@@ -3,12 +3,14 @@ import type {
   CompareResponse,
   CutoverGate,
   CutoverGateVerdict,
+  ImpactsViewRow,
   ObservedL2FailureEvidence,
   PrecertReceipt,
   ProtocolComparisonStatus,
   ProtocolFamilyChange,
   ProtocolFamilyChangeSet,
   ProtocolFamilyChangeSummary,
+  RehearsalImpactsView,
 } from "../api";
 
 const ROW_CAP = 8;
@@ -387,30 +389,49 @@ function ObservedL2Evidence({ value, gate }: {
   );
 }
 
-/** The operator-evidence contracts this view can read (W50). /1 receipts were stored before the engine owner decided
- * failure-impact rows. /2 rows bind only the owner's decisions: a verdict token, reason codes and, per cell, the
- * stored value or an explicit withheld marker. /2 binds no prose, so a later owner rewording never invalidates a
- * stored receipt; this view resolves the words at render time. */
-const OPERATOR_EVIDENCE_V1 = "cutover_operator_evidence/1";
-const OPERATOR_EVIDENCE_V2 = "cutover_operator_evidence/2";
-
-/** Reader-facing chip per engine-owner verdict token (impact_assessability.VERDICTS). A verdict this view does
- * not know renders as unavailable and its values are withheld, so nothing unknown reads as a measurement. */
-const IMPACT_VERDICT_CHIP: Record<string, { label: string; color: string }> = {
-  published: { label: "PUBLISHED", color: "var(--accent)" },
-  lower_bound: { label: "LOWER BOUND", color: "var(--watch)" },
-  not_assessed: { label: "NOT ASSESSED", color: "var(--text-faint)" },
-  ambiguous: { label: "AMBIGUOUS", color: "var(--text-faint)" },
+// ---------------------------------------------------------------------------------------------------------------
+// W50: failure-impact rows are shown ONLY through the engine owner's live interpretation (RehearsalImpactsView).
+// A comparison's operator_evidence.rehearsal.impacts binds the stored rows as raw evidence (a lower bound's count
+// as written, a held zero as a zero), so this view never renders those values. The two tables below are the owner's
+// own words, keyed by the stable tokens it publishes, and each is held EQUAL to its owner in
+// cisco_toolkit/impact_assessability.py (CODE_PHRASES, VERDICT_LABELS) by webapp/tests/test_impacts_view_constants.py.
+// The owner's state words (STATE_WORD) arrive with the view itself (`state_words`), so no copy of the state tokens
+// lives here. A token without a word renders as unrecognised, never as a guess.
+// ---------------------------------------------------------------------------------------------------------------
+const IMPACT_REASON_PHRASES: Readonly<Record<string, string>> = {
+  "section_unavailable": "the failure-impact analysis did not complete this run",
+  "row_unreadable": "the stored row cannot be read",
+  "duplicate_host": "{n} rows name this switch, so no single result can be chosen",
+  "indeterminate": "the simulation could not assess this switch (its detail says why)",
+  "legacy_row": "the row predates the engine's assessability marker",
+  "off_scan_unreadable": "its off-scan VLAN count cannot be read",
+  "blind_links_unreadable": "its count of inter-switch links without VLAN evidence cannot be read",
+  "no_host": "the row names no readable switch",
+  "no_run_config": "its interface running-config, the only source of its gateway addresses, was not captured",
+  "off_scan_only": "every VLAN on it has a gateway outside the scan ({n} VLAN(s))",
+  "blind_links_only": "{n} inter-switch link(s) on it carry no VLAN evidence, and none of its VLANs could be simulated",
+  "off_scan_partial": "{n} VLAN(s) on it have a gateway outside the scan that was not simulated",
+  "blind_links": "{n} inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated",
+  "blind_links_legacy": "the row predates the engine's count of inter-switch links without VLAN evidence",
+  "uncollected_neighbours": "it faces {n} uncollected neighbour(s) that can carry endpoints",
+  "neighbours_unreadable": "the cable map cannot be read to check its neighbours",
+};
+const IMPACT_VERDICT_LABELS: Readonly<Record<string, string>> = {
+  "published": "published",
+  "lower_bound": "lower bound",
+  "not_assessed": "not assessed",
+  "ambiguous": "ambiguous",
 };
 
-/** An own entry of `table`, so a prototype key ("constructor", "toString", "__proto__") never matches. This is
- * `Object.hasOwn`'s check in its ES5 form: `Object.hasOwn` is ES2022 and this project's TypeScript lib is ES2021. */
-function ownEntry<T>(table: Record<string, T>, key: unknown): T | undefined {
-  return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
-}
+const IMPACT_VERDICT_COLOR: Readonly<Record<string, string>> = {
+  published: "var(--accent)",
+  lower_bound: "var(--watch)",
+  not_assessed: "var(--text-faint)",
+  ambiguous: "var(--text-faint)",
+};
 
-/** The measures of a /2 row, with the workbook's Failure Impact column names. */
-const IMPACT_CELLS: ReadonlyArray<readonly [string, string]> = [
+/** The measures of an impacts_view row, with the workbook's Failure Impact column names. */
+const IMPACT_CELL_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["severity", "severity"],
   ["stranded", "stranded endpoints"],
   ["vlans_impacted", "VLANs impacted"],
@@ -419,146 +440,197 @@ const IMPACT_CELLS: ReadonlyArray<readonly [string, string]> = [
   ["fhrp", "FHRP-covered"],
 ];
 
-/** A /2 cell the engine owner withholds (protocol_assurance.IMPACT_CELL_WITHHELD): never a stored value, never 0. */
-function isWithheld(value: unknown): boolean {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && (value as Record<string, unknown>).withheld === true;
+/** An own entry of `table`, so a prototype key ("constructor", "toString", "__proto__") never matches. This is
+ * `Object.hasOwn`'s check in its ES5 form: `Object.hasOwn` is ES2022 and this project's TypeScript lib is ES2021. */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: unknown): T | undefined {
+  return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 }
 
-/** One /2 cell in words, resolved from the bound verdict and value: a withheld cell reads "not assessed"; on a
- * lower-bound row the band and each count are the floors they are ("High (lower bound)", "≥ 45"); a published row
- * prints its measurement. A value of the wrong type is unavailable, never 0, and a row that is not a measurement
- * never prints a value. */
-function impactCell(assessable: string, field: string, value: unknown): string {
-  if (isWithheld(value)) return "not assessed";
-  if (assessable === "lower_bound") {
-    if (field === "severity") {
-      return typeof value === "string" && value.trim() ? `${value} (lower bound)` : "unavailable";
-    }
-    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? `≥ ${value}` : "unavailable";
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** The owner's word for a state token, from the view's own `state_words` ("not collected", "unverified",
+ * "analysis unavailable"); `null` for no state, and a token the owner gave no word is named, never guessed at. */
+type StateWords = Readonly<Record<string, string>>;
+
+function impactStateWord(state: unknown, words: StateWords): string | null {
+  if (state === null || state === undefined) return null;
+  const word = ownEntry(words, state);
+  return typeof word === "string" && word ? word : `unrecognised state (${String(state)})`;
+}
+
+/** One reason in the owner's words, its count filled in; an unknown code is named, never guessed at. */
+function impactReason(entry: unknown): string {
+  const record = asRecord(entry);
+  const phrase = ownEntry(IMPACT_REASON_PHRASES, record.code);
+  if (phrase === undefined) {
+    return `unrecognised reason code (${typeof record.code === "string" ? record.code : "unreadable"})`;
   }
-  if (assessable === "published") {
-    if (typeof value === "string" && value.trim()) return value;
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-    return "unavailable";
+  const n = typeof record.n === "number" && Number.isSafeInteger(record.n) && record.n >= 0 ? String(record.n) : "?";
+  return phrase.replaceAll("{n}", n);
+}
+
+/** One cell in words: a measurement or the owner's floor text ("≥ 45", "High (lower bound)"); a withheld value as
+ * NOT ASSESSED with the owner's state; an unreadable value as unavailable, which is never a zero. */
+function impactCellText(cell: unknown, words: StateWords): string {
+  const record = asRecord(cell);
+  if (record.kind === "published" || record.kind === "floor") {
+    return typeof record.text === "string" && record.text ? record.text : "unavailable";
   }
-  return "not assessed";
+  if (record.kind === "withheld") {
+    const state = impactStateWord(record.state, words);
+    return state ? `not assessed (${state})` : "not assessed";
+  }
+  if (record.kind === "unreadable") return "unavailable (the stored value cannot be read)";
+  return "unavailable";
 }
 
-/** The owner's reason codes, each a stable identifier with the count it quotes ("blind links ×1"). The receipt binds
- * codes rather than the owner's phrases; every engine deliverable prints the owner's phrase for each code. */
-function impactReasons(value: unknown): string {
-  if (!Array.isArray(value)) return "unavailable";
-  return value.map((entry) => {
-    const record: Record<string, unknown> = typeof entry === "object" && entry !== null ? entry : {};
-    const code = typeof record.code === "string" && record.code.trim()
-      ? record.code.replaceAll("_", " ") : "unreadable reason";
-    const n = typeof record.n === "number" && Number.isSafeInteger(record.n) && record.n > 0 ? ` ×${record.n}` : "";
-    return code + n;
-  }).join("; ");
+function impactDetailText(cell: unknown, words: StateWords): string {
+  const record = asRecord(cell);
+  if (record.kind === "published" && typeof record.text === "string" && record.text) {
+    return `Producer detail: ${record.text}`;
+  }
+  if (record.kind === "withheld") {
+    const state = impactStateWord(record.state, words);
+    return `Producer detail withheld: not assessed${state ? ` (${state})` : ""}.`;
+  }
+  return "No readable producer detail.";
 }
 
-function ImpactRowV2({ row }: { row: Record<string, unknown> }) {
-  const verdict = ownEntry(IMPACT_VERDICT_CHIP, row.assessable);
-  const assessable = verdict ? String(row.assessable) : "unavailable";
-  const color = verdict?.color || "var(--text-faint)";
-  const detail = isWithheld(row.detail)
-    ? "Producer detail withheld: the engine owner does not publish it as a measurement for this row."
-    : typeof row.detail === "string" && row.detail.trim() ? `Producer detail: ${row.detail}` : "No producer detail published.";
+function ImpactsViewRowItem({ row, words }: { row: ImpactsViewRow; words: StateWords }) {
+  const label = ownEntry(IMPACT_VERDICT_LABELS, row.assessable);
+  const color = ownEntry(IMPACT_VERDICT_COLOR, row.assessable) || "var(--text-faint)";
+  const state = impactStateWord(row.state, words);
+  const reasons = Array.isArray(row.reasons) ? row.reasons.map(impactReason) : [];
+  const cells = asRecord(row.cells);
+  const host = typeof row.host === "string" && row.host ? row.host : null;
   return (
-    <div data-testid="comparison-rehearsal-row" data-assessable={assessable}
+    <div data-testid="comparison-rehearsal-row" data-assessable={label ? row.assessable : "unrecognised"}
       style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
       <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
-        <b className="mono">{typeof row.host === "string" && row.host ? row.host : "unnamed subject"}</b>
-        <span className="chip" data-testid="comparison-rehearsal-row-verdict"
-          style={{ color, borderColor: color }}>
-          {verdict ? verdict.label : "VERDICT UNAVAILABLE"}
+        <b className="mono">{host ?? `stored row ${String(row.index)} (switch not named by the engine owner)`}</b>
+        <span className="chip" data-testid="comparison-rehearsal-row-verdict" style={{ color, borderColor: color }}>
+          {label ? label.toUpperCase() : `UNRECOGNISED VERDICT (${String(row.assessable)})`}
         </span>
-        {verdict && assessable !== "published" && (
-          <span className="faint" data-testid="comparison-rehearsal-row-reasons">
-            engine-owner reason: {impactReasons(row.reason_codes)}
-          </span>
+        {state && (
+          <span className="faint" data-testid="comparison-rehearsal-row-state">{state}</span>
+        )}
+        {row.ranked !== true && (
+          <span className="faint" data-testid="comparison-rehearsal-row-unranked">not ranked</span>
         )}
       </div>
+      {reasons.length > 0 && (
+        <div className="faint" data-testid="comparison-rehearsal-row-reasons" style={{ marginTop: 2 }}>
+          Engine-owner reason: {reasons.join("; ")}
+        </div>
+      )}
       <div className="dim" data-testid="comparison-rehearsal-row-values" style={{ marginTop: 2 }}>
-        {IMPACT_CELLS.map(([field, label]) =>
-          `${label}: ${verdict ? impactCell(assessable, field, row[field]) : "unavailable"}`).join(" · ")}
+        {IMPACT_CELL_LABELS.map(([field, name]) =>
+          `${name}: ${label ? impactCellText(cells[field], words) : "unavailable"}`).join(" · ")}
       </div>
       <div className="faint" data-testid="comparison-rehearsal-row-detail" style={{ marginTop: 2 }}>
-        {verdict ? detail : "The engine owner's verdict on this row is unavailable; its values are not shown."}
+        {label ? impactDetailText(cells.detail, words)
+          : "The engine owner's verdict on this row is unrecognised here, so none of its values is shown."}
       </div>
     </div>
   );
 }
 
-/** `rehearsal.impacts`, rendered by the contract the payload declares. /2 rows show the owner's verdict, reasons and
- * cells in the owner's ranking order; /1 rows were copied raw before bounds were tracked, so they carry a visible
- * note and are never presented as exact; rows under any other contract are not rendered as values at all. */
-function RehearsalImpacts({ contract, rows, census }: {
-  contract: unknown;
-  rows: Array<Record<string, unknown>>;
-  census?: Record<string, number>;
+/** The failure-impact rows of a comparison, read ONLY through the engine owner's live impacts_view. The view is
+ * shown only when it interpreted exactly the bytes this comparison binds (`source_sha256` equals the bound after
+ * snapshot's SHA-256); otherwise, or when no view was supplied, the rows are explicitly unavailable and their raw
+ * values are never shown. */
+function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
+  view?: RehearsalImpactsView | null;
+  boundSha256?: string;
+  evidenceRows: number;
 }) {
-  if (rows.length === 0) return null;
-  if (contract === OPERATOR_EVIDENCE_V2) {
-    return (
-      <>
-        {census && (
-          <div className="faint" data-testid="comparison-rehearsal-impact-census"
-            style={{ fontSize: 10.5, marginTop: 6 }}>
-            Engine-owner verdicts over every failure-impact row: {Object.entries(IMPACT_VERDICT_CHIP).map(
-              ([key, chip]) => `${typeof census[key] === "number" ? census[key] : "unavailable"} ${chip.label.toLowerCase()}`,
-            ).join(" · ")}
-          </div>
-        )}
-        <div className="faint" data-testid="comparison-rehearsal-impact-order" style={{ fontSize: 10.5, marginTop: 4 }}>
-          Ranked by the engine owner's stranded-endpoint floor; rows it does not rank follow in stored order.
-        </div>
-        {rows.map((row, index) => (
-          <ImpactRowV2 key={`${String(row.host || "impact")}|${index}`} row={row} />
-        ))}
-      </>
-    );
-  }
-  if (contract === OPERATOR_EVIDENCE_V1) {
-    return (
-      <>
-        <div role="note" data-testid="comparison-rehearsal-legacy-note"
-          style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 6 }}>
-          Recorded before bounds were tracked: this receipt stores cutover_operator_evidence/1, which copied each
-          failure-impact row as the engine wrote it. A count below may be only a lower bound and a 0 may be a
-          held value, so none of these values is an exact measurement.
-        </div>
-        {rows.map((row, index) => (
-          <div key={`${String(row.host || "impact")}|${index}`} data-testid="comparison-rehearsal-row"
-            data-assessable="recorded_before_bounds"
-            style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
-            <b className="mono">{String(row.host || "unnamed subject")}</b>
-            <span className="chip" style={{ marginLeft: 6, color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
-              NOT BOUND-CHECKED
-            </span>
-            <span className="dim"> · as recorded: {String(row.severity || "unrated")} · {String(row.detail || "No detail published.")}</span>
-          </div>
-        ))}
-      </>
-    );
-  }
-  return (
-    <div className="faint" data-testid="comparison-rehearsal-contract-unknown" style={{ fontSize: 10.5, marginTop: 6 }}>
-      These failure-impact rows were published under an unrecognised operator-evidence contract, so their values
-      are unavailable here. The complete JSON export includes them.
+  const live = (
+    <div className="faint" data-testid="comparison-rehearsal-impact-live" style={{ fontSize: 10.5, marginTop: 6 }}>
+      Failure-impact interpretation is computed live by the engine owner from the bound evidence; it is not part of
+      this comparison or of any receipt. The {evidenceRows} bound row(s) are in the complete JSON export as raw evidence.
     </div>
+  );
+  let unavailable: string | null = null;
+  if (!view) {
+    unavailable = "this surface does not supply the engine owner's interpretation of the bound rows; the after"
+      + " snapshot's Failure impact view, or an execution receipt of this comparison, shows it";
+  } else if (view.available !== true) {
+    unavailable = typeof view.reason === "string" && view.reason ? view.reason : "no reason was published";
+  } else if (!boundSha256 || view.source_sha256 !== boundSha256) {
+    unavailable = "the interpretation was computed from different evidence bytes than this comparison binds";
+  }
+  if (unavailable !== null || !view || view.available !== true) {
+    return (
+      <>
+        {live}
+        <div data-testid="comparison-rehearsal-impacts-unavailable" style={{ color: "var(--watch)", fontSize: 11, marginTop: 6 }}>
+          Failure-impact interpretation unavailable: {unavailable ?? "no reason was published"}. No row value is shown.
+        </div>
+        <CapDisclosure rendered={0} total={evidenceRows} />
+      </>
+    );
+  }
+  const rows = Array.isArray(view.rows) ? view.rows : [];
+  const rendered = rows.slice(0, ROW_CAP);
+  const total = typeof view.n_rows_total === "number" ? view.n_rows_total : rows.length;
+  const unreadable = typeof view.n_rows_unreadable === "number" ? view.n_rows_unreadable : 0;
+  const counts = asRecord(view.counts);
+  const words: StateWords = Object.fromEntries(Object.entries(asRecord(view.state_words))
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const sectionState = impactStateWord(view.section_state, words);
+  // Every stored row the owner could not read at all, listed by position however far down the ranking it falls.
+  const unreadableRows = rows.filter((row) => Array.isArray(row.reasons)
+    && row.reasons.some((reason) => asRecord(reason).code === "row_unreadable"));
+  return (
+    <>
+      {live}
+      {sectionState && (
+        <div data-testid="comparison-rehearsal-impact-section" style={{ color: "var(--watch)", fontSize: 11, marginTop: 6 }}>
+          The bound evidence's failure-impact section is {sectionState}: its rows cannot be read as results, and
+          this is not a finding of no impact.
+        </div>
+      )}
+      {!sectionState && total === 0 && (
+        <div className="faint" data-testid="comparison-rehearsal-impact-empty" style={{ fontSize: 11, marginTop: 6 }}>
+          The bound evidence stores no failure-impact rows.
+        </div>
+      )}
+      {total > 0 && (
+        <div className="faint" data-testid="comparison-rehearsal-impact-census" style={{ fontSize: 10.5, marginTop: 6 }}>
+          Engine-owner verdicts over {unreadable > 0 ? `all ${total} stored rows (${unreadable} unreadable)` : `every one of the ${total} stored rows`}:{" "}
+          {Object.entries(IMPACT_VERDICT_LABELS).map(([token, word]) =>
+            `${typeof counts[token] === "number" ? counts[token] : "unavailable"} ${word}`).join(" · ")}
+        </div>
+      )}
+      {unreadableRows.length > 0 && (
+        <div data-testid="comparison-rehearsal-impact-unreadable" style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 4 }}>
+          Unreadable stored rows (counted above, never dropped): {unreadableRows.map((row) => `#${String(row.index)}`).join(", ")}
+        </div>
+      )}
+      {total > 0 && (
+        <div className="faint" data-testid="comparison-rehearsal-impact-order" style={{ fontSize: 10.5, marginTop: 4 }}>
+          Ranked by the engine owner's stranded-endpoint floor or measurement; rows it does not rank follow in stored order.
+        </div>
+      )}
+      {rendered.map((row, index) => (
+        <ImpactsViewRowItem key={`${String(row.index)}|${index}`} row={row} words={words} />
+      ))}
+      <CapDisclosure rendered={rendered.length} total={total} />
+    </>
   );
 }
 
-function OperatorEvidence({ value, gate }: {
+function OperatorEvidence({ value, gate, impactsView, boundSha256 }: {
   value: CompareResponse["operator_evidence"];
   gate?: CutoverGate;
+  impactsView?: RehearsalImpactsView | null;
+  boundSha256?: string;
 }) {
   const rehearsal = value?.rehearsal;
   const rollback = value?.rollback;
-  const impactRows = (rehearsal?.impacts || []).slice(0, ROW_CAP);
-  const impactContractKnown = value?.schema === OPERATOR_EVIDENCE_V1 || value?.schema === OPERATOR_EVIDENCE_V2;
+  const evidenceRows = rehearsal && typeof rehearsal.n_impacts_total === "number" ? rehearsal.n_impacts_total : 0;
   const l2 = rehearsal?.l2_failure_rehearsal;
   const l2Rows = (l2?.scenarios || []).slice(0, ROW_CAP);
   const rollbackRows = (rollback?.plans || []).slice(0, ROW_CAP);
@@ -577,17 +649,13 @@ function OperatorEvidence({ value, gate }: {
           </span>
         </div>
         <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>
-          {rehearsal?.note || "No cutover_operator_evidence rehearsal projection was published; rehearsal is not verified."}
+          {rehearsal?.note || "No cutover_operator_evidence/1 rehearsal projection was published; rehearsal is not verified."}
         </div>
         <ObservedL2Evidence
           value={rehearsal?.observed_l2_failure_evidence}
           gate={gate}
         />
-        <RehearsalImpacts contract={value?.schema} rows={impactRows}
-          census={rehearsal?.n_impacts_by_assessable} />
-        {/* Rows under an unrecognised contract are withheld above, so none of them is rendered. */}
-        <CapDisclosure rendered={impactContractKnown ? impactRows.length : 0}
-          total={rehearsal?.n_impacts_total || 0} />
+        <RehearsalImpacts view={impactsView} boundSha256={boundSha256} evidenceRows={evidenceRows} />
         {l2 && (
           <div data-testid="comparison-l2-rehearsal"
             style={{ borderTop: "1px solid var(--border-faint)", marginTop: 8, paddingTop: 8 }}>
@@ -639,7 +707,7 @@ function OperatorEvidence({ value, gate }: {
           </span>
         </div>
         <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>
-          {rollback?.note || "No cutover_operator_evidence rollback projection was published; rollback coverage is not verified."}
+          {rollback?.note || "No cutover_operator_evidence/1 rollback projection was published; rollback coverage is not verified."}
         </div>
         {rollbackRows.map((row, index) => (
           <div key={`${row.group}|${index}`} data-testid="comparison-rollback-row"
@@ -714,11 +782,18 @@ export default function ComparisonDecision({
   value,
   currentBaseline,
   exportFilename = "atlas-comparison-receipt.json",
+  impactsView,
 }: {
   value: CompareResponse;
   /** Optional producer-owned current-state panel, placed directly after the canonical decision. */
   currentBaseline?: ReactNode;
   exportFilename?: string;
+  /**
+   * W50: the engine owner's live, display-only interpretation of the failure-impact rows this comparison binds,
+   * as the API returns it BESIDE the comparison (never inside it, so the export below stays the exact comparison).
+   * Without it the rows are shown as unavailable, never as raw values.
+   */
+  impactsView?: RehearsalImpactsView | null;
 }) {
   const gate = value.cutover_gate?.schema === "cutover_gate/1" ? value.cutover_gate : undefined;
   const gateColor = gate ? (GATE_COLOR[gate.verdict] || "var(--text-faint)") : "var(--text-faint)";
@@ -857,7 +932,8 @@ export default function ComparisonDecision({
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
         <PrecertEvidence value={value.precert} />
-        <OperatorEvidence value={value.operator_evidence} gate={gate} />
+        <OperatorEvidence value={value.operator_evidence} gate={gate} impactsView={impactsView}
+          boundSha256={value.comparison_admission?.source_binding?.after?.sha256} />
         <ReceiptCustody value={value} />
       </div>
     </div>

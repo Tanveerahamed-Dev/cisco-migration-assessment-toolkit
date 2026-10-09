@@ -1091,9 +1091,7 @@ def compute_cutover_gate(delta: dict, certificate: dict,
                 validate_l2_failure_rehearsal,
                 validate_observed_l2_failure_evidence,
             )
-            # Every recomputable operator-evidence contract (W50): the gate reads only the L2 rehearsal and
-            # observed-trial wrappers, which /1 and /2 share, so a stored /1 receipt recomputes the same gate.
-            from cisco_toolkit.protocol_assurance import CUTOVER_OPERATOR_EVIDENCE_SCHEMAS
+            from cisco_toolkit.protocol_assurance import CUTOVER_OPERATOR_EVIDENCE_SCHEMA
 
             evidence = _as_dict(operator_evidence)
             rehearsal_wrapper = _as_dict(evidence.get("rehearsal"))
@@ -1101,7 +1099,7 @@ def compute_cutover_gate(delta: dict, certificate: dict,
             l2_validation = validate_l2_failure_rehearsal(
                 rehearsal_wrapper.get("l2_failure_rehearsal")
             ) if (
-                evidence.get("schema") in CUTOVER_OPERATOR_EVIDENCE_SCHEMAS
+                evidence.get("schema") == CUTOVER_OPERATOR_EVIDENCE_SCHEMA
                 and evidence.get("owner") == "reference_only_projection"
                 and evidence.get("owns_verdict") is False
                 and wrapper_assurance in {

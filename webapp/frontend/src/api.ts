@@ -725,11 +725,7 @@ export interface ObservedL2FailureEvidence {
 }
 
 export interface CutoverOperatorEvidence {
-  /**
-   * /1 (receipts stored before W50) copied each stored failure-impact row raw, so its values were never
-   * bound-checked; /2 binds every row's engine-owner decisions (verdict, reason codes, withheld cells).
-   */
-  schema: "cutover_operator_evidence/1" | "cutover_operator_evidence/2";
+  schema: "cutover_operator_evidence/1";
   owner: "reference_only_projection" | string;
   owns_verdict: false;
   current_baseline_blocker_export?: {
@@ -761,19 +757,11 @@ export interface CutoverOperatorEvidence {
     source_owner: string;
     n_impacts_total: number;
     /**
-     * /1: the stored rows, raw. /2 (W50): `{index, host, assessable, reason_codes, severity, vlans_impacted,
-     * stranded, hard, backup, fhrp, detail}`, bound decisions only and no prose. `index` is the stored row's
-     * position; `assessable` is the engine owner's verdict token (published, lower_bound, not_assessed,
-     * ambiguous); `reason_codes` is `[{code, n}]`, each a stable owner reason code with the count it quotes; each
-     * measure and `detail` is the stored value when the owner publishes it, else `{withheld: true}`. On a
-     * lower_bound row a published band or count is a floor. Rows are ranked by the owner's stranded floor, then
-     * the rows it does not rank in stored order. Read fields defensively either way.
+     * The after snapshot's stored failure-impact rows bound as raw EVIDENCE (W50): a lower bound's count as the
+     * producer wrote it, a held zero as a zero. Never render these as values; render the engine owner's live
+     * `RehearsalImpactsView` that the response carries beside the comparison.
      */
     impacts: Array<Record<string, unknown>>;
-    /** /2 only: the owner's declared semantic version (impact_assessability.SCHEMA) that decided every row. */
-    impacts_owner?: string;
-    /** /2 only: the owner's verdict census over every row, including rows a capped view omits. */
-    n_impacts_by_assessable?: Record<string, number>;
     l2_failure_rehearsal?: L2FailureRehearsal;
     observed_l2_failure_evidence?: ObservedL2FailureEvidence;
     note: string;
@@ -842,7 +830,71 @@ export interface CampaignAdjacentComparison {
   after_label: string;
   /** Complete server-owned source_bound_cutover_comparison/1 document for this adjacent pair. */
   comparison: CompareResponse;
+  /** W50: the engine owner's live reading of the after snapshot's failure-impact rows. Display only. */
+  impacts_view?: RehearsalImpactsView;
 }
+
+/**
+ * W50: one cell of a `RehearsalImpactsView` row, as the engine owner publishes it. `published`: a measurement (or
+ * the producer's detail the owner still publishes); `floor`: a lower bound, `text` is the owner's own wording
+ * ("≥ 45", "High (lower bound)"); `withheld`: not a measurement, `state` is the owner's state of that withholding;
+ * `unreadable`: the owner publishes the cell but the stored value is not readable (never a zero).
+ */
+export interface ImpactsViewCell {
+  kind: "published" | "floor" | "withheld" | "unreadable" | string;
+  text: string | null;
+  state: string | null;
+}
+
+/** W50: one stored failure-impact row, interpreted by the engine owner (cisco_toolkit/impact_assessability.py). */
+export interface ImpactsViewRow {
+  /** The stored row's position. */
+  index: number;
+  /** null when the owner withholds the host (an unreadable row, a failed section). */
+  host: string | null;
+  /** The owner's verdict token: published, lower_bound, not_assessed or ambiguous. */
+  assessable: string;
+  /** The owner's state for a non-measurement: not_collected, unverified or analysis_unavailable. */
+  state: string | null;
+  /** Each reason code (a key of the owner's CODE_PHRASES) with the count its phrase quotes. */
+  reasons: Array<{ code: string; n: number }>;
+  /** Whether the owner ranks the row (by its measurement or its stranded floor). */
+  ranked: boolean;
+  /** severity, vlans_impacted, stranded, hard, backup, fhrp and detail. */
+  cells: Record<string, ImpactsViewCell>;
+}
+
+/**
+ * W50: the engine owner's LIVE, DISPLAY-ONLY interpretation of the failure-impact rows a comparison binds as raw
+ * evidence. AssessHub computes it at request time from the comparison's bound after snapshot and returns it BESIDE
+ * the comparison (an execution receipt row, a trend pair), never inside it: it is never stored, never hashed and
+ * never part of receipt verification. A view is shown only when `source_sha256` equals the after-snapshot SHA-256 the
+ * comparison binds. Rows come in the owner's ranking order.
+ */
+export type RehearsalImpactsView =
+  | {
+    schema: "rehearsal_impacts_view/1";
+    display_only: true;
+    available: true;
+    /** The owner's declared version (impact_assessability.SCHEMA). */
+    owner: string;
+    source_sha256: string;
+    /** The owner's word for each state token (impact_assessability.STATE_WORD). */
+    state_words: Record<string, string>;
+    /** null when the section is a list; otherwise why it cannot be read (never "no impact"). */
+    section_state: string | null;
+    n_rows_total: number;
+    n_rows_unreadable: number;
+    counts: Record<string, number>;
+    rows: ImpactsViewRow[];
+  }
+  | {
+    schema: "rehearsal_impacts_view/1";
+    display_only: true;
+    available: false;
+    code: string;
+    reason: string;
+  };
 
 export interface CampaignAdjacentComparisonStatus {
   schema: "campaign_adjacent_comparison_set/1";
@@ -893,6 +945,8 @@ export interface StoredExecutionComparisonReceipt {
   cutover_verdict: CutoverGateVerdict;
   created_at: string;
   receipt: ExecutionComparisonReceiptBody;
+  /** W50: the engine owner's live reading of the receipt's bound failure-impact evidence. Display only. */
+  impacts_view?: RehearsalImpactsView;
 }
 
 export interface ExecutionLatestComparison {

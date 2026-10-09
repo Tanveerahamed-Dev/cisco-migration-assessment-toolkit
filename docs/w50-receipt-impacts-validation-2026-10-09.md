@@ -1,352 +1,247 @@
-# W50 failure-impact rows in execution receipts read the engine owner (validation record)
+# W50 execution-receipt failure-impact rows: bind the evidence, interpret it live (validation record)
 
 Branch `claude/w50-receipt-impacts`, cut from the local branch `claude/w48-impact-consumers` at `e7c00e12`. The
 stack is main ← #629 (W45, which adds the owner `cisco_toolkit/impact_assessability.py`) ← W48 ← W50. It is
-committed locally and not pushed.
+committed locally and not pushed. This is round 3, a design pivot decided by the supervisor after the independent
+re-verification of round 2 (`e04bb4a1`).
 
-No local test, build, engine, pipeline, npm or vitest run happened (owner GitHub-only rule). The checks run locally
-were static: in-memory compilation and `ruff check` of every changed Python file, W48's guard scanner and the
-hand-list scanner from `tests/test_protocol_assessability.py` executed on their own, and pure engine functions called
-on the committed golden and sample JSON (the digests below; see "Static checks"). The hosted gates decide.
+No local test, build, engine, pipeline, npm or vitest run happened (owner GitHub-only rule). The local checks were
+static: `py_compile`, AST scans, and pure library functions called on the committed golden and sample JSON (see
+"Static checks"). The hosted gates decide.
 
 ## The problem
 
-`protocol_assurance.cutover_operator_evidence` copied every stored `failure_impact` row raw into
-`rehearsal.impacts`, so a lower bound read as an exact count and a held zero as a measured zero. On the committed
-sample, core1 (one inter-switch link with no trunk/STP evidence) went into the payload as an exact 45. AssessHub's
-`ComparisonDecision` rendered those rows' `severity` and `detail` raw.
+`protocol_assurance.cutover_operator_evidence` copies every stored `failure_impact` row raw into
+`rehearsal.impacts`. AssessHub's `ComparisonDecision` rendered those rows' `severity` and `detail` raw, so a lower
+bound read as an exact count and a held zero as a measured zero. On the committed sample, core1 (one inter-switch link
+with no trunk/STP evidence) was shown as an exact 45.
 
-W48 stopped at this site because the payload is persisted inside every AssessHub execution comparison receipt. Every
-read re-verifies the receipt against an exact-source recomputation (`webapp/backend/storage.py`,
-`_execution_receipt_authority_locked`). Changing the computation would have made every stored receipt with
-failure-impact rows read as mismatched.
+W48 stopped at this site because the payload is persisted inside every AssessHub execution comparison receipt, and
+every read re-verifies a stored receipt by RECOMPUTING it from the bound snapshots
+(`webapp/backend/storage.py`, `_execution_receipt_authority_locked`).
 
-## The decision (supervisor, under delegated owner authority)
+## Why rounds 1 and 2 were wrong, and the robust model
 
-Version the receipt contract.
+Rounds 1 and 2 put the owner's reading INTO the receipt (`cutover_operator_evidence/2`: verdict tokens, reason codes,
+withheld markers). Round 2 removed the owner's prose so a rewording could not move a stored receipt, and pinned the
+owner's decisions on a sampled corpus. The re-verification proved that is not enough:
 
-- New receipts carry v2 impacts decided by the owner.
-- Stored v1 receipts keep verifying against the legacy v1 recomputation, preserved verbatim as a named function.
-- The version is explicit in the receipt. A missing or unknown version fails closed.
-- The AssessHub UI renders v2 honestly and marks v1 rows as recorded before bounds were tracked.
+- `_rehearsal_impacts_v2` called the live owner. Any change to what the owner decides changes `/2` bytes for some
+  fleet, and every stored `/2` receipt for that fleet then reads as mismatched (409), so its execution history becomes
+  unreadable. Renaming a frozen copy does not help while it still calls the live owner.
+- The semantic pin covers only the sampled corpus. Removing `"endpoint"` from `IMPACT_EDGE_KINDS` passes every pin
+  yet changes `/2` bytes on a real fleet.
 
-**Fix round (supervisor decision on the independent review's P2).** The first `/2` embedded the owner's free-text
-prose (`why`, `table_detail`, `CODE_PHRASES`) and its rendering rules (`≥ 45`, `High (lower bound)`, `not assessed`).
-A stored receipt is re-verified by recomputation on every read, so any later owner rewording (W48's fix round is the
-next one) would have turned every stored `/2` receipt into a 409 and made its execution history unreadable. `/2` now
-binds only stable semantics; see "Bound versus display".
+The general rule for a recompute-on-read record: **anything it binds must be a pure function of the bound bytes and of
+frozen code.** Evidence satisfies that; an interpretation by an evolving owner never can. So the record binds the
+evidence, and the interpretation is computed live, at display time, and never stored:
 
-## The contract
+- the receipt stays verifiable forever without migrations or version bumps when the owner improves;
+- every receipt, old or new, shows the CURRENT best reading of its own evidence;
+- the owner stays the single place where "measurement, lower bound or not assessed" is decided.
 
-**Version field.** The version is the existing `operator_evidence.schema` inside the stored comparison. Every
-receipt stored before W50 already carries `cutover_operator_evidence/1` there, so no stored receipt lacks an explicit
-version. The new contract is `cutover_operator_evidence/2`. The constants live in `protocol_assurance`:
+## 1. The receipt binds evidence only (`cisco_toolkit/protocol_assurance.py`)
 
-- `CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1` and `CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2`;
-- `CUTOVER_OPERATOR_EVIDENCE_SCHEMA`, the current contract (V2), which every new comparison carries;
-- `CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`, every contract the engine can recompute.
+- The contract stays `cutover_operator_evidence/1`. `/2`, its row builder `_rehearsal_impacts_v2`, its
+  `IMPACT_CELL_WITHHELD` marker, its pins and its owner-semantics battery are removed. No `/2` receipt ever existed
+  outside this unpushed branch.
+- `rehearsal.impacts` is computed by one frozen binder, `_rehearsal_impact_evidence_v1(snap)`: every object row of
+  `snap["failure_impact"]`, copied raw, in stored order. It is the pre-W50 comprehension byte for byte (it now reads
+  the section itself rather than receiving it from a lambda, so the structural guard can name it). The module imports
+  and names nothing of `impact_assessability`.
+- Hardening kept from round 2:
+  - an explicit, read-only dispatch `_REHEARSAL_IMPACTS_BY_CONTRACT` whose only entry is `/1`;
+  - `cutover_operator_evidence(..., schema=...)` raises `ValueError` on any contract outside it (unknown, empty,
+    non-string, prototype names);
+  - `stored_operator_evidence_schema(comparison)` returns the declared contract only when it is a string in
+    `CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`; the storage read replay raises `ExecutionReceiptAuthorityError`
+    ("operator-evidence contract is missing or unsupported") on `None` and otherwise recomputes the declared contract
+    (`compare_bound_pair(..., operator_evidence_schema=...)`);
+  - the append path recomputes with the current contract only, so an incoming receipt declaring anything else is
+    refused as `comparison_mismatch`.
+- `html.compute_cutover_gate` is back to its pre-W50 text (equality with `/1`); with one contract the set membership
+  added in round 1 was redundant.
+- Every receipt stored before W50 still verifies, with no migration and no new version: `/1` reproduces the frozen
+  digests below, and the whole comparison is independent of the owner.
 
-The outer `execution_comparison_receipt/1`, `source_bound_cutover_comparison/1` and `protocol_receipt_envelope/1`
-schemas are unchanged. The admission's owner roster never named this contract and is unchanged too, so a v1
-recomputation's admission is identical to what v1 stored.
+## 2. The interpretation is display-only and computed live (`webapp/backend/engine.py`, `app.py`)
 
-**Dispatch.** `_REHEARSAL_IMPACTS_BY_CONTRACT` is a read-only `{V1: …, V2: …}` table and the one place a contract
-selects its computation. Each entry returns the rows and the keys that contract adds to `rehearsal` (none for /1).
-`cutover_operator_evidence` raises `ValueError` for any contract outside the table, before computing anything. The
-earlier open-ended "anything but /1 is /2" branch is gone.
+`engine.rehearsal_impacts_view(snapshot, source_sha256=...)` (schema `rehearsal_impacts_view/1`) is the owner's
+reading of a comparison's bound after snapshot, built only from `impact_assessability`:
+`assess_failure_impact` (every stored row, unreadable ones included), `withholds` / `withheld_state`, `table_value`
+(the floor text `≥ 45`, `High (lower bound)`), `ranks` / `ranking_floor`, `code_counts`, `section_state`,
+`count_value`. Per row: `index`, `host` (null when the owner withholds it), `assessable`, the owner's `state`
+(`not_collected`, `unverified`, `analysis_unavailable`), `reasons` `[{code, n}]`, `ranked`, and one cell per measure
+plus `detail` as `{kind: published|floor|withheld|unreadable, text, state}`. Rows come in the owner's ranking order:
+ranked rows by floor or measured count, largest first, then ranked rows with no readable count, then every row the
+owner does not rank; stored order breaks ties. The census (`n_rows_total`, `n_rows_unreadable`, `counts`) covers
+every stored row. `section_state` says whether the section itself could be read, so an absent or failed section never
+reads as "no impact".
 
-**v2 rows (bound semantics only).** `_rehearsal_impacts_v2` emits one row per stored `failure_impact` object, read
-through `impact_assessability.rows_with_verdicts`:
+Where it is served, always BESIDE a comparison and never inside it:
 
-- `index`: the stored row's position; `host`: the stored host, which names the row as the MCP tool and workbook do;
-- `assessable`: the owner's verdict token (`published`, `lower_bound`, `not_assessed`, `ambiguous`);
-- `reason_codes`: `[{code, n}]` in the owner's order, from the new additive `RowVerdict.code_counts`. Each code is
-  a stable key of `CODE_PHRASES` with the count its phrase quotes. The owner already had these codes (`Hold.code`,
-  `Bound.code`, `RowVerdict.codes`); only the public accessor for the counts is new, and no prose changed;
-- `severity`, `vlans_impacted`, `stranded`, `hard`, `backup`, `fhrp` and `detail`: the stored value exactly when the
-  owner publishes it, else the explicit marker `IMPACT_CELL_WITHHELD` (`{"withheld": true}`). It is never `null`,
-  because a published row may itself store a null. On a lower-bound row a published band or count is the floor it
-  is: the verdict says so, and the cell carries the stored value.
+- **Execution receipt rows** (`GET /api/executions/{id}` and every route that returns the execution view):
+  `app._receipts_with_impacts_views` shallow-copies each stored row and adds `impacts_view`, computed by
+  `engine.receipt_impacts_view(comparison, store.get_bound_snapshot)`. That loads the comparison's bound after snapshot
+  by id and interprets it only when the stored bytes still carry the SHA-256 the comparison binds
+  (`comparison_admission.source_binding.after`).
+- **Campaign trend pairs** (`GET /api/campaigns/{id}/trend`): each `adjacent_comparisons` entry carries
+  `impacts_view` next to `comparison`, from the same in-memory after snapshot and binding.
 
-Order (P3): the rows the owner ranks (`ranks`) come first, by their stranded floor (`ranking_floor`) or measured
-count, largest first, with ties in stored order. Every row it does not rank follows in stored order. The capped view
-therefore leads with the largest floors, not producer order. On the golden this moves the bounded core2 (no positive
-floor) after access1.
+**Unavailable is explicit.** `engine.IMPACTS_VIEW_UNAVAILABLE` is the closed set of reasons: `binding_unreadable`,
+`snapshot_missing`, `snapshot_unreadable`, `snapshot_mismatch`, `owner_fault`. An unavailable view carries no rows and
+the UI never falls back to the raw rows.
 
-The v2 `rehearsal` block also carries `impacts_owner`, the owner's declared version (`failure_impact_assessability/1`),
-and `n_impacts_by_assessable`, a verdict census over every row, including rows a capped view does not render. Every
-other key is shared by /1 and /2: status, note, L2 projection, observed trial, rollback and blocker export.
+**The boundary.** `impacts_view` is never stored, never hashed and never an input to verification:
 
-Measured on the committed sample: core1 is
-`{index 0, lower_bound, [{blind_links, 1}], severity "High", stranded 45, backup/fhrp withheld, detail = the stored
-per-VLAN list}`, and the census is 20 published and 3 lower bound. On the golden, core2 is a lower bound
-(`uncollected_neighbours` ×1) whose Low band and zeros are withheld.
+- storage (writes and the replay), the comparison composer, the receipt contract, the execution state and the PIR
+  export never name it (`tests/test_operator_evidence_contract.py`, an AST scan that admits only the engine view
+  builders, the trend pair and the app's execution-view decorator);
+- the PIR export reads `rec["comparisons"]` directly, not the decorated view;
+- a comparison WITH the view inside it fails the detached envelope (`storage._comparison_envelope_valid` treats every
+  non-additive key as delta), which is why it travels beside the comparison.
 
-**Legacy function.** `_rehearsal_impacts_v1_legacy(raw_impacts)` holds the v1 comprehension verbatim. Its one call
-site is the /1 dispatch entry, which passes it the same `snap.get("failure_impact")` value v1 read. /1 adds none of
-/2's keys, so a /1 recomputation is byte-identical to what /1 stored, and its digests are frozen (see "Pins").
+**`/api/compare` is unchanged.** It deliberately does not carry the view: two existing pins require its JSON to equal
+the stored execution-receipt comparison and the trend pair's comparison exactly
+(`test_compare_and_execution_receipt_are_exactly_parity_bound_to_stored_bytes`,
+`test_campaign_trend_receipts`), and the envelope argument above applies. A dedicated display route would change the
+OpenAPI document and therefore the generated `src/generated/openapi.ts`, which cannot be regenerated without npm under
+the owner rule. The ad-hoc Compare panel therefore states that the interpretation is not supplied on that surface
+(residual 1).
 
-**Gate.** `html.compute_cutover_gate` accepts any schema in `CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`, where it used to
-require /1 by equality. The gate reads only the L2 rehearsal and observed-trial wrappers, which both contracts share,
-so a v1 recomputation reproduces the stored v1 gate exactly.
+## 3. AssessHub UI (`webapp/frontend/src/components/ComparisonDecision.tsx`)
 
-**Fail-closed rule.**
+`ComparisonDecision` takes a new optional `impactsView` prop; the execution page, the cutover planner and the trend
+pairs pass the sibling from the API. The raw `rehearsal.impacts` rows are no longer read at all (only their count, for
+the evidence line).
 
-- `protocol_assurance.stored_operator_evidence_schema(comparison)` returns the declared contract only when it is a
-  string in `CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`. A missing `operator_evidence`, a missing or non-string `schema`, or
-  an unknown contract returns `None`; `None` never means "current".
-- The storage read replay calls it through `engine.stored_operator_evidence_contract`. On `None` it raises
-  `ExecutionReceiptAuthorityError` (`operator-evidence contract is missing or unsupported`) before any recomputation.
-  Otherwise it recomputes with `compare_bound_pair(..., operator_evidence_schema=<declared>)` and keeps the existing
-  byte-identity check.
-- **Writes take only the current contract.** The append path recomputes with no contract (the current one), so an
-  incoming /1 or unknown-contract receipt cannot match it and is refused as `comparison_mismatch`. Only the
-  stored-history replay recomputes a declared legacy contract. An execution may therefore hold /1 receipts written
-  before W50 followed by /2 receipts written after it.
+- The view is shown only when its `source_sha256` equals the comparison's bound after-snapshot SHA-256; otherwise, or
+  when no view or an unavailable view was supplied, the panel says "Failure-impact interpretation unavailable: …" with
+  the reason, renders no row value and discloses `Rendered: 0`.
+- One line replaces the old "/1 recorded before bounds were tracked" note: the interpretation is computed live by the
+  engine owner from the bound evidence and is not part of the comparison or of any receipt.
+- Each row: the verdict chip, the owner's state word (`not collected`, `unverified`, `analysis unavailable`), the
+  reasons in the owner's words, `not ranked` where it applies, and every measure: a floor as the owner's text
+  (`≥ 45`, `High (lower bound)`), a withheld value as `not assessed (<state>)`, a measurement as its value, and an
+  unreadable value as `unavailable (the stored value cannot be read)`, never 0.
+- The census says `every one of the N stored rows` only when no row is unreadable; otherwise `all N stored rows
+  (U unreadable)`, and the unreadable rows are listed by position however far down the ranking they fall.
+- An absent or failed section is shown as such and "not a finding of no impact"; an empty list reads "stores no
+  failure-impact rows".
+- Reason and verdict words come from two closed tables equal to the owner's `CODE_PHRASES` and `VERDICT_LABELS`
+  (`webapp/tests/test_impacts_view_constants.py` parses the TS tables and requires exact, ordered equality, the W47
+  constants-guard pattern). State words come with the view itself (`state_words`, the owner's `STATE_WORD`
+  verbatim): a TS literal naming `not_collected` and `analysis_unavailable` is flagged by the protocol hand-list guard
+  (`tests/test_protocol_assessability.py`) as a copy of the protocol receipt's vocabulary, and this way the SPA holds
+  no copy at all. An unknown code renders `unrecognised reason code (…)`, an unknown verdict `UNRECOGNISED VERDICT
+  (…)` with every value withheld, a state without a word `unrecognised state (…)`. Lookups are own-property only
+  (`constructor`, `toString` never match).
+- `webapp/frontend/dist` is untouched (owner rule); the hosted dist import belongs to the UI train.
 
-## Bound versus display
+## 4. W48 guard interplay (`tests/test_impact_consumers.py`)
 
-Two designs were open: a `bound` sub-object beside a display part that verification ignores, or prose removed from
-the receipt entirely and resolved at render time. The first was rejected. The receipt envelope, the outer
-`receipt_sha256`, the INTEGER authority limbs and the decision-input authority all hash the whole comparison, so an
-ignored display part would mean excluding it from four digests and from the identity check. A display stored that
-way would also be frozen at write time, so it would show stale prose anyway.
+- The `protocol_assurance` ratchet entry is back, keyed to the binder alone:
+  `("cisco_toolkit.protocol_assurance", "_rehearsal_impact_evidence_v1")`, reason "binds raw evidence for
+  recompute-on-read receipts; presentation goes through the owner at display time (W50)".
+- `test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner` requires the binder to be
+  the module's only reader of the section, the ratchet to name only it, and the engine view builders and trend pair to
+  be routed to the owner.
+- `test_the_guard_still_flags_a_second_raw_presenter_beside_the_binder` is the non-vacuity case on a synthetic tree.
+- The former strict xfail is now `test_receipt_impact_rows_are_bound_raw_and_presented_only_through_the_owner`
+  (bounded and held core1): the receipt binds core1's row raw, and the view presents it through the owner (`≥ 45`
+  floor leading the ranking; held: `not_assessed`, `legacy_row`, `not_collected`, unranked).
+- A presenter of the binder's OUTPUT is not a section read, so `test_impacts_view_constants.py` also scans every
+  non-test SPA source (comments stripped) for `.impacts` / `["impacts"]` reads; the pre-W50 component is the
+  non-vacuity case.
+- W48-owned edits are limited to these; W48's fix round (`a78d85ed`) merges into W50 later.
 
-**Chosen: no prose in the receipt.** The bound record is the whole `/2` row above, and nothing else is stored. The
-boundary is in code: `_rehearsal_impacts_v2` reads only verdict tokens, codes, counts, withholding decisions and
-stored values from the owner. It never calls `why`, `summary`, `table_value`, `table_detail`, `ranked_value` or
-`disclose`. `tests/test_operator_evidence_contract.py` rewords every owner string (all `CODE_PHRASES`,
-`VERDICT_LABELS`, `STATE_WORD`, every `R_*` reason, `NOT_ASSESSED_CELL`, `LOWER_BOUND_MARK`). It then requires the
-`/2` evidence, both pinned digests and the owner-semantics digest to stay unchanged, and no reworded byte to appear.
+## Frozen `/1` digests
 
-**Render time (`ComparisonDecision.tsx`).** The view resolves the words itself, from the bound tokens only:
+Canonical encoding `protocol_assurance.canonical_json_bytes` (sorted keys, ASCII, compact), SHA-256, over
+`cutover_operator_evidence(snap, prior_snapshot=snap)` and over `compare_bound_pair(snap, snap, ...)` with the fixed
+persisted-source bindings of `_binding` (snapshot ids 1 and 2, campaign 1, engagement `E`, the file's own SHA-256 and
+length), `snap` being `bind_snapshot_json_bytes` of the committed file bytes. Measured at `e7c00e12`; constants, never
+recomputed from current code.
 
-- the verdict token becomes a chip;
-- a withheld cell reads `not assessed`;
-- on a lower-bound row the band reads `High (lower bound)` and a count reads `≥ N`;
-- a published row prints its value;
-- each reason code reads as itself with its count (`blind links ×1`, `uncollected neighbours ×1`, `legacy row`);
-- the stored detail is shown as `Producer detail: …` when published.
+| Snapshot | operator evidence | full comparison |
+| --- | --- | --- |
+| golden | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2` |
+| sample | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744` |
 
-The view holds no copy of the owner's phrase table, so there is one truth (the codes) and nothing to drift. The
-trade-off is deliberate: the comparison view shows the stable code, not the owner's full sentence. The engine
-deliverables that render failure-impact rows (for example the workbook's Failure Impact sheet and the MCP tool, through
-`table_detail`) still print the owner's live phrase for the same code. Computing the owner's prose server-side at serve time was also considered and rejected. Comparisons reach the
-UI through `/api/compare`, every execution view, campaign trend entries and four page call sites, so a server-side
-display sidecar would add four untested exits for a presentation gain.
+If one moves, never re-pin: a payload change needs a new contract with its own frozen binder added beside `/1`; a
+comparison-only change breaks every stored receipt alike and needs its own receipt-versioning decision.
 
-## Pins (`tests/test_operator_evidence_contract.py`)
+## Owner additions (`cisco_toolkit/impact_assessability.py`, additive)
 
-Canonical encoding: `protocol_assurance.canonical_json_bytes` (sorted keys, ASCII, compact), SHA-256. The
-operator-evidence digest is over `cutover_operator_evidence(snap, prior_snapshot=snap, schema=…)`. The comparison
-digest is over `compare_bound_pair(snap, snap, ...)`, with the fixed persisted-source bindings in `_binding`
-(snapshot ids 1 and 2, campaign 1, engagement `E`, the file's own SHA-256 and length). Here `snap` is
-`bind_snapshot_json_bytes` of the committed file bytes.
-
-| Contract | Snapshot | operator evidence | full comparison |
-| --- | --- | --- | --- |
-| /1 (frozen, measured at `e7c00e12` by the independent reviewer) | golden | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2` |
-| /1 (frozen) | sample | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744` |
-| /2 (pinned) | golden | `e9aedbb835090df570132111f698e388343d48739fe4375b07dc501d5c97c713` | `30ed44b2ac4fbda336e9739e3ccecef7900022a96749e2bb85b53b85b9e56e83` |
-| /2 (pinned) | sample | `cb916b4ead4448cb53c59bb64e91c1a21a834642954ac62b9abf0c512b818aea` | `a1d9a5040ac4789f5a71b9e673f66103c367ba3936bdb3c2a488aea417694d1f` |
-
-The /1 values are constants, never recomputed from current code (P3: the earlier /1 check built its expectation from
-the current comparison, so it could drift together with the code). This tree reproduces all four /1 values
-statically. The module docstring states the rule:
-
-- a `/2` digest change means `/2` changed: add `/3` as the current contract, freeze today's computation as
-  `_rehearsal_impacts_v2_legacy` selected by the /2 dispatch entry, and pin `/3`;
-- a comparison-only change, with the operator-evidence digest holding, is outside this contract and breaks every
-  stored receipt alike: it needs its own receipt-versioning decision, not a re-pin;
-- until W50 reaches `main` no `/2` receipt can exist anywhere, so the supervisor may re-pin `/2` once, deliberately,
-  in the merge that changes it (for example W48's fix round), and must say so in the handoff log.
-
-**Owner semantic version.** `impact_assessability.SCHEMA` (`failure_impact_assessability/1`) already existed as the
-owner's document schema. It is now declared, in a comment on the owner, as the version of what the owner decides, and
-`/2` binds it in `impacts_owner`. `test_the_owner_bound_semantics_change_only_with_a_schema_bump` pins, per declared
-version, digests of the owner's decisions: per row the verdict, codes with counts, withheld cells, `ranks` and
-`ranking_floor`. The digests cover three corpora:
-
-| Corpus | digest |
-| --- | --- |
-| golden | `7f06243ce235412e0ae0dcb1d3577f196496fd1eda5139f5c12a5ad4dfd8f9de` |
-| sample | `329e7bfbc4f7c54c97e90a355d0ac9cb1e91113436e9752e38b1819ea6ea228b` |
-| battery | `a98056a2099f4a6465feb0a1c6b0d2548d55bad9f725b2553c95e3c46d24e83d` |
-
-The battery is 15 golden variants, one per reason code the golden does not carry. Together with the golden (whose
-core2 carries `uncollected_neighbours`) they exercise all 16 owner codes; a separate test requires that. A semantic
-change under an unchanged `SCHEMA` fails. Bumping `SCHEMA` moves every `/2` digest because `impacts_owner` is bound,
-so it also forces `/3`. Non-vacuity: dropping every hold (`row_hold` returns `None`) moves the battery digest, and
-rewording every phrase does not.
-
-## Residual: a database writer can downgrade a `/2` receipt to `/1`
-
-Recorded, not fixed here (supervisor instruction). Someone who can write the AssessHub SQLite file can replace a
-stored `/2` receipt with a self-consistent `/1` receipt for the same pair. That receipt has the raw rows and the `/1`
-schema. The writer recomputes the detached envelope, the outer `receipt_sha256` and the four INTEGER authority limbs,
-which are unkeyed SHA-256 over public content (`storage._comparison_authority_limbs`). The read replay then recomputes
-the declared `/1`, which matches, so the receipt verifies.
-
-What the downgrade can and cannot change:
-
-- It cannot change the cutover gate: both contracts share every input the gate reads.
-- It replaces owner-decided rows with raw rows. The UI marks those `NOT BOUND-CHECKED` and "recorded before bounds were
-  tracked", so it never presents them as exact.
-
-Closing it needs keyed authority (an HMAC or a signature whose key the database writer does not hold), or a trusted
-per-execution contract floor. Both are out of scope for W50; any database write is outside the current trust model
-anyway.
-
-## AssessHub UI
-
-`webapp/frontend/src/components/` has no shared failure-impact renderer on this base, so `ComparisonDecision.tsx`
-keeps a local `RehearsalImpacts`:
-
-- **/2.** Each row shows:
-  - the owner's verdict chip (`PUBLISHED`, `LOWER BOUND`, `NOT ASSESSED`, `AMBIGUOUS`);
-  - for a row that is not a measurement, its reason codes;
-  - every measure resolved at render time, as described above;
-  - the producer detail, or a note that the owner withholds it.
-
-  A row with a missing, unknown or prototype-named verdict (`constructor`, `toString`) shows `VERDICT UNAVAILABLE`,
-  and every value reads `unavailable`. The lookup uses an own-property check (P3). `Object.hasOwn` itself is ES2022,
-  and the SPA's TypeScript `lib` is ES2021, so it would not typecheck; the code therefore uses
-  `Object.prototype.hasOwnProperty.call`, which is the same check. A missing or mistyped cell reads `unavailable`,
-  never 0. The verdict census and a ranking note precede the rows.
-- **/1.** A visible note says "Recorded before bounds were tracked: … none of these values is an exact
-  measurement." Each row carries a `NOT BOUND-CHECKED` chip and an "as recorded" label. A /1 receipt with no rows
-  shows no note.
-- **Any other contract.** No row values are rendered, and the cap disclosure now reports `Rendered: 0` (P3: it used to
-  count the withheld rows as rendered). A notice points to the complete JSON export.
-
-`api.ts` documents the v2 row (`index, host, assessable, reason_codes`, cells or `{withheld: true}`), its ranking and
-the two v2-only keys.
-
-**Follow-up.** When a shared impact renderer lands in the SPA, `RehearsalImpacts` should adopt it.
-`webapp/frontend/dist` is untouched (owner rule). The `Rebuild the bundled AssessHub SPA` step rebuilds and
-byte-compares the committed bundle, so it will report the tracked dist as modified until the later UI train imports a
-hosted dist.
-
-## Guard (`tests/test_impact_consumers.py`)
-
-The `protocol_assurance` ratchet entry stays removed. Measured statically with the guard's own scanner on this tree:
-
-- the only raw unit is `design_advisor._signals`, the remaining ratchet entry;
-- in `protocol_assurance` the section is now read only inside the dispatch table, which the guard admits;
-- the dispatch table reaches the owner through its /2 entry;
-- `_rehearsal_impacts_v1_legacy` is not a reader, because it receives the rows;
-- the textual cross-check finds no missed module.
-
-The guard works per unit, so it admits the table even though its /1 entry copies raw rows. That entry is pinned
-behaviourally instead:
-
-- the frozen /1 digests;
-- the AST test that `_rehearsal_impacts_v1_legacy` has exactly one reference and one call in production code
-  (`cisco_toolkit/`, `webapp/backend/`, `portable/` and the pipeline), and that it sits in the /1 dispatch entry (P3).
-
-`test_cutover_operator_evidence_carries_the_owner_values_for_core1[bounded|held]` (W48's former strict xfail) now
-checks the bound semantics. It checks the verdict and the codes, and that each of severity, stranded and backup is
-the stored value or the withheld marker exactly as the owner decides. W50's other tests moved out of this W48-owned
-file into `tests/test_operator_evidence_contract.py`, which shrinks the merge surface with W48's fix round.
+`RowVerdict.state` and `RowVerdict.withheld_state(field)` expose the owner's existing withheld states (from the hold,
+doubt, bounds or section it already computes), `section_state(snap)` reads the section as a whole, and
+`count_value(raw)` exposes its count rule. `code_counts` stays (round 2) with a display-only docstring. No decision,
+reason or wording changed, and the comment that tied `SCHEMA` to a receipt is removed.
 
 ## Tests (written, not run)
 
-`tests/test_operator_evidence_contract.py` (new):
-
-- **Frozen and pinned digests.** Two tests carry the pin tables above:
-  - `test_v1_recomputes_the_frozen_pre_w50_bytes[golden|sample]`;
-  - `test_v2_recomputes_its_pinned_bytes[golden|sample]`.
-
-  `test_the_current_contract_is_v2_and_its_default_is_the_pinned_one` checks that the default contract is /2 and
-  produces the pinned bytes.
-- **Rewording.** `test_rewording_the_owner_never_moves_a_stored_v2_receipt[golden|sample]`.
-- **Owner version.** Four tests:
-  - `test_the_battery_exercises_every_reason_code_the_owner_declares`;
-  - `test_the_owner_bound_semantics_change_only_with_a_schema_bump`;
-  - `test_the_semantic_pin_moves_when_the_owner_decides_differently`;
-  - `test_v2_binds_the_owner_version_and_census`.
-- **Row content on the sample.** Three tests:
-  - `test_v2_binds_core1_as_a_lower_bound_by_code_and_stored_values`;
-  - `test_v2_binds_a_held_core1_as_not_assessed_with_every_cell_withheld`;
-  - `test_v2_ranks_rows_by_the_owner_floor_then_discloses_the_rest`.
-
-  Each also checks that no owner phrase, verdict word or rendering mark appears in the bound rows.
-- **Moved here from `test_impact_consumers.py`.** These were extended:
-  - `test_the_legacy_v1_recomputation_is_the_verbatim_raw_row_copy_and_only_on_request[held]` now also refuses the
-    prototype-ish contracts `__class__` and `get`;
-  - `test_a_stored_comparison_names_its_contract_or_reads_as_unverified`.
-- **Dispatch.** `test_the_dispatch_is_exactly_the_recomputable_contracts` checks that the table keys equal
-  `CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`, and that the table is read-only.
-- **Single call site.** `test_the_frozen_v1_function_has_exactly_one_call_site_the_v1_dispatch_entry`.
-
-`webapp/tests/test_compare_execution_receipts.py` (golden snapshot through the public routes and `Store`), adjusted
-to the bound row:
-
-- the /2 receipt test checks the exact `/2` key set, that every `index` names its stored host, and that the codes
-  are well-formed;
-- the tamper tests rewrite `reason_codes` instead of `why`, and find each stored row by `index`, because the rows are
-  ranked;
-- the /1 test keeps its hand-built structural check, with a comment that the byte anchor is the frozen engine-level
-  digests.
-
-The unknown/missing-contract and tampered-/2 fail-closed tests and the rewrite control are unchanged.
-
-`tests/test_protocol_assurance_contracts.py` now expects the held row's `reason_codes` (`legacy_row`) and withheld
-markers. `webapp/tests/test_backend.py` expects /2 from `/api/compare` (unchanged by this round).
-
-`webapp/frontend/src/components/ComparisonDecision.impacts.test.tsx` (vitest) now uses fixtures copied verbatim
-from the engine's real `/2` output (P3: the earlier fixtures were invented strings):
-
-- sample core1 bounded and held;
-- sample access1 published;
-- golden core2 lower bound;
-- the raw sample core1 row for `/1`;
-- the sample census.
-
-It checks that:
-
-- a lower bound shows `LOWER BOUND`, `blind links ×1`, `≥ 45`, `High (lower bound)` and never `45` or `: 0`;
-- a band below the worst reads `not assessed`;
-- a held row shows `NOT ASSESSED`, `legacy row` and no digit;
-- a missing or prototype-key verdict (`constructor`, `toString`) shows `VERDICT UNAVAILABLE`;
-- `/1` keeps its note and reports `Rendered: 1`;
-- an unknown contract renders nothing and reports `Rendered: 0 · Total: 1 · Omitted: 1`.
-
-## Persisted-snapshot impact
-
-None:
-
-- No snapshot section carries `operator_evidence`. A tracked-file search finds it only in the pinned Release 1
-  retrospective comparison, which is replayed by pinned Release 1 source and not by current code.
-- The golden and the sample are not regenerated or touched.
-- No new `cisco_toolkit` module was added, so the golden attestation module count and the LF byte-custody receipt
-  are unchanged. The owner gains one additive property (`RowVerdict.code_counts`) and a comment on `SCHEMA`; no prose
-  or decision changed.
-- CLI `--compare` writes its `.comparison.json` at /2 from now on. It is output only and never re-verified.
+- `tests/test_operator_evidence_contract.py` (rewritten): the frozen `/1` digests, by default and declared;
+  `test_no_owner_change_can_move_a_stored_receipt` (every owner entry point sabotaged, `IMPACT_EDGE_KINDS` without
+  `endpoint`, every phrase reworded: the digests do not move); the raw binder; the one-entry dispatch; unknown
+  contracts raise; stored declarations fail closed; the binder's single reference; protocol_assurance never reaching
+  the owner; the display boundary AST scan; a comparison byte-identical with and without its view, and invalid with
+  the view inside it.
+- `webapp/tests/test_compare_execution_receipts.py` (round 2's `/2` tests replaced): the receipt binds the raw rows
+  beside a live view equal to a fresh owner reading of the bound bytes; the stored receipt's persisted bytes,
+  `receipt_sha256` column and envelope are identical whether the view is present, reinterpreted by a changed owner
+  (every row held) or unavailable, and no read writes it back; every unavailable code; unreadable rows counted and
+  shown, absent / malformed / failed sections; trend pairs carry the view beside a comparison equal to `/api/compare`.
+- `webapp/tests/test_impacts_view_constants.py` (new): the two phrase tables equal their owners in order, the view's
+  `state_words` equal `STATE_WORD` and the SPA holds no state table, the parser's non-vacuity, and the raw-row read
+  scan of the SPA.
+- `ComparisonDecision.impacts.test.tsx` (rewritten, vitest): fixtures copied from the engine's real view output on
+  the committed sample (bounded and held core1, published access1, an unreadable row); floors, states, reasons, the
+  census wording, unreadable rows, unknown code/verdict/state, an unreadable cell, no view, an unavailable view, a SHA
+  mismatch, absent and empty sections, and the cap.
+- `tests/test_protocol_assurance_contracts.py` and `webapp/tests/test_backend.py` are back to their pre-W50 `/1`
+  expectations.
 
 ## Static checks (this round)
 
-- Every changed Python file compiles and passes `ruff check`.
-- The guard scanner and the hand-list scanner are clean on the changed sources.
-- The pure engine functions were called on the committed golden and sample JSON, outside any test runner:
-  - every /1 digest reproduces the frozen `e7c00e12` values;
-  - the /2 and owner-semantics digests above were measured;
-  - rewording every owner string leaves them unchanged;
-  - dropping every hold moves the battery digest;
-  - every reason code is exercised.
-- The new test module's functions were called directly as plain functions with the stored JSON (no pytest runner):
-  19 of 19 cases held.
+- `py_compile` on every changed Python file.
+- Pure functions on the committed golden and sample: all four `/1` digests reproduce, both by default and with `/1`
+  declared; with every owner entry point replaced by a raising stub and `IMPACT_EDGE_KINDS` reduced, both comparisons
+  still reproduce their frozen digests; unknown contracts raise; `stored_operator_evidence_schema` returns `/1` or
+  `None` as above.
+- The view on the sample: 23 rows, 20 published and 3 lower bound; core1 first with `≥ 45`, `High (lower bound)`,
+  backup and FHRP withheld (`not_collected`); held core1 `not_assessed` / `legacy_row`; an appended non-object row is
+  row 24 with `row_unreadable`, `unverified`, unranked.
+- The guard's own scan helpers (copied from the test module, no test function executed): the raw readers are exactly
+  the two ratchet entries, `protocol_assurance`'s only reader is the binder, the view builders are routed, and the
+  synthetic second presenter is flagged.
+- The display-boundary AST scan, the TS table parser, the SPA raw-read scan and the protocol hand-list scanner,
+  replicated in scratch scripts from the test modules' helpers (no test function executed), pass on this tree;
+  the pre-W50 component is flagged by the raw-read scan.
+
+## Residuals
+
+1. **The ad-hoc Compare panel shows no interpretation.** `/api/compare` must stay byte-equal to the stored
+   comparison, and a display route needs regenerated OpenAPI types. Follow-up for the UI train: a read-only
+   `GET /api/snapshots/{id}/impacts-view` (or similar) with the types regenerated; the panel then passes it, and the
+   SHA check in `ComparisonDecision` already guards it.
+2. **The reading is live, not a record of what was shown.** A receipt displayed today and next month may read
+   differently if the owner improved. That is the intent; the panel says so. Preserving "what the operator saw at
+   decision time" would need its own signed, separately stored display record, outside this contract.
+3. **Display cost.** An execution view loads each distinct bound after snapshot once more (the receipt replay already
+   loads it); the trend runs the owner once per pair.
+4. **Trend JSON export** now contains the display sibling next to each comparison. It is labelled `display_only` and
+   never verified; the comparison inside the pair is unchanged.
+5. **Merge with W48's fix round.** It touches `tests/test_impact_consumers.py` and possibly the owner; the additive
+   owner methods and the ratchet entry need a merge check, but no receipt can move because the receipt never reads
+   the owner.
 
 ## Not verified here
 
-- No pytest, vitest, typecheck or build ran. In particular:
-  - the `webapp/tests` receipt tests (they need the FastAPI client and a SQLite store);
-  - the new vitest file;
-  - the SPA typecheck. The TypeScript was reviewed by hand against the ES2021 lib.
-- That `/api/compare`'s JSON round trip is byte-identical to the stored comparison (the existing tamper tests rely on
-  the same property).
-- Whether an AssessHub database with real stored /1 receipts exists anywhere. The read path is exercised only by
-  the simulated pre-W50 writer.
-- How W48's fix round interacts with the pins: if it changes what the owner decides, the owner-semantics and `/2` pins
-  move at the merge, and the rule above applies.
+- No pytest, vitest, typecheck or build ran: the webapp receipt tests (FastAPI client and SQLite store), the vitest
+  file, and the SPA `tsc` typecheck (the TypeScript was checked by hand against the ES2021 lib, strict mode,
+  `noUnusedLocals`).
+- That the OpenAPI document is unchanged: every changed route returns `Dict[str, Any]`, so no schema should move, but
+  `api:check` was not run.
+- Whether an AssessHub database with real stored receipts exists anywhere; the read path is exercised only through
+  the tests' own writers.
 - The hosted SPA dist is not rebuilt.

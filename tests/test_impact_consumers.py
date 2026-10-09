@@ -18,11 +18,11 @@ Two things are pinned here:
    owner) and the AssessHub surfaces (which reach it through ``engine.failure_impact_projection``) are therefore
    admitted by that property, not by name. The only named entries are a RATCHET of the consumers W48 stopped on
    because their output is persisted (see each entry): a new raw reader fails, and fixing a ratchet entry fails
-   until the entry and its strict ``xfail`` below are deleted. W50 removed ``protocol_assurance`` from it by
-   versioning the receipt contract: new comparisons carry ``cutover_operator_evidence/2`` (rows that bind the owner's
-   decisions), and the raw ``/1`` row copy survives only as ``_rehearsal_impacts_v1_legacy``, which receives the rows
-   and is selected solely by a stored receipt that declares ``/1`` (pinned in tests/test_operator_evidence_contract.py,
-   since this guard is per function).
+   until the entry and its strict ``xfail`` below are deleted. W50 narrowed the ``protocol_assurance`` entry to the
+   one frozen EVIDENCE binder (``_rehearsal_impact_evidence_v1``): an execution receipt is re-verified by recomputing
+   it on every read, so it binds the rows raw and must never consult the evolving owner, while every presentation of
+   those rows goes through the owner at display time (AssessHub's live ``impacts_view``). That entry stays a raw
+   reader by design and is pinned to the binder alone; any other raw reader in the module still fails.
 
    Granularity is the function: a function that reaches the owner for one value could still print another raw
    value. The guard closes the class the W33/W48 sites belonged to -- a consumer with no route to the owner at
@@ -68,12 +68,19 @@ _PIPELINE = "COLLECT_PARSE_V3_23_0.py"
 #: Raw readers W48 STOPPED on, each because changing what it presents changes persisted output; routed to the
 #: supervisor for a hosted regeneration (docs/w48-impact-consumers-validation-2026-10-09.md). Keyed by
 #: (module, function). Each has a strict xfail in part 2. Delete the entry when its consumer reads the owner.
+#: The one exception is the protocol_assurance entry (W50): a frozen evidence binder that must stay raw, pinned to
+#: that single function and checked by a behavioural test of the display path instead of an xfail.
 _RAW_RATCHET = {
     ("cisco_toolkit.design_advisor", "_signals"): (
         "nobackup_high counts raw High rows with a raw zero backup, so a lower-bound or held row's withheld zero "
         "is counted as a measured no-backup device. Its text and count are stored in the snapshot's "
         "design_blueprint (decisions[topology-triangles-not-squares-rings].evidence.summary and "
         "tradeoff_scorecard[availability].evidence), so the fix needs a hosted sample regeneration."),
+    # Allowlisted for the frozen evidence binder ONLY (W50): no other protocol_assurance function may read the rows
+    # (test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner).
+    ("cisco_toolkit.protocol_assurance", "_rehearsal_impact_evidence_v1"): (
+        "binds raw evidence for recompute-on-read receipts; presentation goes through the owner at display time "
+        "(W50)"),
 }
 
 
@@ -562,23 +569,64 @@ def test_design_advisor_never_counts_a_withheld_zero_as_a_measured_no_backup_dev
     assert _signals(snap)["nobackup_high"] == measured
 
 
-# --- protocol_assurance.cutover_operator_evidence: the versioned receipt contract (W50) ---------------------------
-# W48 stopped here because rehearsal.impacts is persisted in every AssessHub execution receipt and re-verified on
-# every read. W50 versions the contract: a new comparison carries cutover_operator_evidence/2, whose rows bind the
-# owner's decisions (verdict token, reason codes, the stored value or an explicit withheld marker) and none of its
-# prose; a stored /1 receipt re-verifies against the frozen raw-row recomputation, selected only by its declared /1.
-# The contract itself (frozen /1 and pinned /2 digests, the owner's version, the dispatch) is pinned in
-# tests/test_operator_evidence_contract.py.
+# --- protocol_assurance: the frozen evidence binder; presentation through the owner at display time (W50) --------
+# W48 stopped here because rehearsal.impacts is persisted in every AssessHub execution receipt and re-verified by
+# recomputation on every read. W50: the receipt binds the stored rows as raw EVIDENCE through one frozen binder that
+# never consults the owner (its bytes are frozen in tests/test_operator_evidence_contract.py), and every presentation
+# of those rows is the owner's live reading at display time (webapp.backend.engine.rehearsal_impacts_view, the API's
+# display-only impacts_view). The former strict xfail is now this check of the display path.
 @pytest.mark.parametrize("variant", ["bounded", "held"])
-def test_cutover_operator_evidence_carries_the_owner_values_for_core1(variant, request):
-    from cisco_toolkit.protocol_assurance import IMPACT_CELL_WITHHELD, cutover_operator_evidence
+def test_receipt_impact_rows_are_bound_raw_and_presented_only_through_the_owner(variant, request):
+    from cisco_toolkit.protocol_assurance import cutover_operator_evidence
+    from webapp.backend import engine as web_engine
     snap = request.getfixturevalue(variant)
-    _row, verdict = _core1(snap)
-    impacts = [r for r in cutover_operator_evidence(snap)["rehearsal"]["impacts"] if r.get("host") == "core1"]
-    assert len(impacts) == 1, impacts
-    assert impacts[0].get("assessable") == verdict.assessable, impacts[0]
-    assert impacts[0].get("reason_codes") == [{"code": c, "n": n} for c, n in verdict.code_counts], impacts[0]
-    for field in ("severity", "stranded", "backup"):
-        expected = dict(IMPACT_CELL_WITHHELD) if verdict.withholds(field) else verdict.raw.get(field)
-        assert impacts[0].get(field) == expected, (field, impacts[0])
-    assert impacts[0]["backup"] == dict(IMPACT_CELL_WITHHELD)    # core1's zero is never bound as a measured 0
+    row, verdict = _core1(snap)
+    # the receipt binds core1's stored row as evidence, raw ...
+    assert [r for r in cutover_operator_evidence(snap)["rehearsal"]["impacts"] if r.get("host") == "core1"] == [row]
+    # ... and the display reads it through the owner, live
+    view = web_engine.rehearsal_impacts_view(snap, source_sha256="sha256:" + "0" * 64)
+    assert view["display_only"] is True and view["available"] is True and view["owner"] == ia.SCHEMA
+    items = [r for r in view["rows"] if r["host"] == "core1"]
+    assert len(items) == 1, items
+    item = items[0]
+    assert item["assessable"] == verdict.assessable and item["state"] == verdict.state, item
+    assert item["reasons"] == [{"code": code, "n": n} for code, n in verdict.code_counts], item
+    for field in ia.IMPACT_MEASURES:
+        cell = item["cells"][field]
+        if verdict.withholds(field):
+            assert cell == {"kind": "withheld", "text": None, "state": verdict.withheld_state(field)}, (field, cell)
+        else:
+            assert cell["text"] == str(ia.table_value(verdict, field)), (field, cell)
+    assert item["cells"]["backup"]["kind"] == "withheld"      # core1's stored 0 is never presented as a measured 0
+    if variant == "bounded":
+        assert item["cells"]["stranded"] == {"kind": "floor", "text": f"≥ {row['stranded']}", "state": None}, item
+        assert item["ranked"] is True and view["rows"][0]["host"] == "core1"     # its floor of 45 leads
+    else:
+        assert item["assessable"] == ia.NOT_ASSESSED and item["ranked"] is False, item
+        assert item["state"] == ia.NOT_COLLECTED and item["reasons"] == [{"code": "legacy_row", "n": 0}], item
+
+
+def test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner():
+    """The protocol_assurance ratchet entry excuses the frozen evidence binder and nothing else: it is the module's
+    only reader of the stored section, every other unit there stays subject to the guard, and the display path that
+    presents the bound rows is routed to the owner."""
+    readers, routed = _scan(str(ROOT))
+    assert {name for (module, name) in readers if module == "cisco_toolkit.protocol_assurance"} == {
+        "_rehearsal_impact_evidence_v1"}
+    assert [unit for unit in _RAW_RATCHET if unit[0] == "cisco_toolkit.protocol_assurance"] == [
+        ("cisco_toolkit.protocol_assurance", "_rehearsal_impact_evidence_v1")]
+    for unit in ("rehearsal_impacts_view", "receipt_impacts_view", "_trend_comparison_receipts"):
+        assert ("webapp.backend.engine", unit) in routed, unit
+
+
+def test_the_guard_still_flags_a_second_raw_presenter_beside_the_binder(tmp_path):
+    """Non-vacuity for the narrowed entry: on a synthetic tree, a second protocol_assurance function that presents the
+    rows raw is flagged even though the binder beside it is excused by the ratchet."""
+    _write(tmp_path, "cisco_toolkit/__init__.py", "")
+    _write(tmp_path, "cisco_toolkit/impact_assessability.py", "def rows_with_verdicts(snap):\n    return []\n")
+    _write(tmp_path, "cisco_toolkit/protocol_assurance.py",
+           "def _rehearsal_impact_evidence_v1(snap):\n    return list(snap.get('failure_impact') or [])\n"
+           "def presenter(snap):\n    return [r.get('stranded') for r in snap['failure_impact']]\n")
+    readers, routed = _scan(str(tmp_path))
+    flagged = {unit for unit in readers if unit not in routed and unit not in _RAW_RATCHET}
+    assert flagged == {("cisco_toolkit.protocol_assurance", "presenter")}, flagged

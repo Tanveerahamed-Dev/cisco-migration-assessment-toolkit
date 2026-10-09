@@ -3670,10 +3670,32 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         }
 
     # -- execution runs (war room) ------------------------------------------
+    def _receipts_with_impacts_views(rows: List[Any]) -> List[Any]:
+        """The stored comparison receipt rows, each shallow-copied with a DISPLAY-ONLY ``impacts_view`` sibling (W50).
+
+        A receipt binds its after snapshot's failure-impact rows as raw evidence and is re-verified by recomputation
+        on every read, so it never carries their interpretation. ``impacts_view`` is that interpretation, computed
+        live by the engine owner from the receipt's bound after snapshot (``engine.receipt_impacts_view``). It sits
+        BESIDE ``receipt``: the stored row, its receipt bytes and every digest are untouched, it is never written
+        back, and the PIR export (which reads ``rec["comparisons"]`` directly) never sees it."""
+        views: Dict[Any, Dict[str, Any]] = {}
+        out: List[Any] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                out.append(row)
+                continue
+            receipt = row.get("receipt")
+            comparison = receipt.get("comparison") if isinstance(receipt, dict) else None
+            key = engine.comparison_after_binding(comparison)
+            if key not in views:
+                views[key] = engine.receipt_impacts_view(comparison, store.get_bound_snapshot)
+            out.append({**row, "impacts_view": views[key]})
+        return out
+
     def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
         view = execution.with_progress(
             rec["id"], rec["snapshot_id"], state if state is not None else rec["state"])
-        view["comparison_receipts"] = list(rec.get("comparisons") or [])
+        view["comparison_receipts"] = _receipts_with_impacts_views(list(rec.get("comparisons") or []))
         return view
 
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:

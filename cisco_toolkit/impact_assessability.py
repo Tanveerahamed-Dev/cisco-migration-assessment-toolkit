@@ -46,10 +46,6 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Op
 
 from cisco_toolkit import ssot
 
-#: The owner's declared output version: bump it whenever what the owner DECIDES changes (a verdict, a reason code or
-#: its count, a withheld cell, a ranking), never for a rewording. ``protocol_assurance`` binds it in every
-#: ``cutover_operator_evidence/2`` receipt (``impacts_owner``); tests/test_operator_evidence_contract.py pins the
-#: decisions to it, so a semantic change without a bump fails there.
 SCHEMA = "failure_impact_assessability/1"
 
 PUBLISHED = "published"
@@ -765,10 +761,49 @@ class RowVerdict:
     @property
     def code_counts(self) -> List[Tuple[str, int]]:
         """``(code, n)`` per reason, in :attr:`codes` order: each stable reason identifier (a key of
-        :data:`CODE_PHRASES`) with the count its phrase quotes (0 where it quotes none). A consumer that persists a
-        verdict binds these, never the reader-facing prose, so rewording a phrase never changes what it stored (W50:
-        ``protocol_assurance`` ``cutover_operator_evidence/2``)."""
+        :data:`CODE_PHRASES`) with the count its phrase quotes (0 where it quotes none). A display that words the
+        reasons itself reads these (W50: AssessHub's live ``impacts_view`` of an execution receipt's bound evidence,
+        whose phrase table is held equal to :data:`CODE_PHRASES`)."""
         return list(self._ns)
+
+    @property
+    def state(self) -> Optional[str]:
+        """The owner's withheld state of the row as a whole: ``None`` for a measurement; otherwise
+        :data:`ANALYSIS_UNAVAILABLE`, :data:`UNVERIFIED` or :data:`NOT_COLLECTED`, read in the verdict's own
+        precedence (a failed section or owner fault, an unreadable row, a duplicated host, the hold, then the bounds
+        by :func:`bound_state`). It keeps those three states apart for a reader that would otherwise collapse every
+        non-measurement into "not assessed"."""
+        if self.assessable == PUBLISHED:
+            return None
+        if self._section is not None:
+            return self._section[0]
+        if not isinstance(self.raw, dict):
+            return UNVERIFIED
+        if self.facts.doubt is not None:
+            return self.facts.doubt.state
+        if self.facts.hold is not None:
+            return self.facts.hold.state
+        return bound_state(self.facts.bounds)
+
+    def withheld_state(self, field: str) -> Optional[str]:
+        """The state of the owner's withholding of `field` (``None`` when :meth:`withholds` is False): the state the
+        projection gives that cell, from the same rule :meth:`withholds` applies."""
+        if not self.withholds(field):
+            return None
+        if self._section is not None:
+            return self._section[0]
+        if not isinstance(self.raw, dict):
+            return UNVERIFIED
+        if self.facts.doubt is not None:
+            return self.facts.doubt.state
+        hold, bounds = self.facts.hold, self.facts.bounds
+        if field in IMPACT_MEASURES:
+            found = measure_withheld(hold, field, self.raw.get(field), bounds)
+        elif field == "detail":
+            found = detail_withheld(hold, self.raw.get("detail"), self.raw, bounds)
+        else:
+            found = None
+        return found[0] if found is not None else UNVERIFIED
 
     @property
     def why(self) -> str:
@@ -841,6 +876,30 @@ def assess_failure_impact(snap: Any) -> List[RowVerdict]:
         except _OWNER_FAULTS:
             out.append(RowVerdict(s, i, raw, RowFacts(None, None, ()), (UNVERIFIED, R_SECTION_FAULT)))
     return out
+
+
+def section_state(snap: Any) -> Optional[str]:
+    """The withheld state of the stored ``failure_impact`` section as a whole, for a reader that must tell "no row"
+    from "no readable section": ``None`` when the section is a list (each row then carries its own verdict, and an
+    empty list holds no row); :data:`ANALYSIS_UNAVAILABLE` when its phase failed this run (its rows, if any, are each
+    not assessed); :data:`UNVERIFIED` when the abstention owner faults or the section is present but not a list;
+    :data:`NOT_COLLECTED` when it is absent. Never "none found": an absent or unreadable section is not a zero."""
+    s = snap if isinstance(snap, dict) else {}
+    token = _abst(s, "failure_impact")
+    if token == ANALYSIS_UNAVAILABLE:
+        return ANALYSIS_UNAVAILABLE
+    if token == _FAULT:
+        return UNVERIFIED
+    if isinstance(s.get("failure_impact"), list):
+        return None
+    return NOT_COLLECTED if token == NOT_COLLECTED else UNVERIFIED
+
+
+def count_value(raw: Any) -> Optional[int]:
+    """A stored count as the integer the owner reads it as (a non-bool integer, or an integral finite float, in
+    [0, 2**53-1]), else ``None``: a value that is not a readable count is never a zero."""
+    ok, n = _count(raw)
+    return n if ok else None
 
 
 def rows_with_verdicts(snap: Any) -> List[Tuple[Dict[str, Any], RowVerdict]]:
@@ -955,10 +1014,11 @@ __all__ = [
     "IMPACT_FIELDS", "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST",
     "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL",
     "NOT_COLLECTED", "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS",
-    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "detail_withheld",
-    "disclose",
+    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "count_value",
+    "detail_withheld", "disclose",
     "duplicate_doubt", "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound",
     "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranks", "read_cable_source",
-    "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "table_detail", "table_value",
+    "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "section_state", "table_detail",
+    "table_value",
     "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unreadable_cables",
 ]

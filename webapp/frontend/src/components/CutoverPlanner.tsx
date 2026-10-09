@@ -514,6 +514,7 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
       {latestComparison ? (
         <ComparisonDecision
           value={latestComparison}
+          impactsView={latestStored?.impacts_view}
           exportFilename={`execution-${execution.id}-comparison-receipt-${latestStored?.id || "latest"}.json`}
         />
       ) : policy ? (

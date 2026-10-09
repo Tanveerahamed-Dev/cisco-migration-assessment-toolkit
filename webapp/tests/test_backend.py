@@ -375,7 +375,7 @@ def test_upload_and_compare(client):
         for row in multichassis["source_receipt"]["changes"]
     )
     assert len(body["comparison_admission"]["support_profiles"]) == 10
-    assert body["operator_evidence"]["schema"] == "cutover_operator_evidence/2"  # W50: the current contract
+    assert body["operator_evidence"]["schema"] == "cutover_operator_evidence/1"
     assert body["operator_evidence"]["owns_verdict"] is False
     assert body["operator_evidence"]["rehearsal"]["assurance_level"] == "not_verified"
     assert body["operator_evidence"]["rollback"]["assurance_level"] == "not_verified"

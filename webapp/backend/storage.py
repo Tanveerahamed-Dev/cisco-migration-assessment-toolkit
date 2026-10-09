@@ -1878,10 +1878,11 @@ class Store:
             comparison = receipt.get("comparison")
             if not _comparison_envelope_valid(comparison):
                 invalid(f"receipt {receipt_id} detached comparison envelope is invalid")
-            # W50: operator_evidence is a versioned contract. A stored receipt is re-verified against the
-            # recomputation of the contract it DECLARES, so a receipt stored under cutover_operator_evidence/1
-            # keeps its legacy raw-row recomputation. A missing, malformed or unknown declaration is never
-            # verified and never defaulted to the current contract.
+            # W50: operator_evidence declares its contract, and a stored receipt is re-verified against the
+            # recomputation of the contract it DECLARES (cutover_operator_evidence/1 is the only one: it binds the
+            # stored failure-impact rows as raw evidence through a frozen binder). A missing, malformed or unknown
+            # declaration is never verified and never defaulted to the current contract. The live interpretation
+            # of those rows (the API's display-only impacts_view) is never read here.
             evidence_contract = comparison_engine.stored_operator_evidence_contract(comparison)
             if evidence_contract is None:
                 invalid(
@@ -2797,8 +2798,8 @@ class Store:
                     )
 
                 # A new receipt is accepted only under the CURRENT operator-evidence contract (W50): the
-                # recomputation passes no contract, so an incoming receipt that declares a legacy or unknown
-                # contract cannot match it. Only the stored-history replay recomputes a declared legacy contract.
+                # recomputation passes no contract, so an incoming receipt that declares any other contract cannot
+                # match it. Only the stored-history replay recomputes the contract a stored receipt declares.
                 canonical_comparison = comparison_engine.compare_bound_pair(
                     current_snapshots[before_snapshot_id],
                     current_snapshots[after_snapshot_id],

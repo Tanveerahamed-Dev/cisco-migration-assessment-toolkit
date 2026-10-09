@@ -1,18 +1,30 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { CompareResponse } from "../api";
+import type { CompareResponse, ImpactsViewRow, RehearsalImpactsView } from "../api";
 import ComparisonDecision from "./ComparisonDecision";
 
-// W50: rehearsal.impacts is a versioned receipt contract. /2 rows bind only the engine owner's decisions (a verdict
-// token, reason codes and, per cell, the stored value or {withheld: true}); this view resolves the words. /1 receipts
-// were stored before bounds were tracked and must never read as exact.
+// W50: a comparison's operator_evidence.rehearsal.impacts binds the stored failure-impact rows as raw EVIDENCE. This
+// view never renders those values; it renders only the engine owner's live, display-only impactsView (computed by
+// AssessHub from the bound after snapshot and returned beside the comparison), and only when the view interpreted
+// exactly the bytes the comparison binds.
 
-type Evidence = NonNullable<CompareResponse["operator_evidence"]>;
+const AFTER_SHA = `sha256:${"a".repeat(64)}`;
+const binding = (snapshotId: number, sha256: string) => ({
+  source: "persisted snapshots.snapshot_json blob", sha256, bytes: 1, snapshot_id: snapshotId, campaign_id: 1,
+  engagement_id: "ENG-W50", label: `snapshot ${snapshotId}`,
+});
 
-function compareWith(schema: string, impacts: Array<Record<string, unknown>>,
-  extra: Partial<Evidence["rehearsal"]> = {}): CompareResponse {
+// Sample core1 exactly as the producer stored it: what the receipt binds as raw evidence.
+const RAW_SAMPLE_CORE1 = {
+  host: "core1", severity: "High", vlans_impacted: 3, stranded: 45, hard: 3, backup: 0, fhrp: 0,
+  off_scan_gw_vlans: 0,
+  detail: "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition",
+  blind_links: 1,
+};
+
+function compareWith(impacts: Array<Record<string, unknown>> = [RAW_SAMPLE_CORE1]): CompareResponse {
   const evidence = {
-    schema,
+    schema: "cutover_operator_evidence/1",
     owner: "reference_only_projection",
     owns_verdict: false,
     rehearsal: {
@@ -22,7 +34,6 @@ function compareWith(schema: string, impacts: Array<Record<string, unknown>>,
       n_impacts_total: impacts.length,
       impacts,
       note: "Simulation exists, but no source-bound operator rehearsal receipt was supplied.",
-      ...extra,
     },
     rollback: {
       status: "not_verified",
@@ -33,107 +44,134 @@ function compareWith(schema: string, impacts: Array<Record<string, unknown>>,
       plans: [],
       note: "Rollback not verified.",
     },
-  } as unknown as Evidence;
-  return { verdict: "CLEAN", operator_evidence: evidence };
+  };
+  const admission = {
+    schema: "protocol_comparison_admission/1",
+    status: "admitted",
+    decision_eligible: true,
+    assurance_level: "source_bound",
+    engagement_id: "ENG-W50",
+    campaign_id: 1,
+    source_binding: { before: binding(1, `sha256:${"b".repeat(64)}`), after: binding(2, AFTER_SHA) },
+    subject_binding: {},
+    owner_versions: {},
+    support_profiles: [],
+    failures: [],
+    coverage_gaps: [],
+  };
+  return {
+    verdict: "CLEAN", operator_evidence: evidence, comparison_admission: admission,
+  } as unknown as CompareResponse;
 }
 
-// The engine's real /2 rows (protocol_assurance._rehearsal_impacts_v2), copied verbatim from its output on the
-// committed snapshots; nothing here is invented or computed by the view.
-const WITHHELD = { withheld: true };
+// The engine's real impacts_view rows (webapp.backend.engine.rehearsal_impacts_view), copied verbatim from its
+// output on the committed sample; nothing here is invented or computed by the view.
 // Sample core1: one inter-switch link with no trunk/STP evidence, so a lower bound; its zeros are withheld.
-const BOUNDED_CORE1 = {
-  index: 0,
-  host: "core1",
-  assessable: "lower_bound",
-  reason_codes: [{ code: "blind_links", n: 1 }],
-  severity: "High",
-  vlans_impacted: 3,
-  stranded: 45,
-  hard: 3,
-  backup: WITHHELD,
-  fhrp: WITHHELD,
-  detail: "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition",
+const BOUNDED_CORE1: ImpactsViewRow = {
+  index: 0, host: "core1", assessable: "lower_bound", state: "not_collected",
+  reasons: [{ code: "blind_links", n: 1 }], ranked: true,
+  cells: {
+    severity: { kind: "floor", text: "High (lower bound)", state: null },
+    vlans_impacted: { kind: "floor", text: "≥ 3", state: null },
+    stranded: { kind: "floor", text: "≥ 45", state: null },
+    hard: { kind: "floor", text: "≥ 3", state: null },
+    backup: { kind: "withheld", text: null, state: "not_collected" },
+    fhrp: { kind: "withheld", text: null, state: "not_collected" },
+    detail: {
+      kind: "published", state: null,
+      text: "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition",
+    },
+  },
 };
+// Sample access1: a published measurement (its zeros are measured zeros).
+const MEASURED_ACCESS1: ImpactsViewRow = {
+  index: 1, host: "access1", assessable: "published", state: null, reasons: [], ranked: true,
+  cells: {
+    severity: { kind: "published", text: "High", state: null },
+    vlans_impacted: { kind: "published", text: "3", state: null },
+    stranded: { kind: "published", text: "42", state: null },
+    hard: { kind: "published", text: "3", state: null },
+    backup: { kind: "published", text: "0", state: null },
+    fhrp: { kind: "published", text: "0", state: null },
+    detail: {
+      kind: "published", state: null,
+      text: "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition",
+    },
+  },
+};
+const withheld = (state: string) => ({ kind: "withheld", text: null, state });
 // Sample core1 with its off_scan_gw_vlans marker removed (a row older than the marker): held, every cell withheld.
-const HELD_CORE1 = {
-  index: 0,
-  host: "core1",
-  assessable: "not_assessed",
-  reason_codes: [{ code: "legacy_row", n: 0 }],
-  severity: WITHHELD,
-  vlans_impacted: WITHHELD,
-  stranded: WITHHELD,
-  hard: WITHHELD,
-  backup: WITHHELD,
-  fhrp: WITHHELD,
-  detail: WITHHELD,
+const HELD_CORE1: ImpactsViewRow = {
+  index: 0, host: "core1", assessable: "not_assessed", state: "not_collected",
+  reasons: [{ code: "legacy_row", n: 0 }], ranked: false,
+  cells: {
+    severity: withheld("not_collected"), vlans_impacted: withheld("not_collected"), stranded: withheld("not_collected"),
+    hard: withheld("not_collected"), backup: withheld("not_collected"), fhrp: withheld("not_collected"),
+    detail: withheld("not_collected"),
+  },
 };
-// Sample access1: a published measurement.
-const MEASURED_ACCESS1 = {
-  index: 1,
-  host: "access1",
-  assessable: "published",
-  reason_codes: [],
-  severity: "High",
-  vlans_impacted: 3,
-  stranded: 42,
-  hard: 3,
-  backup: 0,
-  fhrp: 0,
-  detail: "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition",
-};
-// Golden core2: an uncollected neighbour bounds it; its Low band (below the worst) and its zeros are withheld.
-const BOUNDED_GOLDEN_CORE2 = {
-  index: 1,
-  host: "core2",
-  assessable: "lower_bound",
-  reason_codes: [{ code: "uncollected_neighbours", n: 1 }],
-  severity: WITHHELD,
-  vlans_impacted: 1,
-  stranded: WITHHELD,
-  hard: WITHHELD,
-  backup: WITHHELD,
-  fhrp: 1,
-  detail: "VLAN 10: FHRP-covered",
-};
-// Sample core1 exactly as the producer stored it: what a /1 receipt copied raw.
-const RAW_SAMPLE_CORE1 = {
-  host: "core1", severity: "High", vlans_impacted: 3, stranded: 45, hard: 3, backup: 0, fhrp: 0,
-  off_scan_gw_vlans: 0,
-  detail: "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition",
-  blind_links: 1,
-};
-// The sample's census (impacts_owner and n_impacts_by_assessable as the engine wrote them).
-const SAMPLE_REHEARSAL = {
-  impacts_owner: "failure_impact_assessability/1",
-  n_impacts_by_assessable: { published: 20, lower_bound: 3, not_assessed: 0, ambiguous: 0 },
+// A stored row that is not an object (the sample with "not an object" appended at index 23).
+const UNREADABLE_ROW: ImpactsViewRow = {
+  index: 23, host: null, assessable: "not_assessed", state: "unverified",
+  reasons: [{ code: "row_unreadable", n: 0 }], ranked: false,
+  cells: {
+    severity: withheld("unverified"), vlans_impacted: withheld("unverified"), stranded: withheld("unverified"),
+    hard: withheld("unverified"), backup: withheld("unverified"), fhrp: withheld("unverified"),
+    detail: withheld("unverified"),
+  },
 };
 
+// The owner's STATE_WORD, as every view carries it.
+const STATE_WORDS = {
+  analysis_unavailable: "analysis unavailable", unverified: "unverified", not_collected: "not collected",
+};
+
+function viewOf(rows: ImpactsViewRow[], extra: Partial<Record<string, unknown>> = {}): RehearsalImpactsView {
+  return {
+    schema: "rehearsal_impacts_view/1", display_only: true, available: true,
+    owner: "failure_impact_assessability/1", source_sha256: AFTER_SHA, state_words: STATE_WORDS, section_state: null,
+    n_rows_total: rows.length, n_rows_unreadable: 0,
+    counts: { published: 0, lower_bound: 0, not_assessed: 0, ambiguous: 0 },
+    rows,
+    ...extra,
+  } as RehearsalImpactsView;
+}
+// The sample's census as the engine wrote it.
+const SAMPLE_VIEW = viewOf([BOUNDED_CORE1, MEASURED_ACCESS1], {
+  n_rows_total: 23, counts: { published: 20, lower_bound: 3, not_assessed: 0, ambiguous: 0 },
+});
+
+function rehearsal() {
+  return screen.getByTestId("comparison-rehearsal");
+}
+
 function rowFor(host: string) {
-  const rows = screen.getAllByTestId("comparison-rehearsal-row").filter((row) => row.textContent?.includes(host));
+  const rows = within(rehearsal()).getAllByTestId("comparison-rehearsal-row")
+    .filter((row) => row.textContent?.includes(host));
   expect(rows).toHaveLength(1);
   return rows[0];
 }
 
 function impactCap() {
-  const caps = within(screen.getByTestId("comparison-rehearsal")).getAllByTestId("comparison-cap-disclosure");
+  const caps = within(rehearsal()).getAllByTestId("comparison-cap-disclosure");
   expect(caps).toHaveLength(1);
   return caps[0];
 }
 
-describe("ComparisonDecision failure-impact rows by receipt contract", () => {
-  it("renders a /2 lower bound as a floor with its reason code, never as the exact stored count", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/2",
-      [BOUNDED_CORE1, MEASURED_ACCESS1], SAMPLE_REHEARSAL)} />);
+describe("ComparisonDecision failure-impact rows through the engine owner's live view", () => {
+  it("renders a lower bound as the owner's floor, with its reason and state, never the exact stored count", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={SAMPLE_VIEW} />);
     const core1 = rowFor("core1");
     expect(core1).toHaveAttribute("data-assessable", "lower_bound");
     expect(within(core1).getByTestId("comparison-rehearsal-row-verdict")).toHaveTextContent("LOWER BOUND");
-    expect(within(core1).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent("blind links ×1");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-state")).toHaveTextContent("not collected");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent(
+      "1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated");
     const values = within(core1).getByTestId("comparison-rehearsal-row-values");
     expect(values).toHaveTextContent("stranded endpoints: ≥ 45");
     expect(values).toHaveTextContent("severity: High (lower bound)");
-    expect(values).toHaveTextContent("backup-covered: not assessed");
-    expect(values).toHaveTextContent("FHRP-covered: not assessed");
+    expect(values).toHaveTextContent("backup-covered: not assessed (not collected)");
+    expect(values).toHaveTextContent("FHRP-covered: not assessed (not collected)");
     expect(values.textContent).not.toMatch(/stranded endpoints: 45\b/);
     expect(values.textContent).not.toMatch(/: 0\b/);
     expect(within(core1).getByTestId("comparison-rehearsal-row-detail")).toHaveTextContent(
@@ -141,86 +179,143 @@ describe("ComparisonDecision failure-impact rows by receipt contract", () => {
     const measured = rowFor("access1");
     expect(within(measured).getByTestId("comparison-rehearsal-row-verdict")).toHaveTextContent("PUBLISHED");
     expect(within(measured).queryByTestId("comparison-rehearsal-row-reasons")).not.toBeInTheDocument();
+    expect(within(measured).queryByTestId("comparison-rehearsal-row-state")).not.toBeInTheDocument();
     expect(within(measured).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent("stranded endpoints: 42");
     expect(within(measured).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent("backup-covered: 0");
     expect(screen.getByTestId("comparison-rehearsal-impact-census")).toHaveTextContent(
-      "20 published · 3 lower bound · 0 not assessed · 0 ambiguous",
+      "Engine-owner verdicts over every one of the 23 stored rows: 20 published · 3 lower bound · 0 not assessed · 0 ambiguous",
     );
     expect(screen.getByTestId("comparison-rehearsal-impact-order")).toHaveTextContent(/stranded-endpoint floor/);
-    expect(screen.queryByTestId("comparison-rehearsal-legacy-note")).not.toBeInTheDocument();
+    expect(screen.getByTestId("comparison-rehearsal-impact-live")).toHaveTextContent(
+      /computed live by the engine owner from the bound evidence; it is not part of this comparison or of any receipt/,
+    );
+    expect(impactCap()).toHaveTextContent("Rendered: 2 · Total: 23 · Omitted: 21.");
   });
 
-  it("withholds a /2 lower bound's band below the worst and its zeros", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/2", [BOUNDED_GOLDEN_CORE2])} />);
-    const core2 = rowFor("core2");
-    expect(within(core2).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent("uncollected neighbours ×1");
-    const values = within(core2).getByTestId("comparison-rehearsal-row-values");
-    expect(values).toHaveTextContent("severity: not assessed");
-    expect(values).toHaveTextContent("VLANs impacted: ≥ 1");
-    expect(values).toHaveTextContent("FHRP-covered: ≥ 1");
-    expect(values).toHaveTextContent("stranded endpoints: not assessed");
-    expect(values.textContent).not.toMatch(/Low/);
-  });
-
-  it("renders a /2 held row as NOT ASSESSED with no stored value", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/2", [HELD_CORE1])} />);
+  it("renders a held row as NOT ASSESSED with the owner's reason and state, and no stored value", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([HELD_CORE1])} />);
     const core1 = rowFor("core1");
     expect(core1).toHaveAttribute("data-assessable", "not_assessed");
     expect(within(core1).getByTestId("comparison-rehearsal-row-verdict")).toHaveTextContent("NOT ASSESSED");
-    expect(within(core1).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent("legacy row");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent(
+      "the row predates the engine's assessability marker");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-unranked")).toHaveTextContent("not ranked");
     const values = within(core1).getByTestId("comparison-rehearsal-row-values");
     for (const label of ["severity", "stranded endpoints", "VLANs impacted", "hard partitions", "backup-covered", "FHRP-covered"]) {
-      expect(values).toHaveTextContent(`${label}: not assessed`);
+      expect(values).toHaveTextContent(`${label}: not assessed (not collected)`);
     }
     expect(values.textContent).not.toMatch(/\d/);
-    expect(within(core1).getByTestId("comparison-rehearsal-row-detail")).toHaveTextContent(/withheld/);
+    expect(within(core1).getByTestId("comparison-rehearsal-row-detail")).toHaveTextContent(
+      "Producer detail withheld: not assessed (not collected).");
+    expect(rehearsal()).not.toHaveTextContent("Hard partition (34 ep)");
   });
 
-  it("renders a /2 row whose verdict or values are missing, mistyped or a prototype key as unavailable, never as 0", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/2", [
-      { host: "edge9", severity: "Info", stranded: 0 },
-      { host: "edge7", assessable: "published", severity: "Info", stranded: null, detail: "x" },
-      { host: "edge5", assessable: "constructor", severity: "Info", stranded: 0 },
-      { host: "edge3", assessable: "toString", severity: "Info", stranded: 0 },
-    ])} />);
-    for (const host of ["edge9", "edge5", "edge3"]) {
-      const row = rowFor(host);
-      expect(row).toHaveAttribute("data-assessable", "unavailable");
-      expect(within(row).getByTestId("comparison-rehearsal-row-verdict")).toHaveTextContent("VERDICT UNAVAILABLE");
-      expect(within(row).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent("stranded endpoints: unavailable");
-      expect(within(row).getByTestId("comparison-rehearsal-row-values").textContent).not.toMatch(/Info|: 0/);
-    }
-    const missing = rowFor("edge7");
-    expect(within(missing).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent("stranded endpoints: unavailable");
+  it("counts and shows an unreadable stored row instead of dropping it", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([BOUNDED_CORE1, UNREADABLE_ROW], {
+      n_rows_total: 2, n_rows_unreadable: 1, counts: { published: 0, lower_bound: 1, not_assessed: 1, ambiguous: 0 },
+    })} />);
+    expect(screen.getByTestId("comparison-rehearsal-impact-census")).toHaveTextContent(
+      "Engine-owner verdicts over all 2 stored rows (1 unreadable): 0 published · 1 lower bound · 1 not assessed · 0 ambiguous",
+    );
+    expect(screen.getByTestId("comparison-rehearsal-impact-census")).not.toHaveTextContent(/every one/);
+    expect(screen.getByTestId("comparison-rehearsal-impact-unreadable")).toHaveTextContent("#23");
+    const unreadable = rowFor("stored row 23");
+    expect(unreadable).toHaveTextContent("switch not named by the engine owner");
+    expect(within(unreadable).getByTestId("comparison-rehearsal-row-state")).toHaveTextContent("unverified");
+    expect(within(unreadable).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent(
+      "the stored row cannot be read");
+    expect(impactCap()).toHaveTextContent("Rendered: 2 · Total: 2 · Omitted: 0.");
   });
 
-  it("marks a /1 receipt's rows as recorded before bounds were tracked", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/1", [
-      RAW_SAMPLE_CORE1,
-    ])} />);
-    const note = screen.getByTestId("comparison-rehearsal-legacy-note");
-    expect(note).toHaveTextContent(/recorded before bounds were tracked/i);
-    expect(note).toHaveTextContent(/none of these values is an exact measurement/i);
+  it("names an unrecognised code, verdict or state instead of guessing, and an unreadable value is never 0", () => {
+    const unknownCode: ImpactsViewRow = { ...BOUNDED_CORE1, host: "edge1", reasons: [{ code: "new_owner_code", n: 2 }] };
+    const unknownVerdict: ImpactsViewRow = { ...MEASURED_ACCESS1, host: "edge2", assessable: "constructor" };
+    const unknownState: ImpactsViewRow = { ...HELD_CORE1, host: "edge3", state: "half_collected" };
+    const unreadableCell: ImpactsViewRow = {
+      ...MEASURED_ACCESS1, host: "edge4",
+      cells: { ...MEASURED_ACCESS1.cells, stranded: { kind: "unreadable", text: null, state: null } },
+    };
+    render(<ComparisonDecision value={compareWith()}
+      impactsView={viewOf([unknownCode, unknownVerdict, unknownState, unreadableCell])} />);
+    expect(within(rowFor("edge1")).getByTestId("comparison-rehearsal-row-reasons")).toHaveTextContent(
+      "unrecognised reason code (new_owner_code)");
+    const edge2 = rowFor("edge2");
+    expect(edge2).toHaveAttribute("data-assessable", "unrecognised");
+    expect(within(edge2).getByTestId("comparison-rehearsal-row-verdict")).toHaveTextContent(
+      "UNRECOGNISED VERDICT (constructor)");
+    expect(within(edge2).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent("stranded endpoints: unavailable");
+    expect(within(edge2).getByTestId("comparison-rehearsal-row-values").textContent).not.toMatch(/42|: 0\b/);
+    expect(within(rowFor("edge3")).getByTestId("comparison-rehearsal-row-state")).toHaveTextContent(
+      "unrecognised state (half_collected)");
+    const edge4 = within(rowFor("edge4")).getByTestId("comparison-rehearsal-row-values");
+    expect(edge4).toHaveTextContent("stranded endpoints: unavailable (the stored value cannot be read)");
+    expect(edge4.textContent).not.toMatch(/stranded endpoints: 0/);
+  });
+
+  it("words each state with the owner's word the view carries, not a copy of its own", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([HELD_CORE1], {
+      state_words: { not_collected: "never collected by this run" },
+    })} />);
     const core1 = rowFor("core1");
-    expect(core1).toHaveAttribute("data-assessable", "recorded_before_bounds");
-    expect(core1).toHaveTextContent("NOT BOUND-CHECKED");
-    expect(core1).toHaveTextContent("as recorded: High");
-    expect(impactCap()).toHaveTextContent("Rendered: 1 · Total: 1 · Omitted: 0.");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-state")).toHaveTextContent("never collected by this run");
+    expect(within(core1).getByTestId("comparison-rehearsal-row-values")).toHaveTextContent(
+      "stranded endpoints: not assessed (never collected by this run)");
   });
 
-  it("shows no legacy note for a /1 receipt that recorded no failure-impact rows", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/1", [])} />);
-    expect(screen.queryByTestId("comparison-rehearsal-legacy-note")).not.toBeInTheDocument();
-    expect(screen.queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
-  });
-
-  it("withholds the values of rows published under an unrecognised contract and renders none of them", () => {
-    render(<ComparisonDecision value={compareWith("cutover_operator_evidence/9", [
-      RAW_SAMPLE_CORE1,
-    ])} />);
-    expect(screen.getByTestId("comparison-rehearsal-contract-unknown")).toHaveTextContent(/unrecognised/);
-    expect(screen.queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
-    expect(screen.getByTestId("comparison-rehearsal")).not.toHaveTextContent("Hard partition (34 ep)");
+  it("shows the rows as unavailable, never as raw values, when no view is supplied", () => {
+    render(<ComparisonDecision value={compareWith()} />);
+    expect(screen.getByTestId("comparison-rehearsal-impacts-unavailable")).toHaveTextContent(
+      /Failure-impact interpretation unavailable: this surface does not supply the engine owner's interpretation/,
+    );
+    expect(within(rehearsal()).queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
+    expect(rehearsal()).not.toHaveTextContent("Hard partition (34 ep)");
+    expect(rehearsal()).not.toHaveTextContent(/\b45\b/);
     expect(impactCap()).toHaveTextContent("Rendered: 0 · Total: 1 · Omitted: 1.");
+  });
+
+  it("shows the server's reason when the view is unavailable", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={{
+      schema: "rehearsal_impacts_view/1", display_only: true, available: false, code: "snapshot_missing",
+      reason: "the bound after snapshot is no longer stored, so its failure-impact rows cannot be interpreted",
+    }} />);
+    expect(screen.getByTestId("comparison-rehearsal-impacts-unavailable")).toHaveTextContent(
+      "the bound after snapshot is no longer stored");
+    expect(within(rehearsal()).queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
+  });
+
+  it("refuses a view computed from other bytes than the comparison binds", () => {
+    render(<ComparisonDecision value={compareWith()}
+      impactsView={viewOf([BOUNDED_CORE1], { source_sha256: `sha256:${"c".repeat(64)}` })} />);
+    expect(screen.getByTestId("comparison-rehearsal-impacts-unavailable")).toHaveTextContent(
+      "computed from different evidence bytes than this comparison binds");
+    expect(within(rehearsal()).queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
+  });
+
+  it("says an unreadable section is not a finding of no impact, and an empty one stores no rows", () => {
+    const { unmount } = render(<ComparisonDecision value={compareWith([])}
+      impactsView={viewOf([], { section_state: "not_collected" })} />);
+    expect(screen.getByTestId("comparison-rehearsal-impact-section")).toHaveTextContent(
+      "The bound evidence's failure-impact section is not collected");
+    expect(screen.getByTestId("comparison-rehearsal-impact-section")).toHaveTextContent("not a finding of no impact");
+    expect(screen.queryByTestId("comparison-rehearsal-impact-empty")).not.toBeInTheDocument();
+    unmount();
+    render(<ComparisonDecision value={compareWith([])} impactsView={viewOf([])} />);
+    expect(screen.getByTestId("comparison-rehearsal-impact-empty")).toHaveTextContent(
+      "The bound evidence stores no failure-impact rows.");
+    expect(screen.queryByTestId("comparison-rehearsal-impact-census")).not.toBeInTheDocument();
+  });
+
+  it("caps rendering in the owner's ranking order and discloses the rest", () => {
+    const rows = Array.from({ length: 10 }, (_unused, index): ImpactsViewRow => ({
+      ...MEASURED_ACCESS1, index, host: `access${index}`,
+    }));
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf(rows, {
+      counts: { published: 10, lower_bound: 0, not_assessed: 0, ambiguous: 0 },
+    })} />);
+    const rendered = within(rehearsal()).getAllByTestId("comparison-rehearsal-row");
+    expect(rendered).toHaveLength(8);
+    expect(rendered[0]).toHaveTextContent("access0");
+    expect(rendered[7]).toHaveTextContent("access7");
+    expect(impactCap()).toHaveTextContent("Rendered: 8 · Total: 10 · Omitted: 2.");
   });
 });
