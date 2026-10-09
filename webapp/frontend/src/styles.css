@@ -213,6 +213,23 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   border-radius: 999px; flex: none; }
 .blocker .pill.fail { color: var(--crit); background: var(--crit-soft); }
 .blocker .pill.warn { color: var(--watch); background: var(--watch-soft); }
+
+/* ---- engine failure-impact values (components/ImpactValue.tsx) ----
+   Existing tokens only, and never a colour of health. A measured value is unstyled. A lower bound keeps the text
+   colour but wears a dashed underline beside its ≥ mark: a minimum, not a measurement. NOT ASSESSED is the neutral
+   hatched tag the core projection uses for a withheld state (coreSnapshot.css .projection-state). Unavailable is
+   faint italic text, so it never reads as a 0 or as a blank. */
+.impact-bound { border-bottom: 1px dashed var(--text-dim); cursor: help; white-space: nowrap; }
+.impact-na, .impact-tag {
+  display: inline-block; padding: 1px 6px; border: 1px dashed var(--border-strong); border-radius: 999px;
+  font: 700 10px var(--mono); letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; cursor: help;
+}
+.impact-na {
+  color: var(--text-faint);
+  background-image: repeating-linear-gradient(135deg, transparent, transparent 4px, var(--border-faint) 4px, var(--border-faint) 5px);
+}
+.impact-tag { margin-left: 6px; color: var(--text-dim); background: var(--surface-3); font-size: 9px; }
+.impact-unavailable { color: var(--text-faint); font-style: italic; font-weight: 500; white-space: nowrap; cursor: help; }
 .blocker .ph { font: 600 10px var(--mono); color: var(--text-faint); flex: none; }
 
 .ros { display: flex; flex-direction: column; margin: 4px 0 2px; border-left: 2px solid var(--border); padding-left: 16px; }

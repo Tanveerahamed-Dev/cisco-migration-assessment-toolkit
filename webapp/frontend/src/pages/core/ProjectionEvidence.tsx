@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Fact, Identity, Limitation, SourceList, State } from "../../projection";
+import { ImpactValue } from "../../components/ImpactValue";
 
 // Core-page implementation detail: these renderers require the active source-bound projection
 // context and are not standalone components in the public Design component library.
@@ -54,10 +55,19 @@ export function EnvelopeEvidence({ label, envelope }: { label: string; envelope:
     aria-label={`Evidence for ${label}`}>Evidence ↗</button>;
 }
 
-export function FactView({ label, fact, compact = false }: { label: string; fact: Fact; compact?: boolean }) {
+// `lowerBound` is passed only by a caller that knows the owner marks this fact as a minimum (a failure-impact measure
+// citing a witness, components/ImpactValue.tsx::projectionImpactBound). It is never inferred here: a witness ref on
+// another fact means something else, and a published zero stays a zero.
+export function FactView({ label, fact, compact = false, lowerBound }: {
+  label: string; fact: Fact; compact?: boolean; lowerBound?: string;
+}) {
+  const bound = fact.state === "published" && lowerBound !== undefined
+    && (typeof fact.value === "number" || typeof fact.value === "string") ? fact.value : null;
   return <div className={`projection-fact${compact ? " compact" : ""}`}>
     <div className="projection-fact-label">{label}<EnvelopeEvidence label={label} envelope={fact} /></div>
-    <div className="projection-fact-value">{fact.state === "published" ? <ValueText value={fact.value} /> : <span aria-hidden="true">—</span>}</div>
+    <div className="projection-fact-value">{fact.state === "published"
+      ? bound !== null ? <ImpactValue state={{ kind: "lower_bound", value: bound, why: lowerBound ?? "" }} /> : <ValueText value={fact.value} />
+      : <span aria-hidden="true">—</span>}</div>
     <StateLabel state={fact.state} />
     {fact.state !== "published" && <p className="projection-reason">{fact.reason}</p>}
     <Qualifications label={label} envelope={fact} />

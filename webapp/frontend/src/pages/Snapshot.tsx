@@ -14,6 +14,13 @@ import {
   Summary,
 } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
+import {
+  IMPACT_FIELDS,
+  ImpactValue,
+  impactEntryValue,
+  impactTableCell,
+  isImpactNotAssessed,
+} from "../components/ImpactValue";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
 import CutoverPlanner from "../components/CutoverPlanner";
@@ -507,7 +514,57 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
     const list = d[ENGINE_PRIMARY[name]];
     return <div><SummaryStrip summary={d.summary} /><GenericTable data={Array.isArray(list) ? list : d} /></div>;
   }
+  if (name === "failure_impact") return <FailureImpactPane data={d} />;
   return <GenericTable data={d} />;
+}
+
+/* ---------- the snapshot "Failure impact" tab (summary.failure_impact_table, W27) ----------
+   Every row is the engine-owned projection's, in the producer's field order. The generic table showed each cell as
+   truncated text: a lower bound as a string that happened to open with "≥", and a withheld cell as its reason, with
+   nothing to tell either from a measurement, and it dropped the ninth column (detail) under its column cap. Here each
+   value column goes through ImpactValue (≥ N, NOT ASSESSED or unavailable, never a bare 0 for a withheld cell), all
+   nine columns show, and the host and detail stay text. A section the projection cannot list arrives as its own
+   disclosure, {state, reason}, and reads NOT ASSESSED with that reason. */
+function FailureImpactPane({ data }: { data: unknown }) {
+  if (Array.isArray(data)) {
+    if (data.length === 0) return <div className="faint" style={{ fontSize: 13 }}>Empty.</div>;
+    return (
+      <div>
+        <div style={{ overflow: "auto" }}>
+          <table className="tbl">
+            <thead><tr>{IMPACT_FIELDS.map((f) => <th key={f}>{f}</th>)}</tr></thead>
+            <tbody>
+              {data.slice(0, ROW_CAP).map((r: any, i: number) => (
+                <tr key={`${cell(r?.host)}|${i}`} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                  {IMPACT_FIELDS.map((f) => {
+                    const v = r && typeof r === "object" ? r[f] : undefined;
+                    const state = impactTableCell(f, v);
+                    if (!state) return <td key={f} title={cell(v)}>{truncate(cell(v))}</td>;
+                    return (
+                      <td key={f} className={f === "severity" ? undefined : "num"}>
+                        <ImpactValue state={state} format={f === "severity" ? (sev) => <SevChip sev={String(sev)} /> : undefined} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <TruncNote shown={ROW_CAP} total={data.length} />
+      </div>
+    );
+  }
+  const held = data && typeof data === "object" ? (data as { state?: unknown; reason?: unknown }) : null;
+  if (held && typeof held.state === "string" && typeof held.reason === "string") {
+    return (
+      <div style={{ fontSize: 13 }}>
+        <ImpactValue state={{ kind: "not_assessed", why: held.reason }} />{" "}
+        <span className="dim">No failure-impact row can be shown ({held.state.replaceAll("_", " ")}): {held.reason}</span>
+      </div>
+    );
+  }
+  return <GenericTable data={data} />;
 }
 
 /* ---------- Device Risk Register (V3.23.174) ---------- */
@@ -693,6 +750,11 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
   );
 }
 
+/** The device cell of the keystone list's NOT ASSESSED disclosure entry, which names no host. */
+function notRankedLabel(n: unknown): string {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? `${n} row(s) not ranked` : "ranking qualified";
+}
+
 function Keystones({ meta }: { meta: SnapshotMeta }) {
   const ks = meta.summary.keystones || [];
   if (!ks.length) {
@@ -705,12 +767,18 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
       <table className="tbl">
         <thead><tr><th>Device</th><th>Severity</th><th className="num">Stranded</th><th className="num">VLANs</th><th>Impact</th></tr></thead>
         <tbody>
+          {/* W27 keystones (summary._keystones): counts go through ImpactValue, so a lower bound reads "≥ N", the
+              NOT ASSESSED disclosure entry reads NOT ASSESSED, and a withheld VLAN count reads unavailable. None of
+              them can render as a measured number, a 0 or a blank. */}
           {ks.map((k, i) => (
             <tr key={k.host || k.device || i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-              <td className="mono"><b>{k.host || k.device || "—"}</b></td>
+              <td className="mono">
+                {k.host || k.device ? <b>{k.host || k.device}</b>
+                  : isImpactNotAssessed(k) ? <span className="faint">{notRankedLabel(k.n_not_ranked)}</span> : <b>—</b>}
+              </td>
               <td>{k.severity ? <SevChip sev={k.severity} /> : "—"}</td>
-              <td className="num">{k.stranded ?? "—"}</td>
-              <td className="num">{k.vlans_impacted ?? "—"}</td>
+              <td className="num"><ImpactValue state={impactEntryValue(k, "stranded")} /></td>
+              <td className="num"><ImpactValue state={impactEntryValue(k, "vlans_impacted")} /></td>
               <td className="dim" title={k.detail} style={{ maxWidth: 380 }}>{truncate(k.detail || "", 120)}</td>
             </tr>
           ))}

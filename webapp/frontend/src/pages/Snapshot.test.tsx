@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
@@ -682,5 +682,151 @@ describe("Open in Atlas Scope", () => {
     await screen.findByRole("heading", { name: "Demo Fleet" });
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view", { cache: "no-store" }));
     expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
+  });
+});
+
+// ── W47 / F8: failure-impact values in their W27 engine states ────────────────
+// The keystone panel and the "Failure impact" tab read the engine-owned projection through the backend (W27). A lower
+// bound must read "≥ N" and say it is a minimum; a held cell must read NOT ASSESSED; a withheld value must read
+// unavailable. None of them may render as a bare number, a 0 or a blank. Shapes follow
+// webapp/tests/test_impact_surfaces.py's assertions on the real backend output.
+describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const WHY = "the stored cable map cables this switch to a neighbour it does not show as collected (1 cable row(s)), "
+    + "and the simulation counts only endpoints on scanned switches";
+  const HELD = "not collected: analyze.compute_failure_impact could not simulate this switch's blast radius (its detail "
+    + "says why), so its severity and counts are not measurements";
+  const ZERO_BOUND = "not collected: this row cannot account for endpoints behind 1 uncollected neighbour(s), so this 0 "
+    + "is only a lower bound, not a measurement of none";
+  const bound = (v: string | number) => `≥ ${v} — a lower bound, not an exact measurement: ${WHY}`;
+
+  function mockImpact(summaryPatch: Record<string, unknown>, failureImpact: unknown = []) {
+    const m: any = meta(72);
+    Object.assign(m.summary, summaryPatch);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/api\/snapshots\/\d+\/section\/failure_impact$/.test(url)) {
+        return new Response(JSON.stringify({ section: "failure_impact", data: failureImpact }), { status: 200 });
+      }
+      if (/\/api\/snapshots\/\d+(\?.*)?$/.test(url)) return new Response(JSON.stringify(m), { status: 200 });
+      return new Response(JSON.stringify({ detail: "not mocked" }), { status: 404 });
+    });
+  }
+  const keystonePanel = async () =>
+    (await screen.findByRole("heading", { name: /Keystone devices/ })).closest(".panel") as HTMLElement;
+  const rowOf = (panel: HTMLElement, text: string) => within(panel).getByText(text).closest("tr") as HTMLElement;
+  const cellsOf = (row: HTMLElement) => Array.from(row.querySelectorAll("td"));
+
+  it("keystones: a lower bound reads ≥ N, the disclosure NOT ASSESSED, a withheld VLAN count unavailable", async () => {
+    mockImpact({
+      keystone_contract: 4,
+      keystones: [
+        { host: "core1", severity: "High", stranded: 45, vlans_impacted: 4, lower_bound: false, detail: "VLAN 20: Hard partition" },
+        { host: "core2", severity: "High", stranded: 42, vlans_impacted: 3, lower_bound: true,
+          lower_bound_reasons: [WHY], lower_bound_pointers: ["/cable_map/cables/35"],
+          detail: `LOWER BOUND, at least 42 endpoint(s) stranded: ${WHY}. VLAN 10: Hard partition` },
+        { host: "dist1", severity: "Medium", stranded: 7, vlans_impacted: null, lower_bound: false,
+          detail: "not collected: this per-VLAN detail is withheld" },
+        { host: "", severity: "NOT ASSESSED", stranded: null, vlans_impacted: null, n_not_ranked: 2,
+          detail: `2 failure-impact row(s) were not ranked because the engine withholds their host, severity or stranded count, so any of them could rank above the devices shown: acc — ${HELD}.` },
+      ],
+    });
+    renderSnap();
+    const panel = await keystonePanel();
+    expect(within(panel).queryByText(/No keystone devices flagged/)).toBeNull();
+
+    // core2: the pre-W47 table printed 42 and 3 as plain numbers, an exact-looking measurement
+    const core2 = rowOf(panel, "core2");
+    const [, , stranded, vlans] = cellsOf(core2);
+    expect(within(core2).queryByText("42")).toBeNull();
+    expect(within(core2).queryByText("3")).toBeNull();
+    expect(stranded.querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 42");
+    expect(stranded.querySelector('[data-impact="lower_bound"]')?.getAttribute("title"))
+      .toMatch(/At least 42: a lower bound, not an exact measurement/);
+    expect(vlans.querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 3");
+
+    // the NOT ASSESSED disclosure: said in both count columns, never "—", "0" or blank, and the device column says why
+    const note = rowOf(panel, "2 row(s) not ranked");
+    for (const td of cellsOf(note).slice(2, 4)) {
+      expect(td.querySelector('[data-impact="not_assessed"]')?.firstChild?.textContent).toBe("NOT ASSESSED");
+      expect(td.textContent).not.toMatch(/^\s*(0|—)?\s*$/);
+    }
+    expect(within(note).queryByText("0")).toBeNull();
+
+    // dist1: a withheld VLAN count is unavailable, not "—" and not 0; its measured stranded stays exact
+    const dist1 = rowOf(panel, "dist1");
+    const [, , dStranded, dVlans] = cellsOf(dist1);
+    expect(dVlans.querySelector('[data-impact="unavailable"]')?.firstChild?.textContent).toBe("unavailable");
+    expect(within(dist1).queryByText("0")).toBeNull();
+    expect(within(dStranded).getByText("7")).toHaveAttribute("data-impact", "measured");
+
+    // the control: core1's exact counts render as measurements, with no lower-bound treatment
+    const core1 = rowOf(panel, "core1");
+    expect(within(core1).getByText("45")).toHaveAttribute("data-impact", "measured");
+    expect(core1.querySelector('[data-impact="lower_bound"]')).toBeNull();
+  });
+
+  it("the Failure impact tab: ≥ N for a lower bound, NOT ASSESSED for a held cell, a published 0 stays 0", async () => {
+    const MEASURES = ["severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp"];
+    mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: 3 }] }, [
+      { host: "core2", severity: bound("High"), vlans_impacted: bound(3), stranded: bound(42), hard: bound(3),
+        backup: ZERO_BOUND, fhrp: ZERO_BOUND, off_scan_gw_vlans: 0, detail: "VLAN 10: Hard partition" },
+      { host: "acc", ...Object.fromEntries(MEASURES.map((f) => [f, HELD])), off_scan_gw_vlans: 1,
+        detail: "Blast radius INDETERMINATE: VLAN 30 has an off-scan gateway" },
+      { host: "core1", severity: "High", vlans_impacted: 4, stranded: 45, hard: 4, backup: 0, fhrp: 0,
+        off_scan_gw_vlans: 0, detail: "VLAN 20: Hard partition" },
+    ]);
+    renderSnap();
+    const panel = await screen.findByRole("tabpanel", { name: /Failure impact/ });
+    const core2 = (await within(panel).findByText("core2")).closest("tr") as HTMLElement;
+    const header = Array.from(panel.querySelectorAll("th")).map((th) => th.textContent);
+    // all nine producer fields show: the generic table's 8-column cap dropped the detail
+    expect(header).toEqual(["host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
+      "off_scan_gw_vlans", "detail"]);
+    const col = (row: HTMLElement, field: string) => cellsOf(row)[header.indexOf(field)];
+
+    // core2: High and each positive count are published lower bounds; its zeros are held, never shown as 0
+    for (const field of ["severity", "vlans_impacted", "stranded", "hard"]) {
+      const cell = col(core2, field).querySelector('[data-impact="lower_bound"]');
+      expect(cell, field).not.toBeNull();
+      expect(cell?.getAttribute("title"), field).toMatch(/a lower bound, not an exact measurement/);
+    }
+    expect(col(core2, "stranded").querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 42");
+    for (const field of ["backup", "fhrp"]) {
+      expect(col(core2, field).querySelector('[data-impact="not_assessed"]')?.getAttribute("title")).toBe(ZERO_BOUND);
+      expect(col(core2, field).textContent).not.toMatch(/^\s*0\s*$/);
+    }
+
+    // acc: every measure is held: NOT ASSESSED with the projection's reason, never Info, 0 or a blank cell
+    const acc = within(panel).getByText("acc").closest("tr") as HTMLElement;
+    for (const field of MEASURES) {
+      const cell = col(acc, field).querySelector('[data-impact="not_assessed"]');
+      expect(cell?.firstChild?.textContent, field).toBe("NOT ASSESSED");
+      expect(cell?.getAttribute("title"), field).toBe(HELD);
+    }
+    expect(col(acc, "off_scan_gw_vlans").querySelector('[data-impact="measured"]')).toHaveTextContent(/^1$/);
+
+    // the control: core1's exact row renders as measured, a published 0 included
+    const core1 = within(panel).getByText("core1").closest("tr") as HTMLElement;
+    expect(col(core1, "backup").querySelector('[data-impact="measured"]')).toHaveTextContent(/^0$/);
+    expect(col(core1, "stranded").querySelector('[data-impact="measured"]')).toHaveTextContent(/^45$/);
+    expect(core1.querySelector('[data-impact="lower_bound"], [data-impact="not_assessed"]')).toBeNull();
+  });
+
+  it("the Failure impact tab: a section the projection cannot list reads NOT ASSESSED with its reason", async () => {
+    const reason = "unverified: the stored failure_impact section is not a list, so no row can be read";
+    mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: 1 }] }, { state: "unverified", reason });
+    renderSnap();
+    const panel = await screen.findByRole("tabpanel", { name: /Failure impact/ });
+    const held = await waitFor(() => {
+      const node = panel.querySelector('[data-impact="not_assessed"]');
+      expect(node).not.toBeNull();
+      return node as HTMLElement;
+    });
+    expect(held.getAttribute("title")).toBe(reason);
+    expect(panel).toHaveTextContent(reason);
+    expect(within(panel).queryByText("0")).toBeNull();
+    expect(within(panel).queryByText("Info")).toBeNull();
   });
 });

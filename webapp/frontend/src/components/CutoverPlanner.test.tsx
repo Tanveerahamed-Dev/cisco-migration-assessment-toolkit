@@ -557,3 +557,89 @@ describe("CutoverPlanner (render)", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+// W47 / F8: the worst-case blast radius renders the W27 engine states distinctly (shapes from
+// webapp/tests/test_impact_surfaces.py's assertions on cutover._worst_blast_radius).
+describe("CutoverPlanner worst-case blast radius (W27 engine states)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const WHY = "the stored cable map cables this switch to a neighbour it does not show as collected (1 cable row(s)), "
+    + "and the simulation counts only endpoints on scanned switches";
+  async function renderWorstCase(blast_radius: Record<string, unknown>) {
+    const plan = { ...cutover, waves: [{ ...cutover.waves[0], blast_radius }] };
+    vi.spyOn(api, "cutover").mockResolvedValue(plan as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+    const label = await screen.findByText("Worst-case blast radius");
+    return label.parentElement as HTMLElement;
+  }
+
+  it("shows a lower-bound worst case as ≥ N with its explanation, never as the bare count", async () => {
+    const card = await renderWorstCase({
+      host: "core2", severity: "High", stranded: 42, vlans_impacted: 3, lower_bound: true,
+      lower_bound_reasons: [WHY], lower_bound_pointers: ["/cable_map/cables/35"], complete: false, n_not_ranked: 0,
+      detail: `LOWER BOUND, at least 42 endpoint(s) stranded: ${WHY}. VLAN 10: Hard partition`,
+    });
+    // the pre-W47 card printed <b>42</b> and <b>3</b>: a lower bound read as an exact measurement
+    expect(within(card).queryByText("42")).toBeNull();
+    expect(within(card).queryByText("3")).toBeNull();
+    const bounds = card.querySelectorAll('[data-impact="lower_bound"]');
+    expect(bounds).toHaveLength(2);
+    expect(bounds[0]).toHaveTextContent("≥ 42");
+    expect(bounds[0].getAttribute("title")).toMatch(/At least 42: a lower bound, not an exact measurement/);
+    expect(bounds[0]).toHaveTextContent(WHY);                       // screen-reader text names why
+    expect(bounds[1]).toHaveTextContent("≥ 3");
+    expect(card.querySelector('[data-impact="measured"]')).toBeNull();
+    expect(card.querySelector('[data-impact="lower_bound_tag"]')).toHaveAttribute("title", expect.stringMatching(/may be larger/));
+  });
+
+  it("shows a wave nothing could be ranked in as NOT ASSESSED, never as 0 or a blank count", async () => {
+    const card = await renderWorstCase({
+      host: "", severity: "NOT ASSESSED", stranded: null, vlans_impacted: null, complete: false, n_not_ranked: 2,
+      detail: "NOT ASSESSED: 2 switch(es) or row(s) in this wave have no failure-impact row whose severity and "
+        + "stranded count the engine publishes: acc, x1 — not collected: analyze.compute_failure_impact could not "
+        + "simulate this switch's blast radius.",
+    });
+    const held = card.querySelectorAll('[data-impact="not_assessed"]');
+    expect(held).toHaveLength(2);                                   // stranded and VLANs, both said
+    for (const cell of held) {
+      expect(cell.firstChild?.textContent).toBe("NOT ASSESSED");
+      expect(cell.getAttribute("title")).toMatch(/could not simulate/);
+    }
+    expect(within(card).queryByText("0")).toBeNull();
+    expect(card.querySelector('[data-impact="measured"]')).toBeNull();
+    expect(card.querySelector('[data-impact="unavailable"]')).toBeNull();
+    // the empty host is said, not a blank bold cell; the chip reads a token theme.css does not define, so it takes
+    // SevChip's neutral --text-faint fallback, never a colour of health
+    expect(within(card).getByText("no switch ranked")).toBeInTheDocument();
+    expect(card.querySelector(".chip.sev")?.getAttribute("style")).toContain("--sev-NOTASSESSED");
+    // NOT ASSESSED is not a lower bound of anything: no lower-bound tag either
+    expect(card.querySelector('[data-impact="lower_bound_tag"]')).toBeNull();
+  });
+
+  it("shows a withheld VLAN count as unavailable, distinct from 0, and keeps an exact count exact", async () => {
+    const card = await renderWorstCase({
+      host: "gw", severity: "High", stranded: 12, vlans_impacted: null, lower_bound: false, complete: true,
+      n_not_ranked: 0, detail: "VLAN 10: Hard partition",
+    });
+    const vlans = card.querySelector('[data-impact="unavailable"]')!;
+    expect(vlans.firstChild?.textContent).toBe("unavailable");
+    expect(vlans.getAttribute("title")).toMatch(/not a measured 0/);
+    expect(within(card).queryByText("0")).toBeNull();
+    // the control: a complete, exact worst case renders its measured count with no lower-bound treatment
+    expect(within(card).getByText("12")).toHaveAttribute("data-impact", "measured");
+    expect(card.querySelector('[data-impact="lower_bound"]')).toBeNull();
+    expect(card.querySelector('[data-impact="lower_bound_tag"]')).toBeNull();
+  });
+
+  it("tags an exact worst row as a lower bound for the wave when the plan says it is not complete", async () => {
+    const card = await renderWorstCase({
+      host: "core1", severity: "High", stranded: 45, vlans_impacted: 4, lower_bound: false, complete: false,
+      n_not_ranked: 0, detail: `VLAN 20: Hard partition — LOWER BOUND, the worst case may be larger: 1 ranked switch(es) in this wave publish their counts only as lower bounds, so any of them can be larger than it reads: core2 — ${WHY}.`,
+    });
+    // core1's own counts are exact (cutover_docx prints them without "at least"), but the wave's worst case is not
+    expect(within(card).getByText("45")).toHaveAttribute("data-impact", "measured");
+    expect(card.querySelector('[data-impact="lower_bound_tag"]')).toHaveTextContent(/lower bound/);
+  });
+});

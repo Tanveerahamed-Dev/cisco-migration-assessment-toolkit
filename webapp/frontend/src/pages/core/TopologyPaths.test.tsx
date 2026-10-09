@@ -66,6 +66,33 @@ describe("Engine-owned topology and path screen", () => {
     expect(document.querySelectorAll(".path-node")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Investigate path" })).toBeEnabled();
   });
+  it("shows a failure-impact measure the engine publishes only as a lower bound as ≥ N, never the bare count", async () => {
+    // ui_projection._topology_impact marks a published lower bound by a witness ref on the measure (W27 reads the same
+    // mark in summary._impact_bounds). A published 0 without one stays a 0, and a witness on a non-measure is not a bound.
+    const document = topologyFixture();
+    const row = document.payload.failure_impact.page.items[0] as any;
+    const witness = [{ pointer: "/cable_map/cables/0", role: "witness" }];
+    row.severity = { ...row.severity, value: "High", refs: witness };
+    row.stranded = { ...row.stranded, value: 42, refs: witness };
+    row.off_scan_gw_vlans = { ...row.off_scan_gw_vlans, value: 3, refs: witness };
+    show(document); await screen.findByText(/All projected list pages loaded/);
+    fireEvent.click(screen.getByText("Topology evidence lists"));
+    const list = screen.getByRole("region", { name: "Failure impact" });
+    expect(within(list).queryByText("42")).toBeNull();
+    const bounds = list.querySelectorAll('[data-impact="lower_bound"]');
+    expect(bounds).toHaveLength(2);                                  // severity and stranded only
+    expect(bounds[0]).toHaveTextContent("≥ High");
+    expect(bounds[1]).toHaveTextContent("≥ 42");
+    expect(bounds[1].getAttribute("title")).toMatch(/At least 42: a lower bound, not an exact measurement/);
+    expect(bounds[1].getAttribute("title")).toContain("/cable_map/cables/0");
+    expect(within(list).getByText("3")).toBeInTheDocument();         // off_scan_gw_vlans is not a measure
+    expect(within(list).getAllByText("0").length).toBeGreaterThan(0); // the unbounded zeros stay zeros
+    // the same row in the inspector reads the same way
+    fireEvent.click(within(list).getByRole("button", { name: "Inspect failure impact row 0" }));
+    const inspector = screen.getByRole("region", { name: "Topology record details" });
+    expect(inspector.querySelector('[data-impact="lower_bound"]')).not.toBeNull();
+    expect(within(inspector).queryByText("42")).toBeNull();
+  });
   it("clears path/source presentation when the server identifies different snapshot authority", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ...pathFixture(), identity: { ...pathFixture().identity, bytes: 99 } })));
     show(); await screen.findByText(/All projected list pages loaded/);
