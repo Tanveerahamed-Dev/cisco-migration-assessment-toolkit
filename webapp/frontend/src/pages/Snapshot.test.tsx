@@ -213,6 +213,8 @@ describe("Snapshot cockpit", () => {
   // with a message) instead of silently vanishing — here Keystones, since the fixture has no
   // summary.keystones at all. W47 (P3-4): the message says the ranking is unavailable; it never
   // claims "no keystone devices" or "no single switch dominates" from a list that is not there.
+  // Its tag says the same word as its text, "unavailable": an absent list is not a ranking that
+  // was not assessed (that is the empty list's NOT ASSESSED, below).
   it("Unit 10: an empty section renders a designed empty state instead of vanishing (return null)", async () => {
     mockFetch(meta(72));
     renderSnap();
@@ -220,7 +222,13 @@ describe("Snapshot cockpit", () => {
     const note = await screen.findByText(/Keystone ranking unavailable: this snapshot's summary carries no keystone list/);
     const panel = note.closest(".panel") as HTMLElement;
     expect(within(panel).getByRole("heading", { name: /Keystone devices/ })).toBeInTheDocument();
-    expect(panel.querySelector('[data-impact="not_assessed"]')).toHaveTextContent("NOT ASSESSED");
+    expect(panel).toHaveAttribute("data-keystones", "unavailable");
+    const tag = panel.querySelector('[data-impact="unavailable"]');
+    expect(tag?.firstChild?.textContent).toBe("unavailable");
+    expect(panel.querySelector('[data-impact="not_assessed"]')).toBeNull();
+    expect(panel).not.toHaveTextContent("NOT ASSESSED");
+    // the reason is the visible text beside the tag, so the tag is neither a tab stop nor a second copy of it
+    expect(within(panel).queryByRole("button")).toBeNull();
     expect(within(panel).queryByText(/No keystone devices flagged|dominates the fleet's dependency graph\.?$/)).toBeNull();
   });
 
@@ -747,8 +755,11 @@ describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
     expect(within(core2).queryByText("42")).toBeNull();
     expect(within(core2).queryByText("3")).toBeNull();
     expect(stranded.querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 42");
-    expect(stranded.querySelector('[data-impact="lower_bound"]')?.getAttribute("title"))
-      .toMatch(/At least 42: a lower bound, not an exact measurement/);
+    // a toggletip: named by its state, described by its reason, no title beside the description
+    const strandedBound = within(stranded).getByRole("button", { name: "At least 42" });
+    expect(strandedBound).toHaveAttribute("data-impact", "lower_bound");
+    expect(strandedBound).toHaveAccessibleDescription(/^At least 42: a lower bound, not an exact measurement/);
+    expect(strandedBound).not.toHaveAttribute("title");
     expect(vlans.querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 3");
 
     // the NOT ASSESSED disclosure: said in both count columns, never "—", "0" or blank, and the device column says why
@@ -779,6 +790,9 @@ describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
     renderSnap();
     const panel = await keystonePanel();
     expect(panel.querySelector('[data-impact="not_assessed"]')).toHaveTextContent("NOT ASSESSED");
+    // collected but empty is not assessed, never the absent list's "unavailable" (Unit 10 above)
+    expect(panel).toHaveAttribute("data-keystones", "not_ranked");
+    expect(panel.querySelector('[data-impact="unavailable"]')).toBeNull();
     expect(panel).toHaveTextContent(/No keystone ranking was computed: the summary carries no failure-impact row to rank/);
     expect(panel).toHaveTextContent(/This is not a finding that no single switch dominates/);
     expect(within(panel).queryByText(/No keystone devices flagged/)).toBeNull();
@@ -861,6 +875,74 @@ describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
     expect(core1.querySelector('[data-impact="lower_bound"], [data-impact="not_assessed"]')).toBeNull();
   });
 
+  it("the Failure impact tab: at most one tab stop per row, a disclosure that reveals that row's reasons", async () => {
+    // Every qualified cell used to be its own focusable value: an all-held fleet at ROW_CAP (200) rows put about 1,200
+    // tab stops before the next control. Each row now carries at most one, a disclosure in its host cell that lists
+    // the reason of each of its values that is not a measurement. A fully measured row has none.
+    const MEASURES = ["severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp"];
+    const heldRow = (host: string) => ({ host, ...Object.fromEntries(MEASURES.map((f) => [f, HELD])),
+      off_scan_gw_vlans: null, detail: "Blast radius INDETERMINATE: VLAN 30 has an off-scan gateway" });
+    const fleet = [
+      { host: "core1", severity: "High", vlans_impacted: 4, stranded: 45, hard: 4, backup: 0, fhrp: 0,
+        off_scan_gw_vlans: 0, detail: "VLAN 20: Hard partition" },
+      { host: "core2", severity: bound("High"), vlans_impacted: bound(3), stranded: bound(42), hard: bound(3),
+        backup: ZERO_BOUND, fhrp: ZERO_BOUND, off_scan_gw_vlans: 0, detail: "VLAN 10: Hard partition" },
+      ...Array.from({ length: 12 }, (_, i) => heldRow(`acc${i}`)),
+    ];
+    mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: fleet.length }] }, fleet);
+    renderSnap();
+    const panel = await screen.findByRole("tabpanel", { name: /Failure impact/ });
+    await within(panel).findByText("core1");
+    const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const rows = Array.from(panel.querySelectorAll("tbody > tr:not(.impact-reasons)")) as HTMLElement[];
+    expect(rows).toHaveLength(fleet.length);
+    for (const row of rows) expect(row.querySelectorAll(FOCUSABLE).length).toBeLessThanOrEqual(1);
+    // the whole table: one stop for each row with something to disclose, none for the fully measured control, and no
+    // per-cell toggletip anywhere
+    const table = panel.querySelector("table") as HTMLElement;
+    expect(table.querySelectorAll(FOCUSABLE)).toHaveLength(fleet.length - 1);
+    expect(table.querySelectorAll(".impact-why")).toHaveLength(0);
+    const core1 = within(panel).getByText("core1").closest("tr") as HTMLElement;
+    expect(core1.querySelectorAll(FOCUSABLE)).toHaveLength(0);
+    expect(core1.nextElementSibling?.classList.contains("impact-reasons")).toBe(false);
+
+    // core2: one non-submitting disclosure, collapsed, controlling the hidden row beneath
+    const core2 = within(panel).getByText("core2").closest("tr") as HTMLElement;
+    const toggle = within(core2).getByRole("button", { name: /^Reasons for core2: 6 value\(s\) not measured$/ });
+    expect(toggle).toHaveAttribute("type", "button");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const reasons = document.getElementById(toggle.getAttribute("aria-controls")!) as HTMLElement;
+    expect(reasons).toBe(core2.nextElementSibling);
+    expect(reasons).not.toBeVisible();
+    // the cells themselves show their state as text, are no tab stop, and carry no second description
+    for (const value of Array.from(core2.querySelectorAll("[data-impact]"))) {
+      expect(value.tagName).toBe("SPAN");
+      expect(value).not.toHaveAttribute("aria-describedby");
+    }
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAccessibleName(/^Hide reasons for core2/);
+    expect(reasons).toBeVisible();
+    const items = within(reasons).getAllByRole("listitem");
+    expect(items.map((li) => li.getAttribute("data-impact-reason"))).toEqual(MEASURES);
+    expect(items[2]).toHaveTextContent(`stranded (≥ 42): At least 42: a lower bound, not an exact measurement. Why: ${WHY}.`);
+    expect(items[0]).toHaveTextContent(/^severity \(≥ High\): At least High: a lower bound/);
+    expect(items[4]).toHaveTextContent(`backup (NOT ASSESSED): ${ZERO_BOUND}`);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(reasons).not.toBeVisible();
+
+    // an all-held row lists every held cell, and its withheld off-scan count as unavailable
+    const acc0 = within(panel).getByText("acc0").closest("tr") as HTMLElement;
+    const accToggle = within(acc0).getByRole("button", { name: /^Reasons for acc0: 7 value\(s\) not measured$/ });
+    fireEvent.click(accToggle);
+    const accItems = within(document.getElementById(accToggle.getAttribute("aria-controls")!) as HTMLElement)
+      .getAllByRole("listitem");
+    expect(accItems.map((li) => li.getAttribute("data-impact-reason"))).toEqual([...MEASURES, "off_scan_gw_vlans"]);
+    expect(accItems[0]).toHaveTextContent(`severity (NOT ASSESSED): ${HELD}`);
+    expect(accItems[6]).toHaveTextContent(/^off_scan_gw_vlans \(unavailable\): Withheld by the engine/);
+  });
+
   it("the Failure impact tab: a section the projection cannot list reads NOT ASSESSED with its reason", async () => {
     const reason = "unverified: the stored failure_impact section is not a list, so no row can be read";
     mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: 1 }] }, { state: "unverified", reason });
@@ -873,6 +955,13 @@ describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
     });
     expect(held.getAttribute("title")).toBe(reason);
     expect(panel).toHaveTextContent(reason);
+    // the reason is already visible beside the tag, so the tag is no tab stop and no second, described copy of it
+    expect(held.tagName).toBe("SPAN");
+    expect(held).not.toHaveAttribute("tabindex");
+    expect(held).not.toHaveAttribute("aria-describedby");
+    expect(within(panel).queryByRole("button")).toBeNull();
+    expect(panel.querySelector(".impact-why")).toBeNull();
+    expect(within(panel).getAllByText(reason, { exact: false })).toHaveLength(1);
     expect(within(panel).queryByText("0")).toBeNull();
     expect(within(panel).queryByText("Info")).toBeNull();
   });

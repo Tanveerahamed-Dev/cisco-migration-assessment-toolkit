@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   api,
@@ -18,6 +18,8 @@ import {
   IMPACT_FIELDS,
   ImpactValue,
   impactEntryValue,
+  impactReasonText,
+  impactStateText,
   impactTableCell,
   isImpactNotAssessed,
 } from "../components/ImpactValue";
@@ -530,7 +532,10 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
    Its values are not rendered, deliberately: this pane cannot classify a column it does not know (a new measure could
    carry a lower bound or a withheld reason), and a bare value there could read as a measurement. The note says the
    column exists and that its values are not shown, so the gap is visible; the in-repo guard against the skew is
-   webapp/tests/test_impact_surfaces.py, which holds IMPACT_FIELDS equal to summary.IMPACT_FIELDS. */
+   webapp/tests/test_impact_surfaces.py, which holds IMPACT_FIELDS equal to summary.IMPACT_FIELDS.
+
+   A value's reason is reachable without one tab stop per cell: each row carries at most one disclosure (see
+   FailureImpactRow). */
 function unrecognisedImpactColumns(rows: readonly unknown[]): string[] {
   const seen: string[] = [];
   for (const row of rows) {
@@ -558,18 +563,7 @@ function FailureImpactPane({ data }: { data: unknown }) {
             <thead><tr>{IMPACT_FIELDS.map((f) => <th key={f}>{f}</th>)}</tr></thead>
             <tbody>
               {data.slice(0, ROW_CAP).map((r: any, i: number) => (
-                <tr key={`${cell(r?.host)}|${i}`} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-                  {IMPACT_FIELDS.map((f) => {
-                    const v = r && typeof r === "object" ? r[f] : undefined;
-                    const state = impactTableCell(f, v);
-                    if (!state) return <td key={f} title={cell(v)}>{truncate(cell(v))}</td>;
-                    return (
-                      <td key={f} className={f === "severity" ? undefined : "num"}>
-                        <ImpactValue state={state} format={f === "severity" ? (sev) => <SevChip sev={String(sev)} /> : undefined} />
-                      </td>
-                    );
-                  })}
-                </tr>
+                <FailureImpactRow key={`${cell(r?.host)}|${i}`} row={r} index={i} />
               ))}
             </tbody>
           </table>
@@ -580,14 +574,78 @@ function FailureImpactPane({ data }: { data: unknown }) {
   }
   const held = data && typeof data === "object" ? (data as { state?: unknown; reason?: unknown }) : null;
   if (held && typeof held.state === "string" && typeof held.reason === "string") {
+    // The reason is visible text beside the tag, so the tag is neither a tab stop nor a second copy of it.
     return (
       <div style={{ fontSize: 13 }}>
-        <ImpactValue state={{ kind: "not_assessed", why: held.reason }} />{" "}
+        <ImpactValue state={{ kind: "not_assessed", why: held.reason }} reasonShown />{" "}
         <span className="dim">No failure-impact row can be shown ({held.state.replaceAll("_", " ")}): {held.reason}</span>
       </div>
     );
   }
   return <GenericTable data={data} />;
+}
+
+/** One row of the Failure impact tab. Each value cell shows its state as text (≥ N, NOT ASSESSED, unavailable) but is
+ *  not a tab stop of its own: at ROW_CAP rows, an all-held fleet would otherwise put about 1,200 stops before the next
+ *  control. The row carries at most ONE: a disclosure button in its host cell, the SPA's aria-expanded pattern (as
+ *  CutoverPlanner's evidence toggle), which reveals, in a row beneath it, the reason of each of the row's values that is
+ *  not a measurement, named by its column and its state. A row whose values are all measured has nothing to disclose
+ *  and no tab stop. Each cell keeps its reason as a `title` for a pointer user's hover. */
+function FailureImpactRow({ row, index }: { row: unknown; index: number }) {
+  const [open, setOpen] = useState(false);
+  const reasonsId = useId();
+  const r: Record<string, unknown> = row && typeof row === "object" && !Array.isArray(row)
+    ? (row as Record<string, unknown>) : {};
+  const qualified = IMPACT_FIELDS.flatMap((field) => {
+    const state = impactTableCell(field, r[field]);
+    return state && state.kind !== "measured" ? [{ field, state }] : [];
+  });
+  const host = r.host;
+  const who = typeof host === "string" && host.trim() ? truncate(host.trim(), 40) : `row ${index + 1}`;
+  const disclosure = qualified.length > 0 && (
+    <button type="button" className="btn ghost impact-row-why" aria-expanded={open} aria-controls={reasonsId}
+      onClick={() => setOpen((was) => !was)}>
+      {open ? "Hide reasons" : "Reasons"}
+      <span className="sr-only">{` for ${who}: ${qualified.length} value(s) not measured`}</span>
+    </button>
+  );
+  return (
+    <>
+      <tr className="row-reveal" style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}>
+        {IMPACT_FIELDS.map((f) => {
+          const v = r[f];
+          const state = impactTableCell(f, v);
+          if (!state) {
+            return (
+              <td key={f} title={cell(v)}>
+                {truncate(cell(v))}
+                {f === "host" && disclosure && <>{" "}{disclosure}</>}
+              </td>
+            );
+          }
+          return (
+            <td key={f} className={f === "severity" ? undefined : "num"}>
+              <ImpactValue state={state} reasonShown
+                format={f === "severity" ? (sev) => <SevChip sev={String(sev)} /> : undefined} />
+            </td>
+          );
+        })}
+      </tr>
+      {qualified.length > 0 && (
+        <tr id={reasonsId} className="impact-reasons" hidden={!open}>
+          <td colSpan={IMPACT_FIELDS.length}>
+            <ul aria-label={`Why ${who}'s values are not measurements`}>
+              {qualified.map(({ field, state }) => (
+                <li key={field} data-impact-reason={field}>
+                  <span className="mono">{field}</span> ({impactStateText(state)}): {impactReasonText(state)}
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 /* ---------- Device Risk Register (V3.23.174) ---------- */
@@ -783,8 +841,9 @@ function notRankedLabel(n: unknown): string {
    blind spot adds a NOT ASSESSED disclosure entry. So an empty list means only that there was no failure-impact row to
    rank (the engine's list was collected but empty): nothing was compared, and "no single switch dominates" was never
    computed. The summary carries no list state beside `keystones`, so this panel cannot quote the projection's own state
-   and reason (a backend follow-up); it says what the empty list does and does not mean. A summary with no keystone
-   list at all says so. */
+   and reason (a backend follow-up); it says what the empty list does and does not mean, and its tag reads NOT ASSESSED.
+   A summary with no keystone list at all is a different state: there is nothing to read, so its tag reads
+   "unavailable", the same word its text uses, never NOT ASSESSED (the P3-4 decision). */
 const KEYSTONES_EMPTY_WHY =
   "No keystone ranking was computed: the summary carries no failure-impact row to rank, so no switch was compared. "
   + "This is not a finding that no single switch dominates the fleet's dependency graph.";
@@ -796,12 +855,13 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
   const listed = meta.summary.keystones;
   const ks = Array.isArray(listed) ? listed : [];
   if (!ks.length) {
-    const why = Array.isArray(listed) ? KEYSTONES_EMPTY_WHY : KEYSTONES_ABSENT_WHY;
+    const absent = !Array.isArray(listed);
+    const why = absent ? KEYSTONES_ABSENT_WHY : KEYSTONES_EMPTY_WHY;
     return (
-      <div className="panel" data-keystones="not_ranked">
+      <div className="panel" data-keystones={absent ? "unavailable" : "not_ranked"}>
         <h3>Keystone devices · fleet depends on these most</h3>
         <div className="faint" style={{ fontSize: 12 }}>
-          <ImpactValue state={{ kind: "not_assessed", why }} reasonShown /> {why}
+          <ImpactValue state={absent ? { kind: "unavailable", why } : { kind: "not_assessed", why }} reasonShown /> {why}
         </div>
       </div>
     );

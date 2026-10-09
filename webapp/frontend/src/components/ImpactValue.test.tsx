@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
   IMPACT_FIELDS,
   IMPACT_NOT_ASSESSED,
+  IMPACT_ROOT_WITNESS,
   ImpactLowerBoundTag,
   ImpactValue,
   impactEntryValue,
+  impactReasonText,
+  impactStateText,
   impactTableCell,
   isImpactNotAssessed,
   parseImpactBound,
@@ -106,25 +109,84 @@ describe("impact value classification (one rule for every surface)", () => {
     // a similar-looking pointer of another row is not this row's cell
     expect(projectionImpactBound("stranded", citing("/failure_impact/30"), row)).toContain("the record at /failure_impact/30");
   });
+
+  it("words the snapshot root pointer \"\" as the snapshot as a whole, never as an empty pointer", () => {
+    // The pending W35 engine change (PR #626) cites the root pointer "" as a bound's witness when no nearer record was
+    // collected. RFC 6901's whole-document pointer is the empty string, so the old wording read "the record at " with
+    // nothing after it.
+    const row = "/failure_impact/3";
+    const root = { state: "published", value: 42, basis: "x", subject: `${row}/stranded`,
+      refs: [{ pointer: `${row}/stranded`, role: "subject" }, { pointer: "", role: "witness" }] };
+    const said = projectionImpactBound("stranded", root, row)!;
+    expect(IMPACT_ROOT_WITNESS).toBe("the snapshot as a whole (no nearer record was collected)");
+    expect(said).toBe("the engine publishes this value only as a minimum, citing the snapshot as a whole (no nearer "
+      + "record was collected) as what bounds it");
+    expect(said).not.toMatch(/the record at\s*(;|as\b|$)/);
+    expect(said).not.toContain("()");
+    // the same without a row pointer, and beside a nearer witness, each named once, in the order cited
+    expect(projectionImpactBound("stranded", root)).toContain(`citing ${IMPACT_ROOT_WITNESS} as`);
+    const both = projectionImpactBound("stranded", { ...root, refs: [...root.refs, { pointer: "/cable_map/cables/35", role: "witness" },
+      { pointer: "", role: "witness" }] }, row)!;
+    expect(both).toContain(`citing ${IMPACT_ROOT_WITNESS}; the record at /cable_map/cables/35 as`);
+    expect(both.split(IMPACT_ROOT_WITNESS)).toHaveLength(2);
+    // the root is the root even when a row pointer is "" too: never "this row's own record ()"
+    expect(projectionImpactBound("stranded", root, "")).toContain(IMPACT_ROOT_WITNESS);
+    // and the visible and described reason built from it carries the same words
+    expect(impactReasonText({ kind: "lower_bound", value: 42, why: said })).toContain(IMPACT_ROOT_WITNESS);
+  });
+
+  it("names each qualified state by its state text and its reason, as a row's disclosure lists it", () => {
+    expect(impactStateText({ kind: "lower_bound", value: 42, why: WHY })).toBe("≥ 42");
+    expect(impactStateText({ kind: "not_assessed", why: HELD })).toBe(IMPACT_NOT_ASSESSED);
+    expect(impactStateText({ kind: "unavailable", why: "x" })).toBe("unavailable");
+    expect(impactStateText({ kind: "measured", value: 0 })).toBe("0");
+    expect(impactReasonText({ kind: "lower_bound", value: 42, why: WHY }))
+      .toBe(`At least 42: a lower bound, not an exact measurement. Why: ${WHY}.`);
+    expect(impactReasonText({ kind: "not_assessed", why: HELD })).toBe(HELD);
+    expect(impactReasonText({ kind: "measured", value: 7 })).toBe("");
+  });
 });
 
 describe("<ImpactValue>", () => {
   it("renders a lower bound as ≥ N with an accessible minimum-not-measurement explanation, never as the bare number", () => {
-    const view = shown({ kind: "lower_bound", value: 42, why: WHY });
+    shown({ kind: "lower_bound", value: 42, why: WHY });
     expect(screen.queryByText("42")).toBeNull();
-    const bound = view.querySelector('[data-impact="lower_bound"]')!;
-    expect(bound).toHaveClass("impact-bound");
+    // a toggletip: a non-submitting button named by its state text and described by its reason
+    const bound = screen.getByRole("button", { name: "At least 42" });
+    expect(bound).toHaveAttribute("type", "button");
+    expect(bound).toHaveAttribute("data-impact", "lower_bound");
+    expect(bound).toHaveClass("impact-toggletip", "impact-bound");
     expect(bound).toHaveTextContent("≥ 42");
-    expect(bound.getAttribute("title")).toMatch(/^At least 42: a lower bound, not an exact measurement/);
     expect(bound.querySelector(".sr-only")).toHaveTextContent("At least 42");
-    // the reason is not hover-only: the value takes focus (a tap focuses it) and is described by the reason
-    expect(bound).toHaveAttribute("tabindex", "0");
+    expect(bound).toHaveAccessibleDescription(`At least 42: a lower bound, not an exact measurement. Why: ${WHY}.`);
+    // no title beside the description: it would read the reason twice, or stand in for the state text as the name
+    expect(bound).not.toHaveAttribute("title");
+    expect(bound).not.toHaveAttribute("tabindex");          // a native tab stop, not a generic span forced into one
     const reason = reasonOf(bound);
-    expect(reason).toHaveTextContent(/At least 42: a lower bound, not an exact measurement/);
     expect(reason).toHaveTextContent(WHY);
     expect(reason).toHaveClass("impact-why");
+    expect(reason?.closest("button")).toBeNull();            // the description sits beside the button, not in its name
+    // activation reveals the reason (a click or tap also focuses it); Escape and leaving it hide it again
+    expect(bound).not.toHaveAttribute("data-open");
     fireEvent.click(bound);
     expect(bound).toHaveFocus();
+    expect(bound).toHaveAttribute("data-open", "true");
+    fireEvent.keyDown(bound, { key: "Escape" });
+    expect(bound).not.toHaveAttribute("data-open");
+    fireEvent.click(bound);
+    expect(bound).toHaveAttribute("data-open", "true");
+    fireEvent.click(bound);
+    expect(bound).not.toHaveAttribute("data-open");
+    fireEvent.click(bound);
+    fireEvent.blur(bound);
+    expect(bound).not.toHaveAttribute("data-open");
+  });
+
+  it("never submits a form it sits in", () => {
+    const submit = vi.fn((event: Event) => event.preventDefault());
+    render(<form onSubmit={(event) => submit(event.nativeEvent)}><ImpactValue state={{ kind: "not_assessed", why: HELD }} /></form>);
+    fireEvent.click(screen.getByRole("button", { name: IMPACT_NOT_ASSESSED }));
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("gives every qualified state a reachable reason, and keeps text, not colour, as the signal", () => {
@@ -132,45 +194,53 @@ describe("<ImpactValue>", () => {
       [{ kind: "not_assessed", why: HELD }, IMPACT_NOT_ASSESSED],
       [{ kind: "unavailable", why: "Withheld by the engine" }, "unavailable"],
     ] as const) {
-      const view = shown(state);
-      const value = view.querySelector(`[data-impact="${state.kind}"]`)!;
+      const { unmount } = render(<ImpactValue state={state} />);
+      const value = screen.getByRole("button", { name: face });
+      expect(value).toHaveAttribute("data-impact", state.kind);
       expect(value.firstChild?.textContent).toBe(face);
-      expect(value).toHaveAttribute("tabindex", "0");
+      expect(value).toHaveAccessibleDescription(state.why);
+      expect(value).not.toHaveAttribute("title");
       expect(reasonOf(value)).toHaveTextContent(state.why);
-      view.remove();
+      unmount();
     }
-    const tag = render(<ImpactLowerBoundTag why="the wave's worst case may be larger" />).container
-      .querySelector('[data-impact="lower_bound_tag"]')!;
-    expect(tag).toHaveTextContent("lower bound");
-    expect(tag).toHaveAttribute("tabindex", "0");
-    expect(reasonOf(tag)).toHaveTextContent("the wave's worst case may be larger");
+    render(<ImpactLowerBoundTag why="the wave's worst case may be larger" />);
+    const tag = screen.getByRole("button", { name: "lower bound" });
+    expect(tag).toHaveAttribute("data-impact", "lower_bound_tag");
+    expect(tag).toHaveAccessibleDescription("the wave's worst case may be larger");
+    expect(tag).not.toHaveAttribute("title");
   });
 
-  it("with reasonShown, leaves the reason to the caller's visible text: not focusable, not described twice", () => {
+  it("with reasonShown, leaves the reason to the caller: a plain span, not a tab stop, not described twice", () => {
     const view = render(<ImpactValue state={{ kind: "lower_bound", value: 42, why: WHY }} reasonShown />).container;
     const bound = view.querySelector('[data-impact="lower_bound"]')!;
+    expect(bound.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button")).toBeNull();
     expect(bound).toHaveTextContent("≥ 42");
     expect(bound).not.toHaveAttribute("tabindex");
     expect(bound).not.toHaveAttribute("aria-describedby");
     expect(view.querySelector(".impact-why")).toBeNull();
+    // with no description present, the title stays for a pointer user's hover
+    expect(bound.getAttribute("title")).toMatch(/^At least 42: a lower bound, not an exact measurement/);
   });
 
   it("renders NOT ASSESSED as the neutral tag, never as 0 or a blank", () => {
     const view = shown({ kind: "not_assessed", why: HELD });
-    const tag = view.querySelector('[data-impact="not_assessed"]')!;
+    const tag = screen.getByRole("button", { name: IMPACT_NOT_ASSESSED });
+    expect(tag).toHaveAttribute("data-impact", "not_assessed");
     expect(tag).toHaveClass("impact-na");
     expect(tag.firstChild?.textContent).toBe(IMPACT_NOT_ASSESSED);
-    expect(tag).toHaveAttribute("title", HELD);
+    expect(tag).toHaveAccessibleDescription(HELD);
     expect(screen.queryByText("0")).toBeNull();
     expect(view.textContent?.trim()).not.toBe("");
   });
 
   it("renders a withheld value as unavailable, distinct from 0", () => {
-    const view = shown(impactEntryValue({ ...core2, lower_bound: false, vlans_impacted: null }, "vlans_impacted"));
-    const cell = view.querySelector('[data-impact="unavailable"]')!;
+    shown(impactEntryValue({ ...core2, lower_bound: false, vlans_impacted: null }, "vlans_impacted"));
+    const cell = screen.getByRole("button", { name: "unavailable" });
+    expect(cell).toHaveAttribute("data-impact", "unavailable");
     expect(cell).toHaveClass("impact-unavailable");
     expect(cell.firstChild?.textContent).toBe("unavailable");
-    expect(cell.getAttribute("title")).toMatch(/not a measured 0/);
+    expect(cell).toHaveAccessibleDescription(/not a measured 0/);
     expect(screen.queryByText("0")).toBeNull();
   });
 

@@ -102,14 +102,17 @@ const CUSTODY_TEXT: Partial<Record<Schemas["UiProjection1_TrustInputHost"]["cust
 };
 
 // One analysis input's gap row, rendered from the contract alone: the ratio sentence appears only when the
-// projection published both counts, carries the count's own qualifications beside it, and a withheld count or list
-// keeps its own state and reason.
+// projection published both counts, and a withheld count or list keeps its own state and reason. The sentence states
+// two facts, so it carries both facts' qualifications beside it: the count's, and the inventory denominator's own
+// (ui_projection._inventory_total publishes its own caveats, which the count does not inherit). Each control opens
+// its own fact's caveats.
 function InputGap({ row, sid }: { row: Schemas["UiProjection1_TrustInput"]; sid: number }) {
   const { n, of, hosts } = row;
   const ratio = n.state === "published" && of.state === "published" ? `${n.value} of ${of.value} inventory devices could not be assessed` : null;
   return <article className="projection-list-item" aria-label={`${row.input} analysis input`}>
     <h3>{row.input}</h3>
-    {ratio !== null && <p className="projection-ratio">{ratio}<Qualifications label={ratio} envelope={n} /></p>}
+    {ratio !== null && <p className="projection-ratio">{ratio}<Qualifications label={ratio} envelope={n} />
+      <Qualifications label={`the inventory denominator of ${ratio}`} envelope={of} text="Denominator qualifications" /></p>}
     <FactGrid facts={{ could_not_be_assessed: n, inventory_devices: of }} />
     {row.sections.length > 0 && <p className="dim">Input sections: {row.sections.join(", ")}</p>}
     <ListState label={`Devices not assessed by ${row.input}`} source={hosts} />

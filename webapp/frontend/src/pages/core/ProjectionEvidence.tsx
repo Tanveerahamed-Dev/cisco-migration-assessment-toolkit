@@ -44,11 +44,16 @@ function Caveats({ envelope }: { envelope: Envelope }) {
   })}</ul>;
 }
 
-export function Qualifications({ label, envelope }: { label: string; envelope: Envelope }) {
+// `text` names the control when one sentence carries more than one fact's qualifications (a ratio's count and its
+// denominator): its visible text and its accessible name both start with it, so the controls stay distinguishable.
+// `label` is what the opened drawer is titled; each control opens its own fact's caveats, never a merged copy.
+export function Qualifications({ label, envelope, text = "Qualifications" }: {
+  label: string; envelope: Envelope; text?: string;
+}) {
   const { open } = useContext(EvidenceContext);
   if (!envelope.caveats?.length) return null;
   return <button type="button" className="projection-qualifications" onClick={() => open({ label, envelope })}
-    aria-label={`Qualifications for ${label}`}>Qualifications ({envelope.caveats.length})</button>;
+    aria-label={`${text} for ${label}`}>{text} ({envelope.caveats.length})</button>;
 }
 
 export function EnvelopeEvidence({ label, envelope }: { label: string; envelope: Envelope }) {

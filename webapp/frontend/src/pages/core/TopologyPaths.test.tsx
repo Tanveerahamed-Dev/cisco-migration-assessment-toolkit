@@ -112,6 +112,38 @@ describe("Engine-owned topology and path screen", () => {
     expect(inspector.querySelectorAll('[data-impact="lower_bound"]')).toHaveLength(4);
     expect(within(inspector).queryByText("42")).toBeNull();
   });
+  it("keeps a witness on a failure-impact non-measure plain: off_scan_gw_vlans is never shown as a lower bound", async () => {
+    // The component-level negative control for projectionImpactBound's measure gate (ImpactValue.test.tsx covers the
+    // helper alone). _topology_impact cites a bound's witnesses on the measures only, so a witness on the off-scan
+    // count would mean something else, never "only a minimum": it renders as its plain published value, in the list
+    // and in the inspector. The same witness on the stranded measure of the same row is the control.
+    const document = topologyFixture();
+    const row = document.payload.failure_impact.page.items[0] as any;
+    const witness = { pointer: "/cable_map/cables/0", role: "witness" };
+    row.off_scan_gw_vlans = { ...row.off_scan_gw_vlans, value: 3,
+      refs: [{ pointer: "/failure_impact/0/off_scan_gw_vlans", role: "subject" }, witness] };
+    row.stranded = { ...row.stranded, value: 42, refs: [{ pointer: "/failure_impact/0/stranded", role: "subject" }, witness] };
+    show(document); await screen.findByText(/All projected list pages loaded/);
+    fireEvent.click(screen.getByText("Topology evidence lists"));
+    const factIn = (region: HTMLElement, label: string) =>
+      within(region).getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact") as HTMLElement;
+    const list = screen.getByRole("region", { name: "Failure impact" });
+    const offScan = factIn(list, "off scan gw vlans");
+    expect(within(offScan).getByText("3")).toBeInTheDocument();
+    expect(offScan.querySelector("[data-impact]")).toBeNull();
+    expect(offScan).not.toHaveTextContent("≥");
+    expect(offScan).not.toHaveTextContent(/lower bound|At least/);
+    // the control: the same witness on a measure of the same row is a lower bound
+    expect(factIn(list, "stranded").querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 42");
+    expect(list.querySelectorAll('[data-impact="lower_bound"]')).toHaveLength(1);
+    // the inspector reads the same row the same way
+    fireEvent.click(within(list).getByRole("button", { name: "Inspect failure impact row 0" }));
+    const inspector = screen.getByRole("region", { name: "Topology record details" });
+    const inspected = factIn(inspector, "off scan gw vlans");
+    expect(within(inspected).getByText("3")).toBeInTheDocument();
+    expect(inspected.querySelector("[data-impact]")).toBeNull();
+    expect(factIn(inspector, "stranded").querySelector('[data-impact="lower_bound"]')).toHaveTextContent("≥ 42");
+  });
   it("applies the lower-bound mark only to the failure-impact list: a witness on another list's fact stays plain", async () => {
     // No other topology list carries a measure-named fact today, so the list gate is defensive; this proves it is the
     // gate, not the field name, that keeps a witness-carrying fact of another list plain. A witness there means

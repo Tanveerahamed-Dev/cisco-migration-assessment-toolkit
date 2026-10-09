@@ -1,4 +1,4 @@
-import { useId, type MouseEvent, type ReactNode } from "react";
+import { useId, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ImpactEntry } from "../api";
 
 /* ---- engine failure-impact values: one renderer for the whole class (W47 / F8) ----
@@ -24,9 +24,15 @@ import type { ImpactEntry } from "../api";
    Classification only reads what the backend owner already decided. It never re-derives a bound, and it never coerces
    a value: a count that is not a finite number is unavailable, never read as a number.
 
-   Every state but measured carries a reason, and the reason is never hover-only: the value is focusable and names its
-   reason through aria-describedby, and the reason is shown in place while the value has focus (a tap focuses it).
-   A caller that already shows the reason as visible text (the core pages' FactView) asks for `reasonShown`.
+   Every state but measured carries a reason, and the reason is never hover-only. By default the value is a toggletip:
+   a non-submitting <button> whose accessible name is its state text and whose accessible description is its reason
+   (aria-describedby). The reason is shown in place while the button has keyboard focus, or after it is activated (a
+   click, a tap, Enter or Space; Escape or leaving it hides it again). It carries no `title`, so the reason is never
+   read twice and never replaces the state text as the name. A caller that makes the reason reachable itself asks for
+   `reasonShown`: the core pages' FactView (a visible reason line), a disclosure that shows its reason beside the value,
+   and the snapshot "Failure impact" tab, whose rows each carry one disclosure listing their qualified cells' reasons
+   (one tab stop per row, not one per cell). Such a value is a plain span, never a tab stop, and keeps its `title` for a
+   pointer user's hover.
 
    The constants below are hand copies of their Python owners. webapp/tests/test_impact_surfaces.py reads this file and
    requires each to equal its owner exactly, in order, so a renamed, added or reordered engine field fails a test
@@ -119,10 +125,17 @@ export function impactTableCell(field: string, value: unknown): ImpactValueState
   return UNAVAILABLE;
 }
 
-/** How one cited witness pointer reads beside the failure-impact row it bounds: the row's own record, one of the row's
- *  own cells, or another record, always with its pointer. A bound whose witness is the row itself (a row-level bound)
- *  therefore reads as the row's own record, never as "a bound cited by another record". */
+/** How a witness that is the snapshot ROOT pointer reads. RFC 6901's whole-document pointer is the empty string, which
+ *  would otherwise render as an empty pointer ("the record at "). The engine cites the root as a bound's witness when
+ *  no nearer record was collected to cite (the pending W35 engine change, PR #626), so it is worded as what it is. */
+export const IMPACT_ROOT_WITNESS = "the snapshot as a whole (no nearer record was collected)";
+
+/** How one cited witness pointer reads beside the failure-impact row it bounds: the snapshot as a whole (the root
+ *  pointer ""), the row's own record, one of the row's own cells, or another record, always with its pointer. A bound
+ *  whose witness is the row itself (a row-level bound) therefore reads as the row's own record, never as "a bound cited
+ *  by another record". */
 function witnessText(pointer: string, rowPointer: string | undefined): string {
+  if (pointer === "") return IMPACT_ROOT_WITNESS;
   if (rowPointer && pointer === rowPointer) return `this row's own record (${pointer})`;
   if (rowPointer && pointer.startsWith(`${rowPointer}/`)) {
     return `this row's ${pointer.slice(rowPointer.length + 1).split("/").join(" ")} cell (${pointer})`;
@@ -161,23 +174,61 @@ export function impactBoundText(value: number | string, why: string): string {
   return `At least ${value}: ${LOWER_BOUND_LEAD}${said ? `. Why: ${said}` : ""}.`;
 }
 
-/** Focus the value on a click or tap, so a touch user reaches the reason the same way a keyboard user does. */
-const focusOnTap = (event: MouseEvent<HTMLSpanElement>) => event.currentTarget.focus();
+/** The reason a qualified state carries, as one sentence: what its toggletip is described by, and what a row's
+ *  disclosure lists for it. Empty for a measured value, which needs none. */
+export function impactReasonText(state: ImpactValueState): string {
+  switch (state.kind) {
+    case "measured":
+      return "";
+    case "lower_bound":
+      return impactBoundText(state.value, state.why);
+    default:
+      return state.why;
+  }
+}
 
-/** A value with a reason that is never hover-only. By default the value is focusable and names its reason through
- *  aria-describedby; the reason is visually hidden until the value has focus, and then shown in place. With
- *  `reasonShown`, the caller shows the reason as visible text, so the value is neither focusable nor described twice.
- *  The `title` stays for a pointer user's hover. */
+/** The state text a value shows in place of a bare value: "≥ N", NOT ASSESSED or "unavailable" (a measured value is
+ *  itself). A row's disclosure names each listed cell by it. */
+export function impactStateText(state: ImpactValueState): string {
+  switch (state.kind) {
+    case "measured":
+      return String(state.value);
+    case "lower_bound":
+      return `${IMPACT_BOUND_MARK} ${state.value}`;
+    case "not_assessed":
+      return IMPACT_NOT_ASSESSED;
+    default:
+      return "unavailable";
+  }
+}
+
+/** A value with a reason that is never hover-only. By default it is a toggletip: a non-submitting button, reset to look
+ *  like the text it replaces, whose name is its state text (`face`) and whose description is its reason. The reason is
+ *  visually hidden until the button has keyboard focus or has been activated, and is then shown in place. A click or
+ *  tap also focuses the button (Safari does not focus a clicked button), so Escape and leaving it behave the same for
+ *  every input. It has no `title`: with a description present, a title would read the reason twice or stand in for
+ *  the state text as the name. With `reasonShown`, the caller makes the reason reachable itself, so the value is a
+ *  plain span that is neither a tab stop nor described twice, and its `title` stays for a pointer user's hover. */
 function Explained({ kind, className, face, why, reasonShown }: {
   kind: string; className: string; face: ReactNode; why: string; reasonShown: boolean;
 }) {
   const id = useId();
+  const [open, setOpen] = useState(false);
   if (reasonShown) return <span className={className} data-impact={kind} title={why}>{face}</span>;
+  const toggle = (event: MouseEvent<HTMLButtonElement>) => {
+    event.currentTarget.focus();
+    setOpen((was) => !was);
+  };
+  const dismiss = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Escape") setOpen(false);
+  };
   return (
     <span className="impact-explained">
-      <span className={className} data-impact={kind} title={why} tabIndex={0} aria-describedby={id} onClick={focusOnTap}>
+      <button type="button" className={`impact-toggletip ${className}`} data-impact={kind}
+        data-open={open ? "true" : undefined} aria-describedby={id}
+        onClick={toggle} onKeyDown={dismiss} onBlur={() => setOpen(false)}>
         {face}
-      </span>
+      </button>
       <span id={id} className="impact-why">{why}</span>
     </span>
   );
@@ -201,8 +252,8 @@ export function ImpactValue({ state, format, reasonShown = false }: {
           <span className="sr-only">{`At least ${state.value}`}</span>
         </>
       );
-      return <Explained kind="lower_bound" className="impact-bound" face={face}
-        why={impactBoundText(state.value, state.why)} reasonShown={reasonShown} />;
+      return <Explained kind="lower_bound" className="impact-bound" face={face} why={impactReasonText(state)}
+        reasonShown={reasonShown} />;
     }
     case "not_assessed":
       return <Explained kind="not_assessed" className="impact-na" face={IMPACT_NOT_ASSESSED} why={state.why}

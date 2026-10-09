@@ -587,13 +587,16 @@ describe("CutoverPlanner worst-case blast radius (W27 engine states)", () => {
     const bounds = card.querySelectorAll('[data-impact="lower_bound"]');
     expect(bounds).toHaveLength(2);
     expect(bounds[0]).toHaveTextContent("≥ 42");
-    expect(bounds[0].getAttribute("title")).toMatch(/At least 42: a lower bound, not an exact measurement/);
-    // why is reachable without a hover: the value takes focus and is described by its reason, shown on focus
-    expect(bounds[0]).toHaveAttribute("tabindex", "0");
+    // why is reachable without a hover: each value is a toggletip button, named by its state and described by its
+    // reason (shown on keyboard focus or activation), with no title to read the reason twice
+    expect(within(card).getByRole("button", { name: "At least 42" })).toBe(bounds[0]);
+    expect(bounds[0]).toHaveAccessibleDescription(/^At least 42: a lower bound, not an exact measurement/);
+    expect(bounds[0]).not.toHaveAttribute("title");
     expect(document.getElementById(bounds[0].getAttribute("aria-describedby")!)).toHaveTextContent(WHY);
+    expect(within(card).getByRole("button", { name: "At least 3" })).toBe(bounds[1]);
     expect(bounds[1]).toHaveTextContent("≥ 3");
     expect(card.querySelector('[data-impact="measured"]')).toBeNull();
-    expect(card.querySelector('[data-impact="lower_bound_tag"]')).toHaveAttribute("title", expect.stringMatching(/may be larger/));
+    expect(within(card).getByRole("button", { name: "lower bound" })).toHaveAccessibleDescription(/may be larger/);
   });
 
   it("shows a wave nothing could be ranked in as NOT ASSESSED, never as 0 or a blank count", async () => {
@@ -605,9 +608,10 @@ describe("CutoverPlanner worst-case blast radius (W27 engine states)", () => {
     });
     const held = card.querySelectorAll('[data-impact="not_assessed"]');
     expect(held).toHaveLength(2);                                   // stranded and VLANs, both said
+    expect(within(card).getAllByRole("button", { name: "NOT ASSESSED" })).toEqual(Array.from(held));
     for (const cell of held) {
       expect(cell.firstChild?.textContent).toBe("NOT ASSESSED");
-      expect(cell.getAttribute("title")).toMatch(/could not simulate/);
+      expect(cell).toHaveAccessibleDescription(/could not simulate/);
     }
     expect(within(card).queryByText("0")).toBeNull();
     expect(card.querySelector('[data-impact="measured"]')).toBeNull();
@@ -626,8 +630,9 @@ describe("CutoverPlanner worst-case blast radius (W27 engine states)", () => {
       n_not_ranked: 0, detail: "VLAN 10: Hard partition",
     });
     const vlans = card.querySelector('[data-impact="unavailable"]')!;
+    expect(within(card).getByRole("button", { name: "unavailable" })).toBe(vlans);
     expect(vlans.firstChild?.textContent).toBe("unavailable");
-    expect(vlans.getAttribute("title")).toMatch(/not a measured 0/);
+    expect(vlans).toHaveAccessibleDescription(/not a measured 0/);
     expect(within(card).queryByText("0")).toBeNull();
     // the control: a complete, exact worst case renders its measured count with no lower-bound treatment
     expect(within(card).getByText("12")).toHaveAttribute("data-impact", "measured");

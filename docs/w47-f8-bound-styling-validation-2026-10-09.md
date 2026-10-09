@@ -43,11 +43,20 @@ published 0 stays 0.
 | not assessed | the neutral, hatched `NOT ASSESSED` tag (`.impact-na`) | the engine's reason |
 | unavailable | faint italic `unavailable` (`.impact-unavailable`) | withheld, "not a measured 0" |
 
-The explanation is never hover-only (fix round, P3-1). In tables and sentences the value is focusable (`tabIndex=0`;
-a click or tap focuses it). It is described through `aria-describedby` by a `.impact-why` element. That element is
-visually hidden but read by assistive tech, and shown in place, in the normal flow, while the value has focus. Being in
-the flow, it is never clipped by a scrolling table. On the core pages (`FactView`), a lower bound's explanation is a
-visible `.projection-reason` line, as a withheld state's reason already is. The `title` stays for a pointer user's hover.
+The explanation is never hover-only (fix round, P3-1; reworked in fix round 2). In sentences and small tables the value
+is a toggletip: a non-submitting `<button type="button">`, reset to look like the text it replaces. Its accessible name
+is the state text and its accessible description is the reason (`aria-describedby` on a `.impact-why` element), and it
+has no `title`. The `.impact-why` element is visually hidden but read by assistive tech. It is shown in place, in the
+normal flow, while the button has keyboard focus or after it is activated; Escape or leaving the button hides it. Being
+in the flow, it is never clipped by a scrolling table.
+
+A caller that makes the reason reachable itself passes `reasonShown`, and the value is then a plain span with no tab
+stop. Its `title` stays for hover, since no description is present. Those callers are:
+- the core pages' `FactView`, where a lower bound's explanation is a visible `.projection-reason` line, as a withheld
+  state's reason already is;
+- a disclosure whose reason is visible text beside the tag;
+- the snapshot "Failure impact" tab, where each row has one disclosure listing its qualified cells' reasons.
+
 Text, not colour, carries every state.
 
 The CSS in `styles.css` uses existing tokens only, and no colour of health. The hatch is the one the core projection
@@ -79,7 +88,10 @@ Located by grep across `webapp/frontend/src` for `stranded`, `vlans_impacted`, `
    - All nine producer fields show. `GenericTable`'s eight-column cap had dropped `detail`.
    - Each value column goes through `impactTableCell`. Severity renders as a chip, and as `≥ chip` when it is a lower
      bound.
-   - The `{state, reason}` disclosure of an unlistable section reads NOT ASSESSED, with the reason visible.
+   - The `{state, reason}` disclosure of an unlistable section reads NOT ASSESSED, with the reason visible beside the
+     tag. The tag is not a tab stop (fix round 2).
+   - Each row has at most one tab stop: a disclosure in its host cell that lists the row's qualified cells' reasons in
+     a row beneath (fix round 2).
 4. **Core topology failure-impact rows:** `pages/core/TopologyPaths.tsx`, `RowFacts`, in the evidence list and the
    record inspector, through `ImpactFactView` and `FactView`'s optional `lowerBound` prop.
    - A published measure citing a witness reads `≥ N`, with its reason as a visible line.
@@ -180,15 +192,55 @@ only, and was written without running any of it (owner rule).
   sibling's layout effect clicks Next after the list's DOM is committed and before its passive effect runs. It fails
   on the old effect.
 
+## Fix round 2 after independent re-review (2026-10-09)
+
+Source and tests only, on top of `a76be1c4`, written without running any of it (owner rule).
+
+| Finding | Resolution |
+|---|---|
+| P3: `<span tabIndex=0>` puts a generic element in the focus order, and its `title` could become the name | Fixed. `ImpactValue.tsx` `Explained` renders a `<button type="button">` toggletip with `aria-describedby`. Its name is the state text ("At least 42", NOT ASSESSED, "unavailable", "lower bound") and its description is the reason. It has no `title` while a description is present. The reason shows on keyboard focus (`:focus-visible`) or activation (`data-open`, toggled by click, tap, Enter or Space). Escape or blur hides it. A click also focuses the button, because Safari does not. `styles.css` `.impact-toggletip` resets the button before the state classes, so each state keeps its own border, padding and font. |
+| P3: up to 1,200 tab stops in the Failure impact tab | Fixed with the simpler pattern the SPA already uses: one `aria-expanded` disclosure per row, as in CutoverPlanner's evidence toggle. `Snapshot.tsx` `FailureImpactRow` puts a "Reasons" button in the host cell. Its accessible name is "Reasons for HOST: N value(s) not measured", and it controls a `hidden` row beneath, which lists each qualified cell as "field (state): reason". The cells are `reasonShown` spans. A fully measured row has no tab stop. A roving tabindex was not chosen: it would add grid keyboard semantics that no other SPA table has. |
+| P3: the ratio sentence carried only the count's qualifications | Fixed. `CoreSnapshot.tsx` `InputGap` adds the denominator's own control. `ui_projection._inventory_total` publishes `published_caveats=_brief_caveats(ctx)`, which the count does not inherit. `Qualifications` gains an optional `text`, so the two controls read "Qualifications (k)" and "Denominator qualifications (k)", and each accessible name starts with its visible text. Each control opens its own fact's caveats. |
+| P3: an absent keystone list showed NOT ASSESSED beside "unavailable" text | Fixed, per the P3-4 decision. An absent list uses the `unavailable` kind (`data-keystones="unavailable"`). A present but empty list stays NOT ASSESSED (`data-keystones="not_ranked"`). |
+| P3: the tab's non-list disclosure duplicated its visible reason in a focusable copy | Fixed. It passes `reasonShown`. |
+| P3: the component-level negative control for `off_scan_gw_vlans` was lost | Restored in `TopologyPaths.test.tsx`. A witness on the off-scan count of a failure-impact row renders the plain published 3 in the list and in the inspector, while the same witness on `stranded` (the control) renders `≥ 42`. |
+| P3: root-pointer witness wording | Fixed ahead of PR #626 (W35). `witnessText` words `""` as `IMPACT_ROOT_WITNESS`, "the snapshot as a whole (no nearer record was collected)", instead of "the record at " followed by nothing. `projectionImpactBound` is the only bound-wording helper that names witnesses. The evidence drawer's generic reference list still prints a raw pointer, so a root reference there renders an empty `<code>`. That drawer is not a bound-wording helper and is left unchanged. |
+
+Tests (written, not run):
+- `ImpactValue.test.tsx`:
+  - queries every toggletip by role `button` and its name, and checks its exact accessible description;
+  - checks that the toggletip has no `title` and that activation, Escape and blur toggle the reveal;
+  - checks that a form is not submitted;
+  - checks that `reasonShown` is a plain span that keeps its `title`;
+  - adds unit tests for the `""` witness wording (alone, without a row pointer, beside a nearer witness, and through
+    `impactReasonText`) and for `impactStateText` and `impactReasonText`.
+- `CutoverPlanner.test.tsx` and the keystone case in `Snapshot.test.tsx` check role, name and description in place
+  of `title`.
+- `Snapshot.test.tsx`:
+  - an absent list reads `unavailable` and not NOT ASSESSED, with no button;
+  - an empty list never reads `unavailable`;
+  - a new tab case covers 14 rows: at most one tab stop per row, `rows - 1` stops for the table, and none for the
+    measured control row. It also checks the disclosure's `aria-expanded` and `aria-controls`, the hidden reasons row,
+    and the listed fields, states and reasons, including an `unavailable` off-scan count;
+  - the non-list disclosure has no button, no `tabindex` and one visible copy of its reason.
+- `CoreSnapshot.test.tsx`: a denominator caveat gets its own control inside the sentence, opening only its own caveat.
+  A count with no caveat still shows the denominator's control, and a denominator with no caveat shows none.
+- `TopologyPaths.test.tsx`: the restored off-scan negative control.
+
+No existing assertion was removed. The `title` assertions on toggletips became accessible-description assertions,
+which is the stronger check. The `title` assertions on `reasonShown` cells still hold unchanged.
+
 ## Not verified here
 
 - vitest, `tsc`, the Vite build and every browser run. The hosted "Frontend test + type-check + build" job decides,
   and the supervisor's UI train imports its dist.
 - Pixel baselines. The design-sync demo plan (`.design-sync/providers/sample-data.ts`) carries only measured
   blast-radius values with no W27 flags, and a measured value renders in an unstyled span. So the CutoverPlanner card
-  should be pixel-identical, but no capture confirmed it.
-- Screen-reader and touch behaviour were not checked with assistive technology or a touch device. The reason is in
-  an `aria-describedby` target and a focus reveal (or a visible line on the core pages), and the `title` remains.
+  should be pixel-identical, but no capture confirmed it. The toggletip button's reset was not compared visually with
+  the span it replaced.
+- Screen-reader and touch behaviour were not checked with assistive technology or a touch device, and no axe run took
+  place. Each reason sits in an `aria-describedby` target with a focus or activation reveal, in the row disclosure,
+  or in a visible line.
 
 ## Residuals outside this slice
 

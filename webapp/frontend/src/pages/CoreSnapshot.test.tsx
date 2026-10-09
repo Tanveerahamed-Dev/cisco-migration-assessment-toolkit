@@ -123,9 +123,9 @@ describe("Core snapshot route", () => {
     const hostList = (state: string, items: object[], reason?: string) => ({ ...evidence, state, subject: null, items,
       ...(reason ? { reason } : {}),
       ...(items.length || state === "published" || state === "collected_but_empty" ? { caveats: [scope.id] } : {}) });
-    function serveTrust(rows: Record<string, object>) {
+    function serveTrust(rows: Record<string, object>, limitations: object[] = [scope]) {
       const doc = trustFixture();
-      const document = { ...doc, limitations: [scope], payload: { ...doc.payload,
+      const document = { ...doc, limitations, payload: { ...doc.payload,
         inputs: doc.payload.inputs.map((row) => ({ ...row, ...rows[row.input] })) } };
       return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
         const url = String(input);
@@ -253,6 +253,58 @@ describe("Core snapshot route", () => {
         expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
         expect(row.queryByRole("link")).not.toBeInTheDocument();
       }
+    });
+    it("carries the inventory denominator's own qualifications beside the ratio sentence, apart from the count's", async () => {
+      // ui_projection._inventory_total publishes the denominator with its own caveats (one_hop_failure_attribution
+      // when a phase failed), which the count does not inherit, so the sentence that states both carries both. Each
+      // control opens its own fact's caveats, never the other's.
+      const oneHop = { id: "one_hop_failure_attribution", owner: "synthetic.owner:one_hop", applies_to: ["/trust/inputs"],
+        text: "Synthetic: a failed phase is attributed to its direct consumers only" };
+      const qualifiedTotal = (value: number) => ({ ...total(value), caveats: [oneHop.id] });
+      serveTrust({
+        "Hardware EoL": { n: count(3), of: qualifiedTotal(5), hosts: hostList("published", [
+          { host: "edge/a~b", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/3" }]) },
+        Health: { n: { ...count(2), caveats: [] }, of: qualifiedTotal(5), hosts: hostList("published", [
+          { host: "synthetic-core", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/1" }]) },
+      }, [scope, oneHop]);
+      await openTrust();
+      const eol = inputRow("Hardware EoL");
+      const sentence = eol.getByText("3 of 5 inventory devices could not be assessed", { exact: true });
+      const countControl = eol.getByRole("button", { name: "Qualifications for 3 of 5 inventory devices could not be assessed" });
+      const denominatorControl = eol.getByRole("button",
+        { name: "Denominator qualifications for the inventory denominator of 3 of 5 inventory devices could not be assessed" });
+      expect(sentence).toContainElement(countControl);
+      expect(sentence).toContainElement(denominatorControl);
+      expect(denominatorControl).toHaveTextContent("Denominator qualifications (1)");
+      expect(countControl).toHaveTextContent("Qualifications (1)");
+      fireEvent.click(denominatorControl);
+      let drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(oneHop.text);
+      expect(drawer).toHaveTextContent("/collection_completeness/summary/inventory");
+      expect(drawer).not.toHaveTextContent(scope.text);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      fireEvent.click(countControl);
+      drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(scope.text);
+      expect(drawer).not.toHaveTextContent(oneHop.text);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      // a count with no caveat of its own: the sentence still carries the denominator's
+      const health = inputRow("Health");
+      const healthSentence = health.getByText("2 of 5 inventory devices could not be assessed", { exact: true });
+      expect(within(healthSentence).queryByRole("button", { name: /^Qualifications for/ })).toBeNull();
+      fireEvent.click(within(healthSentence).getByRole("button",
+        { name: "Denominator qualifications for the inventory denominator of 2 of 5 inventory devices could not be assessed" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(oneHop.text);
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close evidence" }));
+    });
+    it("carries no denominator control while the denominator publishes no caveat", async () => {
+      serveTrust({ "Hardware EoL": { n: count(3), of: total(5), hosts: hostList("published", [
+        { host: "edge/a~b", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/3" }]) } });
+      await openTrust();
+      const sentence = inputRow("Hardware EoL").getByText("3 of 5 inventory devices could not be assessed", { exact: true });
+      expect(within(sentence).getByRole("button", { name: "Qualifications for 3 of 5 inventory devices could not be assessed" }))
+        .toBeInTheDocument();
+      expect(within(sentence).queryByRole("button", { name: /^Denominator qualifications/ })).toBeNull();
     });
     it("shows no ratio while the inventory denominator is withheld", async () => {
       const denominator = "Synthetic: the owner's inventory count disagrees with the device rows";
