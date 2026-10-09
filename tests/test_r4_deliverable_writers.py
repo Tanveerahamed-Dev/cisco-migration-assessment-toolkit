@@ -364,6 +364,10 @@ def test_archreview_res4_still_conforms_on_an_observed_zero(sample):
     assert bounded["verdict"] == "not-assessable", bounded
     assert "core2" in bounded["observed"] and "uncollected neighbour" in bounded["observed"], bounded
     withheld = [r["host"] for r in s["failure_impact"] if r.get("blind_links", 1) or r["host"] == "core2"]
+    # the derivation pinned on the sample, in stored order (W45 refutation): its blind_links are exactly core1: 1 and
+    # dist1: 1 (tests/test_ui_projection_device_impact.py pins every row), so a drift in the stored counts fails here
+    # instead of silently moving the expectation along with it
+    assert withheld == ["core1", "core2", "dist1"], withheld
     assert f" {len(withheld)} simulated device(s) are not graded" in bounded["observed"], (withheld, bounded)
     for host in withheld[:5]:                                  # the disclosure names the first five, in stored order
         assert f"{host} (lower bound" in bounded["observed"], (host, bounded)

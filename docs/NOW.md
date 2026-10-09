@@ -250,6 +250,13 @@ protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
 
+- **2026-10-09 (Claude, W45 refutation fix round, tests and docs only):** On `claude/train-engine-sample` after `bb024ef0`, four P3 test-strength gaps are closed. No engine code, golden or sample byte changed, so the pending Scope re-bind stays valid.
+  - **Exact sample counts.** The sample's per-row `blind_links` are pinned as core1 1, dist1 1 and every other row 0, as read from the committed sample. Before, only a floor was checked. The pin is also held on the RES-4, tab and keystone sample tests.
+  - **One-end evidence.** W32's `_blind_fleet` gains peer `y`, whose link to `x` has trunk/STP evidence on `x`'s end only. Both ends count 0 for it.
+  - **Exact duplicate reason.** The W23 duplicate check now requires exact equality with `impact_assessability.R_DUP.format(n=2)`.
+  - **No silent branches.** The below-the-cut control asserts its precondition. The sample tab's clean-bill detail branch, which the sample never takes, is asserted unused there and exercised on two real-row variants: podacc1 older than the count, and core2 behind its router.
+  - **Docs.** The W45 doc's raw-row list is corrected: AssessHub `summary` and `cutover` read the projection. The remaining readers are recorded as follow-up **W48**.
+  - Static checks only; not pushed (the supervisor pushes with the Scope re-bind).
 - **2026-10-09 (Claude, W45 hosted regeneration):** After the rule-7 scans, `7d8f02a2` was pushed and `engine-output-handoff.yml` dispatched with `expected_source_commit` set to it. Run `37881624224` succeeded; `receive` admitted artifact `11594811864` (archive sha256 `ac7e4401…ed2b`).
   - **Golden:** both golden files are byte-identical to HEAD, and the committed golden is exactly W33's 13 leaves plus W32's three `blind_links: 0`.
   - **Sample:** sha256 `dbc229cf…a26c1`, blob `ba869c0e…f476b8`, 3,339,333 bytes. A leaf diff against main gives 328 leaves, all in declared classes:

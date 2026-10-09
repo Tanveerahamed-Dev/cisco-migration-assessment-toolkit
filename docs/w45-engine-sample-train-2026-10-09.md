@@ -231,6 +231,25 @@ constants.
 
 - **Atlas Scope re-bind.** The regenerated sample stales Scope's compiled outputs and `GOLDEN_SHA`;
   `atlas-scope/` is Codex-held. The supervisor requests it.
-- **Remaining W33 F6 raw-row sites.** These still read raw rows and do not see the blind-link bound: runbook §10,
-  MOP `_blast_for`, ops keystones, the MCP tool, `design_advisor`, and AssessHub `summary` / `cutover`.
+- **Remaining W33 F6 raw-row sites: follow-up row W48** ("move remaining failure-impact consumers onto the
+  `impact_assessability` owner"). These consumers read the stored `failure_impact` rows directly, so they see neither
+  the blind-link bound nor the owner's other holds and bounds. They show core1's 45 stranded endpoints, which is only
+  a lower bound (`blind_links` 1), as an exact figure:
+  - `cisco_toolkit/mop.py:517`: `fi_by_host`, read by `_blast_for` (line 281) for each wave's "Max blast" figure and
+    its rollback trigger;
+  - `cisco_toolkit/runbook.py:302`: the row list, which §10 Risk Register ranks and tabulates at line 2267;
+  - `cisco_toolkit/ops.py:33`: the handbook's keystones, ranked and tabulated by raw `stranded`;
+  - `cisco_toolkit/mcp_server.py:191`: the `failure_impact` tool, which returns the raw cells;
+  - `cisco_toolkit/protocol_assurance.py:2204`: copies the raw rows into the failure-rehearsal `impacts` list.
+
+  Two further consumers read the same rows in a different way:
+  - `cisco_toolkit/design_advisor.py:1244` counts High rows whose `backup` is 0 as `nobackup_high`, so it reads a
+    bounded zero, such as core1's, as a measured "no backup path";
+  - `atlas-scope/tools/lib/compile-model.mjs:988` builds `impactByHost` from the raw rows. Atlas Scope is held by
+    Codex, so its part of W48 belongs to the Scope holder.
+
+  A correction to this record: AssessHub `summary` and `cutover` are **not** raw-row readers. Since W27 (#620) they
+  read the engine projection: `webapp/backend/summary.py:257` calls `engine.failure_impact_projection` in
+  `impact_view`, and `webapp/backend/cutover.py` reads `summary.impact_view`. This train carries them onto the owner's
+  blind-link rule, and `webapp/tests/test_impact_surfaces.py` pins that.
 - **W32's F2–F4 producer follow-ups.**

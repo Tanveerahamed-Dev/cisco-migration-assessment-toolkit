@@ -1022,7 +1022,9 @@ def test_the_explorer_keystone_card_ranks_published_rows_and_lower_bound_floors(
 # 4. W32's per-row blind-link count is one more owner rule (W45 integration): every surface reads it from here
 # --------------------------------------------------------------------------------------------------
 def _blind_fleet():
-    """W32's fleet (tests/test_ui_projection_device_impact.py::_blind_fleet, copied, not imported). `g1` and `g2` are
+    """W32's fleet (tests/test_ui_projection_device_impact.py::_blind_fleet, copied, not imported, without the
+    one-end-evidence peer `y` the W45 refutation added there: the producer's count rule is pinned there, and this
+    section pins how the owner reads the count). `g1` and `g2` are
     FHRP peers gatewaying VLAN 10 for `acc` (removing `g1` is FHRP-covered: Low); `g2` is also the sole gateway of
     VLAN 30 for `acc` (removing it is a hard partition: High). Every trunk among those three carries VLAN evidence.
     `g1` also trunks to `x` over a link with NO trunk/STP evidence on either end, and `x` has nothing else."""

@@ -405,6 +405,10 @@ def test_keystones_on_the_sample_keep_their_order_flag_only_the_rows_their_own_e
     assert [k["host"] for k in shown if k["lower_bound"]] == [k["host"] for k in shown
                                                               if _sample_bounded(sample, k["host"])]
     assert "core2" in {k["host"] for k in shown if k["lower_bound"]}
+    # pinned on the sample (W45 refutation), never only derived from its stored counts: the flagged rows are exactly
+    # core1 (blind_links 1) and core2 (its router), and the one row no ranking places is dist1 (a bounded Low band)
+    assert [k["host"] for k in shown if k["lower_bound"]] == ["core1", "core2"], shown
+    assert _sample_unranked(sample) == ["dist1"]
     # a bounded band below High or a bounded zero is never ranked and always disclosed, with any lower bound below
     # the cut, in the one NOT ASSESSED entry
     unranked = _sample_unranked(sample)
@@ -522,12 +526,16 @@ def test_a_lower_bound_below_the_cut_is_disclosed_because_it_could_rank_among_th
     assert (f"{len(below)} ranked row(s) below the devices shown publish only lower bounds"
             in note["detail"]), note["detail"]
     assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in note["detail"]
-    # the control: a cut that shows core2 flags it in place and no longer discloses it as below the cut
+    # the control: a cut that shows core2 flags it in place and no longer discloses it as below the cut. Its
+    # precondition is asserted, never branched on, so a future sample cannot skip the control silently: the sample's
+    # only ranked bounds are core1 (first) and core2 (third) -- dist1's bounded Low band never ranks -- so no bounded
+    # ranked row lies below core2
+    assert [host for host in order if _sample_bounded(sample, host)] == ["core1", "core2"], order
+    assert not [host for host in order[place + 1:] if _sample_bounded(sample, host)], order
     keystones = summary._keystones(copy.deepcopy(sample), top=place + 1)
     shown = [k for k in keystones if k["host"]]
     assert [k["host"] for k in shown] == ["core1", "access1", "core2"] and shown[-1]["lower_bound"] is True
-    if not [host for host in order[place + 1:] if _sample_bounded(sample, host)]:
-        assert not any("publish only lower bounds" in k["detail"] for k in keystones if not k["host"]), keystones
+    assert not any("publish only lower bounds" in k["detail"] for k in keystones if not k["host"]), keystones
 
 
 @pytest.mark.parametrize("mode", ["held", "failed", "published"])
@@ -802,16 +810,16 @@ def test_the_failure_impact_tab_shows_the_engine_reason_never_a_withheld_value(c
         assert isinstance(gw[field], str) and "only a lower bound" in gw[field], (field, gw[field])
 
 
-def test_the_sample_tab_changes_only_the_rows_their_own_evidence_bounds(client, sample):
-    """core2's uncollected router bounds it, as before; since W32 (through the W33 owner) a row's positive or absent
-    blind_links count bounds it the same way. Each bound is derived from the stored row (:func:`_sample_bounds`)."""
-    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
-    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
-    assert len(table) == len(sample["failure_impact"])
-    withheld, bounded = {}, {}
-    for i, (row, src) in enumerate(zip(table, sample["failure_impact"])):
+def _tab_against_bounds(table, snap):
+    """The "Failure impact" tab of `snap`, checked cell by cell against each stored row's own bounds
+    (:func:`_sample_bounds`). Returns which branch each bounded row's cells took, by host: ``withheld`` (a band below
+    High or a zero), ``bounded`` (High or a positive count, published as a lower bound) and ``cleared`` (a clean-bill
+    detail, which names no simulated VLAN, withheld as not a clean bill)."""
+    assert len(table) == len(snap["failure_impact"])
+    withheld, bounded, cleared = {}, {}, []
+    for i, (row, src) in enumerate(zip(table, snap["failure_impact"])):
         assert list(row) == list(summary.IMPACT_FIELDS)
-        pointers, reasons = _sample_bounds(sample, i)
+        pointers, reasons = _sample_bounds(snap, i)
         for field in summary.IMPACT_FIELDS:
             understates = field in MEASURES and (src[field] != "High" if field == "severity" else src[field] == 0)
             if pointers and understates:
@@ -826,13 +834,57 @@ def test_the_sample_tab_changes_only_the_rows_their_own_evidence_bounds(client, 
                 bounded.setdefault(src["host"], []).append(field)
             elif pointers and field == "detail" and not src["vlans_impacted"]:
                 assert isinstance(row[field], str) and "not a clean bill" in row[field], row[field]
+                assert src[field] not in row[field], (src["host"], row[field])   # never the stored clean bill
+                cleared.append(src["host"])
             else:
                 assert row[field] == src[field], (src["host"], field)      # every exact cell renders as before
-    assert sorted(withheld["core2"]) == ["backup", "fhrp"], withheld
-    assert sorted(bounded["core2"]) == ["hard", "severity", "stranded", "vlans_impacted"], bounded
+    assert set(withheld) | set(bounded) == {src["host"] for i, src in enumerate(snap["failure_impact"])
+                                            if _sample_bounds(snap, i)[0]}
+    return ({host: sorted(fields) for host, fields in withheld.items()},
+            {host: sorted(fields) for host, fields in bounded.items()}, cleared)
+
+
+def test_the_sample_tab_changes_only_the_rows_their_own_evidence_bounds(client, sample):
+    """core2's uncollected router bounds it, as before; since W32 (through the W33 owner) a row's positive or absent
+    blind_links count bounds it the same way. Each bound is derived from the stored row (:func:`_sample_bounds`)."""
+    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    withheld, bounded, cleared = _tab_against_bounds(table, sample)
+    assert withheld["core2"] == ["backup", "fhrp"], withheld
+    assert bounded["core2"] == ["hard", "severity", "stranded", "vlans_impacted"], bounded
     assert "uncollected neighbour" in table[_sample_index(sample, "core2")]["backup"]
-    assert set(withheld) | set(bounded) == {src["host"] for i, src in enumerate(sample["failure_impact"])
-                                            if _sample_bounds(sample, i)[0]}
+    # pinned exactly on the sample (W45 refutation), never only derived from its stored counts: core2's router, and
+    # the blind_links of core1 (High, 45 stranded) and dist1 (Low, FHRP-covered), 1 each
+    assert withheld == {"core1": ["backup", "fhrp"], "core2": ["backup", "fhrp"],
+                        "dist1": ["backup", "hard", "severity", "stranded"]}, withheld
+    assert bounded == {"core1": ["hard", "severity", "stranded", "vlans_impacted"],
+                       "core2": ["hard", "severity", "stranded", "vlans_impacted"],
+                       "dist1": ["fhrp", "vlans_impacted"]}, bounded
+    # the clean-bill detail branch, asserted rather than skipped: every bounded sample row simulated a VLAN, so its
+    # per-VLAN detail lists what was simulated and renders as stored
+    assert cleared == [], cleared
+    assert {src["host"]: src["vlans_impacted"] for i, src in enumerate(sample["failure_impact"])
+            if _sample_bounds(sample, i)[0]} == {"core1": 3, "core2": 3, "dist1": 2}
+    # ... and that branch exercised, once per bound that reaches a detail: podacc1's stored clean bill made older than
+    # the blind_links count (the row itself bounds it), and core2 storing a clean bill behind its uncollected router.
+    # A POSITIVE count never takes this branch: with no VLAN simulated, the owner reads it as its blind_links_only
+    # hold (impact_assessability.row_hold), never as a bound. Each tab row withholds every measure and the bill itself.
+    snap = copy.deepcopy(sample)
+    pod, core2 = _sample_index(snap, "podacc1"), _sample_index(snap, "core2")
+    assert snap["failure_impact"][pod]["detail"] == CLEAN_BILL and snap["failure_impact"][pod]["blind_links"] == 0
+    del snap["failure_impact"][pod]["blind_links"]
+    snap["failure_impact"][core2].update(severity="Info", vlans_impacted=0, stranded=0, hard=0, backup=0, fhrp=0,
+                                         detail=CLEAN_BILL)
+    sid = _upload(client, snap)
+    stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
+    assert stored["failure_impact"] == snap["failure_impact"]
+    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    withheld, bounded, cleared = _tab_against_bounds(table, stored)
+    assert cleared == ["core2", "podacc1"], cleared                         # stored order
+    for host in cleared:
+        assert withheld[host] == sorted(MEASURES) and host not in bounded, (host, withheld, bounded)
+    for k, cause in ((core2, "uncollected neighbour"), (pod, "carries no blind_links")):
+        assert table[k]["detail"].startswith("not collected: ") and cause in table[k]["detail"], table[k]["detail"]
 
 
 def test_the_tab_withholds_unreadable_rows(client):

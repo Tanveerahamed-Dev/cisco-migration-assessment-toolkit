@@ -34,6 +34,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from cisco_toolkit import analyze
+from cisco_toolkit import impact_assessability as ia
 from cisco_toolkit import ui_projection as ui
 from cisco_toolkit.model import InterfaceData
 
@@ -1260,13 +1261,16 @@ def test_n_two_rows_naming_one_host_are_unverified_and_agree_on_both_surfaces(sa
     # ONLY thing the duplicate adds to it. Its cell reads the doubt, then exactly the reason the same cell carries
     # without the duplicate (a bound the row has of its own, such as its blind-link count), or the doubt alone.
     clean_first = _topology(sample, topology_validator)["failure_impact"]["items"][first]
+    # the doubt is exactly the engine owner's duplicate reason for two rows, never merely text that opens like it
+    dup_reason = ia.R_DUP.format(n=2)
+    assert dup_reason.startswith(IMPACT_DUP + ", ") and "; " not in dup_reason, dup_reason
     for field in MEASURES + ("detail",):
         copy_reason = fleet["items"][dup][field]["reason"]
         assert ("predates the producer's assessability marker" in copy_reason) == (mode == "held_copy"), copy_reason
         own = fleet["items"][first][field]["reason"]
         assert "predates the producer's assessability marker" not in own, (field, own)
         alone = own.split("; ", 1)[0]
-        assert alone.startswith(IMPACT_DUP), (field, own)
+        assert alone == dup_reason, (field, own)
         if clean_first[field]["state"] == PUB:
             assert own == alone, (field, own)
         else:
@@ -1326,14 +1330,21 @@ def _blind_fleet():
     the sole gateway of VLAN 30 for `acc`, so removing it is a hard partition (High). Every trunk among those three
     carries VLAN evidence. `g1` also trunks to `x` over a link with NO trunk/STP evidence on either end: the producer
     leaves it out of every forwarding graph, so whatever `g1` transits over it was never simulated, and `x`, which
-    has nothing else, could not be simulated at all."""
+    simulates nothing else, could not be simulated at all.
+
+    `x` also trunks to `y` over a link whose trunk/STP evidence sits on `x`'s end ONLY (VLAN 99, which nothing
+    gateways or uses, so it simulates nothing for anyone). analyze._link_has_vlan_evidence reads one end's evidence as
+    evidenced, so that link is counted on NEITHER end: `x` keeps exactly 1 over its two inter-switch links, and `y`,
+    whose own end carries no evidence at all, counts 0 (W45 refutation: a producer that began counting one-end
+    evidence would raise both)."""
     return {"g1": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10"), "Gi9": _trunk("Gi9", "x", "Gi1"),
                    "Vlan10": _svi(10, "10.10.0.2/24", "Active")},
             "g2": {"Gi1": _trunk("Gi1", "acc", "Gi2", "10,30"), "Vlan10": _svi(10, "10.10.0.3/24", "Standby"),
                    "Vlan30": _svi(30, "10.30.0.1/24")},
             "acc": {"Gi1": _trunk("Gi1", "g1", "Gi1", "10"), "Gi2": _trunk("Gi2", "g2", "Gi1", "10,30"),
                     "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi30": _access("Gi30", 30, "0000.0000.001e")},
-            "x": {"Gi1": _trunk("Gi1", "g1", "Gi9")}}
+            "x": {"Gi1": _trunk("Gi1", "g1", "Gi9"), "Gi2": _trunk("Gi2", "y", "Gi1", "99")},
+            "y": {"Gi1": _trunk("Gi1", "x", "Gi2")}}
 
 
 def _blind_rows():
@@ -1345,12 +1356,21 @@ def _blind_rows():
 
 def test_o_the_producer_writes_the_blind_link_count_on_every_row():
     impact, _snap, k = _blind_rows()
-    assert set(k) == {"g1", "g2", "acc", "x"}
+    assert set(k) == {"g1", "g2", "acc", "x", "y"}
     for row in impact:
         assert tuple(row) == IMPACT_RECORD_FIELDS, row               # appended last; every earlier field in place
         assert type(row["blind_links"]) is int, row                  # a count, never a flag or a text
-    assert {host: impact[i]["blind_links"] for host, i in k.items()} == {"g1": 1, "g2": 0, "acc": 0, "x": 1}
-    g1, g2, acc, x = (impact[k[host]] for host in ("g1", "g2", "acc", "x"))
+    # the x-y trunk is an inter-switch link of the producer's model (both ends scanned) with trunk/STP evidence on
+    # exactly one end, so the zero it adds below is the rule at work, never a link the model never saw
+    fields = ("stp_fwd_vlans", "stp_blk_vlans", "trunk_allowed_vlans", "trunk_native_vlan")
+    xy = [link for link in analyze.build_network_model(_blind_fleet())["links"] if {link["a"], link["b"]} == {"x", "y"}]
+    assert len(xy) == 1, xy
+    ends = {xy[0]["a"]: xy[0]["da"], xy[0]["b"]: xy[0]["db"]}
+    assert ends["x"].trunk_allowed_vlans == "99" and not any(str(getattr(ends["y"], f) or "").strip() for f in fields)
+    # exact, never a floor: the evidence-less g1-x link counts once on each end; the one-end-evidence x-y link counts
+    # on neither, so x reads 1 (not 2) and y reads 0 (not 1)
+    assert {host: impact[i]["blind_links"] for host, i in k.items()} == {"g1": 1, "g2": 0, "acc": 0, "x": 1, "y": 0}
+    g1, g2, acc, x, y = (impact[k[host]] for host in ("g1", "g2", "acc", "x", "y"))
     # g1 simulated in part: before the count, nothing in this row said that its link to x was never reasoned about
     assert (g1["severity"], g1["vlans_impacted"], g1["fhrp"], g1["off_scan_gw_vlans"]) == ("Low", 1, 1, 0), g1
     assert g1["stranded"] == g1["hard"] == g1["backup"] == 0 and g1["detail"] == "VLAN 10: FHRP-covered", g1
@@ -1361,8 +1381,11 @@ def test_o_the_producer_writes_the_blind_link_count_on_every_row():
     # x simulated nothing: the producer's own INDETERMINATE disclosure, unchanged, states the same count
     assert x["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX) and "1 inter-switch link(s)" in x["detail"], x
     assert x["severity"] == "Info" and x["off_scan_gw_vlans"] == 0, x
+    # y's only link carries evidence (on x's end) and VLAN 99 is simulated for no one: the producer's clean bill
+    assert y["severity"] == "Info" and all(y[f] == 0 for f in MEASURES[1:]) and y["off_scan_gw_vlans"] == 0, y
+    assert y["detail"] == "No reachability impact from removing this switch (within the scan).", y
     # the sort is unchanged: severity, then stranded, then VLANs, then host
-    assert [row["host"] for row in impact] == ["g2", "g1", "acc", "x"]
+    assert [row["host"] for row in impact] == ["g2", "g1", "acc", "x", "y"]
 
 
 def test_o_a_partly_simulated_switch_with_an_evidence_less_link_withholds_its_band_and_zeros(doc_validator,
@@ -1538,16 +1561,30 @@ def test_o_every_sample_row_carries_the_count_its_evidence_less_links_imply(samp
         rec = (sample["interfaces"].get(host) or {}).get(port)
         return rec if isinstance(rec, dict) else None
 
-    floor = {}
+    def evidenced(end):
+        return any(str(end.get(f) or "").strip() for f in fields)
+
+    floor, one_end = {}, {}
     for pair in sample["link_centrality"]:
         ends = [record(pair["a_host"], pair["a_port"]), record(pair["b_host"], pair["b_port"])]
-        if all(end is not None and not any(str(end.get(f) or "").strip() for f in fields) for end in ends):
+        if any(end is None for end in ends):
+            continue
+        tally = floor if not any(evidenced(end) for end in ends) else one_end if not all(map(evidenced, ends)) else None
+        if tally is not None:
             for host in (pair["a_host"], pair["b_host"]):
-                floor[host] = floor.get(host, 0) + 1
+                tally[host] = tally.get(host, 0) + 1
     assert floor, "the sample has no evidence-less stored host pair, so this check would be vacuous"
     counts = {row["host"]: row["blind_links"] for row in rows}
+    assert len(counts) == len(rows), "a host names two rows, so a per-host count cannot be read"
     for host, n in sorted(floor.items()):
         assert type(counts[host]) is int and counts[host] >= n, (host, n, counts[host])
+    # ... and pinned EXACTLY, never only floored (W45 refutation). The stored evidence implies one evidence-less pair,
+    # core1-dist1; core1 also has stored pairs whose trunk/STP evidence sits on one end only, which the producer reads
+    # as evidenced. A producer that began counting those would raise core1 above 1 while every floor above held.
+    assert floor == {"core1": 1, "dist1": 1}, floor
+    assert one_end.get("core1", 0) > 0, ("the sample has no one-end-evidence pair on core1, so the exact pin below "
+                                         f"could not tell a one-end-counting producer apart: {one_end}")
+    assert counts == {**dict.fromkeys(counts, 0), "core1": 1, "dist1": 1}, counts
 
 
 # --------------------------------------------------------------------------------------------------
