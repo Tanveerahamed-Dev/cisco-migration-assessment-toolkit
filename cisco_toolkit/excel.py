@@ -23,6 +23,7 @@ from cisco_toolkit.analyze import (
 )
 from cisco_toolkit.brand_tokens import DOC_NAVY_HEX, WORKBOOK_NAVY_HEX
 from cisco_toolkit.cmdio import _load_cmd_output
+from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _classify_media, _is_physical_port, _parse_fhrp, _parse_poe_watts,
@@ -5944,32 +5945,49 @@ def write_causality_chains_sheet(wb, chains: list) -> None:
     logger.info(f"  [OK] '{CAUSALITY_SHEET_NAME}' sheet: {len(chains)} chain(s)")
 
 
-def write_failure_impact_sheet(wb, rows: list) -> None:
+def write_failure_impact_sheet(wb, rows: list, impact_evidence: Optional[dict] = None) -> None:
     """Write (or replace) 'Failure Impact': per-switch migration blast-radius simulation.
     NEW-V3.23.91: takes the precomputed records (compute_failure_impact, run once in main and
     shared with the snapshot + executive summary) instead of recomputing the per-switch removal
-    simulation a third time."""
+    simulation a third time.
+
+    W33: every row is read through the engine owner of row assessability (impact_assessability) over
+    `impact_evidence` -- the snapshot sections it reads (interfaces, cable_map, assessment_integrity). Evidence
+    that is not supplied reads as not captured, so a row is never published by default. A value the owner withholds
+    is written 'not assessed' with the verdict and its reason in the detail column, never as Info or 0; a lower
+    bound is written as one ('High (lower bound)', a count prefixed with the at-least sign). Rewriting the sheet
+    keeps its tab position (main() writes it before the cable map exists, then rewrites it with the evidence)."""
     cols = ["Severity", "Switch (remove / migrate)", "VLANs Impacted", "Stranded Endpoints",
             "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
-    if FAILURE_SHEET_NAME in wb.sheetnames:
-        del wb[FAILURE_SHEET_NAME]
+    prior = next((i for i, name in enumerate(wb.sheetnames) if name.lower() == FAILURE_SHEET_NAME.lower()), None)
     ws = _new_sheet(wb, FAILURE_SHEET_NAME)
+    if prior is not None:
+        wb.move_sheet(ws, offset=prior - wb.index(ws))
     _census_header(ws, cols)
-    rows = rows or []
+    rows = rows if isinstance(rows, list) else []
+    verdicts = impact_assessability.assess_failure_impact(
+        {**(impact_evidence if isinstance(impact_evidence, dict) else {}), "failure_impact": rows})
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
     r = 2
-    for rec in rows:
-        vals = [rec["severity"], rec["host"], rec["vlans_impacted"], rec["stranded"],
-                rec["hard"], rec["backup"], rec["fhrp"], rec["detail"]]
+    n_withheld = 0
+    for rec, verdict in zip(rows, verdicts):
+        if not isinstance(rec, dict):
+            continue
+        n_withheld += not verdict.published
+        tv = impact_assessability.table_value
+        vals = [tv(verdict, "severity"), rec.get("host"), tv(verdict, "vlans_impacted"), tv(verdict, "stranded"),
+                tv(verdict, "hard"), tv(verdict, "backup"), tv(verdict, "fhrp"),
+                impact_assessability.table_detail(verdict)]
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-            if col == 1 and rec["severity"] in _SEV_FILL:
+            if col == 1 and not verdict.withholds("severity") and rec.get("severity") in _SEV_FILL:
                 c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
         r += 1
     _census_autofit(ws, len(cols), r - 1)
     ws.column_dimensions["H"].width = 70
-    logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed")
+    logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed"
+                + (f"; {n_withheld} not a measurement on this evidence" if n_withheld else ""))
 
 
 LINK_CENTRALITY_SHEET_NAME = "Link Centrality"
@@ -6182,12 +6200,17 @@ EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
                                   migration_readiness: list,
                                   failure_impact: list, brief=None, provenance=None,
-                                  assessment_integrity=None) -> None:
+                                  assessment_integrity=None, impact_evidence=None) -> None:
     """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
     synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
     where to start without opening all 30+ detail tabs. This is the workbook twin of the explorer's Risk
-    cockpit: pure presentation of already-computed data; every detail tab remains the source of record."""
+    cockpit: pure presentation of already-computed data; every detail tab remains the source of record.
+
+    W33: the keystone table ranks the failure-impact rows the engine owner of row assessability
+    (impact_assessability) publishes over `impact_evidence` (the snapshot sections it reads), plus each lower-bound
+    row by the positive stranded floor the owner publishes for it, written as that floor ('≥ N (lower bound)');
+    the rest are disclosed under the table, never ranked as stranding nobody."""
     ws = _new_sheet(wb, EXEC_SUMMARY_SHEET_NAME)
     TITLE = Font(name="Calibri", bold=True, size=15, color=DOC_NAVY_HEX)
     SUB   = Font(name="Calibri", bold=True, size=11, color=DOC_NAVY_HEX)
@@ -6383,23 +6406,52 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     r += 1
 
     # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
-    fi = failure_impact or []                          # NEW-V3.23.91: precomputed once in main
+    fi_all = failure_impact if isinstance(failure_impact, list) else []   # NEW-V3.23.91: precomputed once in main
+    # W33: rank the rows the engine owner of row assessability publishes, plus each lower-bound row by the positive
+    # stranded floor the owner publishes for it (the per-cell decision, not the row verdict: dropping such a row named
+    # a measured 0 the top keystone over a switch that strands at least 300), rendered as the floor it is. Disclose
+    # the rest (a held, INDETERMINATE, zero-floor or duplicated row is never read as stranding nobody).
+    _fi_verdicts = impact_assessability.assess_failure_impact(
+        {**(impact_evidence if isinstance(impact_evidence, dict) else {}), "failure_impact": fi_all})
+
+    def _ks_stranded(pair):
+        """The ranking key: the floor of a lower-bound row, else the measured count (no figure is never a zero)."""
+        rec, v = pair
+        floor = impact_assessability.ranking_floor(v)
+        if floor is not None:
+            return floor
+        s = rec.get("stranded")
+        return s if isinstance(s, (int, float)) and not isinstance(s, bool) and s == s else 0
+
+    fi = sorted(((rec, v) for rec, v in zip(fi_all, _fi_verdicts)
+                 if isinstance(rec, dict) and impact_assessability.ranks(v)), key=lambda p: -_ks_stranded(p))
+    fi_held = [v for rec, v in zip(fi_all, _fi_verdicts)
+               if isinstance(rec, dict) and not impact_assessability.ranks(v)]
     # A 10-row table headed "fix-first" reads as the keystone population; on the Meridian reference fleet 193 of the
     # 303 simulated devices strand at least one endpoint. Name the ratio so the reader sizes the
     # problem, not the table. (Rows with NO stranded figure are unmeasured, never counted as zero.)
-    _n_keystone = sum(1 for rec in fi
-                      if isinstance(rec, dict) and isinstance(rec.get("stranded"), (int, float))
-                      and rec["stranded"] > 0)
+    _n_keystone = sum(1 for p in fi if _ks_stranded(p) > 0)
     _sub("Keystone devices — fix-first (by migration blast radius)"
          + (f" — top 10 of {_n_keystone} device(s) that strand ≥1 endpoint"
             if _n_keystone > 10 else ""))
     _hdr(["Rank", "Device", "Severity", "Endpoints stranded", "VLANs impacted"])
-    for i, rec in enumerate(fi[:10], 1):
+    for i, (rec, v) in enumerate(fi[:10], 1):
         ws.cell(r, 1, i).font = DAT
         ws.cell(r, 2, rec.get("host", "")).font = DAT
-        ws.cell(r, 3, rec.get("severity", "")).font = DAT
-        ws.cell(r, 4, rec.get("stranded", 0)).font = DAT
-        ws.cell(r, 5, rec.get("vlans_impacted", 0)).font = DAT
+        if v.published:
+            ws.cell(r, 3, rec.get("severity", "")).font = DAT
+            ws.cell(r, 4, rec.get("stranded", 0)).font = DAT
+            ws.cell(r, 5, rec.get("vlans_impacted", 0)).font = DAT
+        else:                                          # a lower bound: each value as the owner publishes it
+            ws.cell(r, 3, impact_assessability.ranked_value(v, "severity")).font = DAT
+            ws.cell(r, 4, impact_assessability.ranked_value(v, "stranded")).font = DAT
+            ws.cell(r, 5, impact_assessability.ranked_value(v, "vlans_impacted")).font = DAT
+        r += 1
+    if fi_held:
+        c = ws.cell(r, 1, f"Not ranked — {len(fi_held)} switch(es) whose blast radius is not a measurement on "
+                          f"this evidence: {impact_assessability.disclose(fi_held)}. See the 'Failure Impact' tab.")
+        c.font = DAT; c.alignment = WRAP
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
         r += 1
     r += 1
 
@@ -6430,10 +6482,22 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     # --- headline: where to start ---
     _sub("Where to start")
     lines = []
-    if fi:
-        top = fi[0]
-        lines.append(f"• {top.get('host')} is the top keystone — its loss strands "
-                     f"{top.get('stranded', 0)} endpoint(s). Harden it first (FHRP / a redundant path).")
+    # W33: the top keystone is the first ranked row that strands someone (a measured 0 is never "the top keystone");
+    # a lower bound's count is written as the floor it is, with the owner's reason.
+    _top = next((p for p in fi if _ks_stranded(p) > 0), None)
+    if _top is not None:
+        top, _tv = _top
+        _count_txt = (f"{top.get('stranded', 0)} endpoint(s)" if _tv.published else
+                      f"{impact_assessability.table_value(_tv, 'stranded')} endpoint(s) ({_tv.summary})")
+        lines.append(f"• {top.get('host')} is the top keystone — its loss strands {_count_txt}. "
+                     "Harden it first (FHRP / a redundant path).")
+    elif fi_held and not fi:
+        lines.append(f"• No switch's blast radius is a measurement on this evidence ({len(fi_held)} not ranked) — "
+                     "collect the missing evidence (see the 'Failure Impact' tab) before sequencing by blast radius.")
+    elif fi_held:
+        lines.append(f"• No measured switch strands endpoints, but {len(fi_held)} switch(es) are not ranked because "
+                     "their blast radius is not a measurement — collect the missing evidence (see the 'Failure "
+                     "Impact' tab) before treating the fleet as well distributed.")
     if not health_unavailable and n and bands["Critical"] == n:
         lines.append(f"• All {n} switches land in the Critical band — the per-switch score is "
                      f"saturated, so prioritise by blast radius (above), not by score.")
@@ -6469,7 +6533,7 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     # land the summary as the first tab in the workbook
     wb.move_sheet(ws, -wb.index(ws))
     logger.info(f"  [OK] '{EXEC_SUMMARY_SHEET_NAME}' sheet: {n} switch(es); "
-                f"top keystone {fi[0]['host'] if fi else '-'}")
+                f"top keystone {_top[0].get('host') if _top is not None else '-'}")
 
 
 # =============================================================================

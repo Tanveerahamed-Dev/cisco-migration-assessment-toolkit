@@ -54,6 +54,8 @@ class AnalysisContext:
     protocol_assessability: Dict[str, Any] = field(default_factory=dict)
     parse_yield: Dict[str, Any] = field(default_factory=dict)
     input_failures: Optional[Tuple[FrozenSet[str], bool]] = None
+    #   W33: impact_assessability.assessment_document over failure_impact + its evidence (None: not supplied)
+    failure_impact_assessability: Optional[Dict[str, Any]] = None
     vtp_safety_baseline: Dict[str, Any] = field(default_factory=dict)
     vtp_safety_subject_scope: List[Any] = field(default_factory=list)
     ipv6_routing_adjacency_baseline: Dict[str, Any] = field(default_factory=dict)

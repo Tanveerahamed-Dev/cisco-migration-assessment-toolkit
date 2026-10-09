@@ -11,7 +11,9 @@ Slice 1 covers two screens:
   scoring state, the executive-brief axes (and the registered axes the brief does not carry), the
   top-gating list, the posture statement, and the lifecycle band partition in its canonical order;
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
-  unknown-evidence summary, the SSOT self-verification, and the projection's own stated limitations;
+  unknown-evidence summary, the SSOT self-verification, the analysis-input gap summary (per input of the
+  engine's per-device risk register: the inventory devices it could not assess, out of the inventory), and
+  the projection's own stated limitations;
 
 plus an ``engine`` block naming the snapshot schema and producer versions.
 
@@ -116,9 +118,10 @@ from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
+from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+    DOSSIER_AXIS_INPUTS, PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -139,7 +142,8 @@ TOPOLOGY_GLYPHS = ("device", "router", "ap", "unknown", "none")
 TOPOLOGY_TONES = ("neutral", "muted", "info", "warning", "danger")
 TOPOLOGY_STROKES = ("solid", "dashed", "dotted")
 TOPOLOGY_WEIGHTS = ("normal", "strong")
-IMPACT_SEVERITIES = ("High", "Medium", "Low", "Info")          # analyze.compute_failure_impact sev_rank order
+#: The failure-impact owner's bands, worst first (analyze.compute_failure_impact sev_rank order).
+IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES
 ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
 #: The FIB owner's route fields a hop may report invalid, and its MTU-gap reasons (fib.trace_fib_path).
 FIB_ROUTE_FIELDS = ("admin_distance", "source", "next_hop", "out_intf")
@@ -332,8 +336,9 @@ SELECTION_NEEDS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     # parse and inter-switch links from CDP/LLDP (compute_topology_links). It reads no interface-status or
     # version/inventory field; its MAC, trunk and STP inputs are not essential captures. Its gateways are SVIs with
     # an IP, which build.py takes only from the scoped interface running-config capture (svi_ip), marking each
-    # interface it parsed run_config_observed. The shared row builder checks that per row (_impact_hold), so the
-    # fleet row and the device page hold the same values; the full running-config (the security row) is not it.
+    # interface it parsed run_config_observed. The shared row builder applies that per row (the engine owner's
+    # impact_assessability.row_hold), so the fleet row and the device page hold the same values; the full
+    # running-config (the security row) is not it.
     "failure_impact": ("switchport", "CDP/LLDP neighbors"),
     # analyze.compute_link_centrality: CDP/LLDP links between two scanned hosts (_topology_adjacency).
     "structural_links": ("CDP/LLDP neighbors",),
@@ -396,7 +401,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total", "/topology"]),
+         "/findings/rows", "/findings/total", "/topology", "/trust/inputs"]),
     _limitation(
         "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
@@ -417,7 +422,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "not call the input incomplete; engine_state keeps the owner's token. An empty text or mapping "
         "stays collected_but_empty.",
         ["/overview/facts", "/overview/lifecycle", "/trust/unknown_evidence", "/trust/ssot/engine_stamp",
-         "/inventory/devices/total"]),
+         "/inventory/devices/total", "/trust/inputs"]),
     _limitation(
         "abstention_addresses_dict_paths_only", "ssot.abstention_reason",
         "The abstention core cannot address an array element. A list item takes its list's state, then its "
@@ -592,7 +597,16 @@ LIMITATIONS += (
                 "of zero is not a measurement of none, and High and positive counts are published as lower bounds "
                 "that cite that count. A withheld row's detail is withheld with its measures unless it is the "
                 "owner's INDETERMINATE disclosure; a partial row's per-VLAN detail stays published as the list of "
-                "what was simulated. A switch the stored cable map cables to a peer it does not show as collected "
+                "what was simulated. A row's blind_links (cited, not shown as a cell) counts the switch's "
+                "inter-switch links with no trunk/STP evidence on either end; the owner leaves them out of every "
+                "forwarding graph, so a VLAN the switch transits only over one was never simulated. A positive "
+                "blind_links bounds the row as a positive off_scan_gw_vlans does and also withholds a detail that "
+                "names no simulated VLAN; with no VLAN simulated, it withholds the row's measures. A stored row "
+                "without blind_links predates that count (the owner then disclosed such links at most for a switch "
+                "it simulated nothing for), so it is bounded the same way, citing the row. Such a link can also hide "
+                "an alternate path, so a removal elsewhere may read worse than it is: a published High or positive "
+                "count is a lower bound against its own row's blind_links, not against other rows'. A switch the "
+                "stored cable map cables to a peer it does not show as collected "
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
                 "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
@@ -607,6 +621,24 @@ LIMITATIONS += (
                 "not management suitability or unique source ownership. A scoped no-route observation is not "
                 "an observed discard. Reached paths can still have dropping ECMP legs. MTU evidence is "
                 "IPv4-specific and does not establish IPv6 suitability.", ["/topology/source_addresses"]),
+)
+LIMITATIONS += (
+    _limitation("trust_inputs_scope",
+                "analyze.compute_device_dossiers, analyze.compute_collection_completeness, cisco_toolkit.ui_projection",
+                "The analysis inputs are the engine's per-device risk-register axes and their input sections "
+                "(analyze.DOSSIER_AXIS_INPUTS), not every analysis: a fleet or findings-only section (for example "
+                "cross_layer or l3_forwarding) writes no per-device custody, so no device is counted here, as a gap "
+                "or as clean, from its absence. A device counts as not assessed by an input where its dossier row "
+                "marks that axis 'na'; the device's custody keeps the engine's input state (not collected, analysis "
+                "unavailable, or collected but empty: evidence was read but nothing assessable, such as no "
+                "authoritative lifecycle band). A collection_completeness 'not collected' device is listed under "
+                "every input whatever its dossier says. An assessed axis is the engine's bounded conclusion, not proof "
+                "that every sub-input ran: Protocol concludes when at least one protocol family is assessable, and "
+                "Config hygiene and Physical read an empty screen as clean. Dossier rows are joined by exact host and "
+                "blind spots by their owner's device scope; a missing, duplicated or malformed row makes the count "
+                "unverified, and the denominator is the inventory count the device rows reconcile to. The fold is "
+                "this projection's; nothing is recomputed from raw evidence.",
+                ["/trust/inputs"]),
 )
 #: What a device document cannot claim; addressed inside a ``DeviceDocument``.
 DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
@@ -715,8 +747,9 @@ _R_NO_ROW = "not collected: {section} carries no row for this device"
 _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not collected, so every fact about it "
                 "is a blind spot (ssot.abstention_reason, device scope)")
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
-_R_UNJOINABLE = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key field "
-                 "that is missing or not text), and any of them could name this device")
+_R_UNJOINABLE_STEM = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key "
+                      "field that is missing or not text), and any of them could name ")
+_R_UNJOINABLE = _R_UNJOINABLE_STEM + "this device"
 _R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
                  "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
@@ -845,6 +878,17 @@ class _Ctx:
         self._vlan_hosts: Any = _UNSET
         self._coverage_rows: Any = _UNSET
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._impact: Any = _UNSET
+
+    @property
+    def impact(self) -> impact_assessability.ImpactSnapshot:
+        """The engine owner of failure-impact row assessability over this snapshot. It reads through this context's
+        exact-key index and its envelope reading of the stored cable map, each on first use only."""
+        if self._impact is _UNSET:
+            self._impact = impact_assessability.ImpactSnapshot(
+                self.s, rows_by_host=lambda: self.index(("failure_impact",), ("host",)),
+                cables=lambda: _impact_cable_source(self))
+        return self._impact
 
     @property
     def coverage_rows(self) -> Optional[CoverageRowIndex]:
@@ -2165,6 +2209,175 @@ def _ssot_block(ctx: _Ctx) -> Dict[str, Any]:
     return block
 
 
+# ---------------------------------------------------------------------------------------------------
+# trust: the analysis-input gap summary (G08)
+#
+# The engine's per-device custody of each analysis input is the risk register's exposure record: for every device
+# row, analyze.compute_device_dossiers writes exactly one {axis, state, label, input_state} per entry of
+# analyze.DOSSIER_AXIS_INPUTS, and forces state 'na' whenever the input was not published (its ax()). The register
+# writes a row for every device the devices map names: its host universe includes lifecycle_risk.per_device, which
+# compute_lifecycle_risk writes for every key of the same device-physical map the devices map is built from. No
+# findings-only or sparse section is read for absence here; its absence is never a gap and never clean. A register
+# row the exact-key join cannot read (:func:`_unjoinable_rows`) could be any listed device's row, so it withholds
+# every count, the precedent of the strict device selection.
+# ---------------------------------------------------------------------------------------------------
+#: Every analysis input the engine assesses PER DEVICE, with its input sections, in the owner's order: the risk
+#: register's closed axis registry (analyze.DOSSIER_AXIS_INPUTS), imported, never copied.
+TRUST_INPUTS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
+    {axis: tuple(sections) for axis, sections in DOSSIER_AXIS_INPUTS.items()})
+#: Why an input did not assess a listed device: the dossier's input state for an 'na' axis, not_collected for a
+#: collection blind spot, analysis_unavailable or unverified when no single readable exposure exists. Every token is
+#: an absence, so the G43 catalogue (``_VOCAB_UNRANKED``) names it as an unranked vocabulary that draws no level.
+TRUST_INPUT_CUSTODY: Tuple[str, ...] = tuple(s for s in WITHHELD_STATES if s != _NA)
+_B_INPUTS = ("analyze.compute_device_dossiers:device_dossiers.per_device[].exposures[] + "
+             "analyze.compute_collection_completeness:collection_completeness.devices[]")
+_R_INPUTS_ASSESSED = ("collected but empty: every inventory device carries one readable exposure for this input that "
+                      "is not 'na' (not a blind spot)")
+_R_INPUTS_NO_DEVICE = ("not collected: the inventory names no device (neither the devices map nor "
+                       "collection_completeness), so no input assessed anything and a zero would claim nothing")
+_R_INPUTS_NO_REGISTER = ("not collected: the snapshot carries no device_dossiers.per_device, so no device's custody "
+                         "of this input is published; only collection blind spots are listed, and an absent device "
+                         "is not a clean result")
+_R_INPUTS_UNJOINABLE = _R_UNJOINABLE_STEM + ("any inventory device, so the count of devices this input could not "
+                                             "assess is not verified")
+#: How one inventory device stands before any axis is read: ``(fixed custody, witness pointer, why)`` when the same
+#: custody holds for every input, else ``None`` with the dossier row and its axis index.
+_HostCustody = Tuple[Optional[Tuple[str, str, str]], Optional[Tuple[Tuple[Any, ...], List[Any], Dict[str, List[int]]]]]
+
+
+def _host_custody(ctx: _Ctx, host: str, dev_keys: FrozenSet[str], index: Mapping[str, List[int]], raw: Any,
+                  readable: bool, lifecycle_failed: bool) -> _HostCustody:
+    """One inventory device, first match wins: a collection blind spot (every input) -> an unreadable register (no
+    claim) -> no row (unavailable when the lifecycle phase that guarantees every device a row failed, else a
+    contradiction with the producer: unverified) -> two rows naming it -> a row whose exposures cannot be indexed."""
+    i, _row = ctx.cc_row(host)
+    if i is not None and ctx.device_blind("collection_completeness", host):
+        return (_NC, json_pointer("collection_completeness", "devices", i), "blind"), None
+    if not readable:
+        return None, None
+    own = json_pointer("devices", host) if host in dev_keys or i is None else json_pointer(
+        "collection_completeness", "devices", i)
+    rows = index.get(host, [])
+    if not rows:
+        return ((AU, own, "lost") if lifecycle_failed else (_UV, own, "unreadable")), None
+    toks: Tuple[Any, ...] = ("device_dossiers", "per_device", rows[0])
+    if len(rows) > 1:
+        return (_UV, json_pointer(*toks), "unreadable"), None
+    rec = raw[rows[0]]
+    exposures = rec.get("exposures") if isinstance(rec, dict) else None
+    if not isinstance(exposures, list):
+        return (_UV, json_pointer(*toks), "unreadable"), None
+    by_axis: Dict[str, List[int]] = {}
+    for j, exposure in enumerate(exposures):
+        axis = exposure.get("axis") if isinstance(exposure, dict) else None
+        if not _is_text(axis):
+            return (_UV, json_pointer(*toks, "exposures", j), "unreadable"), None
+        by_axis.setdefault(axis, []).append(j)
+    return None, (toks, exposures, by_axis)
+
+
+def _axis_custody(axis: str, host: _HostCustody) -> Optional[Tuple[str, Optional[str], str, str]]:
+    """``(custody, engine label, witness pointer, why)`` when `axis` did not assess the device, ``None`` when it did (or
+    when nothing about the device can be read). Exactly one exposure must name the axis and pass the exposure record
+    check; 'na' over published custody contradicts the producer's rule and is unverified."""
+    fixed, joined = host
+    if fixed is not None:
+        return fixed[0], None, fixed[1], fixed[2]
+    if joined is None:
+        return None
+    toks, exposures, by_axis = joined
+    hits = by_axis.get(axis, [])
+    if len(hits) != 1:
+        return _UV, None, json_pointer(*toks, "exposures"), "unreadable"
+    pointer = json_pointer(*toks, "exposures", hits[0])
+    ok, rec = _typed(exposures[hits[0]], "exposure")
+    if not ok:
+        return _UV, None, pointer, "unreadable"
+    if rec["state"] != "na":
+        return None
+    if rec["input_state"] == _PUB:
+        return _UV, None, pointer, "unreadable"
+    return rec["input_state"], rec["label"], pointer, "exposure"
+
+
+def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
+    """Per analysis input: the inventory devices it could not assess (``hosts``), their count (``n``) and the inventory
+    count they are out of (``of``, the device rows' own reconciled total). A register row the host join cannot read
+    (:func:`_unjoinable_rows`) makes ``hosts`` and ``n`` unverified, with a witness to each such row, while the readable
+    rows' devices stay listed; ``of`` is the inventory's own owner and does not read the register."""
+    hosts, dev_keys, _cc_norm = _inventory_universe(ctx)
+    dd_toks = ("device_dossiers", "per_device")
+    dd_state, dd_reason, dd_raw = _list_state(ctx, dd_toks, ("device_dossiers",))
+    readable = dd_state in (_PUB, _CBE)
+    index = ctx.index(dd_toks, ("host",)) if readable else {}
+    # The join skips these rows, so the per-device fold never visits them: any could be a conflicting observation of
+    # a listed device. Read as the strict selection reads them: over a published or empty register, and over an
+    # unverified one whose rows can still be read.
+    bad = ctx.unjoinable(dd_toks, ("host",)) if readable or (dd_state == _UV and isinstance(dd_raw, list)) else []
+    unjoinable = _R_INPUTS_UNJOINABLE.format(n=len(bad), section=".".join(dd_toks)) if bad else None
+    lifecycle_failed = ctx.abst("lifecycle_risk") == AU
+    standing = [(host, _host_custody(ctx, host, dev_keys, index, dd_raw, readable, lifecycle_failed))
+                for host in hosts]
+    out: List[Dict[str, Any]] = []
+    for axis, sections in TRUST_INPUTS.items():
+        secs = tuple(dict.fromkeys(("device_dossiers",) + sections + ("collection_completeness",)))
+        items: List[Dict[str, Any]] = []
+        whys: List[str] = []
+        for host, custody in standing:
+            hit = _axis_custody(axis, custody)
+            if hit is not None:
+                items.append({"host": host, "custody": hit[0], "label": hit[1], "pointer": hit[2]})
+                whys.append(hit[3])
+        extra: List[Tuple[str, Sequence[Any]]] = [("basis", dd_toks),
+                                                  ("basis", ("collection_completeness", "devices"))]
+        extra += [("basis", (s,)) for s in secs if s != "device_dossiers"]
+        lost = whys.count("lost")
+        if lost:
+            extra += [("basis", ("lifecycle_risk",))] + ctx.failure_entries(("lifecycle_risk",), True)
+        failed = _secs_fail(ctx, ("device_dossiers.per_device",) + secs)
+        doubt: Optional[str] = None
+        if failed:
+            state, reason = failed
+        elif not readable:
+            state, reason = dd_state, (_R_INPUTS_NO_REGISTER if dd_state == _NC else dd_reason)
+            doubt = unjoinable                  # set only over an unverified register whose rows can be read
+        elif not hosts:
+            state, reason = _NC, _R_INPUTS_NO_DEVICE
+        elif lost:
+            state = AU
+            reason = (ctx.unavailable_reason(("lifecycle_risk",)) + f"; {lost} device(s) have no risk-register "
+                      "row, and the phase that guarantees every collected device one failed")
+        elif "unreadable" in whys:
+            state, doubt = _UV, unjoinable
+            reason = (f"unverified: {whys.count('unreadable')} device(s) carry no single readable exposure for this "
+                      "input in device_dossiers (a missing, duplicated or malformed row or record), so the count of "
+                      "devices it could not assess is not verified")
+        elif unjoinable is not None:
+            state, reason, doubt = _UV, None, unjoinable
+        else:
+            state, reason = (_PUB, None) if items else (_CBE, _R_INPUTS_ASSESSED)
+        if doubt is not None:
+            # Never a published count or zero: the listed devices stay as data, each unreadable row is witnessed.
+            state, reason = _UV, "; ".join(r for r in (reason, doubt) if r)
+            extra += [("witness", dd_toks + (i,)) for i in bad]
+        state, reason = _rolled(ctx, state, reason, secs, ("collection_completeness",))
+        of = _inventory_total(ctx, len(hosts))
+        if state in (_PUB, _CBE) and of["state"] != _PUB:
+            state, reason = of["state"], (f"{of['reason']}; the inventory denominator is withheld, so the device "
+                                          "universe this list covers is not verified")
+        listed = _listing(ctx, state, reason, None, _B_INPUTS, items, sections=secs, extra=extra,
+                          caveats=("trust_inputs_scope",))
+        refs = [dict(ref) for ref in listed["refs"]] + ctx.refs(
+            [("denominator", ("collection_completeness", "summary", "inventory"))])
+        if listed["state"] in (_PUB, _CBE):
+            n = _envelope(_PUB, len(items), None, refs, _B_INPUTS + " (count)", "",
+                          caveats=listed.get("caveats", ()))
+        else:
+            n = _envelope(listed["state"], None, None, refs, _B_INPUTS + " (count)", listed["reason"])
+        out.append({"input": axis, "sections": list(sections), "n": n, "of": of, "hosts": listed})
+    return out
+
+
 def _limitations_payload() -> List[Dict[str, Any]]:
     return [{"id": lim["id"], "owner": lim["owner"], "text": lim["text"], "applies_to": list(lim["applies_to"])}
             for lim in LIMITATIONS]
@@ -2177,12 +2390,14 @@ def _trust(ctx: _Ctx) -> Dict[str, Any]:
         "coverage_matrix": _coverage_matrix(ctx),
         "unknown_evidence": _unknown_evidence(ctx),
         "ssot": _ssot_block(ctx),
+        "inputs": _trust_inputs(ctx),
         "limitations": _limitations_payload(),
     }
 
 
 def project_trust(snap: Any) -> Dict[str, Any]:
-    """The Trust screen: census, failure record, coverage matrix, unknown evidence, SSOT verification."""
+    """The Trust screen: census, failure record, coverage matrix, unknown evidence, SSOT verification and the
+    analysis-input gap summary."""
     return _trust(_Ctx(snap))
 
 
@@ -3037,7 +3252,9 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
     return row
 
 
-def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+def _inventory_universe(ctx: _Ctx) -> Tuple[List[str], FrozenSet[str], Dict[str, List[int]]]:
+    """``(hosts, devices-map keys, blind-spot index)``: the inventory rows' devices, sorted. One owner for the device
+    rows and the analysis-input gaps, so both count the same universe."""
     devices = ctx.s.get("devices")
     dev_keys = frozenset(k for k in devices if _is_text(k)) if isinstance(devices, dict) else frozenset()
     cc_norm = ctx.index(("collection_completeness", "devices"), ("host",), norm=True)
@@ -3046,7 +3263,26 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
     # a blind spot the devices map names (without case or surrounding space) is that device's row, not a new one;
     # the rest are named by their first row's own spelling
     blind_only = {cc_rows[idx[0]]["host"] for name, idx in cc_norm.items() if name not in dev_norm}
-    hosts = sorted(dev_keys | blind_only)
+    return sorted(dev_keys | blind_only), dev_keys, cc_norm
+
+
+def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
+    """The owner's inventory count, published only when it equals the inventory rows' count."""
+    def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
+        if typed == n_rows:
+            return None
+        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
+                     f"number {n_rows}; the owner's inventory count says {typed}", [])
+
+    return _scalar(ctx, "collection_completeness.summary.inventory", "count",
+                   "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
+                   gate=_matches_rows, witness=[("witness", ("executive_brief", "scale", "n_devices")),
+                                                ("witness", ("coverage_matrix", "summary", "n_devices"))],
+                   published_caveats=_brief_caveats(ctx))
+
+
+def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
     items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
@@ -3056,20 +3292,7 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
                     "collection_completeness.devices", items, sections=("devices",),
                     rollup=("collection_completeness",),
                     caveats=("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
-    n_rows = len(items)
-
-    def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
-        if typed == n_rows:
-            return None
-        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
-                     f"number {n_rows}; the owner's inventory count says {typed}", [])
-
-    total = _scalar(ctx, "collection_completeness.summary.inventory", "count",
-                    "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
-                    gate=_matches_rows, witness=[("witness", ("executive_brief", "scale", "n_devices")),
-                                                 ("witness", ("coverage_matrix", "summary", "n_devices"))],
-                    published_caveats=_brief_caveats(ctx))
-    return {"total": total, "rows": rows}
+    return {"total": _inventory_total(ctx, len(items)), "rows": rows}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -4276,8 +4499,8 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         # G10/G11: the stored fleet rows naming this device, built by the fleet topology's own row builders. Both
         # producers compute over every scanned device's evidence, so the fleet's blind spots qualify them (as on the
         # fleet topology lists). A device whose own gateway SVIs never reached the simulation (no scoped interface
-        # running-config) is held inside its row by the shared builder (_impact_hold), never by a second selection
-        # gap: the fleet row and this page show one state.
+        # running-config) is held inside its row by the shared builder (the engine owner's
+        # impact_assessability.row_hold), never by a second selection gap: the fleet row and this page show one state.
         "failure_impact": _selection_rows(
             ctx, host, forced, "failure_impact", ("failure_impact",), ("host",),
             "analyze.compute_failure_impact:failure_impact", _ABSENT_IMPACT,
@@ -4483,250 +4706,59 @@ def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     return out
 
 
-#: analyze.compute_failure_impact's own opening for a switch whose blast radius it could not simulate (a VLAN it
-#: carries has an off-scan gateway, or its inter-switch links carry no VLAN evidence). Its Info severity and zero
-#: counts are then not measurements. Pinned to the real producer by tests/test_ui_projection_device_impact.py.
-IMPACT_INDETERMINATE_PREFIX = "Blast radius INDETERMINATE"
+#: analyze.compute_failure_impact's own opening for a switch whose blast radius it could not simulate. Owned, with
+#: every row-level assessability rule, by the engine (impact_assessability); re-exported for the projection's
+#: readers. Pinned to the real producer by tests/test_impact_assessability.py.
+IMPACT_INDETERMINATE_PREFIX = impact_assessability.IMPACT_INDETERMINATE_PREFIX
 #: The failure-impact cells that measure the simulated blast radius; host, off_scan_gw_vlans and detail are not.
-_IMPACT_MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
-#: The producer's worst band (IMPACT_SEVERITIES runs worst first): the one severity a partial simulation cannot
-#: understate.
-_IMPACT_WORST = IMPACT_SEVERITIES[0]
-_R_IMPACT_INDETERMINATE = ("not collected: analyze.compute_failure_impact could not simulate this switch's blast "
-                           "radius (its detail says why), so its severity and counts are not measurements")
-_R_IMPACT_LEGACY = ("not collected: this stored row carries no off_scan_gw_vlans, so it predates the producer's "
-                    "assessability marker (analyze.compute_failure_impact). An engine that old wrote 'No reachability "
-                    "impact' with Info and zero counts for a switch it could not simulate, so this row's severity and "
-                    "counts are not measurements")
-_R_IMPACT_OFF_SCAN_ONLY = ("not collected: every VLAN analyze.compute_failure_impact found on this switch has an "
-                           "off-scan gateway ({n} counted in off_scan_gw_vlans), so it simulated none of them and its "
-                           "severity and counts are not measurements")
-_R_IMPACT_OFF_SCAN_UNREAD = ("unverified: off_scan_gw_vlans is not a count, so whether the simulation covered this "
-                             "switch's whole blast radius cannot be read")
-_R_IMPACT_NO_HOST = ("unverified: the row names no readable host, so whether its device's interface running-config "
-                     "was captured cannot be checked")
-_R_IMPACT_DUP = ("unverified: {n} rows in failure_impact name this exact host, but analyze.compute_failure_impact "
-                 "writes one row per host, so no single row can be chosen")
-_R_IMPACT_NO_RUN_CONFIG = ("not collected: no interface of this device carries run_config_observed: true. build.py "
-                           "marks every interface its scoped interface running-config capture ('show running-config "
-                           "interface' or '| section ^interface') parsed, and takes SVI gateway addresses (svi_ip) "
-                           "only from that capture, so this device's own gateways never reached the simulation and "
-                           "its severity and counts are not measurements. A snapshot that predates the marker, or "
-                           "drops it as false (html.sparsify_interfaces), reads the same: not captured")
-_R_IMPACT_UNDERSTATED = ("not collected: this severity may understate the blast radius: {n} VLAN(s) on this switch "
-                         "have an off-scan gateway the simulation could not assess (off_scan_gw_vlans), and only the "
-                         "worst band ({worst}) cannot be understated")
-_R_IMPACT_ZERO_BOUND = ("not collected: this 0 is only a lower bound: {n} VLAN(s) on this switch have an off-scan "
-                        "gateway the simulation could not assess (off_scan_gw_vlans), so it is not a measurement of "
-                        "none")
-#: analyze.compute_cable_map's kinds for an uncollected peer it POSITIVELY identifies as edge gear: its fabric-only
-#: declutter may hide only these, and 'unknown' always stays visible. _node_kind ranks infra first across every
-#: observer (_KIND_RANK puts switch, router and firewall before ap, phone and endpoint) and lets platform evidence
-#: outrank endpoint type, so a peer carries one of these kinds only when no observer's evidence says switch, router or
-#: firewall; build_network_model likewise never admits a CDP-speaking phone or AP as an uplink
-#: (_is_offscan_uplink_port). What hangs off an AP or a phone depends on the removed switch's own port, the case the
-#: simulation excludes by its declared scope (the removed switch's own endpoints move with it). Every other kind --
-#: switch, router, firewall, unknown, a missing or unrecognised kind, or the collected-device kind on a node marked
-#: uncollected -- can carry endpoints or transit that the scanned model never saw.
-_IMPACT_EDGE_KINDS = frozenset({"ap", "phone", "endpoint"})
-_R_IMPACT_PEERS = ("this row cannot account for endpoints behind {n} uncollected neighbour(s): the stored cable map "
-                   "cables this switch to {n} peer(s) it does not show as collected that can carry endpoints or "
-                   "transit (a cable_map.nodes row with collected: false and a kind other than ap, phone or endpoint, "
-                   "or a cable end that does not join exactly one node){closed}, and analyze.compute_failure_impact "
-                   "counts only endpoints on scanned switches")
-_R_IMPACT_PEERS_CLOSED = ("; {k} of them fail closed because their cable row cannot be read or their cable end does "
-                          "not join exactly one node, so they are never assumed collected")
-_R_IMPACT_PEERS_UNREAD = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored "
-                          "cable map's cables cannot be read ({why}), and analyze.compute_failure_impact counts only "
-                          "endpoints on scanned switches")
-_R_IMPACT_PEER_SEVERITY = ("{word}: {clause}, so this severity may understate the blast radius, and only the worst "
-                           "band ({worst}) cannot be understated")
-_R_IMPACT_PEER_ZERO = "{word}: {clause}, so this 0 is only a lower bound, not a measurement of none"
-_R_IMPACT_PEER_DETAIL = ("{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: it was "
-                         "never checked against what lies behind them")
-#: The leading word of a withheld state's reason.
-_IMPACT_STATE_WORD = {AU: "analysis unavailable", _UV: "unverified", _NC: "not collected"}
-#: A hold on a row's measures: ``(state, reason, witness ref entries)``.
-_ImpactHold = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
-#: A qualification of a row's understatable values (a severity below the worst band, a zero count and, where it applies,
-#: a detail that names no simulated VLAN): ``(state, severity reason, zero-count reason, detail reason or None,
-#: witness ref entries)``. The witnesses are cited by every measure, the published lower bounds included.
-_ImpactBound = Tuple[str, str, str, Optional[str], List[Tuple[str, Sequence[Any]]]]
+_IMPACT_MEASURES = impact_assessability.IMPACT_MEASURES
 
 
-def _impact_hold(ctx: _Ctx, row: _Row) -> Optional[_ImpactHold]:
-    """The hold on every blast-radius measure of one row, with a witness to the evidence that says why. First match
-    wins: the producer's INDETERMINATE detail -> no off_scan_gw_vlans (a row older than that marker) -> an
-    unreadable off-scan count -> no readable host -> no interface of the row's device carrying
-    run_config_observed (its gateway SVIs never reached the simulation; absent is never read as captured) -> a
-    positive off-scan count with no VLAN simulated (the INDETERMINATE case, read from the count rather than the
-    prose). ``None``: the measures are the producer's (a partial row's are then qualified per field by
-    :func:`_impact_pre`)."""
-    if row.state is not None or not isinstance(row.raw, dict):
-        return None
-    rec = row.raw
-    detail = rec.get("detail")
-    if _is_text(detail) and detail.startswith(IMPACT_INDETERMINATE_PREFIX):
-        return _NC, _R_IMPACT_INDETERMINATE, [("witness", row.toks + ("detail",))]
-    if "off_scan_gw_vlans" not in rec:
-        return _NC, _R_IMPACT_LEGACY, [("witness", row.toks)]
-    ok, n = _count(rec["off_scan_gw_vlans"])
-    if not ok:
-        return _UV, _R_IMPACT_OFF_SCAN_UNREAD, [("witness", row.toks + ("off_scan_gw_vlans",))]
-    host = rec.get("host")
-    if not _is_text(host):
-        return _UV, _R_IMPACT_NO_HOST, [("witness", row.toks)]
-    ifaces = ctx.s.get("interfaces")
-    ports = ifaces.get(host) if isinstance(ifaces, dict) else None
-    if not (isinstance(ports, dict) and any(isinstance(port, dict) and port.get("run_config_observed") is True
-                                            for port in ports.values())):
-        where = ("interfaces", host) if isinstance(ports, dict) else ("interfaces",)
-        return _NC, _R_IMPACT_NO_RUN_CONFIG, [("witness", where)]
-    simulated_ok, simulated = _count(rec.get("vlans_impacted"))
-    if n and not (simulated_ok and simulated):
-        return _NC, _R_IMPACT_OFF_SCAN_ONLY.format(n=n), [("witness", row.toks + ("off_scan_gw_vlans",))]
-    return None
-
-
-def _impact_off_scan(row: _Row) -> int:
-    """The row's readable, positive off-scan VLAN count (0 otherwise)."""
-    ok, n = _count(row.raw.get("off_scan_gw_vlans")) if isinstance(row.raw, dict) else (False, None)
-    return n if ok else 0
-
-
-def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
-    """The bound an uncollected neighbour puts on one row. analyze.compute_failure_impact simulates only scanned
-    switches, so endpoints behind a peer the collection never reached count nowhere: not as stranded, not as an
-    off-scan VLAN. A SELECTION of stored rows, never a re-simulation: the stored cable_map.cables rows naming the
-    row's host as one end (exact text, as :func:`_topology_join` joins) whose far end joins exactly one
-    cable_map.nodes row that does not carry ``collected: true``, unless that node is ``collected: false`` with a kind
-    the producer positively marks as edge gear (:data:`_IMPACT_EDGE_KINDS`). It fails closed: a cable row that
-    cannot be read could name the host, a far end that joins no single node is never assumed collected, and a cable
-    list that cannot be read bounds the row with that list's own state. ``None``: no such neighbour."""
-    host = row.raw.get("host") if row.state is None and isinstance(row.raw, dict) else None
-    if not _is_text(host):
-        return None
+def _impact_cable_source(ctx: _Ctx) -> impact_assessability.CableSource:
+    """This context's reading of the stored cable map for the owner's neighbour bound
+    (impact_assessability.neighbour_bound). The cable list takes the envelope state every topology list takes; one
+    that cannot be read bounds each row with that state (unavailable and unverified stay, anything else is not
+    collected), that reason, and a witness to the list (or its parent) plus the failure records of a failed cable
+    map. A readable list carries this context's exact-text joins over it, and over the node list when that can be
+    read (otherwise no far end joins a node, so every one fails closed)."""
     toks = ("cable_map", "cables")
     state, reason, cables = _topology_source(ctx, toks)
     if state not in (_PUB, _CBE):
         state = state if state in (AU, _UV) else _NC
         where = toks if _get(ctx.s, toks) is not _MISSING else ("cable_map",)
-        clause = _R_IMPACT_PEERS_UNREAD.format(why=reason or _R_NC)
-        wit = [("witness", where)] + ctx.failure_entries(("cable_map",), state == AU)
-        return _impact_bound(state, clause, wit)
+        return impact_assessability.unreadable_cables(
+            state, reason or _R_NC, [("witness", where)] + ctx.failure_entries(("cable_map",), state == AU))
     ntoks = ("cable_map", "nodes")
     nstate, _nreason, nodes = _topology_source(ctx, ntoks)
-    index = ctx.index(ntoks, ("host",)) if nstate in (_PUB, _CBE) and isinstance(nodes, list) else {}
-    hits: List[int] = []
-    peers: Dict[str, bool] = {}              # far end -> whether it fails closed (joins no single node)
-    unreadable = 0
-    bad = set(ctx.unjoinable(toks, ("a", "b")))
-    for j in sorted(set(ctx.index(toks, ("a", "b")).get(host, [])) | bad):
-        if j in bad:
-            hits.append(j)                   # the join cannot read this row, so it could name this switch
-            unreadable += 1
-            continue
-        ends = (cables[j]["a"], cables[j]["b"])
-        far = ends[1] if ends[0] == host else ends[0]
-        found = index.get(far, []) if far else []
-        if len(found) == 1:
-            node = nodes[found[0]]
-            kind = node.get("kind")
-            if node.get("collected") is True or (
-                    node.get("collected") is False and _is_text(kind) and kind in _IMPACT_EDGE_KINDS):
-                continue
-        hits.append(j)
-        peers[far] = peers.get(far, False) or len(found) != 1
-    if not hits:
-        return None
-    closed = unreadable + sum(peers.values())
-    clause = _R_IMPACT_PEERS.format(n=len(peers) + unreadable,
-                                    closed=_R_IMPACT_PEERS_CLOSED.format(k=closed) if closed else "")
-    return _impact_bound(_NC, clause, [("witness", toks + (j,)) for j in hits])
+    readable = nstate in (_PUB, _CBE) and isinstance(nodes, list)
+    return impact_assessability.readable_cables(
+        cables, nodes if readable else None, by_end=ctx.index(toks, ("a", "b")),
+        unjoinable=ctx.unjoinable(toks, ("a", "b")), node_index=ctx.index(ntoks, ("host",)) if readable else {})
 
 
-def _impact_bound(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]]) -> _ImpactBound:
-    """One :data:`_ImpactBound` from a neighbour reason clause: it reaches the detail too (a detail naming no
-    simulated VLAN is the producer's clean bill, never checked against what lies behind the neighbour)."""
-    word = _IMPACT_STATE_WORD[state]
-    return (state, _R_IMPACT_PEER_SEVERITY.format(word=word, clause=clause, worst=_IMPACT_WORST),
-            _R_IMPACT_PEER_ZERO.format(word=word, clause=clause),
-            _R_IMPACT_PEER_DETAIL.format(word=word, clause=clause), wit)
-
-
-def _impact_bound_state(bounds: Sequence[_ImpactBound]) -> str:
-    """The withheld state of several bounds: the module's precedence (unavailable, then unverified, then not
-    collected)."""
-    states = {bound[0] for bound in bounds}
-    return AU if AU in states else _UV if _UV in states else _NC
-
-
-def _impact_pre(hold: Optional[_ImpactHold], field: str, bounds: Sequence[_ImpactBound]) -> _Pre:
-    """One measure's pre-check: the row's hold (:func:`_impact_hold`), else, on a row with a bound (VLANs it also
-    counts but could not simulate, or an uncollected neighbour, :func:`_impact_peers`), the values that bound cannot
-    vouch for: a severity below the worst band (it may understate) and a zero count (a lower bound of zero is not a
-    measurement of none). The worst band and a positive count stay published as the lower bounds they are, citing
-    each bound's witnesses; a mistyped value falls through to the type check."""
-    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
-        if hold is not None:
-            return hold
-        if not bounds:
-            return None
-        if field == "severity":
-            ok, band = _typed(raw, "enum", IMPACT_SEVERITIES)
-            if not (ok and band != _IMPACT_WORST):
-                return None
-            reasons = [bound[1] for bound in bounds]
-        else:
-            ok, value = _count(raw)
-            if not (ok and value == 0):
-                return None
-            reasons = [bound[2] for bound in bounds]
-        return _impact_bound_state(bounds), "; ".join(reasons), [w for bound in bounds for w in bound[4]]
+def _impact_pre(hold: Optional[impact_assessability.Hold], field: str,
+                bounds: Sequence[impact_assessability.Bound]) -> _Pre:
+    """One measure's pre-check, decided by the engine owner (impact_assessability.measure_withheld): the row's hold,
+    else, on a bounded row, a severity below the worst band and a zero count. The worst band and a positive count
+    stay published as lower bounds; a mistyped value falls through to the type check."""
+    def pre(raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
+        return impact_assessability.measure_withheld(hold, field, raw, bounds)
     return pre
 
 
-def _impact_detail_pre(hold: Optional[_ImpactHold], bounds: Sequence[_ImpactBound]) -> _Pre:
-    """The detail's pre-check. The producer's INDETERMINATE detail is its own disclosure that the switch could not be
-    assessed, never a clean bill, so it stays published. Any other detail is withheld with the row's hold: its text
-    ('No reachability impact', or per-VLAN results) states what the held measures could not. On a row without a hold,
-    a bound that reaches the detail (an uncollected neighbour) withholds a detail that names no simulated VLAN (no
-    readable positive vlans_impacted): that is the producer's clean bill. A per-VLAN detail stays published as the
-    list of what was simulated, the other cells carrying the lower-bound disclosure; a mistyped detail falls through
-    to the type check."""
+def _impact_detail_pre(hold: Optional[impact_assessability.Hold],
+                       bounds: Sequence[impact_assessability.Bound]) -> _Pre:
+    """The detail's pre-check, decided by the engine owner (impact_assessability.detail_withheld): the producer's
+    INDETERMINATE disclosure stays published, any other detail is held with the row's hold, and a bound that reaches
+    the detail withholds one that names no simulated VLAN; a mistyped detail falls through to the type check."""
     def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
-        if _is_text(raw) and raw.startswith(IMPACT_INDETERMINATE_PREFIX):
-            return None
-        if hold is not None:
-            return hold
-        reach = [bound for bound in bounds if bound[3] is not None]
-        if not reach or not _is_text(raw):
-            return None
-        ok, simulated = _count(row.raw.get("vlans_impacted")) if isinstance(row.raw, dict) else (False, None)
-        if ok and simulated:
-            return None
-        return _impact_bound_state(reach), "; ".join(bound[3] for bound in reach), [w for b in reach for w in b[4]]
+        return impact_assessability.detail_withheld(hold, raw, row.raw, bounds)
     return pre
-
-
-def _impact_dup(ctx: _Ctx, raw: Any) -> Optional[_Withheld]:
-    """The doubt on a failure_impact row whose exact host text another row also names. analyze.compute_failure_impact
-    writes one row per host of its network model, so two rows naming one host (an exact copy or a contradicting
-    record) cannot each be the producer's row, and no single one can be chosen (the _R_AMBIG precedent, the same
-    exact-text key the device selection joins by). Row-level, as for a duplicated structural host pair: every such
-    row keeps its index and pointer and withholds each of its cells as unverified, with a witness to every row naming
-    the host, while the list and its other hosts stay published. ``None``: no readable host, or no other row names it."""
-    if not (isinstance(raw, dict) and _is_text(raw.get("host"))):
-        return None
-    same = ctx.index(("failure_impact",), ("host",)).get(raw["host"], [])
-    if len(same) < 2:
-        return None
-    return _UV, _R_IMPACT_DUP.format(n=len(same)), [("witness", ("failure_impact", j)) for j in same]
 
 
 def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
     """A duplicated row's pre-check, in the module's precedence (analysis unavailable, then unverified, then not
-    collected; :func:`_impact_bound_state`, :func:`_topology_style`). The duplicate's unverified state wins over a
+    collected; impact_assessability.bound_state, :func:`_topology_style`). The duplicate's unverified state wins over a
     hold or bound that withholds the cell as not collected, because that hold reads a row no one can say is the
     producer's; a bound that is analysis_unavailable (a failed cable map) wins over it. Either way the other reason
     and its witnesses are carried beside, so both negative observations survive (the _selection_rows precedent for a
@@ -4743,22 +4775,16 @@ def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
 
 
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
-    """One failure-impact row, shared by the fleet topology and the device page (one builder, one state)."""
+    """One failure-impact row, shared by the fleet topology and the device page (one builder, one state). Which of its
+    values are measurements is the engine owner's row-level rule (impact_assessability: the duplicate doubt, the
+    hold, then the off-scan, blind-link and uncollected-neighbour bounds); this builder only carries those facts
+    into the envelopes, in the module's state precedence."""
     row = _list_row(("failure_impact", i), raw, ("failure_impact",))
     basis = "analyze.compute_failure_impact:failure_impact[]."
     out = {"index": i, "pointer": json_pointer(*row.toks)}
-    dup = _impact_dup(ctx, raw)
-    hold = _impact_hold(ctx, row)
-    off_scan = _impact_off_scan(row)
-    bounds: List[_ImpactBound] = []
-    if off_scan:
-        wit = [("witness", row.toks + ("off_scan_gw_vlans",))]
-        bounds.append((_NC, _R_IMPACT_UNDERSTATED.format(n=off_scan, worst=_IMPACT_WORST),
-                       _R_IMPACT_ZERO_BOUND.format(n=off_scan), None, wit))
-    peers = _impact_peers(ctx, row) if hold is None else None
-    if peers is not None:
-        bounds.append(peers)
-    # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable
+    dup, hold, bounds = ctx.impact.row(i, raw)
+    # every measure of a bounded row cites what bounds it: the off-scan count, the blind-link count (or the row
+    # itself when it predates that count), each uncollected neighbour's cable
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):
@@ -5233,6 +5259,9 @@ _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
                                                          "ExposureValue.input_state): an evidence state, not a verdict"),
     ("withheld_state", WITHHELD_STATES, "the withheld branch of every fact: each state names why a value is "
                                         "absent, never how severe it is"),
+    ("trust_input_custody", TRUST_INPUT_CUSTODY, "why an analysis input did not assess a listed device "
+                                                 "(TrustInputHost.custody): withheld states, each an absence that "
+                                                 "names why, never how severe; the gap's weight is its n out of of"),
     ("engine_state", ENGINE_STATES, "the raw owner token an envelope keeps beside a projected state"),
     ("engine_state_owner", ENGINE_STATE_OWNERS, "the owner that produced an engine_state"),
     ("limitation_id", _ALL_LIMITATION_IDS, "the registered qualifications a value may cite; LIMITATIONS and "
@@ -5909,11 +5938,22 @@ def _build_schema() -> Dict[str, Any]:
          "n_facts": _ref("CountFact"), "n_checked": _ref("CountFact"), "n_violations": _ref("CountFact"),
          "violations": _ref("ViolationList"), "engine_stamp": _ref("StampFact"),
          "stamp_matches_live": _nullable({"type": "boolean"})})
+    defs["TrustInputHost"] = _closed(
+        "TrustInputHost", ("host", "custody", "label", "pointer"),
+        {"host": _str(), "custody": _enum(TRUST_INPUT_CUSTODY), "label": _nullable(_str()),
+         "pointer": _ref("Pointer")})
+    defs["TrustInputHostList"] = _list_def("TrustInputHostList", _ref("TrustInputHost"))
+    defs["TrustInput"] = _closed(
+        "TrustInput", ("input", "sections", "n", "of", "hosts"),
+        {"input": _enum(tuple(TRUST_INPUTS)), "sections": {"type": "array", "items": _str()},
+         "n": _ref("CountFact"), "of": _ref("CountFact"), "hosts": _ref("TrustInputHostList")})
     n_lims = len(LIMITATIONS)
+    n_inputs = len(TRUST_INPUTS)
     defs["Trust"] = _closed(
-        "Trust", ("census", "failures", "coverage_matrix", "unknown_evidence", "ssot", "limitations"),
+        "Trust", ("census", "failures", "coverage_matrix", "unknown_evidence", "ssot", "inputs", "limitations"),
         {"census": _ref("Census"), "failures": _ref("Failures"), "coverage_matrix": _ref("CoverageMatrix"),
          "unknown_evidence": _ref("UnknownEvidence"), "ssot": _ref("Ssot"),
+         "inputs": {"type": "array", "minItems": n_inputs, "maxItems": n_inputs, "items": _ref("TrustInput")},
          "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")}})
     _slice2_defs(defs)
     _topology_defs(defs)

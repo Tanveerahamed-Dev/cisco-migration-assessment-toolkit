@@ -21,6 +21,12 @@ count, but as lower bounds, citing a witness ref on each such measure. Every sur
 ``lower_bound``, ``≥ N`` in the tab), a wave whose ranked switches include one is never ``complete``, and an exact row
 is never flagged. It also pins that a stored ``executive_brief.keystones`` list is never read, that a section that is
 not a list shows the projection's own disclosure, and that a row with an empty host is disclosed like one with none.
+
+W45 (the W36 + W33 + W32 integration train, after this file merged): the projection's row rules now live in the engine
+owner ``cisco_toolkit/impact_assessability.py`` (W33), which also bounds a row by W32's per-row ``blind_links`` count
+(inter-switch links with no trunk/STP evidence) or by its absence (a row older than that count). So the sample rows
+each surface flags are derived from each stored row's own evidence (:func:`_sample_bounds`), never from a host list:
+core2's uncollected router as before, plus every row whose stored count is positive or absent.
 """
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` i
 from backend import cutover, summary  # noqa: E402  (also bootstraps sys.path for cisco_toolkit)
 from backend.app import create_app  # noqa: E402
 from cisco_toolkit import analyze  # noqa: E402
+from cisco_toolkit import impact_assessability as ia  # noqa: E402
 from cisco_toolkit import ui_projection as ui  # noqa: E402
 from cisco_toolkit.model import InterfaceData  # noqa: E402
 
@@ -174,18 +181,64 @@ def _bound_entry(row, pointers, reasons):
                       f"{row['detail']}"}
 
 
-#: The sample's one uncollected neighbour that is not edge gear (W23 pins it as the sample's only bound:
-#: tests/test_ui_projection_device_impact.py::test_a_simulated_device_selects_exactly_its_fleet_rows).
+#: The sample's one uncollected neighbour that is not edge gear (W23 pins it as the sample's only uncollected-neighbour
+#: bound: tests/test_ui_projection_device_impact.py::test_a_simulated_device_selects_exactly_its_fleet_rows).
 WAN = "wan-edge-rtr1.lab"
 
 
+def _sample_index(sample, host):
+    hits = [i for i, row in enumerate(sample["failure_impact"]) if row["host"] == host]
+    assert len(hits) == 1, (host, hits)
+    return hits[0]
+
+
+def _sample_bounds(sample, i):
+    """Independent of the projection and the owner: how stored sample row `i`'s own evidence bounds it, as
+    ``(pointers, reasons)`` in the projection's cite order. First its blind-link count (W32): a positive count cites
+    the count, and a row without the field predates it and cites the row itself. Then core2's cable to the
+    uncollected router. ``([], [])``: the row is a measurement."""
+    row = sample["failure_impact"][i]
+    pointer = f"/failure_impact/{i}"
+    pointers, reasons = [], []
+    if "blind_links" not in row:
+        pointers.append(pointer)
+        reasons.append(summary._R_BOUND_BLIND_LEGACY)
+    elif row["blind_links"]:
+        pointers.append(pointer + "/blind_links")
+        reasons.append(summary._R_BOUND_BLIND)
+    if row["host"] == "core2":
+        pointers.append(_cable(sample, "core2", WAN))
+        reasons.append(summary._R_BOUND_PEERS.format(k=1))
+    return pointers, reasons
+
+
+def _sample_bounded(sample, host):
+    return bool(_sample_bounds(sample, _sample_index(sample, host))[0])
+
+
+def _sample_ranks(sample, i):
+    """Whether the projection publishes stored sample row `i`'s host, severity and stranded count: always for a
+    measurement; on a bounded row only a High band and a positive count (a bound withholds a lower band and a 0)."""
+    row = sample["failure_impact"][i]
+    return not _sample_bounds(sample, i)[0] or (row["severity"] == "High" and row["stranded"] != 0)
+
+
+def _sample_ranked(sample):
+    """The stored sample rows a ranking may place, in stored order."""
+    return [row for i, row in enumerate(sample["failure_impact"]) if _sample_ranks(sample, i)]
+
+
+def _sample_unranked(sample):
+    """The hosts of the stored sample rows no ranking places (always disclosed instead), in stored order."""
+    return [row["host"] for i, row in enumerate(sample["failure_impact"]) if not _sample_ranks(sample, i)]
+
+
 def _sample_entry(sample):
-    """The entry each sample row ranks as: core2, cabled to the uncollected router, is a flagged lower bound; every
-    other row is exact."""
+    """The entry each ranked sample row ranks as: a flagged lower bound when its own evidence bounds it (core2's
+    uncollected router, a positive or absent blind_links count), else exact."""
     def entry(row):
-        if row["host"] == "core2":
-            return _bound_entry(row, [_cable(sample, "core2", WAN)], [summary._R_BOUND_PEERS.format(k=1)])
-        return _exact(row)
+        pointers, reasons = _sample_bounds(sample, _sample_index(sample, row["host"]))
+        return _bound_entry(row, pointers, reasons) if pointers else _exact(row)
     return entry
 
 
@@ -233,12 +286,19 @@ def test_the_impact_fields_and_tokens_are_the_projections_own(sample):
     assert summary.IMPACT_MEASURES == ui._IMPACT_MEASURES == MEASURES
     assert summary._WITNESS_ROLE in ui.REF_ROLES
     # a cable-row bound's kind is read from the projection's own words, in each reason its bound writes: the
-    # neighbours it counts and how many fail closed (unreadable or ambiguous cable evidence)
+    # neighbours it counts and how many fail closed (unreadable or ambiguous cable evidence). Since W33 those words
+    # are the engine owner's (impact_assessability.R_PEERS / R_PEERS_CLOSED / make_bound), which the projection carries.
     for n, k in ((1, 0), (2, 1), (3, 3)):
-        clause = ui._R_IMPACT_PEERS.format(n=n, closed=ui._R_IMPACT_PEERS_CLOSED.format(k=k) if k else "")
-        for reason in ui._impact_bound(ui._NC, clause, [])[1:4]:
+        clause = ia.R_PEERS.format(n=n, closed=ia.R_PEERS_CLOSED.format(k=k) if k else "")
+        for reason in ia.make_bound(ia.NOT_COLLECTED, clause, [], "uncollected_neighbours", n)[1:4]:
             assert summary._impact_peers_said({"fhrp": (False, None, reason)}) == (n, k), reason
     assert summary._impact_peers_said({"fhrp": (True, 0, "")}) is None
+    # the blind-link bound (W32, through the owner) is worded by its witness, which is exactly what the owner cites: the
+    # row's blind_links count, or the row itself when it predates that count
+    assert ia.blind_bound({"blind_links": 2}, ("failure_impact", 7)).witnesses == [
+        ("witness", ("failure_impact", 7, "blind_links"))]
+    assert ia.blind_bound({}, ("failure_impact", 7)).witnesses == [("witness", ("failure_impact", 7))]
+    assert ia.blind_bound({"blind_links": 0}, ("failure_impact", 7)) is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -277,7 +337,7 @@ def test_keystones_never_rank_a_clean_bill_an_uncollected_neighbour_bounds():
     assert gw["severity"] == "High" and gw["stranded"] == 1, gw
     dsw, wan = _node(snap, "dsw"), _node(snap, "wan")
     assert dsw["collected"] is False and dsw["kind"] == "switch", dsw        # the REAL cable-map producer's nodes
-    assert wan["collected"] is False and wan["kind"] not in ui._IMPACT_EDGE_KINDS, wan
+    assert wan["collected"] is False and wan["kind"] not in ia.IMPACT_EDGE_KINDS, wan
     # gw is cabled to the uncollected router wan: High and its positive count are published lower bounds
     gw_bound = _bound_entry(gw, [_cable(snap, "gw", "wan")], [summary._R_BOUND_PEERS.format(k=1)])
     keystones = summary.summarize(snap)["keystones"]
@@ -335,14 +395,31 @@ def test_an_unreadable_cable_row_is_a_bound_worded_as_unreadable_never_as_an_unc
     assert tab[k]["stranded"] == f"≥ 1 — a lower bound, not an exact measurement: {why}", tab[k]["stranded"]
 
 
-def test_keystones_on_the_sample_keep_their_order_flag_only_core2_and_carry_the_contract(sample):
+def test_keystones_on_the_sample_keep_their_order_flag_only_the_rows_their_own_evidence_bounds(sample):
     s = summary.summarize(copy.deepcopy(sample))
     assert s["keystone_contract"] == summary.KEYSTONE_CONTRACT_VERSION
-    # the same ranking and values as before; only core2, cabled to the uncollected router, is flagged "at least"
-    assert s["keystones"] == _old_keystones(sample["failure_impact"], entry=_sample_entry(sample))
-    assert [k["host"] for k in s["keystones"] if k["lower_bound"]] == ["core2"]
-    assert all(k["host"] for k in s["keystones"])
-    assert cutover._keystone_hosts(copy.deepcopy(sample)) == {k["host"] for k in s["keystones"]}
+    shown = [k for k in s["keystones"] if k["host"]]
+    # the same ranking and values as before over the rows a ranking may place; each row its own stored evidence bounds
+    # (core2's uncollected router, a positive or absent blind_links count) is flagged "at least", and only those
+    assert shown == _old_keystones(_sample_ranked(sample), entry=_sample_entry(sample))
+    assert [k["host"] for k in shown if k["lower_bound"]] == [k["host"] for k in shown
+                                                              if _sample_bounded(sample, k["host"])]
+    assert "core2" in {k["host"] for k in shown if k["lower_bound"]}
+    # pinned on the sample (W45 refutation), never only derived from its stored counts: the flagged rows are exactly
+    # core1 (blind_links 1) and core2 (its router), and the one row no ranking places is dist1 (a bounded Low band)
+    assert [k["host"] for k in shown if k["lower_bound"]] == ["core1", "core2"], shown
+    assert _sample_unranked(sample) == ["dist1"]
+    # a bounded band below High or a bounded zero is never ranked and always disclosed, with any lower bound below
+    # the cut, in the one NOT ASSESSED entry
+    unranked = _sample_unranked(sample)
+    order = _old_keystones(_sample_ranked(sample), top=len(sample["failure_impact"]))
+    below = [k["host"] for k in order[len(shown):] if _sample_bounded(sample, k["host"])]
+    notes = [k for k in s["keystones"] if not k["host"]]
+    assert len(notes) == (1 if unranked or below else 0), notes
+    if notes:
+        assert notes[0]["severity"] == summary.IMPACT_NOT_ASSESSED and notes[0]["n_not_ranked"] == len(unranked)
+        assert all(host in notes[0]["detail"] for host in unranked + below), notes[0]["detail"]
+    assert cutover._keystone_hosts(copy.deepcopy(sample)) == {k["host"] for k in shown}
 
 
 def test_the_samples_core2_is_a_lower_bound_on_every_surface(client, sample):
@@ -350,15 +427,22 @@ def test_the_samples_core2_is_a_lower_bound_on_every_surface(client, sample):
     wan-edge-rtr1.lab (collected: false, kind router), so 42 is only a lower bound. Every surface says so."""
     cable = _cable(sample, "core2", WAN)
     why = summary._R_BOUND_PEERS.format(k=1)
-    # the projection's own signal: core2's published measures cite that cable; no other published measure cites any
+    # the projection's own signal: each published measure cites exactly its own row's bounds (core2's cable; a row's
+    # positive blind_links count, or the row itself when it predates that count), and a measurement's cite none
     items = ui.project_topology(sample)["failure_impact"]["items"]
-    for item, src in zip(items, sample["failure_impact"]):
+    flagged = []
+    for i, (item, src) in enumerate(zip(items, sample["failure_impact"])):
         for field in MEASURES:
             if item[field]["state"] == "published":
                 cited = [ref["pointer"] for ref in item[field]["refs"] if ref["role"] == "witness"]
-                assert cited == ([cable] if src["host"] == "core2" else []), (src["host"], field, cited)
+                assert cited == _sample_bounds(sample, i)[0], (src["host"], field, cited)
+                if cited and src["host"] not in flagged:
+                    flagged.append(src["host"])
     rows = {row["key"]: row for row in summary.impact_view(copy.deepcopy(sample))["rows"]}
-    assert [host for host, row in rows.items() if row["lower_bound"]] == ["core2"]
+    assert [host for host, row in rows.items() if row["lower_bound"]] == flagged and "core2" in flagged
+    for host in flagged:
+        pointers, reasons = _sample_bounds(sample, _sample_index(sample, host))
+        assert rows[host]["bound_pointers"] == pointers and rows[host]["bound_reasons"] == reasons, rows[host]
     assert rows["core2"]["ranked"] is True and rows["core2"]["bound_pointers"] == [cable]
     assert rows["core2"]["bound_fields"] == ("severity", "vlans_impacted", "stranded", "hard")
     assert rows["core2"]["bound_reasons"] == [why]
@@ -369,13 +453,13 @@ def test_the_samples_core2_is_a_lower_bound_on_every_surface(client, sample):
     assert core2["stranded"] == 42 and core2["lower_bound"] is True, core2
     assert core2["lower_bound_pointers"] == [cable] and core2["lower_bound_reasons"] == [why]
     assert core2["detail"].startswith(f"LOWER BOUND, at least 42 endpoint(s) stranded: {why}. VLAN "), core2["detail"]
-    assert all(k["lower_bound"] is False for k in keystones if k["host"] != "core2")
-    # the cutover planner: core2's wave is not complete (core2 can exceed its worst case, core1's 45); core2 alone is
-    # a flagged lower bound, never complete
+    assert all(k["lower_bound"] is (k["host"] in flagged) for k in keystones if k["host"]), keystones
+    # the cutover planner: core2's wave is not complete (core2 can exceed its worst case, core1's 45, itself flagged
+    # when core1's own stored evidence bounds it); core2 alone is a flagged lower bound, never complete
     plan = client.get(f"/api/snapshots/{sid}/cutover").json()
     wave = next(w for w in plan["waves"] if "core2" in w["switches"])
     br = wave["blast_radius"]
-    assert br["host"] == "core1" and br["stranded"] == 45 and br["lower_bound"] is False
+    assert br["host"] == "core1" and br["stranded"] == 45 and br["lower_bound"] is ("core1" in flagged)
     assert br["complete"] is False and "core2 — " + why in br["detail"], br
     alone = cutover._worst_blast_radius({"core2"}, summary.impact_view(copy.deepcopy(sample)))
     assert alone["host"] == "core2" and alone["stranded"] == 42 and alone["lower_bound"] is True
@@ -391,11 +475,14 @@ def test_a_withheld_sample_row_never_ranks_and_is_disclosed(sample, mode):
     snap, why = _held_core1(sample, mode)
     keystones = summary.summarize(snap)["keystones"]
     ranked, note = keystones[:-1], keystones[-1]
-    others = [row for row in sample["failure_impact"] if row["host"] != "core1"]
+    others = [row for row in _sample_ranked(sample) if row["host"] != "core1"]
     # core1 is neither ranked first nor shown as Info
     assert ranked == _old_keystones(others, entry=_sample_entry(sample)), ranked
     assert note["host"] == "" and note["severity"] == summary.IMPACT_NOT_ASSESSED
-    assert note["n_not_ranked"] == (2 if mode == "duplicate" else 1)
+    # core1's row(s), beside every other sample row its own evidence keeps from a ranking (always disclosed)
+    also = [host for host in _sample_unranked(sample) if host != "core1"]
+    assert note["n_not_ranked"] == (2 if mode == "duplicate" else 1) + len(also), note
+    assert all(host in note["detail"] for host in also), note["detail"]
     assert "core1" in note["detail"] and why in note["detail"], note["detail"]
     assert "core1" not in cutover._keystone_hosts(snap)
 
@@ -414,10 +501,10 @@ def test_a_blind_spot_makes_the_keystone_ranking_a_disclosed_lower_bound(sample)
     snap = copy.deepcopy(sample)
     snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)
     keystones = summary.summarize(snap)["keystones"]
-    # every row is still the engine's to rank
-    assert keystones[:-1] == _old_keystones(sample["failure_impact"], entry=_sample_entry(sample))
+    # every row is still the engine's to rank (the blind spot names no sample row)
+    assert keystones[:-1] == _old_keystones(_sample_ranked(sample), entry=_sample_entry(sample))
     note = keystones[-1]
-    assert note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == 0
+    assert note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == len(_sample_unranked(sample))
     assert "lower bound" in note["detail"] and "collection_completeness lists 2 device(s)" in note["detail"]
 
 
@@ -429,14 +516,26 @@ def test_a_lower_bound_below_the_cut_is_disclosed_because_it_could_rank_among_th
     assert place == 2                                       # core1 45, access1 42, core2 42 (stored order)
     keystones = summary._keystones(copy.deepcopy(sample), top=place)        # core2 just below the cut
     assert [k["host"] for k in keystones[:-1]] == ["core1", "access1"]
-    assert not any(k["lower_bound"] for k in keystones[:-1])
+    # each shown row is flagged exactly when its own stored evidence bounds it (core1 by a positive blind_links count)
+    assert [k["lower_bound"] for k in keystones[:-1]] == [_sample_bounded(sample, h) for h in ("core1", "access1")]
     note = keystones[-1]
-    assert note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == 0
-    assert "1 ranked row(s) below the devices shown publish only lower bounds" in note["detail"], note["detail"]
+    assert note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == len(_sample_unranked(sample))
+    order = [row["key"] for row in ranked]
+    below = [host for host in order[place:] if _sample_bounded(sample, host)]
+    assert "core2" in below
+    assert (f"{len(below)} ranked row(s) below the devices shown publish only lower bounds"
+            in note["detail"]), note["detail"]
     assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in note["detail"]
-    # the control: a cut that shows core2 flags it in place and needs no disclosure
+    # the control: a cut that shows core2 flags it in place and no longer discloses it as below the cut. Its
+    # precondition is asserted, never branched on, so a future sample cannot skip the control silently: the sample's
+    # only ranked bounds are core1 (first) and core2 (third) -- dist1's bounded Low band never ranks -- so no bounded
+    # ranked row lies below core2
+    assert [host for host in order if _sample_bounded(sample, host)] == ["core1", "core2"], order
+    assert not [host for host in order[place + 1:] if _sample_bounded(sample, host)], order
     keystones = summary._keystones(copy.deepcopy(sample), top=place + 1)
-    assert [k["host"] for k in keystones] == ["core1", "access1", "core2"] and keystones[-1]["lower_bound"] is True
+    shown = [k for k in keystones if k["host"]]
+    assert [k["host"] for k in shown] == ["core1", "access1", "core2"] and shown[-1]["lower_bound"] is True
+    assert not any("publish only lower bounds" in k["detail"] for k in keystones if not k["host"]), keystones
 
 
 @pytest.mark.parametrize("mode", ["held", "failed", "published"])
@@ -574,29 +673,45 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
     plan = cutover.build_plan(copy.deepcopy(sample))
     assert plan["waves"]
     entry = _sample_entry(sample)
+    ranked_rows = _sample_ranked(sample)
+    unranked = set(_sample_unranked(sample))
     with_core2 = [wave for wave in plan["waves"] if "core2" in wave["switches"]]
     assert with_core2 and len(with_core2) < len(plan["waves"])
     for wave in plan["waves"]:
-        want = _old_worst(sample["failure_impact"], set(wave["switches"]))
+        switches = set(wave["switches"])
+        assert switches <= set(_by_host(sample)), wave["group"]          # every sample wave switch has its row
         br = wave["blast_radius"]
-        if wave in with_core2:
-            # core2's counts are lower bounds (its uncollected router), so it could exceed the wave's worst case
-            assert {k: v for k, v in br.items() if k != "detail"} == {
-                **{k: v for k, v in entry(want).items() if k != "detail"}, "complete": False, "n_not_ranked": 0}
-            assert br["detail"].startswith(entry(want)["detail"] + " — LOWER BOUND, the worst case may be larger")
-            assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in br["detail"], br["detail"]
-        else:
+        not_ranked = sorted(switches & unranked)
+        # a ranked switch whose counts its own evidence bounds (core2's router, a positive or absent blind_links
+        # count) could exceed the wave's worst case, whether or not it is the worst
+        bounded_in = [row["host"] for row in ranked_rows if row["host"] in switches
+                      and _sample_bounded(sample, row["host"])]
+        if not any(row["host"] in switches for row in ranked_rows):
+            assert br["severity"] == cutover.IMPACT_NOT_ASSESSED and br["stranded"] is None, br
+            assert br["complete"] is False and br["n_not_ranked"] == len(not_ranked), br
+            continue
+        want = _old_worst(ranked_rows, switches)
+        if not not_ranked and not bounded_in:
             assert br == {**_exact(want), "complete": True, "n_not_ranked": 0}, wave["group"]
+            continue
+        assert {k: v for k, v in br.items() if k != "detail"} == {
+            **{k: v for k, v in entry(want).items() if k != "detail"}, "complete": False,
+            "n_not_ranked": len(not_ranked)}, wave["group"]
+        assert br["detail"].startswith(entry(want)["detail"] + " — LOWER BOUND, the worst case may be larger")
+        assert all(host in br["detail"] for host in not_ranked + bounded_in), (wave["group"], br["detail"])
+        if "core2" in switches:
+            assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in br["detail"], br["detail"]
     snap, why = _held_core1(sample, "duplicate")
     wave = next(w for w in cutover.build_plan(snap)["waves"] if "core1" in w["switches"])
     br = wave["blast_radius"]
-    others = [row for row in sample["failure_impact"] if row["host"] != "core1"]
+    others = [row for row in ranked_rows if row["host"] != "core1"]
     want = _old_worst(others, set(wave["switches"]))
     assert br["host"] != "core1" and br["severity"] != "Info"
     assert {k: br[k] for k in ("host", "severity", "stranded", "vlans_impacted")} == {
         k: want[k] for k in ("host", "severity", "stranded", "vlans_impacted")}
-    assert br["detail"].startswith(want["detail"] + " — LOWER BOUND") and why in br["detail"]
-    assert br["complete"] is False and br["n_not_ranked"] == 1
+    assert br["detail"].startswith(entry(want)["detail"] + " — LOWER BOUND") and why in br["detail"]
+    also = sorted((set(wave["switches"]) & unranked) - {"core1"})
+    assert br["complete"] is False and br["n_not_ranked"] == 1 + len(also)
 
 
 def test_the_cutover_document_prints_not_assessed_never_a_zero(tmp_path):
@@ -637,9 +752,13 @@ def test_the_cutover_document_prints_a_lower_bound_as_at_least(tmp_path, sample)
     lines = _blast_lines(snap, tmp_path)
     assert any("core2 (High) — at least 42 endpoint(s) stranded across at least 3 VLAN(s). LOWER BOUND" in line
                for line in lines), lines
-    # core1's wave prints core1's exact counts, with core2's bound disclosed as the reason it may be larger
-    assert any("core1 (High) — 45 endpoint(s) stranded across 3 VLAN(s)." in line and "core2 — " in line
-               for line in lines), lines
+    # core1's wave prints core1's counts, exact unless core1's own stored evidence bounds them (then "at least"), with
+    # core2's bound disclosed as the reason it may be larger
+    core1 = _by_host(sample)["core1"]
+    head = ("core1 (High) — at least {s} endpoint(s) stranded across at least {v} VLAN(s)."
+            if _sample_bounded(sample, "core1") else "core1 (High) — {s} endpoint(s) stranded across {v} VLAN(s).")
+    head = head.format(s=core1["stranded"], v=core1["vlans_impacted"])
+    assert any(head in line and "core2 — " in line for line in lines), (head, lines)
     # the control: an exact worst case prints its counts bare
     ctrl = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))])
     _node(ctrl, "wan")["collected"] = True
@@ -691,27 +810,81 @@ def test_the_failure_impact_tab_shows_the_engine_reason_never_a_withheld_value(c
         assert isinstance(gw[field], str) and "only a lower bound" in gw[field], (field, gw[field])
 
 
-def test_the_sample_tab_changes_only_core2_whose_uncollected_router_bounds_it(client, sample):
-    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
-    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
-    assert len(table) == len(sample["failure_impact"])
-    why = summary._R_BOUND_PEERS.format(k=1)
-    withheld, bounded = [], []
-    for row, src in zip(table, sample["failure_impact"]):
+def _tab_against_bounds(table, snap):
+    """The "Failure impact" tab of `snap`, checked cell by cell against each stored row's own bounds
+    (:func:`_sample_bounds`). Returns which branch each bounded row's cells took, by host: ``withheld`` (a band below
+    High or a zero), ``bounded`` (High or a positive count, published as a lower bound) and ``cleared`` (a clean-bill
+    detail, which names no simulated VLAN, withheld as not a clean bill)."""
+    assert len(table) == len(snap["failure_impact"])
+    withheld, bounded, cleared = {}, {}, []
+    for i, (row, src) in enumerate(zip(table, snap["failure_impact"])):
         assert list(row) == list(summary.IMPACT_FIELDS)
+        pointers, reasons = _sample_bounds(snap, i)
         for field in summary.IMPACT_FIELDS:
-            if src["host"] == "core2" and field in MEASURES and src[field] == 0:
-                assert isinstance(row[field], str) and "only a lower bound" in row[field], (field, row[field])
-                assert "uncollected neighbour" in row[field], row[field]
-                withheld.append(field)
-            elif src["host"] == "core2" and field in MEASURES:
+            understates = field in MEASURES and (src[field] != "High" if field == "severity" else src[field] == 0)
+            if pointers and understates:
+                # a band below High and a zero: withheld, since the bound cannot vouch for them
+                assert isinstance(row[field], str), (src["host"], field, row[field])
+                assert ("may understate" if field == "severity" else "only a lower bound") in row[field], row[field]
+                withheld.setdefault(src["host"], []).append(field)
+            elif pointers and field in MEASURES:
                 # High and each positive count: published, as the lower bounds they are
-                assert row[field] == f"≥ {src[field]} — a lower bound, not an exact measurement: {why}", row[field]
-                bounded.append(field)
+                assert row[field] == (f"≥ {src[field]} — a lower bound, not an exact measurement: "
+                                      f"{'; '.join(reasons)}"), (src["host"], field, row[field])
+                bounded.setdefault(src["host"], []).append(field)
+            elif pointers and field == "detail" and not src["vlans_impacted"]:
+                assert isinstance(row[field], str) and "not a clean bill" in row[field], row[field]
+                assert src[field] not in row[field], (src["host"], row[field])   # never the stored clean bill
+                cleared.append(src["host"])
             else:
                 assert row[field] == src[field], (src["host"], field)      # every exact cell renders as before
-    assert sorted(withheld) == ["backup", "fhrp"], withheld
-    assert sorted(bounded) == ["hard", "severity", "stranded", "vlans_impacted"], bounded
+    assert set(withheld) | set(bounded) == {src["host"] for i, src in enumerate(snap["failure_impact"])
+                                            if _sample_bounds(snap, i)[0]}
+    return ({host: sorted(fields) for host, fields in withheld.items()},
+            {host: sorted(fields) for host, fields in bounded.items()}, cleared)
+
+
+def test_the_sample_tab_changes_only_the_rows_their_own_evidence_bounds(client, sample):
+    """core2's uncollected router bounds it, as before; since W32 (through the W33 owner) a row's positive or absent
+    blind_links count bounds it the same way. Each bound is derived from the stored row (:func:`_sample_bounds`)."""
+    sid = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    withheld, bounded, cleared = _tab_against_bounds(table, sample)
+    assert withheld["core2"] == ["backup", "fhrp"], withheld
+    assert bounded["core2"] == ["hard", "severity", "stranded", "vlans_impacted"], bounded
+    assert "uncollected neighbour" in table[_sample_index(sample, "core2")]["backup"]
+    # pinned exactly on the sample (W45 refutation), never only derived from its stored counts: core2's router, and
+    # the blind_links of core1 (High, 45 stranded) and dist1 (Low, FHRP-covered), 1 each
+    assert withheld == {"core1": ["backup", "fhrp"], "core2": ["backup", "fhrp"],
+                        "dist1": ["backup", "hard", "severity", "stranded"]}, withheld
+    assert bounded == {"core1": ["hard", "severity", "stranded", "vlans_impacted"],
+                       "core2": ["hard", "severity", "stranded", "vlans_impacted"],
+                       "dist1": ["fhrp", "vlans_impacted"]}, bounded
+    # the clean-bill detail branch, asserted rather than skipped: every bounded sample row simulated a VLAN, so its
+    # per-VLAN detail lists what was simulated and renders as stored
+    assert cleared == [], cleared
+    assert {src["host"]: src["vlans_impacted"] for i, src in enumerate(sample["failure_impact"])
+            if _sample_bounds(sample, i)[0]} == {"core1": 3, "core2": 3, "dist1": 2}
+    # ... and that branch exercised, once per bound that reaches a detail: podacc1's stored clean bill made older than
+    # the blind_links count (the row itself bounds it), and core2 storing a clean bill behind its uncollected router.
+    # A POSITIVE count never takes this branch: with no VLAN simulated, the owner reads it as its blind_links_only
+    # hold (impact_assessability.row_hold), never as a bound. Each tab row withholds every measure and the bill itself.
+    snap = copy.deepcopy(sample)
+    pod, core2 = _sample_index(snap, "podacc1"), _sample_index(snap, "core2")
+    assert snap["failure_impact"][pod]["detail"] == CLEAN_BILL and snap["failure_impact"][pod]["blind_links"] == 0
+    del snap["failure_impact"][pod]["blind_links"]
+    snap["failure_impact"][core2].update(severity="Info", vlans_impacted=0, stranded=0, hard=0, backup=0, fhrp=0,
+                                         detail=CLEAN_BILL)
+    sid = _upload(client, snap)
+    stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
+    assert stored["failure_impact"] == snap["failure_impact"]
+    table = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    withheld, bounded, cleared = _tab_against_bounds(table, stored)
+    assert cleared == ["core2", "podacc1"], cleared                         # stored order
+    for host in cleared:
+        assert withheld[host] == sorted(MEASURES) and host not in bounded, (host, withheld, bounded)
+    for k, cause in ((core2, "uncollected neighbour"), (pod, "carries no blind_links")):
+        assert table[k]["detail"].startswith("not collected: ") and cause in table[k]["detail"], table[k]["detail"]
 
 
 def test_the_tab_withholds_unreadable_rows(client):

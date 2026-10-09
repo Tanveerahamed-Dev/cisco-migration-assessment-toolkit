@@ -12595,7 +12595,7 @@
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 100 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 101 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -12607,7 +12607,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 102 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 103 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -14582,7 +14582,8 @@
    "backup": 0,
    "fhrp": 0,
    "off_scan_gw_vlans": 0,
-   "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)"
+   "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)",
+   "blind_links": 0
   },
   {
    "host": "core2",
@@ -14593,7 +14594,8 @@
    "backup": 0,
    "fhrp": 1,
    "off_scan_gw_vlans": 0,
-   "detail": "VLAN 10: FHRP-covered"
+   "detail": "VLAN 10: FHRP-covered",
+   "blind_links": 0
   },
   {
    "host": "access1",
@@ -14604,7 +14606,8 @@
    "backup": 0,
    "fhrp": 0,
    "off_scan_gw_vlans": 0,
-   "detail": "No reachability impact from removing this switch (within the scan)."
+   "detail": "No reachability impact from removing this switch (within the scan).",
+   "blind_links": 0
   }
  ],
  "link_centrality": [
@@ -15630,7 +15633,12 @@
     ],
     "risk_index": 100,
     "risk_band": "Severe",
-    "verdict": "Stabilize or replace before migration \u2014 health Critical (3/100); hardware Past LDoS; open advisory surface; removal strands 3 endpoint(s) across 2 VLAN(s)."
+    "verdict": "Stabilize or replace before migration \u2014 health Critical (3/100); hardware Past LDoS; open advisory surface; removal strands 3 endpoint(s) across 2 VLAN(s).",
+    "impact_assessability": {
+     "assessable": "published",
+     "why": "",
+     "pointer": "/failure_impact/0"
+    }
    },
    {
     "host": "access1",
@@ -15726,7 +15734,12 @@
     "compound": [],
     "risk_index": 10,
     "risk_band": "Guarded",
-    "verdict": "Watch items only \u2014 hardware past end-of-sale; advisory surface to validate (PSIRT checker); operational events to review in the logs."
+    "verdict": "Watch items only \u2014 hardware past end-of-sale; advisory surface to validate (PSIRT checker); operational events to review in the logs.",
+    "impact_assessability": {
+     "assessable": "published",
+     "why": "",
+     "pointer": "/failure_impact/2"
+    }
    },
    {
     "host": "core2",
@@ -15822,7 +15835,12 @@
     "compound": [],
     "risk_index": 0,
     "risk_band": "Low",
-    "verdict": "No stacked risk \u2014 routine migration handling."
+    "verdict": "No stacked risk on the assessed axes, but the blast radius is only a lower bound (it faces 1 uncollected neighbour(s) that can carry endpoints); confirm the blast radius before treating this as routine migration handling.",
+    "impact_assessability": {
+     "assessable": "lower_bound",
+     "why": "it faces 1 uncollected neighbour(s) that can carry endpoints",
+     "pointer": "/failure_impact/1"
+    }
    }
   ],
   "summary": {
@@ -15994,7 +16012,7 @@
     "domain": "Resiliency & availability",
     "title": "No keystone single point of failure",
     "verdict": "advisory",
-    "observed": "Losing core1 strands 3 endpoint(s).",
+    "observed": "Losing core1 strands 3 endpoint(s). 1 simulated device(s) are not graded, because their blast radius is not a measurement on this evidence: core2 (lower bound \u2014 it faces 1 uncollected neighbour(s) that can carry endpoints).",
     "implication": "Endpoint dependency is concentrated \u2014 these devices ARE the availability budget.",
     "recommendation": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
     "reference": "Availability analysis \u2014 single-device blast radius",

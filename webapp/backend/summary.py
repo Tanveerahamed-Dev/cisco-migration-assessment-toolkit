@@ -125,7 +125,9 @@ def _count_by(items: List[dict], key: str, order: List[str] | None = None) -> Di
 # measurement and never feeds a ranking.
 #
 # A PUBLISHED measure can still be a lower bound. On a row the simulation covered only in part (a positive
-# off_scan_gw_vlans) or that the stored cable map shows cabled to an uncollected neighbour (_impact_peers),
+# off_scan_gw_vlans), whose switch has inter-switch links with no trunk/STP evidence (a positive blind_links, W32) or
+# whose stored row predates that count, or that the stored cable map shows cabled to an uncollected neighbour -- the
+# bounds of the engine owner cisco_toolkit/impact_assessability.py (off_scan_bound, blind_bound, neighbour_bound) --
 # ui_projection._topology_impact withholds what that bound cannot vouch for (a band below High, a zero) and publishes
 # the worst band and each positive count "as lower bounds", citing every bound's witnesses on every measure (its
 # `cite`, passed to _cell as the cell's witness refs; limitation impact_scanned_scope). That witness ref is the
@@ -164,9 +166,11 @@ _IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
 #: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
 #: executive_brief.keystones list is no longer read. 4: a cable-row bound is worded by what the projection's own
 #: reason says of it (an uncollected neighbour, or cable evidence that cannot be read or is ambiguous), never as an
-#: uncollected neighbour alone. A cached summary from an older contract is recomputed on read
+#: uncollected neighbour alone. 5: a bound from inter-switch links with no trunk/STP evidence (W32, through the
+#: engine owner impact_assessability.blind_bound) is flagged and worded by its witness: the row's blind_links count,
+#: or the row itself when it predates that count. A cached summary from an older contract is recomputed on read
 #: (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 4
+KEYSTONE_CONTRACT_VERSION = 5
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -196,14 +200,22 @@ _R_BOUND_PEERS_EITHER = ("the stored cable map has {k} cable row(s) that cable t
                          "on scanned switches")
 _R_BOUND_CABLE_MAP = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored cable "
                       "map cannot be read, and the simulation counts only endpoints on scanned switches")
+#: The two blind-link bounds of impact_assessability.blind_bound, by their witness: the row's own blind_links count
+#: (a positive count) or the row itself (a row stored before the producer wrote that count).
+_R_BOUND_BLIND = ("this switch has inter-switch links with no trunk/STP evidence on either end (blind_links), and "
+                  "the simulation never ran a VLAN this switch transits only over them")
+_R_BOUND_BLIND_LEGACY = ("this stored row predates the engine's per-row count of inter-switch links with no "
+                         "trunk/STP evidence (blind_links), so it cannot rule such links out, and the simulation "
+                         "never ran a VLAN a switch transits only over them")
 _R_BOUND_CITED = "the engine cites {pointer} as a bound on this row"
 #: How the tab marks a published lower bound in place of its bare value (cf. a withheld cell's reason).
 IMPACT_BOUND_MARK = "≥"
 _R_BOUND_LEAD = "a lower bound, not an exact measurement: "
-#: The witness pointers ui_projection._impact_peers cites: one cable row, or the cable list / map it cannot read.
+#: The witness pointers the owner's neighbour bound (impact_assessability.neighbour_bound) cites: one cable row, or
+#: the cable list / map it cannot read.
 _IMPACT_CABLE_WITNESS = "/cable_map/cables/"
 _IMPACT_CABLE_LIST_WITNESSES = ("/cable_map/cables", "/cable_map")
-#: The projection's own words for a cable-row bound (ui_projection._R_IMPACT_PEERS and _R_IMPACT_PEERS_CLOSED), as a
+#: The projection's own words for a cable-row bound (impact_assessability.R_PEERS and R_PEERS_CLOSED), as a
 #: withheld cell of the same row states them: how many neighbours the bound counts, and how many of them fail closed
 #: (a cable row the join cannot read, so it could name this switch, or a far end that joins no single node). The ref a
 #: published measure cites names a cable row but not which kind it is, so the kind is read from these words, never
@@ -283,9 +295,9 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
     """The projection's published lower bounds on one row, ``(fields, pointers, reasons)``, read from the projected
     cells' refs only, never from the stored row. ``fields``: the measures it publishes with a witness ref, each a
     lower bound and never an exact measurement; ``pointers``: every witness those cells cite, de-duplicated in the
-    order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, a cable
-    row worded by what the projection's own reason says of it, an unreadable cable list or map, anything else by its
-    pointer)."""
+    order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, its
+    blind_links count or the row itself when it predates that count, a cable row worded by what the projection's own
+    reason says of it, an unreadable cable list or map, anything else by its pointer)."""
     fields: List[str] = []
     pointers: List[str] = []
     for field in IMPACT_MEASURES:
@@ -313,6 +325,10 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
         if pointer and cite == f"{pointer}/off_scan_gw_vlans":
             ok, n, _ = cells["off_scan_gw_vlans"]
             why = _R_BOUND_OFF_SCAN.format(n=n if ok and type(n) is int else "some")
+        elif pointer and cite == f"{pointer}/blind_links":
+            why = _R_BOUND_BLIND
+        elif pointer and cite == pointer:
+            why = _R_BOUND_BLIND_LEGACY             # only the blind-link bound cites the row on a published measure
         elif cite.startswith(_IMPACT_CABLE_WITNESS):
             why = cables_why.format(k=n_cables)
         elif cite in _IMPACT_CABLE_LIST_WITNESSES:

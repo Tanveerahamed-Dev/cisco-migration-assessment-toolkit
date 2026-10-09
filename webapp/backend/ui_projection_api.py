@@ -42,15 +42,16 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W34 (G15 stored STP facts) on main fa110851: compact ensure_ascii JSON plus LF,
-# in owner key order. Observed by hosted job113614943713 on tested3e623d9c,
-# independently reviewed against the source/schema delta before literal adoption.
-# See docs/w34-stp-root-facts-validation-2026-10-09.md (prior W24/W23 records retained).
+# W45 train: W34 (G15 stored STP facts, main f797444e) combined with W28 (G08 trust
+# inputs, #628): compact ensure_ascii JSON plus LF, in owner key order. The combined
+# owner schema is the disjoint union of both reviewed deltas; see
+# docs/w45-engine-sample-train-2026-10-09.md (prior: docs/w34-stp-root-facts-validation-2026-10-09.md,
+# docs/w28-trust-inputs-validation-2026-10-08.md and the W24/W23 records).
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "16b8095765891cebb3fe94d01d9c3ebfa966f7ead8ae9a139d84499d39b4db34",
-    "list": "bca688bd5a3991c70005e20c68a0be5c2d4f3c58aa6cc2a254a51fcc2a6b8c22",
+    "view": "0553957c7d4e6e535420488d0aec799db5e319c0942154e6729ab7b5d45fccb4",
+    "list": "3ee0af7f1686050821ed29878b1785eac3a5ca3ee482b35af55561c770a659df",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

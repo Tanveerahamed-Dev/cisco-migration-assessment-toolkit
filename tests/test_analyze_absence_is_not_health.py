@@ -106,16 +106,23 @@ def test_failure_impact_no_trunk_evidence_is_indeterminate_not_no_impact():
         "core1": {"Gi1/0/1": isl("Gi1/0/1", "transit1", "Gi1/0/2"),
                   "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1")},
     }
-    rec = {r["host"]: r for r in analyze.compute_failure_impact(blind)}["transit1"]
+    by_host = {r["host"]: r for r in analyze.compute_failure_impact(blind)}
+    rec = by_host["transit1"]
     assert "No reachability impact" not in rec["detail"]
     assert "INDETERMINATE" in rec["detail"] and "not assessable" in rec["detail"]
+    # W32: the count rides on EVERY row, not only in the prose of a switch that simulated nothing -- core1 simulated
+    # its gateway VLAN (High) and still carries the evidence-less link it could not reason about
+    assert {h: r["blind_links"] for h, r in by_host.items()} == {"access1": 1, "transit1": 2, "core1": 1}
+    assert by_host["core1"]["severity"] == "High" and "INDETERMINATE" not in by_host["core1"]["detail"]
 
     # With the trunk evidence present, the same topology resolves normally again (no cry-wolf):
     seen = {h: {p: InterfaceData(**{**vars(d), "trunk_allowed_vlans": "10"})
                 if d.cdp_neighbor else d for p, d in ports.items()}
             for h, ports in blind.items()}
-    rec2 = {r["host"]: r for r in analyze.compute_failure_impact(seen)}["transit1"]
+    seen_by_host = {r["host"]: r for r in analyze.compute_failure_impact(seen)}
+    rec2 = seen_by_host["transit1"]
     assert "INDETERMINATE" not in rec2["detail"]
+    assert all(r["blind_links"] == 0 for r in seen_by_host.values()), seen_by_host
 
 
 # --------------------------------------------------------------------------- #14

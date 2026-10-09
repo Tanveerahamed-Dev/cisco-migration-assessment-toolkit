@@ -1301,9 +1301,16 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # observation rules; ipaddress canonicalizes those evidence joins. Decision rollups admit only the
     # existing public vocabulary, stored-row folds, capture-flag precedence and VLAN membership owners.
     # Coverage joins/folds are admitted by their exact public names; neither a module-wide analyze or
-    # coverage_matrix import nor private/other owner imports are admitted.
+    # coverage_matrix import nor private/other owner imports are admitted. W33: the failure-impact row
+    # assessability rules (INDETERMINATE marker, legacy row, off-scan bound, run_config_observed hold,
+    # uncollected-neighbour bound, duplicate host) are owned by the engine module impact_assessability, which
+    # the deliverables share; it imports only ssot, so admitting it reaches no producer (pinned by
+    # tests/test_impact_assessability.py). Trust inputs (G08) admit the dossier's public per-axis input
+    # registry by its exact name, so the input list is imported, never copied.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+               "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
+               "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",
                "cisco_toolkit.analyze:compute_device_findings", "cisco_toolkit.analyze:device_config_capture",
                "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",

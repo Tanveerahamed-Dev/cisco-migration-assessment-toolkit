@@ -33,9 +33,12 @@ def snap():
             "summary": {"n_nodes": 2, "n_cables": 1}},
         "link_centrality": [{"a_host": "a/b~c.d", "a_port": "Gi1", "b_host": "offscan", "b_port": "Gi0",
                              "betweenness": 321.5, "is_bridge": True, "pairs_cut": 3, "rank": 1}],
+        # a current analyze.compute_failure_impact row: it carries off_scan_gw_vlans and the per-row blind_links
+        # count (0 each), so its clean bill is the producer's measurement; without either the row is withheld
         "failure_impact": [{"host": "a/b~c.d", "severity": "Info", "vlans_impacted": 0, "stranded": 0,
                             "hard": 0, "backup": 0, "fhrp": 0, "off_scan_gw_vlans": 0,
-                            "detail": "No reachability impact from removing this switch (within the scan)."}],
+                            "detail": "No reachability impact from removing this switch (within the scan).",
+                            "blind_links": 0}],
     }
 
 
@@ -407,6 +410,7 @@ def test_failure_impact_preserves_full_counts_and_disclosed_eight_example_detail
     impact = analyze.compute_failure_impact(interfaces)
     source = next(row for row in impact if row["host"] == "gateway")
     assert source["vlans_impacted"] == source["stranded"] == source["hard"] == 10
+    assert source["blind_links"] == 0                    # its one trunk carries VLAN evidence: nothing bounds the row
     assert len(re.findall(r"\bVLAN \d+:", source["detail"])) == 8
     assert source["detail"].endswith("... +2 more")
     snapshot = {"failure_impact": impact, "cable_map": analyze.compute_cable_map(interfaces), "routes": {},

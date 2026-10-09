@@ -526,6 +526,7 @@ from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
+from cisco_toolkit import impact_assessability                       # W33 (failure-impact row assessability owner)
 from cisco_toolkit.docmeta import (artifact_candidate_paths, artifact_kind,
                                    validate_artifact)
 from cisco_toolkit.protocol_receipt_surfaces import write_protocol_assurance_receipt_sheet
@@ -2376,6 +2377,18 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
     return _manifest.build_manifest(meta, artifacts, steps)
 
 
+# The zone `collected_at` is STATED in; None = this host's local zone (the field default, unchanged). A live
+# run names its collection directory from this host's local wall clock (`stamp` in main(), via
+# datetime.now().strftime) and that stamp records no offset, so on the collecting host the only honest reading
+# of it is the host's own zone: re-reading every field stamp as UTC would shift each re-analysed instant by the
+# collecting host's offset, and an east-of-UTC capture could then read as collected AFTER its own upload. A
+# caller that DECLARES the zone of its evidence stamp pins this for one in-process run -- the engine-built demo
+# fleet (webapp/sample_data/build_sample.py) pins the zone of its pinned evidence clock (UTC), the same
+# in-process seam pattern as its registry clock -- and collected_at is then a pure function of the stamp: the
+# same bytes on every host, whatever its TZ.
+_COLLECTION_TZ = None
+
+
 def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     """Provenance: the instant the EVIDENCE was collected (NOT wall-clock-at-regen). Returns
     (iso_datetime, defaulted). A live run stamps now() -- collection IS happening now. A
@@ -2383,19 +2396,24 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     evidence reproduces the original lifecycle bands + cover date byte-for-byte: first from the
     `YYYYMMDD_HHMMSS` stamp in the collection-dir name (how every run names its dir), else the
     earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
-    can disclose that the collection date was unknown. Pure read; no side effects."""
+    can disclose that the collection date was unknown. Every branch states its instant with an explicit
+    offset: in `_COLLECTION_TZ` when a caller declared it (a dir stamp is then read AS that zone's wall
+    clock; now() and an mtime are true instants rendered in it), else in this host's local zone.
+    Pure read; no side effects."""
+    zone = _COLLECTION_TZ
+
+    def _now():
+        return datetime.now(zone) if zone is not None else datetime.now().astimezone()
+
     if not no_collect:
-        return datetime.now().astimezone().isoformat(), False
+        return _now().isoformat(), False
     base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
     m = re.search(r"(\d{8})_(\d{6})", base)
     if m:
         try:
-            return (
-                datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
-                .astimezone()
-                .isoformat(),
-                False,
-            )
+            wall = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+            stated = wall.replace(tzinfo=zone) if zone is not None else wall.astimezone()
+            return stated.isoformat(), False
         except ValueError:
             pass
     d = collection_dir or root_dir or ""
@@ -2403,10 +2421,13 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
         mtimes = [os.path.getmtime(os.path.join(dp, f))
                   for dp, _dirs, files in os.walk(d) for f in files]
         if mtimes:
-            return datetime.fromtimestamp(min(mtimes)).astimezone().isoformat(), False
+            first = min(mtimes)
+            stated = (datetime.fromtimestamp(first, zone) if zone is not None
+                      else datetime.fromtimestamp(first).astimezone())
+            return stated.isoformat(), False
     except OSError:
         pass
-    return datetime.now().astimezone().isoformat(), True
+    return _now().isoformat(), True
 
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
@@ -4526,6 +4547,9 @@ def main():
     # Phase 20: Failure Impact simulation (NEW-V3.16 intelligence layer)
     logger.info("\n[Phase 20] Writing Failure Impact sheet ...")
     failure_impact = _run_phase("Failure Impact", compute_failure_impact, all_interfaces, _default=[])
+    # W33: written here to keep its tab position, but WITHOUT the assessability evidence (the cable map does not
+    # exist yet), so every row reads 'not assessed' until the 'Failure Impact assessability sheet' phase below
+    # rewrites it in place with the evidence -- never Info / 0 by default.
     _run_phase("Failure Impact sheet", write_failure_impact_sheet, wb, failure_impact)
     _run_phase("Link Centrality sheet", write_link_centrality_sheet, wb, all_interfaces)   # NEW-V3.23.88 (chokepoint links)
 
@@ -4855,6 +4879,38 @@ def main():
     # WIDE compute_* below stop threading 15/19/14 locals positionally through _run_phase (a silent
     # reorder could corrupt them). _actx is populated per-consumer as each feed becomes available;
     # the public compute_* keep their explicit-arg signatures (see the adapters just after main()).
+    #
+    # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
+    # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
+    # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green). W33: computed BEFORE the
+    # Device risk register (it was right after it; no sheet is written in between, so the tab order is
+    # unchanged), because the failure-impact assessability owner reads it: a switch cabled to an uncollected
+    # neighbour that can carry endpoints has a blast radius that is only a lower bound.
+    cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
+    _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
+    # W33: the evidence the failure-impact assessability owner (impact_assessability) reads -- each interface's
+    # scoped running-config mark (the only source of a device's gateway SVIs), the stored cable map, and the
+    # phase failures so far -- in the snapshot's own shape. The dossier, the Failure Impact and Executive Summary
+    # sheets read it here; every deliverable rendered from snap_dict reads the same sections there. Built and
+    # assessed inside one guarded phase like every other compute: on a raise the phase records its failure (it
+    # attributes to device_dossiers, ssot.PHASE_SECTIONS), the sheets get no evidence (every row then reads 'not
+    # assessed', never published by default) and the dossier gets the owner's unavailable document (each row
+    # disclosed as having no verdict; its score still reads the stored row, so nothing is lowered).
+    def _failure_impact_assessability():
+        evidence = {
+            "interfaces": {h: {p: {"run_config_observed": getattr(d, "run_config_observed", False) is True}
+                               for p, d in (ports or {}).items()}
+                           for h, ports in (all_interfaces or {}).items()},
+            "cable_map": cable_map,
+            "assessment_integrity": {"failed_phases": [p["phase"] for p in _PHASE_TIMINGS
+                                                       if p.get("ok") is False]}}
+        return evidence, impact_assessability.assessment_document({**evidence, "failure_impact": failure_impact})
+
+    impact_evidence, failure_impact_assessability = _run_phase(
+        "Failure Impact assessability", _failure_impact_assessability,
+        _default=(None, impact_assessability.unavailable_document()))
+    _run_phase("Failure Impact assessability sheet", write_failure_impact_sheet, wb, failure_impact,
+               impact_evidence)
     from cisco_toolkit.ssot import failed_sections as _dossier_failed_sections
     _actx = AnalysisContext(
         health_scores=health_scores, failure_impact=failure_impact, lifecycle_risk=lifecycle_risk,
@@ -4870,13 +4926,9 @@ def main():
         vtp_safety_subject_scope=vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
         ipv6_routing_subject_scope=ipv6_routing_subject_scope,
-        move_groups=move_groups)
+        move_groups=move_groups,
+        failure_impact_assessability=failure_impact_assessability)
     device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
-    # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
-    # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
-    # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
-    cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
-    _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
     # NEW-V3.23.117: lifecycle risk stays its OWN axis (sheet / cockpit / runbook §4.1). V3.23.172
     # compound patterns may also fold a lifecycle band into the punch-list when it stacks with another
     # risk axis. The golden harness therefore pins the synthetic collection timestamp: lifecycle and
@@ -5072,7 +5124,7 @@ def main():
         executive_brief["scale"]["n_collected"] = ((collection_completeness or {}).get("summary") or {}).get("complete")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
-               brief=executive_brief,
+               brief=executive_brief, impact_evidence=impact_evidence,          # W33: keystones = published rows only
                provenance={"script_version": f"V{__version__}",                 # P3-E3: self-trace the landing sheet
                            "generated_at": datetime.now().isoformat(),
                            "snapshot": os.path.splitext(os.path.basename(str(out_xlsx or "")))[0]})
@@ -5098,7 +5150,9 @@ def main():
          "lifecycle_risk": lifecycle_risk, "failure_impact": failure_impact,
          "security": all_security, "config_hygiene": all_config_hygiene,
          "operational_drift": _drift, "redistribution": all_redistribution,
-         "collection_completeness": collection_completeness, "punchlist": punchlist},
+         "collection_completeness": collection_completeness, "punchlist": punchlist,
+         # W33: RES-4 reads failure_impact through the assessability owner, which also reads the cable map
+         "cable_map": cable_map},
         _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty review (cf. executive_brief)
     _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
 
@@ -6252,7 +6306,8 @@ def _device_dossiers(ctx: "AnalysisContext") -> dict:
         stp_roots=ctx.all_stp_roots, vpc=ctx.all_vpc,
         physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
         move_groups=ctx.move_groups, protocol_assessability=ctx.protocol_assessability,
-        parse_yield=ctx.parse_yield, input_failures=ctx.input_failures)
+        parse_yield=ctx.parse_yield, input_failures=ctx.input_failures,
+        failure_impact_assessability=ctx.failure_impact_assessability)
 
 
 def _punchlist(ctx: "AnalysisContext") -> list:
