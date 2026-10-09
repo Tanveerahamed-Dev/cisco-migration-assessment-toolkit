@@ -170,3 +170,56 @@ Python manifests (`master-reference/requirements-release.txt`, `webapp/requireme
 receive no version-update proposals; whether a file receives security alerts depends on GitHub's
 dependency-graph manifest detection, which was not checked here. The required `Dependency audit` job audits
 all of them.
+
+## (e) CodeQL alert #78 (`js/http-to-file-access`) in the dependency-preparation helper
+
+**Alert.** #78, open on `refs/heads/main` (most recent instance at `6390b66c`), rule `js/http-to-file-access`
+("Network data written to file", medium), created 2026-10-07, at
+`.github/scripts/frontend_dependency_prepare.mjs:239`: the `writeSync` inside `writeOrdinary`. The flagged flow
+is the npm registry response that `main()` fetches for each planned direct dependency and writes to
+`metadata/NN.json` under the preparation output directory.
+
+**Assessment.** The flow is real and intended: the raw response is preservation evidence.
+`frontend_artifact_receive.py :: candidate` re-reads each `metadata/NN.json`, joins its size and SHA-256 to the
+preparation receipt, re-admits it through the pinned admission helper and compares the result with registry
+metadata the receiver selects independently. Canonicalising the bytes would break that join, and any
+re-serialisation would still carry the taint, so no edit of the content makes the alert disappear. It is not
+an exploitable file write:
+
+- **Path.** Never derived from the response. The member name is `metadataMember(index)` (`metadata/01.json` to
+  `metadata/32.json`, the plan's bound), and every write by `emit` (and the receipt) now passes `outputMember`,
+  a closed census that mirrors the receiver's. Writes go to a fresh `0700` directory under `RUNNER_TEMP`,
+  proven outside the checkout, through `O_CREAT|O_EXCL|O_NOFOLLOW` after a `realpath` check of the parent.
+- **Source.** A fixed origin (`https://registry.npmjs.org/`), with `redirect: "error"`, a 30-second timeout,
+  and a URL built from plan-validated `NAME`/`VERSION` strings through `encodeURIComponent`.
+- **Content (new).** `registryEvidence` admits the bytes *before* any reach disk: HTTP 200, at most 2 MiB (also
+  enforced while streaming), and one strict, bounded, UTF-8, duplicate-key-free JSON object. Before this
+  change, a non-200 or non-JSON body was written first and checked afterwards. A refused response is now
+  accounted for in the receipt by status, size and digest only (`file: null`). On success, the metadata row
+  and the written members keep their previous shape and content; only the receipt's digests of the helper
+  and its test file (both selected inputs) change.
+- **Use.** The file is never executed, installed or imported; it is review input to the receiver.
+
+**Hosted coverage.** `frontend_dependency_prepare.test.mjs` gains two tests: the closed member census
+(accepted names, path-escape, absolute, backslash, NUL and out-of-range refusals, and every
+`metadataMember` output admitted), and registry admission (status, non-JSON, array, string, null, duplicate
+key, trailing content, invalid UTF-8, the exact 2 MiB boundary and one byte over, and a non-buffer).
+
+**Receiver pin.** The receiver refuses to run unless the helper's Git blob equals
+`frontend_artifact_receive.py :: ADMISSION_BLOB`, so the pin moves from `1f178d00…` to
+`76ab9aeb399554b697091417f04cb9e940a99cad` (`git hash-object` of the committed file). The exported admission
+functions the receiver bridges to (`admitMetadata`, `admitCandidate`, `planManifest`) are unchanged. An
+independent review should confirm this re-pin.
+
+**Disposition.** CodeQL is likely to keep reporting #78 because the taint path still exists. The alert was not
+dismissed through the API. Whether to dismiss it as "won't fix" with the reasoning above (also in the
+helper's comment and `docs/ssot.md`) is for the owner.
+
+**Recorded, not changed (Codex-held Atlas Scope review scripts):**
+
+| Alert | Rule | Location | State on 2026-10-09 |
+|---|---|---|---|
+| #70 | `js/http-to-file-access` (medium) | `atlas-scope/review/capture-refs-clean.mjs:656` | open |
+| #71 | `js/http-to-file-access` (medium) | `atlas-scope/review/measure-inp.mjs:2543` | open |
+
+Both are in `atlas-scope/`, which the Atlas Scope holder (Codex) owns; this row does not edit them.
