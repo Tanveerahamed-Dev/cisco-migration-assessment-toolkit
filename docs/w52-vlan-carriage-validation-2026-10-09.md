@@ -178,3 +178,52 @@ default/golden/sample checks and all protected workflows. The new sample must
 receive its own hosted Scope rebind. The new VLAN renderer also needs the existing
 hosted frontend receipt route and reviewed committed distribution before the
 portable source comparison can pass. No old compiled output qualifies this head.
+
+## Reference path registration follow-up
+
+Old c47 Reference run `37909102495` / job `113749662486` failed Python governance
+step7: `test_real_contract_disposes_every_tracked_path_exactly_once` reported
+`path:cisco_toolkit/vlan_carriage.py:unmapped`. Exact tracked-tree compilation
+step9 and every later compiler/build/artifact step were skipped. This was a path
+disposition refusal, not the earlier G15 observer import-edge failure.
+
+The independently reviewed correction adds only the literal carriage path to the
+existing `analysis` component (layer5, `derived_truth`) in
+`master-reference/governance/architecture.json`, and to its existing exact-owner
+positive test. Component, edge, exclusion and exactly-once coverage rules are
+unchanged. This local follow-up waits with the remaining generated Scope/frontend
+bindings so the published 7a producing runs can complete. Hosted governance and
+compilation on the eventual combined head still have to pass.
+
+## 7a terminal recovery boundaries and Scope rebind
+
+On tested `fa245e48`, frontend job `113772956725` passed the actual API comparison,
+observed both native pin matches, 32 files / 432 tests, type/Vite build and capture.
+That does not admit its distribution artifact: whole webapp run `37916173235`
+failed because backend job `113772956883` reported exactly 45 W12b parameter cases
+at its independent prospective-pin equality. The production pair was correct,
+but the test-local literals still named the G15 schemas. Independent review admits
+only their two literal replacements from the already observed schema pair; all
+15 mutations across three surfaces, equality and later parity checks remain.
+The previous material review missed this second literal owner. Backend quiet
+output has no numeric pass/skip aggregate or separate named G14 pass receipt.
+Frontend artifact `11609234411` remains undownloaded and inadmissible under the
+existing whole-producer-success guard; no receiver dispatch or exception occurred.
+
+Current Scope run `37916173172` / job `113772773345` separately failed 47 tests
+and four suite initializations, with 7,334 passes and 27 skips. The later mutation,
+build, B3, hub and browser steps were skipped. Successful pre-unit compiler export
+produced diagnostic `11608729272`, received once at `10:41:52Z` as inert data.
+Independent review joined all 456 processing inputs, four old-output identities
+and 28 per-member sample bindings to the actual 3,776,900-byte sample, blob
+`f6f470e2b7fe914dfcd1979036a0ee324eef584b`, SHA256
+`397401534686c8ccaae5176ef154169457f59f644dcd93e4b60f34afc55fad61`.
+
+This correction copies exactly the four compiled JSON members and that literal
+`GOLDEN_SHA`. All non-metadata content is unchanged, including 140 findings, 377
+evidence records, projection counters and the 26-node / 44-link compiled graph.
+Only source bindings and fabric collected/generated timestamps change. No sixth
+golden-expectation edit is indicated by the data review, and neither G14 carriage
+facts nor the queued raw-impact qualification consumer are imported into Scope by
+this rebind. Fresh complete Scope execution, whole-webapp recovery, then a new
+admissible hosted frontend receipt and committed distribution are still required.

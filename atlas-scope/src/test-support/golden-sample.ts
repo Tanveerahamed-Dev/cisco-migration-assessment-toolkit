@@ -20,7 +20,7 @@ import { fabric } from "../core/data";
 
 export const SAMPLE_SOURCE = "webapp/sample_data/sample_fleet.snapshot.json";
 /** sourceSha256 (LF-normalised) of the tracked sample the golden tier was derived from. */
-export const GOLDEN_SHA = "e63d7facd9a6b6e937a2c13ecb8e04692eb955ec66573d39928a5f372eff9dd7";
+export const GOLDEN_SHA = "397401534686c8ccaae5176ef154169457f59f644dcd93e4b60f34afc55fad61";
 
 export const isGoldenSample = (): boolean => fabric.meta.sourceSha256 === GOLDEN_SHA;
 

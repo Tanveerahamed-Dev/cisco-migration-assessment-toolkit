@@ -94,6 +94,7 @@
         "cisco_toolkit/traffic_assurance.py",
         "cisco_toolkit/ui_projection.py",
         "cisco_toolkit/upgrade_targets.py",
+        "cisco_toolkit/vlan_carriage.py",
         "cisco_toolkit/vtp_extended.py",
         "cisco_toolkit/vtp_safety.py",
         "cisco_toolkit/whatif.py"
