@@ -11,9 +11,12 @@ regenerate them:
 | `webapp/sample_data/sample_fleet.snapshot.json` | `python webapp/sample_data/build_sample.py` |
 
 This handoff runs those two existing commands on a GitHub-hosted runner, in the dispatch-only
-workflow `.github/workflows/engine-output-handoff.yml`, and hands their output back for review. Nothing else is regenerated, and the workflow never writes to the repository. The closed
-set, both commands and both ends of the handoff are owned by `.github/scripts/engine_output_handoff.py`
-(`OUTPUT_PATHS`, `GOLDEN_COMMAND`, `SAMPLE_COMMAND`); the registry row is in `docs/ssot.md`.
+workflow `.github/workflows/engine-output-handoff.yml`, and hands their output back for review. A
+second dispatch-only workflow, `.github/workflows/engine-output-receipt.yml`, admits that output as
+review data on a GitHub-hosted runner too. Nothing else is regenerated, and neither workflow writes
+to the repository. The closed set, both commands and every end of the handoff are owned by
+`.github/scripts/engine_output_handoff.py` (`OUTPUT_PATHS`, `GOLDEN_COMMAND`, `SAMPLE_COMMAND`); the
+registry row is in `docs/ssot.md`.
 
 ## When to use it
 
@@ -25,12 +28,13 @@ regenerates outputs for one exact commit.
 ## Steps
 
 The commands below suit Windows PowerShell 5.1 as well as other shells: one command per block, with
-an explicit repository.
+an explicit repository. No step runs repository code on a workstation; locally there is only `gh`
+and `git`.
 
 1. Push the branch that holds the engine change (owner authority, after the rule-7 scans in
    `docs/NOW.md`). Note the full 40-character SHA of its head.
 
-2. Dispatch the workflow on that branch:
+2. Dispatch the producer on that branch:
 
    ```
    gh workflow run engine-output-handoff.yml --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit --ref <branch> -f expected_source_commit=<full head SHA>
@@ -50,27 +54,44 @@ an explicit repository.
    gh run watch <run-id> --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit
    ```
 
-4. In a clean checkout of the same branch at the same commit, verify the artifact without writing:
+4. Dispatch the hosted receipt on the same branch, naming that producer run and its source:
 
    ```
-   py -3.12 <checkout>/.github/scripts/engine_output_handoff.py receive --run-id <run-id> --dry-run
+   gh workflow run engine-output-receipt.yml --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit --ref <branch> -f producer_run_id=<producer run id> -f source_commit=<full source SHA>
    ```
 
-   The report lists, for each output, whether it is byte-identical to `HEAD` and, if not, which
-   top-level keys changed. Every change must be explained by the engine change. Then import:
+   The branch must still point at the source commit, or at a descendant whose later commits touch
+   top-level `docs/*.md` only. Add `-f allow_golden_shrink=true` only when the producer ran with it
+   and the removal is reviewed. Watch it as in step 3 (`--workflow engine-output-receipt.yml`). Its
+   log lists, for each output, its size, its Git blob name and whether it is byte-identical to the
+   source; if not, which top-level keys changed. Every change must be explained by the engine
+   change. A refused receipt uploads nothing.
+
+5. Apply the admitted bytes with Git alone. Download the receipt artifact into a fresh scratch
+   directory outside the checkout:
 
    ```
-   py -3.12 <checkout>/.github/scripts/engine_output_handoff.py receive --run-id <run-id>
+   gh run download <receipt run id> --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit --name engine-output-receipt-<receipt head SHA>-<receipt run id>-<attempt> --dir <fresh scratch directory>
    ```
 
-   If a board-only commit was added after the dispatch, pass `--source-commit <dispatched SHA>`.
-   The commits after it may touch top-level `docs/*.md` only; anything else is refused.
+   Copy each `<scratch>/files/<path>` you import over `<checkout>/<path>`, then:
 
-5. Review `git diff`, commit the outputs on their own (cite the run id in the message), run the
-   rule-7 scans, and push. The ordinary hosted gates on that commit decide: golden, sample and,
-   when the sample changed, Atlas Scope.
+   ```
+   git -C <checkout> hash-object tests/golden/sheet_schema.json tests/golden/snapshot.json webapp/sample_data/sample_fleet.snapshot.json
+   ```
 
-6. If the sample changed, Atlas Scope's tracked compiled outputs are stale. These are the files
+   Each printed name must equal that output's `git_blob` in `<scratch>/receipt.json` (an output you
+   hold back keeps the source's name). Review `git diff`, commit the outputs on their own (cite both
+   run ids in the message), run the rule-7 scans, and push.
+
+6. Bind the import commit to the admitted bytes: dispatch the receipt again, on the branch that now
+   holds the import commit, with the same producer run and source and `-f verify_import=true`. It
+   refuses unless the commits after the source touch only the three outputs and top-level
+   `docs/*.md`, and every output at the dispatched commit is either the admitted bytes or the
+   source's own. Then the ordinary hosted gates on that commit decide: golden, sample and, when the
+   sample changed, Atlas Scope.
+
+7. If the sample changed, Atlas Scope's tracked compiled outputs are stale. These are the files
    `atlas-scope/tools/compile-all.mjs` writes, plus `GOLDEN_SHA` in
    `atlas-scope/src/test-support/golden-sample.ts`; they bind the sample's exact bytes.
    `atlas-scope/` is held by its own board row. Coordinate with that holder, who re-binds it from
@@ -83,6 +104,10 @@ The hosted producer (`before` / `after`):
 
 - Binds the dispatched commit to the `expected_source_commit` input, `GITHUB_SHA` and the checkout
   `HEAD`. It requires a clean tracked tree before regeneration.
+- Binds the executed source, not only the three outputs: the index must equal the source tree with
+  no assume-unchanged or skip-worktree flag, and every tracked file's bytes and mode are re-read and
+  must equal the tree, before regeneration and again (twice) after it. `git status` alone trusts the
+  index. Untracked compiled Python in the checkout, which could shadow the source, is refused.
 - Runs under the GitHub-hosted Linux image, Python 3.12 and `TZ=UTC`.
 - Refuses any effect outside the closed set: a changed tracked file, a staged change, or an
   untracked file that appeared or vanished.
@@ -93,19 +118,38 @@ The hosted producer (`before` / `after`):
   `files/<path>`. The workflow uploads them as one artifact, only on success, named
   `engine-output-handoff-<sha>-<run>-<attempt>`.
 
-The local receiver (`receive`):
+The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
 
-- Refuses a dirty tracked tree, a run from another workflow, event, commit or repository, a failed
-  or incomplete run, job or step, and a job outside the hosted `ubuntu-24.04` image.
+- Refuses every environment but that workflow's manual dispatch in this repository on a
+  GitHub-hosted Linux runner under Python 3.12. A workstation run, a dry run included, is refused
+  before any Git, API or archive operation. Its inputs arrive only through the workflow
+  environment; the command line takes no path, run, source or option.
+- Binds its own checkout the same way as the producer: `HEAD` is the dispatched commit, the index
+  hides nothing, and every tracked byte and mode equals the tree, at the start and again before it
+  records anything.
+- Refuses a run from another workflow, event, commit or repository, a failed or incomplete run, job
+  or step, and a job outside the hosted `ubuntu-24.04` image.
 - Selects exactly one unexpired artifact by name and requires the downloaded archive's size and
   SHA-256 to match GitHub's record.
-- Admits only the closed ZIP member set. It refuses path traversal, absolute, aliased or duplicate
-  names, links and special files, and corrupt or oversized members.
-- Requires the manifest's commit and tree to match the local source, the closed file list, and
-  every member's size and SHA-256. It recomputes `changed_from_source` from the local source commit.
-- Applies the same content policy, then replaces each target through an exclusive temporary file.
-  It refuses linked or hard-linked targets and linked parent directories, and re-reads every
-  written byte.
+- Decodes every ZIP member from its exact raw span. The end record must be the archive's last bytes
+  (no comment, prefix or suffix). The member records must tile everything before the central
+  directory with no gap or overlap, and local and central headers (names, flags, method, sizes,
+  CRC, data descriptor) must agree. ZIP64, encryption and unsupported flags or compression are
+  refused. Each member must expand to exactly its declared size, reach end-of-stream with no
+  trailing bytes or second stream, and match its CRC. The member, total, archive, entry-count and
+  expansion-ratio caps stay. Only the closed member set is admitted: path traversal, absolute,
+  aliased or duplicate names, links and special files are refused.
+- Requires the manifest's commit and tree to match the source, the closed file list, and every
+  member's size and SHA-256. It recomputes `changed_from_source` from the source commit.
+- Applies the same content policy. The canonical marker policy executes only from the admitted Git
+  bytes of its four-file closure in a private namespace. No `sys.path` entry, already-imported
+  module, working-tree file or bytecode cache can supply it.
+- Writes `receipt.json` and `files/<path>` into a fresh directory under the runner's temporary
+  directory, outside the checkout, and never writes the checkout. The receipt records each output's
+  size, SHA-256 and Git blob name, and carries `acceptance` and `release_authority` false.
+- With `verify_import`, it writes `receipt.json` only, after proving that every output at the
+  dispatched commit is the admitted bytes or the source's and that nothing but the outputs and
+  top-level `docs/*.md` changed since the source.
 
 ## Known properties
 
@@ -124,15 +168,83 @@ The local receiver (`receive`):
   `multichassis_lag_typed_observations` and `vtp_extended_evidence`. Any other changed section
   needs an explanation before import.
 - **Atlas Scope.** Every sample regeneration therefore stales Atlas Scope's tracked compiled outputs
-  (step 6), as it always has.
+  (step 7), as it always has.
 - **First dispatch.** GitHub dispatches a workflow only when its file exists on the default branch,
-  so the first real dispatch can happen only after this workflow merges.
+  so the first real dispatch of each workflow can happen only after it merges. The receipt workflow
+  lands with W54; until then no admissible receipt route exists.
 - **Not derived.** `webapp/frontend/dist` is not built from these outputs, and Atlas Scope's tests
   read `tests/golden/snapshot.json` at test time. Neither needs re-binding when only the goldens
   change.
 
+## Review dispositions (W54, 2026-10-09)
+
+Codex's read-only cross-review of the merged route (comment `6071980820` on #622) recorded four
+source-derived concerns that remained unresolved in merged source. W54 (`claude/w31-route-concerns`)
+reproduced each by reading the code and by probing the merged functions on synthetic inputs, then
+fixed each structurally. Every new test is written and statically checked but not run under the
+GitHub-only rule; hosted CI is their first execution.
+
+1. **Forbidden local receipt route — fixed.** The merged `receive` ran on a workstation, performed
+   API, archive, hash and policy work there, `--dry-run` included, and could replace tracked files.
+   `receive` now refuses every environment but the new dispatch-only receipt workflow on a
+   GitHub-hosted Linux runner (repository, event, workflow ref, runner and Python checked before any
+   Git, API or archive operation). It takes no command-line input and never writes the checkout. The
+   local write path (`write_outputs`, `replace_file`) and the dry run are removed. The bounded
+   boundary is: review data out (`receipt.json` and `files/<path>` under the runner's temporary
+   directory); application by `gh run download`, a file copy and `git hash-object` against the
+   recorded blob names; and the hosted `verify_import` re-admission of the import commit. Like the
+   frontend receiver's environment check, this gate stops documented or accidental local
+   execution; it is not host attestation against a deliberately spoofed environment. Tests:
+   `test_receiver_refuses_every_environment_but_the_hosted_receipt_workflow`,
+   `test_the_command_line_receive_takes_no_inputs_and_refuses_a_workstation`, the review-data,
+   output-directory and `verify_import` tests in `tests/test_engine_output_handoff.py`, and
+   `test_receipt_workflow_is_manual_read_only_hosted_and_success_only` with its mutation guard in
+   `tests/test_engine_output_handoff_workflow_contract.py`.
+2. **Hidden-index source closure — fixed.** The merged producer bound only the three outputs'
+   bytes. Every other input relied on `git status` and `git diff`, which an assume-unchanged or
+   skip-worktree entry hides. A probe of the merged `bind_source` admitted an altered `engine.py`
+   behind either flag and, on a Windows filesystem, a same-size edit with its timestamp restored and
+   no flag at all. `bind_checkout` now requires the index to equal the source tree with only plain
+   cached entries,
+   re-reads every tracked byte and mode, and refuses untracked compiled Python. The producer runs it
+   before regeneration and twice after, and the receiver at its start and before recording. Tests:
+   the `hides working-tree state`, executable-bit, compiled-Python and `bind_checkout` tests. The
+   timestamp case depends on the filesystem's change-time handling, so it is recorded here rather
+   than pinned by a test.
+3. **ZIP stream closure — fixed.** The merged reader trusted `zipfile`'s declared-size cutoff.
+   Probed on synthetic archives, it admitted a STORED `ab` declared as one byte with the CRC of `a`,
+   a DEFLATE stream that expands past its declaration, trailing bytes, a second stream, an unfinished
+   stream, and leading or trailing archive bytes. `zip_members` now follows the reviewed frontend
+   receiver: an exact end record, contiguous member tiling, agreeing local and central headers, no
+   ZIP64, and per-member raw-span decoding to exact size, end-of-stream, no tail and the CRC. All
+   existing caps and member restrictions are kept, plus the reviewed expansion-ratio bound. The
+   layout of a real upload-artifact archive (W45's producer artifact `11594811864`: data descriptors
+   with their signature, zero local sizes, no extra fields, no comment) was read independently with a
+   stdlib header walk, not with repository code, and its synthetic replica is a positive control.
+   Tests: `test_member_stream_must_close_exactly_at_its_declared_size`,
+   `test_archive_layout_must_tile_exactly_with_agreeing_headers` and
+   `test_raw_span_controls_admit_plain_and_descriptor_members`.
+4. **Cached marker-policy admission — fixed.** The merged loader imported
+   `cisco_toolkit.distribution_verify` and accepted any module whose `__file__` matched. A probe
+   admitted both a preloaded same-path module and planted bytecode stamped to the source, even under
+   `-B`; each returned no patterns. `bound_marker_policy` now executes the four-file closure from
+   the admitted Git bytes of the bound commit (the producer's source, the receiver's own commit) in
+   a private namespace. Relative imports must be the reviewed table; absolute imports must be
+   standard library. It is the reviewed frontend receiver's approach and table (the tests compare
+   the two). Tests: the same-path, cached, working-tree, closure-escape and pre-loaded-policy
+   producer and receiver tests. They are skipped below Python 3.11, where the closure's `tomllib`
+   is not standard library; the hosted ends run 3.12.
+
+Still open: the first hosted dispatch of the receipt workflow (it needs default-branch
+registration), the first hosted execution of every new test, and independent review of this
+change. The merge of #622 was not these concerns' validation, and this record is not either. Two
+sibling producers outside this route still load the marker policy through the import system:
+`.github/scripts/frontend_build_handoff.py` and `.github/scripts/scope_compile_handoff.py`. W54
+does not change them; they are a separate follow-up for their own rows.
+
 ## What it is not
 
 The handoff is never a test pass, an approval, a merge or release authority, or a substitute for
-hosted CI on the committed result. It never runs on a pull request or a push. It holds no token and
-only reads the repository, and nothing in it writes to a device or the vault.
+hosted CI on the committed result. It never runs on a pull request or a push. The producer holds no
+token; the receipt holds only the read-only Actions token it needs to fetch the artifact. Neither
+writes to the repository, a device or the vault.
