@@ -206,18 +206,36 @@ def _returned_calls(fn, callee):
             if isinstance(k, ast.Constant) and isinstance(v, ast.Call) and getattr(v.func, "id", None) == callee}
 
 
+def _literal(node):
+    """A literal argument, or the module constant a bare name argument refers to (e.g. ``_CC_ROWS``)."""
+    if isinstance(node, ast.Name):
+        return getattr(ui, node.id)
+    return ast.literal_eval(node)
+
+
 def _key_field_joins():
     """Every ``_resolve(..., key_field=...)`` join in the projection, read from its source: ``{name in _joins:
-    (list path, key field, norm)}``, and how many such joins the whole module makes."""
+    (list path, key field, norm)}``, and how many such joins the whole module makes. A _joins member that delegates to
+    a module helper (W51 round 4: the collection join's doubt-aware door, ``_collection_join``) is that helper's one
+    key_field join, so the parametrized join tests below still reach it."""
     tree = _source_tree()
     every = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_resolve"
                 and any(k.arg == "key_field" for k in n.keywords))
+    (ret,) = [n for n in ast.walk(_function(tree, "_joins")) if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict)]
     joins = {}
-    for name, call in _returned_calls(_function(tree, "_joins"), "_resolve").items():
+    for key, call in zip(ret.value.keys, ret.value.values):
+        if not (isinstance(key, ast.Constant) and isinstance(call, ast.Call)):
+            continue
+        callee = getattr(call.func, "id", None)
+        if callee != "_resolve":
+            inner = [c for c in ast.walk(_function(tree, callee)) if isinstance(c, ast.Call)
+                     and getattr(c.func, "id", None) == "_resolve" and any(k.arg == "key_field" for k in c.keywords)]
+            assert len(inner) == 1, (key.value, callee, len(inner))     # a helper holds exactly one such join
+            call = inner[0]
         kw = {k.arg: k.value for k in call.keywords}
         if "key_field" in kw:
-            joins[name] = (ast.literal_eval(call.args[1]), ast.literal_eval(kw["key_field"]),
-                           bool(ast.literal_eval(kw["norm"])) if "norm" in kw else False)
+            joins[key.value] = (_literal(call.args[1]), _literal(kw["key_field"]),
+                                bool(_literal(kw["norm"])) if "norm" in kw else False)
     return joins, every
 
 
@@ -801,7 +819,9 @@ CC_LIST_READERS = {
     "_cc_universe": "the inventory universe's one read of the list, which discloses the rows and lists it cannot "
                     "read (the inventory rows, their count, the trust inputs' denominator and the device facet)",
     "_roster_join": "the unknown-host roster check, which discloses the rows and lists it cannot read",
-    "_joins": "the device's own blind-spot record: a key_field join held to the one rule inside _resolve",
+    "_collection_join": "the device's own blind-spot record (a _joins member since W51 round 4): a key_field join "
+                        "held to the one rule inside _resolve, whose 'not a blind spot' absence is further held to the "
+                        "device scope's own doubt (scope_doubt)",
 }
 
 
