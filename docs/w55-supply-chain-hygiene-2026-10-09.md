@@ -135,3 +135,38 @@ The workflow has no other triggers. No existing test pinned this workflow's conc
 `tests/test_portable_release_workflow.py` now pins the group, the expression and the trigger set through the
 duplicate-key-refusing workflow loader, rejects a job-level override, and carries six rejection cases
 (never-cancel, always-cancel, cancel-dispatch, a shared group, a job override, an added push trigger).
+
+## (d) Dependabot: version updates for Atlas Scope and the Master Reference
+
+`.github/dependabot.yml` proposed npm updates only for `/webapp/frontend`, although three npm lockfiles are
+tracked (`git ls-files '*package-lock.json'`) and all three are audited by the required `Dependency audit`
+job. It now has entries for `/atlas-scope` and `/master-reference` with the AssessHub frontend's policy:
+weekly, at most five open pull requests, one group per directory, and every semver-major update ignored
+(majors are planned migrations).
+
+The 2026-10-08 owner deferrals (NOW.md, "W19 merged; dependency closeout"; the ignore lines added after #609
+superseded #593) are copied where the project carries the package:
+
+| Deferral | `/atlas-scope` | `/master-reference` |
+|---|---|---|
+| `three` / `@types/three` 0.186.x | **not copied**: the lock already pins 0.186.0 | not a dependency |
+| `@playwright/test` 1.63.x | deferred (pins 1.62.1) | not a dependency |
+| `vite` 8.3.x | deferred (pins 8.2.1) | deferred (pins 8.2.0) |
+
+The three/@types/three deferral was about adopting the r186 rendering change in the AssessHub frontend
+(still on 0.185). Atlas Scope already runs 0.186.0, so the same ignore there would only suppress 0.186 patch
+releases of an adopted line (Dependabot's `0.186.x` pattern matches patches, and a 0.x minor such as 0.187 is
+not a semver-major update). The owner can confirm or reverse this.
+
+Atlas Scope proposals edit `atlas-scope/package.json` and its lock, which the Atlas Scope holder (Codex)
+owns. Master Reference proposals must re-pass its source/lock and release-SBOM contracts (exact Miniflare,
+Sharp and Vinext edges, bounded vendored packages), so they are review input, never merged on a green bump
+alone. No test pinned `dependabot.yml`; its YAML was parsed and every npm directory was checked to hold a
+`package.json` and `package-lock.json`.
+
+Not changed (recorded only): Dependabot version updates still cover only the root pip manifests. The other
+Python manifests (`master-reference/requirements-release.txt`, `webapp/requirements.txt`,
+`tools/requirements-transition-runtime-test.txt` and the hash-locked `portable/windows-x64-requirements.lock`)
+receive no version-update proposals; whether a file receives security alerts depends on GitHub's
+dependency-graph manifest detection, which was not checked here. The required `Dependency audit` job audits
+all of them.
