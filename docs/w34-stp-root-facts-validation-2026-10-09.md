@@ -204,3 +204,32 @@ Identity checks avoid treating 1/0 as the native Boolean result. No production
 fallback, domain, schema, provider, literal pin, generated type, case or guard is
 changed. Fresh hosted execution must establish this stronger acceptance/refusal
 proof; no old passing receipt supplies it.
+
+## Hosted LF path-set ratchet
+
+Supervisor comment `6073194032` identifies a separate mechanical failure on
+`6471d7d9`: Linux 3.11 job `113633171567` (actual tested `3aaf9131`) reports one
+failed LF-custody test, 11,520 passed, 279 skipped, 1 xfailed, 1 warning and
+26 subtests passed. The failure prints the exact actual LF receipt:
+182 paths, `sha256:3dfb75b912fcf6e8fa80b01544e97464e128e79643892f62a45cf33b59ad276e`.
+The observer's move into `webapp/backend/` adds one path to the unchanged LF rule.
+Git shows only three existing test/doc files changed from `6471d7d9` to `c9cfedc5`;
+the LF policy, matching path set and owner inputs are unchanged. The hosted
+receipt therefore applies to this same path set without local hash computation.
+
+The fixture's `lf_scope` adopts that observed receipt. Its separate
+`broader_declared_lf_scope` ratchet also needs attention: the derived owner set is
+still 38, so the broader cardinality is 144. That later assertion was not reached
+in the selected failing job, and its actual hash remains unobserved. The existing
+test now runs early on only the Ubuntu 24.04 / Python 3.11 leg to surface this
+companion receipt promptly; it remains in every complete suite. Its first failure
+message also prints the broader receipt for future combined path-set updates.
+No assertion, LF rule, publisher exception, derived-owner membership, byte check
+or full-suite requirement changes. The broader pin must come from hosted output,
+not a guessed digest or hand-merged receipt; final qualification remains pending.
+
+Supervisor comment `6073401209` supersedes the W36-only Scope re-bind request.
+No W36 branch, artifact intake or re-bind is authorized to proceed now. Wait for
+the single five-path request on the W45 integration train, with its exact head,
+artifact and new sample identity. Separate sample/receipt-byte claims in peer
+comments are declarations until independently joined to hosted evidence.

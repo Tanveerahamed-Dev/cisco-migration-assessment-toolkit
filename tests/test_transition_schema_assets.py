@@ -1713,7 +1713,8 @@ def _verify_byte_custody_policy(
     )
     lf_paths = lf_candidates - publisher_paths
     assert _path_set_receipt(lf_paths) == policy["lf_scope"], (
-        f"LF scope receipt drifted: {_path_set_receipt(lf_paths)!r}"
+        f"LF scope receipt drifted: {_path_set_receipt(lf_paths)!r}; "
+        f"broader LF scope receipt: {_path_set_receipt(lf_paths - owner_paths)!r}"
     )
     assert _path_set_receipt(publisher_paths) == policy["publisher_byte_scope"], (
         f"publisher scope receipt drifted: {_path_set_receipt(publisher_paths)!r}"
