@@ -271,3 +271,18 @@ Still required before merge:
 - every protected exact-head hosted check, including the native-parity group and `api:check`;
 - independent refutation;
 - the supervisor's merge.
+
+## Second refutation round on the W51 train (2026-10-09)
+
+* **P1 (only directly attributed failures):** `_category_sources` reads the module's full failed-phase census:
+  `ssot.abstention_reason` for a directly attributed section, and `ctx.unattributed` (an intermediate phase, a
+  label nobody classified, or a failed-phase record that is not a list, from `ssot.failed_sections` over
+  `ssot.PHASE_SECTIONS`) for every category it could feed, which is every category. Such a hold is
+  analysis_unavailable with the unattributed failure records. Probe: the sample under `dependency map` published 17
+  categories without the source caveat; now none.
+* **P2 (wrong container):** `CATEGORY_SOURCE_KINDS` registers each source section's producer container (held by a
+  test against the engine-built sample and golden); a section stored as anything else is unverified, a section with
+  no registered container too. Probe: `multicast_intelligence` stored as a list, text or number published
+  `Multicast/Media: 0`; now unverified.
+* **Fleet qualification** now also fires on an absent, failed or self-contradictory blind-spot record
+  (the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`)).

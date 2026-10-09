@@ -161,7 +161,8 @@ IMPACT_NOT_ASSESSED = "NOT ASSESSED"
 #: The fleet qualifier ui_projection puts on the failure-impact list while collection_completeness lists a blind
 #: spot: every row was computed over the scanned model without that device's evidence. It also cites a record it
 #: cannot read as a blind spot (a row that is not an object or states no status of its owner's vocabulary, or a list
-#: or section of the wrong type), which its owner would have read as collected; the two kinds are told apart by the
+#: or section of the wrong type), which its owner would have read as collected, and (W51) a record that is absent,
+#: failed or whose summary does not reconcile with its rows or the roster; the two kinds are told apart by the
 #: projection's own classifier (engine.fleet_blind_spot_rows), never by re-reading the stored rows.
 _IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
 #: Every witness the qualifier cites lies under this pointer; one naming a row the classifier reads is a blind device.
@@ -189,9 +190,11 @@ _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. ana
 _R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
                    "was computed without their evidence, and a device the collection never reached has no row")
 _R_IMPACT_BLIND_UNREAD = ("collection_completeness carries {n} record(s) the engine cannot read as a partial or "
-                          "not-collected device (a row that is not an object or states no status of its owner's "
-                          "vocabulary, or a list or section of the wrong type), and each could be one: a "
-                          "failure-impact row may have been computed without that device's evidence")
+                          "not-collected device or as listing every such device (a row that is not an object or "
+                          "states no status of its owner's vocabulary, a list or section of the wrong type, or a "
+                          "record that is absent, failed, or whose summary does not reconcile with its rows or the "
+                          "roster), and each could be or hide one: a failure-impact row may have been computed without "
+                          "that device's evidence")
 _R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
 #: Why a published measure is only a lower bound, by the kind of record its witness ref points at. A cable-row witness
 #: has three wordings, picked by what the projection's own reason on the row says of it (:func:`_impact_peers_said`):
@@ -302,8 +305,10 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
 def impact_blind_counts(snap: Dict[str, Any], listing: Dict[str, Any]) -> Tuple[int, int]:
     """``(blind, unread)`` for the fleet qualifier on the failure-impact list: of the ``/collection_completeness``
     witnesses it cites, those naming a row the projection's own classifier reads as a partial or not-collected device
-    (engine.fleet_blind_spot_rows), and every other one (a row, list or section it cannot read as such). ``(0, 0)``
-    without the qualifier. The qualifier with no such witness keeps the earlier reading of one blind device."""
+    (engine.fleet_blind_spot_rows), and every other one (a row, list or section it cannot read as such, or the
+    record's summary). ``(0, 0)`` without the qualifier. The qualifier with no such witness is a record the snapshot
+    does not carry (W51: the projection's coverage verdict qualifies the list for it, and nothing of it resolves), so
+    it is one record that cannot be read, never a blind device the owner lists."""
     if not (isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]):
         return 0, 0
     try:
@@ -321,7 +326,7 @@ def impact_blind_counts(snap: Dict[str, Any], listing: Dict[str, Any]) -> Tuple[
             blind += 1
         else:
             unread += 1
-    return (blind, unread) if blind or unread else (1, 0)
+    return (blind, unread) if blind or unread else (0, 1)
 
 
 def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],

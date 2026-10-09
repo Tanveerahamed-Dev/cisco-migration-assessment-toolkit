@@ -8,10 +8,11 @@ absence as health:
   "captured, no tracked object" only where the snapshot proves its producer separates the two (before 2026-07-28 it
   wrote '' for both); a text that disagrees with the row's own tracked-object-down flag is unverified;
 * ``risk`` is the producer's single-gateway flag alone, a boolean. The producer counts gateways by VLAN id, so its
-  absence is published as false only where another switch's row provably shares the segment (subnet and VRF), and
-  then whatever the coverage (an unscanned device can only add gateways). The flag is a published risk only when the
-  scan covers every gateway the producer's VlanN rule could count and nothing stored contradicts it: no collection
-  blind spot, no cable-map neighbour the collection never reached that could route, every collected device's interface
+  absence is published as false only where another switch's row provably shares the segment (subnet and VRF, and --
+  W51 -- positive layer-2 evidence between the two switches: a trunk path carrying the VLAN, or one spanning-tree root
+  bridge for it), and then whatever the coverage (an unscanned device can only add gateways). The flag is a published
+  risk only when the scan covers every gateway the producer's VlanN rule could count and nothing stored contradicts
+  it: no collection blind spot nor any gap of the blind-spot record's own coverage verdict, no cable-map neighbour the collection never reached that could route, every collected device's interface
   running-config captured, no other collected interface holding an address in the gateway's subnet, and no stored FHRP
   evidence of another router in its group. A flag the stored rows contradict is unverified;
 * an empty gateway list is a clean "no gateway in the scan" only under that same coverage, and a row the VLAN join
@@ -274,7 +275,21 @@ def _gap_partial(snap):
 def _gap_not_collected(snap):
     snap["collection_completeness"]["devices"].append(
         {"host": "ghost1", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]})
+    summary = snap["collection_completeness"]["summary"]       # the producer counts the device it lists (W51)
+    summary["inventory"] += 1
+    summary["not_collected"] += 1
     return NC, _ptr("collection_completeness", "devices", 0), "partial or not collected"
+
+
+def _gap_completeness_list_absent(snap):
+    del snap["collection_completeness"]["devices"]
+    return NC, _ptr("collection_completeness"), "collection_completeness cannot be read"
+
+
+def _gap_inventory_off_the_roster(snap):
+    # W51 (the shared coverage verdict): an inventory count the devices map and the listed blind spots do not reach
+    snap["collection_completeness"]["summary"]["inventory"] += 1
+    return UV, _ptr("collection_completeness", "summary", "inventory"), "does not reconcile with the roster"
 
 
 def _gap_no_record(snap):
@@ -371,6 +386,8 @@ GAPS = {
     "completeness_phase_failed": _gap_completeness_failed,
     "summary_counts_an_unlisted_blind_spot": _gap_summary_counts_unlisted,
     "summary_count_unreadable": _gap_summary_unreadable,
+    "completeness_list_absent": _gap_completeness_list_absent,
+    "inventory_off_the_roster": _gap_inventory_off_the_roster,
 }
 WORD = {NC: "not collected", UV: "unverified", AU: "analysis unavailable"}
 
@@ -929,6 +946,98 @@ def test_a_vlan_id_seen_on_two_switches_is_a_second_gateway_only_on_one_segment(
                                          "counts a VLAN's gateways by VLAN id"), risk["reason"]
         assert "VLAN-id reuse" in risk["reason"]
         assert {(_ptr("l3_forwarding", a), "witness"), (_ptr("l3_forwarding", b), "witness")} <= _refs(risk)
+
+
+def _trunk_hosts(snap, vid):
+    """Independent: host -> the hosts one stored cable joins it to over two ports both trunking `vid` (status
+    'trunking', the VLAN in the allowed list, read here with plain comma/range parsing)."""
+    def carries(rec):
+        if not isinstance(rec, dict) or str(rec.get("trunk_status", "")).strip().lower() != "trunking":
+            return False
+        for part in str(rec.get("trunk_allowed_vlans", "")).split(","):
+            lo, _sep, hi = part.strip().partition("-")
+            if lo.isdigit() and int(lo) <= vid <= int(hi if hi.isdigit() else lo):
+                return True
+        return False
+
+    out = {}
+    for cable in snap["cable_map"]["cables"]:
+        a, b = cable["a"], cable["b"]
+        if carries(snap["interfaces"].get(a, {}).get(cable["a_port"])) and carries(
+                snap["interfaces"].get(b, {}).get(cable["b_port"])):
+            out.setdefault(a, set()).add(b)
+            out.setdefault(b, set()).add(a)
+    return out
+
+
+def _joined(graph, a, b):
+    seen, todo = {a}, [a]
+    while todo:
+        for nxt in graph.get(todo.pop(), ()):
+            if nxt == b:
+                return True
+            if nxt not in seen:
+                seen.add(nxt)
+                todo.append(nxt)
+    return False
+
+
+def test_one_subnet_in_one_table_without_layer_2_evidence_is_vlan_id_reuse(sample, inv_validator):
+    """W51 (G16 P2, the reviewer's case): two sites reuse a VLAN id AND its subnet in the global table. Matching
+    networks and VRFs are then no proof of one segment; only positive layer-2 evidence between the two switches is (a
+    stored cable path every hop of which joins two ports trunking the VLAN, or the same spanning-tree root bridge for
+    the VLAN). Without it both rows' false is withheld; before W51 it was published."""
+    snap = _covered(sample)
+    pair, a, b = _pair_vlan(snap)
+    l3 = snap["l3_forwarding"]
+    ha, hb = l3[a]["switch"], l3[b]["switch"]
+    assert _joined(_trunk_hosts(snap, pair), ha, hb)                     # the stored pair is one trunked segment
+    # sever every trunk path for the VLAN: no port that trunks it to a neighbour carries it any more
+    for host, ports in snap["interfaces"].items():
+        for rec in ports.values():
+            if isinstance(rec, dict) and rec.get("trunk_allowed_vlans"):
+                vids = [v for v in rec["trunk_allowed_vlans"].split(",") if v.strip() != str(pair)]
+                rec["trunk_allowed_vlans"] = ",".join(vids) or "none"
+    assert not _joined(_trunk_hosts(snap, pair), ha, hb)
+    roots = snap.get("stp_roots", {})
+    shared = {(roots.get(h) or {}).get(str(pair), {}).get("root_address") for h in (ha, hb)}
+    assert not (len(shared) == 1 and shared != {""} and None not in shared)  # and no shared root bridge
+    assert l3[a]["primary_subnet"] == l3[b]["primary_subnet"]             # one subnet, one table: the trap
+    inv = _inventory(snap, inv_validator)
+    for k in (a, b):
+        risk = _gw(inv, pair, k)["risk"]
+        assert (risk["state"], risk["value"]) == (UV, None), (k, risk)
+        assert "VLAN-id reuse" in risk["reason"] and "layer-2 domain" in risk["reason"], risk["reason"]
+        assert {(_ptr("l3_forwarding", a), "witness"), (_ptr("l3_forwarding", b), "witness")} <= _refs(risk)
+    # the same switches reporting one spanning-tree root bridge for the VLAN share its layer-2 domain
+    for h in (ha, hb):
+        snap.setdefault("stp_roots", {}).setdefault(h, {})[str(pair)] = {
+            "root_priority": 24586, "root_address": "aaaa.0001.0001", "is_root": h == ha, "is_mst": False,
+            "bridge_priority": 24586}
+    inv = _inventory(snap, inv_validator)
+    for k in (a, b):
+        risk = _gw(inv, pair, k)["risk"]
+        assert (risk["state"], risk["value"]) == (PUB, False), (k, risk)
+    # an MST instance key is not a VLAN: the same root then proves nothing
+    snap["stp_roots"][hb][str(pair)]["is_mst"] = True
+    inv = _inventory(snap, inv_validator)
+    assert _gw(inv, pair, a)["risk"]["state"] == UV
+
+
+def test_a_trunk_that_is_not_trunking_carries_no_layer_2_proof(sample, inv_validator):
+    """A port whose trunk status is not 'trunking' (or whose allowed list cannot be read) carries no VLAN, whatever its
+    configured allowed list says."""
+    snap = _covered(sample)
+    pair, a, b = _pair_vlan(snap)
+    l3 = snap["l3_forwarding"]
+    ha, hb = l3[a]["switch"], l3[b]["switch"]
+    for host, ports in snap["interfaces"].items():
+        for rec in ports.values():
+            if isinstance(rec, dict) and rec.get("trunk_status"):
+                rec["trunk_status"] = "not-trunking"
+    assert not _joined(_trunk_hosts(snap, pair), ha, hb)
+    inv = _inventory(snap, inv_validator)
+    assert _gw(inv, pair, a)["risk"]["state"] == UV
 
 
 def test_a_vrf_that_cannot_be_read_does_not_split_one_segment(sample, inv_validator):

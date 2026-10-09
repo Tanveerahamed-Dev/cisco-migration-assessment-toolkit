@@ -395,3 +395,62 @@ sample and golden are unchanged and need no regeneration.
 - **The failure-impact neighbour wording** names "a cable end that does not join exactly one node"
   also for a far end beside an unreadable node row. It joins one readable node, but that cannot be
   shown to be the only one. The wording is kept because the W27 summary parser reads it.
+
+## Second refutation round on the W51 train (2026-10-09)
+
+An independent re-verification of every W51 branch found one shared root cause: the `collection_completeness`
+record was trusted when it was absent, failed, malformed or self-contradictory. It is now fixed once, in
+the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`). Every reader of the collection's blind spots takes it: the fleet qualifier (`_fleet_qualify`, so every
+fleet list, total, finding facet and G05 axis count), the device scope's doubt (`_Ctx.scope_doubt`), G16's
+gateway coverage, G17's address coverage, the W28 trust inputs and the inventory rows (`_roster_list`).
+
+The verdict is `complete`, `incomplete` (readable blind-spot rows, each a witness) or the strongest state of its
+gaps, each with its witnesses:
+
+| Gap | State | When |
+| --- | --- | --- |
+| `failed` | analysis_unavailable | the record's phase failed (any fallback); the failure record is in every reader's refs, never capped |
+| `faulted` | unverified | an owner fault reading the record |
+| `unreadable` | unverified | the list, or its section, is the wrong type (F6's rule, unchanged wording) |
+| `absent` | not_collected | the section or the list is missing or null: never "no blind spot" |
+| `unread_rows` | unverified | rows that cannot be read as a blind spot (F6's classifier) |
+| `summary_unread` | unverified | the summary is not an object, or its partial, not_collected or inventory count is not a count |
+| `summary_unlisted` | unverified | the summary counts more partial and not-collected devices than the list carries |
+| `inventory` | unverified | over a readable devices map and fully joinable rows, `summary.inventory` differs from the inventory rows' count |
+
+The inventory clause reuses the rule `_device_rows` already applied: the old `_inventory_total` gate is now
+`_inventory_reconcile`, which both the total and the verdict call. A list that carries more rows than its summary
+counts over-reports and hides nothing, so it is no gap (most authored fixtures append rows that way).
+
+Per reader:
+
+* Fleet lists qualify on every gap; an empty one is not_collected with the gap's reason and witnesses.
+* The device scope doubts every device only for gaps that leave the record untrusted for any device: failed,
+  faulted, unreadable, `summary_unread`, `summary_unlisted`. A record the snapshot does not carry stays the
+  collection row's own not_collected (each page's facts are its own evidence), and the inventory count is a roster
+  statement that only the fleet-level readers count over. **F6 P2 is therefore fixed for the fleet readers and for a
+  failed or self-contradictory record on device pages; an absent record does not doubt device pages (deliberate,
+  stated in `scope_doubt`).**
+* W28 and the inventory rows take only the gaps their own rollup and the inventory total do not already report:
+  an absent list inside a carried section, and the two summary gaps. Their witnesses are cited even when another
+  rule already withholds the list.
+
+### F6 P1: the unknown-host page crash
+
+`_roster_join` returns `(state, reason, witnesses)` beside a roster row or list the host join cannot read;
+`_device_finding_rollup` unpacked two values, so every such page raised `ValueError` (probed on the sample with
+one unjoinable blind-spot row). It now reads `forced[0]` and `forced[1]`; the witnesses ride in the row's extra
+(`_forced_wit`). Arity census: `_roster_join`'s return has one consumer (`_device_page`, two targets); the forced
+state reaches 13 functions (`_resolve`, `_move_group_fact`, `_joins`, `_device_finding_rollup`, `_coverage_scope`,
+`_device_coverage_rollup`, `_interfaces_block`, `_selection_rows`, `_routes_block`, `_neighbors_block`,
+`_security_block`, `_remediation_block`, `_nrfu_block`) plus `_forced_wit`; `_device_finding_rollup` was the only
+one that unpacked it. A new AST test forbids unpacking a name `forced` anywhere and requires every `_roster_join`
+call to bind exactly two names. The type is the alias `_Forced`.
+
+### Tests written (not run)
+
+`tests/test_ui_projection_unjoinable_rows.py`: the absent-list test now requires every fleet list to be qualified
+(it failed on the old code by design); a failed record doubts every device and cites the failure record; a summary
+counting an unlisted blind spot doubts every device (control: an over-reporting list does not); the unknown-host
+finding rollup renders; the forced-state arity census. `webapp/backend/summary.py` no longer reads a qualifier with
+no resolvable witness (an absent record) as one listed blind device; its note names an unreadable record.

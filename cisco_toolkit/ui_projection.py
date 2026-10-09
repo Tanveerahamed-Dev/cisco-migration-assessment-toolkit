@@ -131,7 +131,7 @@ import ipaddress
 import math
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
@@ -291,14 +291,21 @@ AXIS_UNASSESSED: Mapping[str, Tuple[str, str, str, str, str, Union[str, bool]]] 
 })
 #: The counters whose producer omits an entry no device holds (a Counter): there, a missing could-not-assess entry is
 #: a zero only when the per-device rows confirm that no device carries the value. Held by a test against the producer.
-AXIS_UNASSESSED_SPARSE: FrozenSet[str] = frozenset({"platform_health.summary.bands"})
+AXIS_UNASSESSED_SPARSE: FrozenSet[str] = frozenset({"platform_health.summary.bands",
+                                                    "software_risk.summary.train_bands"})
 #: Axis label -> the further layers its producer assesses beyond the layer its registered count covers: ``(path of the
-#: producer's stored count of the devices that layer could assess, the layer's name)``. While such a count is below the
-#: axis's device count (or cannot be read), the registered count is not the axis's: it is withheld as not_collected,
-#: its value and the layer's gap named in the reason. A test scans every registered producer's real summary for its
-#: per-layer coverage counts and holds each one to this table or to the registered count it complements.
-AXIS_UNASSESSED_LAYERS: Mapping[str, Tuple[Tuple[str, str], ...]] = MappingProxyType({
-    "Software risk": (("software_risk.summary.n_version_known", "release-train layer (a captured software version)"),),
+#: producer's stored count of the devices that layer could NOT assess, the layer's name, its per-device rows path, the
+#: row field, the field's could-not-assess value, the summary coverage key whose uncovered devices that count holds)``.
+#: A layer's own could-not-assess count is read, never a coverage key standing in for it (W51: Software risk's
+#: release-train layer is its train_bands Unknown count -- a release captured but not classified is not assessed --
+#: never n_version_known). While that count is above zero (or cannot be read, or disagrees with its rows), the
+#: registered count is not the axis's: it is withheld as not_collected, its value and the layer's gap named in the
+#: reason. A test scans every registered producer's real summary for its per-layer coverage counts and holds each one to
+#: this table (the layer's coverage key) or to the registered count it complements.
+AXIS_UNASSESSED_LAYERS: Mapping[str, Tuple[Tuple[str, str, str, str, Union[str, bool], str], ...]] = MappingProxyType({
+    "Software risk": (("software_risk.summary.train_bands.Unknown",
+                       "release-train layer (a captured and classified software release train)",
+                       "software_risk.per_device", "train_band", "Unknown", "n_version_known"),),
 })
 #: The axis whose count an owner computes live: ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored``, the brief's
 #: own unscored health rows (the scored-row predicate the brief averages over), out of ``n_rows``.
@@ -511,8 +518,9 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "that producer's own device count, so the counts cover different device universes and are never added "
         "across axes; none of those universes holds an inventory device the collection never reached "
         "(fleet_lists_exclude_blind_devices). A count that covers one layer of an axis whose producer assesses "
-        "another (AXIS_UNASSESSED_LAYERS: Software risk's release-train layer, read from n_version_known) is that "
-        "axis's count only while the other layer's stored count shows every device assessed; otherwise it is "
+        "another (AXIS_UNASSESSED_LAYERS: Software risk's release-train layer, read from that layer's own count of the "
+        "devices it could not assess, train_bands Unknown -- a release captured but not classified is not assessed -- "
+        "never from n_version_known) is that axis's count only while that layer's count is zero; otherwise it is "
         "withheld as not_collected, its value and the other layer's gap named in the reason, with a witness ref to "
         "that layer's count. A device a dossier axis marked na is not counted. A count is unverified when it, or a "
         "further layer's count, exceeds its denominator, or when its producer's per-device rows disagree with it "
@@ -673,8 +681,11 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "marked run_config_observed); otherwise it is withheld. risk is the sole-gateway risk alone: the producer's "
         "single-gateway flag, never its no-FHRP or tracked-object-down flags. The producer counts gateways by VLAN id "
         "across the scan, so false is published only where another switch's gateway row provably shares this "
-        "gateway's segment (the same primary subnet and SVI network, in the same VRF where both can be read); it says "
-        "the scan saw another gateway for the segment, not that the gateway is healthy. These verdicts are this "
+        "gateway's segment: the same primary subnet and SVI network, in the same VRF where both can be read, and "
+        "positive evidence that the two switches share one layer-2 domain for the VLAN -- a stored cable path every "
+        "hop of which joins two collected ports trunking the VLAN, or the same spanning-tree root bridge for the VLAN "
+        "on both. A matching subnet, FHRP group or virtual address alone is not that evidence (cloned sites reuse "
+        "them). It says the scan saw another gateway for the segment, not that the gateway is healthy. These verdicts are this "
         "projection's: true is published only where the scan covers every gateway the producer's VlanN rule could "
         "count and no stored record contradicts it. That needs no collection blind spot, no cable-map neighbour the "
         "collection never reached that could route, every collected device's interface running-config captured, no "
@@ -735,8 +746,11 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "not_collected, never 'nothing found'. The owner lists only blind spots, so a row that cannot be read as one "
         "(not an object, or a status outside its vocabulary) qualifies the list the same way, with a witness ref to "
         "that row, and so does a blind-spot list carried as something other than a list (or its section as something "
-        "other than an object), which its owner reads as listing none, with a witness ref to that value. A finding "
-        "facet count follows the same rule: a positive severity or "
+        "other than an object), which its owner reads as listing none, with a witness ref to that value. The record "
+        "is never trusted by default: one that the snapshot does not carry, whose phase failed (with a ref to its "
+        "failure record, never dropped by a witness cap), or whose summary counts a partial or not-collected device "
+        "its list does not carry, cannot be read, or counts an inventory other than the inventory rows' count, "
+        "qualifies the list the same way. A finding facet count follows the same rule: a positive severity or "
         "category count is a lower bound that carries this caveat, and a zero is not_collected. An executive axis's "
         "count of the devices it could not assess, and its denominator, are likewise taken over its producer's own "
         "devices, which hold only the devices whose evidence that producer was given: a device the collection never "
@@ -815,7 +829,10 @@ LIMITATIONS += (
     _limitation("finding_facet_source_incomplete", "analyze.PUNCH_CATEGORY_SECTION",
                 "The engine folds each punch-list category from one source section (analyze.PUNCH_CATEGORY_SECTION), "
                 "which is not always a punch-list input. While a category's section was not collected, its phase "
-                "failed, or the abstention core could not read it, that category's count cannot be complete: a "
+                "failed, a failure the run recorded cannot be attributed to sections (an intermediate phase or a "
+                "label nobody classified, which could have fed any of them), the section is stored as a container "
+                "other than its producer's, or the abstention core could not read it, that category's count cannot be "
+                "complete: a "
                 "positive count is a lower bound that carries this caveat, with a ref to the section or its failure "
                 "record, and a zero is not_collected, analysis_unavailable or unverified, never a clean result. A row "
                 "of any category can carry any severity, so while any category's section is incomplete every "
@@ -1041,6 +1058,26 @@ _R_FLEET_UNREAD = ("not collected: collection_completeness carries {n} row(s) th
 _R_FLEET_UNREADABLE_LIST = ("not collected: {path} is present but is not {kind}, so which devices it lists as partial "
                             "or not collected cannot be read; any device could be one, and an empty list is not a "
                             "clean result")
+#: W51 (second round): any other reason the blind-spot record's coverage verdict (:func:`_cc_coverage`) cannot show
+#: every inventory device collected or listed: an absent, failed or self-contradictory record.
+_R_FLEET_CC_GAP = "not collected: {clause}; an empty list is not a clean result"
+# The blind-spot record's coverage verdict (:func:`_cc_coverage`): its clauses, shared by every consumer.
+_R_CC_UNREAD = "collection_completeness cannot be read ({why}), so no collection blind spot can be ruled out"
+_R_CC_ROWS = ("{k} collection_completeness row(s) name no readable status of their owner's vocabulary (not an object, "
+              "or a status other than partial or not collected; the owner lists only blind spots), so whether they "
+              "are blind spots cannot be read")
+_R_CC_SUMMARY = ("collection_completeness.summary counts {k} partial or not-collected device(s), but its devices list "
+                 "carries only {n} such row(s), and the producer writes one row per such device, so a blind spot may "
+                 "be missing from the list")
+_R_CC_SUMMARY_UNREAD = ("collection_completeness.summary's partial or not_collected count cannot be read, so the "
+                        "blind-spot list cannot be checked against it")
+_R_CC_INVENTORY = ("collection_completeness.summary.inventory counts {typed} device(s), but the inventory rows (the "
+                   "devices map and the blind spots the record lists) number {n}, so the record does not reconcile with "
+                   "the roster and a blind spot may be missing from the list")
+_R_CC_INVENTORY_UNREAD = ("collection_completeness.summary.inventory cannot be read as a count, so the record cannot be "
+                          "reconciled with the roster")
+_R_INVENTORY_RECORD = ("{word}: the inventory rows read the blind spots from collection_completeness, which cannot show "
+                       "every inventory device collected or listed: {clauses}")
 
 
 def _is_text(value: Any) -> bool:
@@ -1152,6 +1189,7 @@ class _Ctx:
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
         self._scope_doubt: Dict[str, Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]] = {}
         self._blind_rows: Optional[List[int]] = None
+        self._cc_cov: Optional["_CCCoverage"] = None
         self._no_config: Optional[List[str]] = None
         self._device_findings: Any = _UNSET
         self._punch_facets: Any = _UNSET
@@ -1395,20 +1433,25 @@ class _Ctx:
         (the name without case or surrounding space, first match wins) that passes over every row it cannot read, so
         it is held to the rule of every key join here (:func:`_resolve`): a row it cannot join could be this device's;
         a second row naming the device is never read; and a row whose status the owner's vocabulary does not name
-        reads as collected. The list itself is held to it too: carried as something other than a list (or its section
-        as something other than an object), the owner reads it as listing no blind spot (ssot._as_list), so every
-        device is in doubt, with a witness to that value (:meth:`cc_unreadable`). A list or section the snapshot does
-        not carry (missing or null) is the abstention core's not_collected and the collection row's own state
-        (:func:`_joins`), not a doubt about one device (cached per host)."""
+        reads as collected. The record itself is held to it too, through its one coverage verdict
+        (:meth:`cc_coverage`, :data:`_CC_RECORD_DOUBTS`): carried as something other than a list (or its section as
+        something other than an object), the owner reads it as listing no blind spot (ssot._as_list); a failed phase
+        leaves only its fallback; and a summary that counts more blind spots than the list carries, or cannot be read,
+        contradicts it. Each puts every device in doubt, with a witness to that value and, for a failed phase, its
+        failure record. A list or section the snapshot does not carry (missing or null) with no failure recorded is the
+        abstention core's not_collected on the collection row's own state (:func:`_joins`), not a doubt about one
+        device; every fleet-level reader still qualifies it (:func:`_fleet_qualify`) (cached per host)."""
         if not (_is_text(host) and host):
             return None
         if host not in self._scope_doubt:
             parts: List[str] = []
             wit: List[Tuple[str, Sequence[Any]]] = []
-            unread = self.cc_unreadable()
-            if unread is not None:
-                parts.append(_R_SCOPE_LIST.format(path=".".join(unread[0]), kind=_KIND[unread[1]]))
-                wit.append(("witness", unread[0]))
+            for gap in self.cc_coverage().gaps:
+                if gap.kind not in _CC_RECORD_DOUBTS:
+                    continue
+                parts.append(_R_SCOPE_LIST.format(path=".".join(gap.where[0]), kind=_KIND[gap.where[1]])
+                             if gap.kind == _CC_UNREADABLE else gap.clause)
+                wit += gap.entries()
             named = self.index(_CC_ROWS, ("host",), norm=True).get(_norm(host), [])
             if len(named) > 1:
                 parts.append(_R_SCOPE_AMBIG.format(n=len(named)))
@@ -1432,6 +1475,13 @@ class _Ctx:
         """Where the blind-spot list the owner's device scope reads is present but cannot be read as a list, with the
         type it should be (:func:`_unreadable_container`), or ``None``."""
         return _unreadable_container(self.s, _CC_ROWS, list)
+
+    def cc_coverage(self) -> "_CCCoverage":
+        """The blind-spot record's one coverage verdict (:func:`_cc_coverage`), computed once: every reader of whether
+        the collection reached every inventory device reads it here, never the record itself."""
+        if self._cc_cov is None:
+            self._cc_cov = _cc_coverage(self)
+        return self._cc_cov
 
     def partial_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
         """The one blind-spot row the owner's device scope reads for `host` when it lists the device as partial, or
@@ -2373,16 +2423,19 @@ def _stored_unassessed(ctx: _Ctx, label: str, spec: _UnassessedSpec, cav: Tuple[
     n_ok, n_val = _count(n_raw)
     of_ok, of_val = _count(_get(ctx.s, of_toks))
     over: List[Tuple[str, int]] = []                # a further layer's count above the device count
-    for layer_path, _layer in AXIS_UNASSESSED_LAYERS.get(label, ()):
-        layer_ok, layer_val = _count(_get(ctx.s, _tokens(layer_path)))
+    off: List[Tuple[Tuple[Any, ...], Any, int]] = []   # a further layer's count its own per-device rows contradict
+    for layer in AXIS_UNASSESSED_LAYERS.get(label, ()):
+        layer_ok, layer_val, layer_marked, present = _layer_count(ctx, layer)
         if layer_ok and of_ok and layer_val > of_val:
-            over.append((layer_path, layer_val))
+            over.append((layer[0], layer_val))
+        elif layer_ok and layer_marked is not None and layer_marked != layer_val:
+            off.append((layer, layer_val if present else None, layer_marked))
     doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = None
     if n_ok and of_ok and n_val > of_val:
         doubt = (f"unverified: the producer's count of devices this axis could not assess ({n_val}) exceeds its own "
                  f"device count ({of_val})", [("witness", n_toks), ("witness", of_toks)])
     elif over:
-        doubt = (f"unverified: the producer's count of the devices a further layer of this axis assessed "
+        doubt = (f"unverified: the producer's count of the devices a further layer of this axis could not assess "
                  f"({over[0][0]}: {over[0][1]}) exceeds its own device count ({of_val})",
                  [("witness", _tokens(over[0][0])), ("witness", of_toks)])
     elif readable is False:
@@ -2393,6 +2446,12 @@ def _stored_unassessed(ctx: _Ctx, label: str, spec: _UnassessedSpec, cav: Tuple[
             f"{of_val}" if of_ok else "no readable device count")
         doubt = (f"unverified: {rows_path} holds {total} device row(s), {marked} of them with {field} {mark!r}, "
                  f"while the producer's summary stores {stored}", [("witness", _tokens(rows_path))])
+    elif off:
+        (lpath, _lname, lrows, lfield, lmark, _cover), stored_val, lmarked = off[0]
+        stored_txt = "no entry" if stored_val is None else str(stored_val)
+        doubt = (f"unverified: the producer's count of the devices a further layer of this axis could not assess "
+                 f"({lpath}: {stored_txt}) disagrees with its per-device rows ({lmarked} of the rows in {lrows} carry "
+                 f"{lfield} {lmark!r})", [("witness", _tokens(lpath)[:-1]), ("witness", _tokens(lrows))])
 
     def of_gate(_ctx: _Ctx, _value: Any, _zero: bool):
         return (_UV, doubt[0], list(doubt[1])) if doubt else None
@@ -2459,28 +2518,47 @@ def _failed_unassessed(ctx: _Ctx, label: Optional[str], basis: Sequence[str]) ->
     return out
 
 
+def _layer_count(ctx: _Ctx, layer: Tuple[str, str, str, str, Union[str, bool], str]
+                 ) -> Tuple[bool, Any, Optional[int], bool]:
+    """A further layer's own could-not-assess count (:data:`AXIS_UNASSESSED_LAYERS`): ``(readable, value, rows carrying
+    the could-not-assess value or None when its per-device rows cannot be read, whether the entry is stored)``. A
+    counter that omits an entry no device holds (:data:`AXIS_UNASSESSED_SPARSE`) reads a missing entry as zero only
+    when its per-device rows can be read, and then the rows say what it should hold."""
+    layer_path, _name, rows_path, field, mark, _cover = layer
+    toks = _tokens(layer_path)
+    readable, _total, marked = _unassessed_rows(ctx, rows_path, field, mark)
+    rows_marked = marked if readable else None
+    raw = _get(ctx.s, toks)
+    if raw is _MISSING and isinstance(_get(ctx.s, toks[:-1]), dict) and ".".join(toks[:-1]) in AXIS_UNASSESSED_SPARSE:
+        return (True, 0, rows_marked, False) if readable else (False, None, None, False)
+    ok, value = _count(raw)
+    return ok, value, rows_marked, raw is not _MISSING
+
+
 def _layer_gaps(ctx: _Ctx, label: Optional[str], n: Dict[str, Any],
                 of: Dict[str, Any]) -> List[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
-    """``(reason, witness entries)`` for each further layer of the axis (:data:`AXIS_UNASSESSED_LAYERS`) whose stored
-    count does not show every one of the producer's devices assessed, or cannot be read over a published device count:
-    the registered count then covers one layer only, and the producer stores none that spans every layer."""
+    """``(reason, witness entries)`` for each further layer of the axis (:data:`AXIS_UNASSESSED_LAYERS`) whose own
+    could-not-assess count (:func:`_layer_count`) is above zero, or cannot be read over a published device count: the
+    registered count then covers one layer only, and the producer stores none that spans every layer. A layer's
+    coverage key (a release captured) never stands in for its own count (a release classified)."""
     out: List[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = []
-    for layer_path, layer in (AXIS_UNASSESSED_LAYERS.get(label, ()) if label is not None else ()):
+    for layer in (AXIS_UNASSESSED_LAYERS.get(label, ()) if label is not None else ()):
+        layer_path, name = layer[0], layer[1]
         layer_toks = _tokens(layer_path)
-        layer_ok, layer_val = _count(_get(ctx.s, layer_toks))
-        if layer_ok and of["state"] == _PUB and layer_val == of["value"]:
+        layer_ok, layer_val, _marked, present = _layer_count(ctx, layer)
+        if layer_ok and of["state"] == _PUB and layer_val == 0:
             continue
         held = f" ({n['value']})" if n["state"] == _PUB else ""
-        if layer_ok and of["state"] == _PUB and layer_val < of["value"]:
-            why = (f"not collected: this count{held} covers one layer of the axis only; its {layer} could not assess "
-                   f"{of['value'] - layer_val} of the {of['value']} device(s) ({layer_path} is {layer_val}), and the "
-                   "producer stores no count of the devices it could not assess in every layer, so how many devices "
-                   "this axis could not assess is not known; it is never shown as 0")
+        if layer_ok and of["state"] == _PUB and 0 < layer_val <= of["value"]:
+            why = (f"not collected: this count{held} covers one layer of the axis only; its {name} could not assess "
+                   f"{layer_val} of the {of['value']} device(s) ({layer_path} is {layer_val}), and the producer stores "
+                   "no count of the devices it could not assess in every layer, so how many devices this axis could "
+                   "not assess is not known; it is never shown as 0")
         else:
             why = (f"not collected: this count{held} covers one layer of the axis only, and {layer_path} is not a "
-                   f"readable count over a published device count, so whether its {layer} assessed every device is "
+                   f"readable count over a published device count, so whether its {name} assessed every device is "
                    "not known; it is never shown as 0")
-        out.append((why, [("witness", layer_toks)]))
+        out.append((why, [("witness", layer_toks if present else layer_toks[:-1])]))
     return out
 
 
@@ -2964,9 +3042,14 @@ _R_INPUTS_UNJOINABLE = _R_UNJOINABLE_STEM + ("any inventory device, so the count
                                              "assess is not verified")
 #: W51 (F6 x G08): a device whose owner device scope cannot say it is not a blind spot (:meth:`_Ctx.device_scope`).
 _R_INPUTS_SCOPE = ("unverified: whether collection_completeness lists {n} device(s) as partial or not collected cannot "
-                   "be read (a row the host join cannot read, a second row naming the device, or a status outside its "
-                   "owner's vocabulary; ssot.abstention_reason reads only the first row it can), so the count of "
-                   "devices this input could not assess is not verified")
+                   "be read (a row the host join cannot read, a second row naming the device, a status outside its "
+                   "owner's vocabulary, or a record that failed or whose summary counts a blind spot its list does not "
+                   "carry; ssot.abstention_reason reads only the first row it can), so the count of devices this input "
+                   "could not assess is not verified")
+#: W51: the blind-spot record cannot show which inventory devices were not collected (:func:`_roster_gaps`).
+_R_INPUTS_RECORD = ("{word}: collection_completeness, which lists the inventory devices no input could assess, cannot "
+                    "show every inventory device collected or listed: {clauses}; so the count of devices this input "
+                    "could not assess is not verified")
 #: How one inventory device stands before any axis is read: ``(fixed custody, witness pointer, why)`` when the same
 #: custody holds for every input, else ``None`` with the dossier row and its axis index.
 _HostCustody = Tuple[Optional[Tuple[str, str, str]], Optional[Tuple[Tuple[Any, ...], List[Any], Dict[str, List[int]]]]]
@@ -3094,6 +3177,15 @@ def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
             state, reason = _UV, "; ".join(r for r in (reason, doubt) if r)
             extra += [("witness", dd_toks + (i,)) for i in bad]
         state, reason = _rolled(ctx, state, reason, secs, ("collection_completeness",))
+        # W51: the blind-spot record's coverage verdict, for the gaps neither the rollup nor the inventory total reads;
+        # its witnesses are cited whatever else withholds the list (a record doubt also doubts every device's custody)
+        record = _roster_gaps(ctx)
+        if record:
+            extra += [entry for gap in record for entry in gap.entries()]
+            if state in (_PUB, _CBE):
+                state = impact_assessability.bound_state([(gap.state,) for gap in record])
+                reason = _R_INPUTS_RECORD.format(word=impact_assessability.STATE_WORD[state],
+                                                 clauses="; ".join(gap.clause for gap in record))
         of = _inventory_total(ctx, len(hosts))
         if state in (_PUB, _CBE) and of["state"] != _PUB:
             state, reason = of["state"], (f"{of['reason']}; the inventory denominator is withheld, so the device "
@@ -3190,7 +3282,13 @@ class _Row:
         self.bare = bare
 
 
-def _forced_wit(forced: Optional[Tuple[Any, ...]]) -> List[Tuple[str, Sequence[Any]]]:
+#: A forced device-page state (:func:`_roster_join`, :func:`_device_page`): ``(state, reason)``, or ``(state, reason,
+#: witness ref entries)`` beside a roster row or list the host join cannot read. Its arity varies, so a reader takes
+#: ``forced[0]`` and ``forced[1]`` and the witnesses only through :func:`_forced_wit`; it never unpacks the tuple.
+_Forced = Tuple[Any, ...]
+
+
+def _forced_wit(forced: Optional[_Forced]) -> List[Tuple[str, Sequence[Any]]]:
     """The witness ref entries a forced page carries: its optional third element, the roster rows or lists that leave
     an unknown host's absence open (:func:`_device_page`). ``(state, reason)`` alone carries none."""
     return list(forced[2]) if forced is not None and len(forced) > 2 else []
@@ -3208,7 +3306,7 @@ def _secs_fail(ctx: _Ctx, sections: Sequence[str]) -> Optional[Tuple[str, str]]:
 
 def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, key: Any = _MISSING,
              key_field: Optional[str] = None, want: Any = dict, host: Any = None,
-             absent: Optional[Tuple[str, str]] = None, forced: Optional[Tuple[str, str]] = None,
+             absent: Optional[Tuple[str, str]] = None, forced: Optional[_Forced] = None,
              norm: bool = False) -> _Row:
     """Join one row. `path_toks` is a FIXED container path (never a host). With `key` alone the container is a
     map keyed by it; with `key_field` it is a list whose rows name the key in that field (with `norm`, compared
@@ -3576,25 +3674,29 @@ def _total(ctx: _Ctx, section: str, listing: Dict[str, Any], *, sections: Sequen
                      caveats=cav if state == _PUB else ())
 
 
+def _fleet_gap_reason(gap: "_CCGap") -> str:
+    """How a fleet list words one gap of the blind-spot record's coverage verdict (:func:`_cc_coverage`)."""
+    if gap.kind == _CC_UNREAD_ROWS:
+        return _R_FLEET_UNREAD.format(n=len(gap.rows))
+    if gap.kind == _CC_UNREADABLE:
+        return _R_FLEET_UNREADABLE_LIST.format(path=".".join(gap.where[0]), kind=_KIND[gap.where[1]])
+    return _R_FLEET_CC_GAP.format(clause=gap.clause)
+
+
 def _fleet_qualify(ctx: _Ctx, config: bool = False) -> List[_Qualify]:
-    """The fleet-list qualifications (see :data:`_Qualify`): blind devices, the blind-spot rows that cannot be read as
-    one (:meth:`_Ctx.unread_blind_rows`, never passed over), a blind-spot list that cannot be read at all
-    (:meth:`_Ctx.cc_unreadable`: its owner reads it as listing none), and, for the punch-list, devices whose
-    running-config was not captured."""
+    """The fleet-list qualifications (see :data:`_Qualify`), read from the blind-spot record's one coverage verdict
+    (:meth:`_Ctx.cc_coverage`): blind devices, then every gap that leaves the record unable to show each inventory
+    device collected or listed -- a record the snapshot does not carry, a failed phase (its failure record always
+    cited), a list or section that cannot be read (its owner reads it as listing none), rows that cannot be read as a
+    blind spot (never passed over), and a summary that cannot be read or does not reconcile with the rows or the
+    roster -- and, for the punch-list, devices whose running-config was not captured."""
     out: List[_Qualify] = []
-    blind = ctx.blind_rows()
-    if blind:
-        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(blind)),
-                    [("witness", ("collection_completeness", "devices", i)) for i in blind]))
-    unread = ctx.unread_blind_rows()
-    if unread:
-        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_UNREAD.format(n=len(unread)),
-                    [("witness", _CC_ROWS + (i,)) for i in unread]))
-    unreadable = ctx.cc_unreadable()
-    if unreadable is not None:
-        out.append(("fleet_lists_exclude_blind_devices",
-                    _R_FLEET_UNREADABLE_LIST.format(path=".".join(unreadable[0]), kind=_KIND[unreadable[1]]),
-                    [("witness", unreadable[0])]))
+    cov = ctx.cc_coverage()
+    if cov.blind:
+        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(cov.blind)),
+                    [("witness", ("collection_completeness", "devices", i)) for i in cov.blind]))
+    for gap in cov.gaps:
+        out.append(("fleet_lists_exclude_blind_devices", _fleet_gap_reason(gap), gap.entries()))
     if config:
         lacking = ctx.no_config_hosts()
         if lacking:
@@ -3723,7 +3825,7 @@ def _move_group_problem(raw: Any) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _move_group_fact(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+def _move_group_fact(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> Dict[str, Any]:
     source = _resolve(ctx, ("move_groups",), ("move_groups",), want=list, host=host, forced=forced)
     basis = "analyze.compute_move_groups:move_groups[].group"
     if source.state is not None:
@@ -3767,7 +3869,7 @@ def _dev_basis(field: str) -> str:
     return "html.snapshot_state:devices{}." + field
 
 
-def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, _Row]:
+def _joins(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> Dict[str, _Row]:
     """The rows one device joins: its record, health, lifecycle, dossier and blind-spot rows. The blind-spot
     row itself is evidence of non-collection, so the device scope does not withhold it; it is joined by the rule
     of its owner's device scope (no case, no surrounding space). Its absence means "not a blind spot" only for a
@@ -3871,7 +3973,7 @@ def _capture_record(ctx: _Ctx, section: str, host: str) -> Tuple[Any, Any, Optio
 
 
 def _device_finding_rollup(ctx: _Ctx, host: Any,
-                           forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+                           forced: Optional[_Forced] = None) -> Dict[str, Any]:
     """Publish the pure owner fold only after scoped input and positive capture custody."""
     sections = ("punchlist",) + PUNCHLIST_INPUTS
     base, reason, _raw = _list_state(ctx, ("punchlist",), ("punchlist",))
@@ -3879,7 +3981,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     witness: List[Tuple[str, Sequence[Any]]] = [("basis", ("punchlist",))]
     values: Dict[str, Any] = {"worst": None, "by_severity": None}
     if forced is not None:
-        state, reason = forced
+        # a forced state is ``(state, reason)`` or, beside a roster it cannot read, ``(state, reason, witnesses)``
+        # (:func:`_roster_join`); its witnesses ride in the row's extra (:func:`_forced_wit`), never in the unpacking
+        state, reason = forced[0], forced[1]
     elif not _is_text(host) or not host.strip():
         state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
     elif state in (_PUB, _CBE):
@@ -3945,7 +4049,7 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     }
 
 
-def _coverage_scope(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> _Row:
+def _coverage_scope(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> _Row:
     return _resolve(ctx, ("coverage_matrix", "by_device"), ("coverage_matrix",), key=host,
                     host=host, forced=forced,
                     absent=(_NC, "not collected: coverage_matrix carries no row for this device"))
@@ -3973,7 +4077,7 @@ def _coverage_join(ctx: _Ctx, cov: _Row, host: str, axis: str) -> _Row:
 
 
 def _device_coverage_rollup(ctx: _Ctx, host: Any,
-                            forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+                            forced: Optional[_Forced] = None) -> Dict[str, Any]:
     """The complete stored axis fold, with no zero/all-covered assurance from silent sources."""
     cov = _coverage_scope(ctx, host, forced)
     state, reason = cov.state, cov.reason
@@ -4070,22 +4174,29 @@ def _inventory_universe(ctx: _Ctx) -> Tuple[List[str], FrozenSet[str], Dict[str,
     return sorted(dev_keys | blind_only), dev_keys, cc_norm
 
 
+def _inventory_reconcile(ctx: _Ctx, typed: Any, n_rows: int) -> Optional[Tuple[str, str, List[Tuple[str, Sequence[Any]]]]]:
+    """The one rule the owner's inventory count is held to (the inventory rows' total, :func:`_inventory_total`, and
+    the blind-spot record's coverage verdict, :func:`_cc_coverage`, both read it here): ``None`` when the count equals
+    the inventory rows' count; otherwise why not, as an unverified gate result. While the blind-spot list holds a row
+    or value the universe cannot read (:func:`_cc_universe`), the two cannot be reconciled at all."""
+    _index, _rows, lost, unreadable, lost_wit = _cc_universe(ctx)
+    if unreadable is not None:
+        return (_UV, f"unverified: {'.'.join(unreadable[0])} is present but is not {_KIND[unreadable[1]]}, so the "
+                     f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
+    if lost:
+        return (_UV, f"unverified: {len(lost)} collection_completeness row(s) cannot be joined by host, so the "
+                     f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
+    if typed == n_rows:
+        return None
+    return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
+                 f"number {n_rows}; the owner's inventory count says {typed}", [])
+
+
 def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
     """The owner's inventory count, published only when it equals the inventory rows' count, and never while the
-    blind-spot list holds a row or value the universe cannot read (:func:`_cc_universe`)."""
-    _index, _rows, lost, unreadable, lost_wit = _cc_universe(ctx)
-
+    blind-spot list holds a row or value the universe cannot read (:func:`_inventory_reconcile`)."""
     def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
-        if unreadable is not None:
-            return (_UV, f"unverified: {'.'.join(unreadable[0])} is present but is not {_KIND[unreadable[1]]}, so the "
-                         f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
-        if lost:
-            return (_UV, f"unverified: {len(lost)} collection_completeness row(s) cannot be joined by host, so the "
-                         f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
-        if typed == n_rows:
-            return None
-        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
-                     f"number {n_rows}; the owner's inventory count says {typed}", [])
+        return _inventory_reconcile(ctx, typed, n_rows)
 
     return _scalar(ctx, "collection_completeness.summary.inventory", "count",
                    "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
@@ -4094,21 +4205,172 @@ def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
                    published_caveats=_brief_caveats(ctx))
 
 
+# ---------------------------------------------------------------------------------------------------
+# the blind-spot record's one coverage verdict (W51 second round)
+# ---------------------------------------------------------------------------------------------------
+#: The record shows every inventory device collected or listed (no gap, no listed blind spot) ...
+_CC_COMPLETE = "complete"
+#: ... or it lists blind spots and nothing leaves that list in doubt.
+_CC_INCOMPLETE = "incomplete"
+#: The gap kinds of :func:`_cc_coverage`. At most one of the first four (the record cannot be read as a list at all);
+#: the rest are found only in a list that can be read.
+_CC_FAILED, _CC_FAULTED, _CC_UNREADABLE, _CC_ABSENT = "failed", "faulted", "unreadable", "absent"
+_CC_UNREAD_ROWS, _CC_SUMMARY_UNREAD, _CC_SUMMARY_UNLISTED, _CC_INVENTORY = (
+    "unread_rows", "summary_unread", "summary_unlisted", "inventory")
+#: The gaps that leave the record itself untrusted for EVERY device (failed, faulted, unreadable, or its own summary
+#: counting a blind spot the list does not carry): the device scope's doubt (:meth:`_Ctx.scope_doubt`) reads exactly
+#: these. A record the snapshot does not carry is the collection row's own not_collected; rows that cannot be read are
+#: doubted per device by the scope's own row rules; and the inventory count is a statement about the roster, which
+#: only the fleet-level readers count over.
+_CC_RECORD_DOUBTS: FrozenSet[str] = frozenset({_CC_FAILED, _CC_FAULTED, _CC_UNREADABLE, _CC_SUMMARY_UNREAD,
+                                              _CC_SUMMARY_UNLISTED})
+
+
+class _CCGap:
+    """One reason the blind-spot record cannot show every inventory device collected or listed. ``clause`` states it
+    without a state word; ``witness`` are the ref entries showing it (a reader may cap them); ``failure`` are the
+    failure-record entries of a failed phase, which every reader cites in full, never capped; ``rows`` the row indices
+    of an unread-rows gap; ``where`` the ``(path, type)`` of an unreadable record, or, for an absent one, what is not
+    carried: the list (inside a section the snapshot carries) or the section itself."""
+    __slots__ = ("kind", "state", "clause", "witness", "failure", "rows", "where")
+
+    def __init__(self, kind: str, state: str, clause: str, witness: Sequence[Tuple[str, Sequence[Any]]],
+                 failure: Sequence[Tuple[str, Sequence[Any]]] = (), rows: Sequence[int] = (),
+                 where: Any = None) -> None:
+        self.kind, self.state, self.clause = kind, state, clause
+        self.witness: Tuple[Tuple[str, Sequence[Any]], ...] = tuple(witness)
+        self.failure: Tuple[Tuple[str, Sequence[Any]], ...] = tuple(failure)
+        self.rows: Tuple[int, ...] = tuple(rows)
+        self.where = where
+
+    def entries(self, cap: Optional[int] = None) -> List[Tuple[str, Sequence[Any]]]:
+        """Its witnesses (the first `cap` of them), then every failure record."""
+        return list(self.witness if cap is None else self.witness[:cap]) + list(self.failure)
+
+
+class _CCCoverage:
+    """:func:`_cc_coverage`'s verdict: ``state`` is :data:`_CC_COMPLETE`, :data:`_CC_INCOMPLETE`, or the strongest gap
+    state (analysis_unavailable, then unverified, then not_collected); ``blind`` the readable blind-spot rows; ``gaps``
+    every :class:`_CCGap`, in the order found."""
+    __slots__ = ("state", "blind", "gaps")
+
+    def __init__(self, blind: Sequence[int], gaps: Sequence[_CCGap]) -> None:
+        self.blind: Tuple[int, ...] = tuple(blind)
+        self.gaps: Tuple[_CCGap, ...] = tuple(gaps)
+        self.state = (impact_assessability.bound_state([(gap.state,) for gap in self.gaps]) if self.gaps
+                      else _CC_INCOMPLETE if self.blind else _CC_COMPLETE)
+
+
+def _cc_coverage(ctx: _Ctx) -> _CCCoverage:
+    """Whether collection_completeness shows every inventory device collected or listed: the one verdict every reader
+    of the collection's blind spots takes (:meth:`_Ctx.cc_coverage`: the fleet qualifier, the device scope's doubt, the
+    gateway and address coverage, the axis denominators, the trust inputs and the inventory rows). The record is never
+    trusted by default; first match wins for the record itself:
+
+    * its phase failed (the abstention core's analysis_unavailable): ``failed``, analysis_unavailable, citing every
+      failure record, whatever the fallback holds;
+    * an owner fault: ``faulted``, unverified;
+    * the list, or its section, carried as the wrong type (the owner reads it as listing none): ``unreadable``;
+    * the section or the list not carried (missing or null): ``absent``, not_collected -- no blind spot can be ruled
+      out, so it is never "no blind spot";
+
+    and, over a list that can be read, every one of: rows that cannot be read as a blind spot (``unread_rows``); a
+    summary that is not an object or whose partial, not_collected or inventory count is not a count
+    (``summary_unread``); a summary counting more partial and not-collected devices than the list carries
+    (``summary_unlisted``: the producer writes one row per such device, so one may be missing); and, over a readable
+    devices map and a list every row of which the host join can read, an inventory count other than the inventory
+    rows' count, by the one rule the inventory total applies (:func:`_inventory_reconcile`; ``inventory``). A list
+    carrying MORE such rows than its summary counts over-reports, so it hides no blind spot and is no gap."""
+    section = ctx.s.get("collection_completeness")
+    where = _CC_ROWS if isinstance(section, dict) and "devices" in section else ("collection_completeness",)
+    hit = _secs_fail(ctx, (".".join(_CC_ROWS), "collection_completeness"))
+    if hit is not None:
+        if hit[0] == AU:
+            return _CCCoverage((), [_CCGap(_CC_FAILED, AU, _R_CC_UNREAD.format(why=hit[1]), [("witness", where)],
+                                           ctx.failure_entries(("collection_completeness",), True))])
+        return _CCCoverage((), [_CCGap(_CC_FAULTED, _UV, _R_CC_UNREAD.format(why=hit[1]), [("witness", where)])])
+    unreadable = ctx.cc_unreadable()
+    if unreadable is not None:
+        why = f"unverified: {'.'.join(unreadable[0])} is present but is not {_KIND[unreadable[1]]}"
+        return _CCCoverage((), [_CCGap(_CC_UNREADABLE, _UV, _R_CC_UNREAD.format(why=why), [("witness", unreadable[0])],
+                                       where=unreadable)])
+    state, reason, rows = _list_state(ctx, _CC_ROWS, ("collection_completeness",))
+    if not isinstance(rows, list):
+        kind = _CC_ABSENT if state == _NC else _CC_FAULTED
+        # `where` of an absent record: the list when its section is carried (the section rollup reads that as present)
+        absent_at = _CC_ROWS if isinstance(section, dict) else ("collection_completeness",)
+        return _CCCoverage((), [_CCGap(kind, _NC if state == _NC else _UV, _R_CC_UNREAD.format(why=reason or _R_NC),
+                                       [("witness", where)], where=absent_at)])
+    blind = ctx.blind_rows()
+    gaps: List[_CCGap] = []
+    unread = ctx.unread_blind_rows()
+    if unread:
+        gaps.append(_CCGap(_CC_UNREAD_ROWS, _UV, _R_CC_ROWS.format(k=len(unread)),
+                           [("witness", ("collection_completeness", "devices", i)) for i in unread], rows=unread))
+    stoks = ("collection_completeness", "summary")
+    summary = _get(ctx.s, stoks)
+    if summary is not _MISSING and summary is not None and not isinstance(summary, dict):
+        gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+    elif isinstance(summary, dict):
+        # analyze.compute_collection_completeness counts each blind-spot status under that status's own summary key
+        # (its space written '_'), and lists one devices row per such device
+        keys = tuple(status.replace(" ", "_") for status in CC_STATUSES)
+        if any(key in summary for key in keys):
+            counts = [_count(summary.get(key, 0)) for key in keys]
+            if not all(ok for ok, _n in counts):
+                gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+            elif sum(n for _ok, n in counts) > len(blind):
+                gaps.append(_CCGap(_CC_SUMMARY_UNLISTED, _UV,
+                                   _R_CC_SUMMARY.format(k=sum(n for _ok, n in counts), n=len(blind)),
+                                   [("witness", stoks)]))
+        if "inventory" in summary:
+            ok, typed = _count(summary["inventory"])
+            if not ok:
+                gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_INVENTORY_UNREAD, [("witness", stoks + ("inventory",))]))
+            elif isinstance(ctx.s.get("devices"), dict) and not _cc_universe(ctx)[2]:
+                n_rows = len(_inventory_universe(ctx)[0])
+                if _inventory_reconcile(ctx, typed, n_rows) is not None:
+                    gaps.append(_CCGap(_CC_INVENTORY, _UV, _R_CC_INVENTORY.format(typed=typed, n=n_rows),
+                                       [("witness", stoks + ("inventory",))]))
+    return _CCCoverage(blind, gaps)
+
+
+#: The coverage gaps the inventory rows and the trust inputs take from the record's verdict themselves: the ones their
+#: own section rollup (an absent section, a failed phase) and the inventory total (an unreadable list, an inventory
+#: count off the roster) do not already report. An absent list inside a present section is the rollup's blind spot.
+_CC_ROSTER_GAPS: FrozenSet[str] = frozenset({_CC_SUMMARY_UNREAD, _CC_SUMMARY_UNLISTED})
+
+
+def _roster_gaps(ctx: _Ctx) -> List[_CCGap]:
+    """The record gaps a roster-derived list must take itself (:data:`_CC_ROSTER_GAPS`, and a devices list absent
+    from a section the snapshot does carry, which the section rollup reads as present)."""
+    return [gap for gap in ctx.cc_coverage().gaps
+            if gap.kind in _CC_ROSTER_GAPS or (gap.kind == _CC_ABSENT and gap.where == _CC_ROWS)]
+
+
 def _roster_list(ctx: _Ctx, items: List[Any], basis: str, caveats: Sequence[str]) -> Dict[str, Any]:
     """A list with one item per :func:`_inventory_universe` host, in the roster's own state: the devices map's state,
     then the collection_completeness rollup. An absent or unreadable devices map is never an empty roster, and (F6) a
-    blind-spot row or list the universe cannot read makes it unverified with a witness; the inventory rows and the
-    device finding facet share this one state."""
+    blind-spot row or list the universe cannot read makes it unverified with a witness; so does (W51) a record whose
+    summary counts a blind spot its list does not carry, or whose list is absent from its section
+    (:func:`_roster_gaps`). The inventory rows and the device finding facet share this one state."""
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
         base = _PUB if items else _CBE
     # F6: a blind-spot row the host join cannot read, or a blind-spot list it cannot read, may hide a roster device
     _index, _rows, lost, unreadable, lost_wit = _cc_universe(ctx)
+    extra = list(lost_wit)
     if lost_wit and base in (_PUB, _CBE):
         base, reason = _UV, (_R_INVENTORY_UNJOINABLE.format(n=len(lost)) if unreadable is None else
                              _R_INVENTORY_UNREADABLE.format(path=".".join(unreadable[0]), kind=_KIND[unreadable[1]]))
+    held = _roster_gaps(ctx)
+    extra += [entry for gap in held for entry in gap.entries()]
+    if held and base in (_PUB, _CBE):
+        base = impact_assessability.bound_state([(gap.state,) for gap in held])
+        reason = _R_INVENTORY_RECORD.format(word=impact_assessability.STATE_WORD[base],
+                                            clauses="; ".join(gap.clause for gap in held))
     return _listing(ctx, base, reason, ("devices",), basis, items, sections=("devices",),
-                    rollup=("collection_completeness",), extra=lost_wit, caveats=caveats)
+                    rollup=("collection_completeness",), extra=extra, caveats=caveats)
 
 
 def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
@@ -4523,9 +4785,12 @@ _R_GW_RISK_PEER_CONTRADICTED = ("unverified: the producer raises no single-gatew
                                 "it, so the flags contradict the stored rows")
 _R_GW_RISK_SEGMENT = ("unverified: the producer raises no single-gateway flag here because it counts a VLAN's "
                       "gateways by VLAN id across the scan, but no gateway row of this VLAN on another switch provably "
-                      "shares this gateway's segment (the same readable primary subnet and SVI network, and the same "
-                      "VRF where both SVIs' VRFs can be read). VLAN-id reuse at another site or in another VRF is not "
-                      "a second gateway, so whether this is its segment's only gateway cannot be read")
+                      "shares this gateway's segment (the same readable primary subnet and SVI network, the same VRF "
+                      "where both SVIs' VRFs can be read, and positive evidence of one layer-2 domain between the two "
+                      "switches: a stored cable path every hop of which joins two ports trunking the VLAN, or the same "
+                      "spanning-tree root bridge for the VLAN). VLAN-id reuse at another site -- even one that reuses "
+                      "the subnet in the same table -- or in another VRF is not a second gateway, so whether this is "
+                      "its segment's only gateway cannot be read")
 _R_GW_RISK_UNPROVEN = ("{word}: the producer flags this gateway single-gateway, but the scan does not cover every "
                        "possible gateway of this VLAN: {clauses}. One gateway in the scan is not proven to be the "
                        "VLAN's only gateway")
@@ -4546,17 +4811,8 @@ _R_GW_NONE = ("collected but empty: no scanned device records a gateway for this
               "device the collection discovered (not a blind spot)")
 _R_GW_NONE_UNPROVEN = ("{word}: no scanned device records a gateway for this VLAN, but the scan does not cover every "
                        "possible gateway of the VLAN: {clauses}; an absent gateway row is not a clean result")
-_R_GW_CC_UNREAD = "collection_completeness cannot be read ({why}), so no collection blind spot can be ruled out"
 _R_GW_CC_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected, and any of them could "
                   "carry another gateway")
-_R_GW_CC_ROWS = ("{k} collection_completeness row(s) name no readable status of their owner's vocabulary (not an "
-                 "object, or a status other than partial or not collected; the owner lists only blind spots), so "
-                 "whether they are blind spots cannot be read")
-_R_GW_CC_SUMMARY = ("collection_completeness.summary counts {k} partial or not-collected device(s), but its devices "
-                    "list carries only {n} such row(s), and the producer writes one row per such device, so a blind "
-                    "spot may be missing from the list")
-_R_GW_CC_SUMMARY_UNREAD = ("collection_completeness.summary's partial or not_collected count cannot be read, so the "
-                           "blind-spot list cannot be checked against it")
 _R_GW_MAP_UNREAD = ("the stored cable map's {what} cannot be read ({why}), so no neighbour the collection never "
                     "reached can be ruled out")
 _R_GW_PEERS = ("the stored cable map shows {n} neighbour(s) the collection never reached that could route (a "
@@ -4633,40 +4889,25 @@ def _gap_unread(ctx: _Ctx, state: str, toks: Tuple[str, ...], section: str, clau
 def _gateway_coverage(ctx: _Ctx) -> List[_GatewayGap]:
     """Why the scan may not cover every possible gateway of a VLAN (empty: it covers every device the collection
     discovered). Fleet-wide and fail-closed, because VLAN carriage per cable is not stored (G14), so no gap can be
-    scoped to the VLANs it could reach: a collection blind spot (collection_completeness, its device list checked
-    against its own summary), a cable-map neighbour the collection never reached that could route (the
+    scoped to the VLANs it could reach: a collection blind spot, or any gap of the blind-spot record's one coverage
+    verdict (:meth:`_Ctx.cc_coverage`: absent, failed, unreadable, or a summary that does not reconcile with its rows or
+    the roster), a cable-map neighbour the collection never reached that could route (the
     failure-impact owner's :data:`impact_assessability.IMPACT_EDGE_KINDS` names the only kinds that cannot), and a
     collected device whose scoped interface running-config, the only source of its SVI addresses, was not captured (no
     interface marked run_config_observed: true, read through :func:`_run_config_captured`, the owner's scan; absent is
     never read as captured). Each input that cannot be read is a gap with its own state. The gateways
     the producer's VlanN rule cannot count are per VLAN (:meth:`_GatewayScan.attribution`)."""
     gaps: List[_GatewayGap] = []
-    toks = ("collection_completeness", "devices")
-    state, reason, rows = _list_state(ctx, toks, ("collection_completeness",))
-    if state not in (_PUB, _CBE):
-        gaps.append(_gap_unread(ctx, state, toks, "collection_completeness",
-                                _R_GW_CC_UNREAD.format(why=reason or _R_NC)))
-    else:
-        blind = ctx.blind_rows()
-        if blind:
-            gaps.append(_gw_gap(_NC, _R_GW_CC_BLIND.format(n=len(blind)), [("witness", toks + (i,)) for i in blind]))
-        bad = ctx.unread_blind_rows()          # F6: the one classifier of a row that cannot be read as a blind spot
-        if bad:
-            gaps.append(_gw_gap(_UV, _R_GW_CC_ROWS.format(k=len(bad)), [("witness", toks + (i,)) for i in bad]))
-        stoks = ("collection_completeness", "summary")
-        summary = _get(ctx.s, stoks)
-        # analyze.compute_collection_completeness counts each blind-spot status under that status's own summary key
-        # (its space written '_'), and lists one devices row per such device
-        keys = tuple(status.replace(" ", "_") for status in CC_STATUSES)
-        if isinstance(summary, dict) and any(key in summary for key in keys):
-            counts = [_count(summary.get(key, 0)) for key in keys]
-            if not all(ok for ok, _n in counts):
-                gaps.append((_UV, _R_GW_CC_SUMMARY_UNREAD, [("witness", stoks)]))
-            elif sum(n for _ok, n in counts) > len(blind):
-                gaps.append((_UV, _R_GW_CC_SUMMARY.format(k=sum(n for _ok, n in counts), n=len(blind)),
-                             [("witness", stoks)]))
-        elif summary is not _MISSING and summary is not None and not isinstance(summary, dict):
-            gaps.append((_UV, _R_GW_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+    # the blind-spot record is read only through its one coverage verdict (W51): a listed blind spot, then every gap
+    # that leaves the record unable to show each device collected or listed; a failed phase's failure records ride
+    # outside the witness cap, so they are always cited
+    cov = ctx.cc_coverage()
+    if cov.blind:
+        gaps.append(_gw_gap(_NC, _R_GW_CC_BLIND.format(n=len(cov.blind)),
+                            [("witness", ("collection_completeness", "devices", i)) for i in cov.blind]))
+    for cc_gap in cov.gaps:
+        state, clause, wit = _gw_gap(cc_gap.state, cc_gap.clause, list(cc_gap.witness))
+        gaps.append((state, clause, wit + list(cc_gap.failure)))
     ntoks, ctoks = ("cable_map", "nodes"), ("cable_map", "cables")
     nstate, nreason, nodes = _topology_source(ctx, ntoks)
     cstate, creason, cables = _topology_source(ctx, ctoks)
@@ -4781,6 +5022,50 @@ def _port_vrf(rec: Any) -> Optional[str]:
     return None
 
 
+def _vlan_listed(raw: Any, vid: int) -> Optional[bool]:
+    """Whether a stored allowed-VLAN text ('10,20,30', ranges '1-4094', 'ALL', 'none') lists VLAN `vid`; ``None`` when
+    any part of it cannot be read (the owners' VLAN-id key rule, :func:`_vid`; a range outside 1-4094 is unreadable)."""
+    if not _is_text(raw):
+        return None
+    text = raw.strip().lower()
+    if text == "all":
+        return 1 <= vid <= 4094
+    if text in ("", "none"):
+        return False
+    hit = False
+    for part in text.split(","):
+        lo_text, sep, hi_text = part.strip().partition("-")
+        lo = _vid(lo_text)
+        hi = _vid(hi_text) if sep else lo
+        if lo is None or hi is None or not 1 <= lo <= hi <= 4094:
+            return None
+        hit = hit or lo <= vid <= hi
+    return hit
+
+
+def _trunks_vlan(rec: Any, vid: int) -> bool:
+    """One stored interface record is a port trunking VLAN `vid`: its trunk status is 'trunking' and its allowed-VLAN
+    list (build.py's trunk_allowed_vlans) can be read and lists the VLAN. Anything else carries no proof."""
+    if not isinstance(rec, dict):
+        return False
+    status = rec.get("trunk_status")
+    return (_is_text(status) and status.strip().lower() == "trunking"
+            and _vlan_listed(rec.get("trunk_allowed_vlans"), vid) is True)
+
+
+def _stp_root(snap: Mapping[str, Any], host: str, vid: int) -> Optional[str]:
+    """The spanning-tree root bridge `host` reports for VLAN `vid` (build.build_stp_roots: stp_roots{host}{vid}), as
+    lower-case text, only for a per-VLAN instance (is_mst exactly false) whose root address can be read; else
+    ``None``. A bridge address names one bridge, so two switches reporting it share that VLAN's spanning tree."""
+    roots = snap.get("stp_roots")
+    per_host = roots.get(host) if isinstance(roots, dict) else None
+    rec = per_host.get(str(vid)) if isinstance(per_host, dict) else None
+    if not (isinstance(rec, dict) and rec.get("is_mst") is False):
+        return None
+    address = rec.get("root_address")
+    return address.strip().lower() if _is_text(address) and address.strip() else None
+
+
 def _interface_addresses(rec: Mapping[str, Any], base: Tuple[Any, ...]) -> Tuple[List[Any], List[Tuple[Any, ...]]]:
     """Every address one interface record holds (svi_ip, and the configured set svi_ips, ';'-joined text or a list),
     parsed, and the tokens of every address value that cannot be read."""
@@ -4829,6 +5114,8 @@ class _GatewayScan:
         self._by_len: Dict[Tuple[int, int], Dict[int, List[int]]] = {}
         self._free: Dict[Any, bool] = {}
         self._unscoped: Optional[List[Tuple[str, str]]] = None
+        #: VLAN id -> the trunk graph :meth:`same_l2` walks (built on first use)
+        self._l2: Dict[int, Dict[str, Set[str]]] = {}
         ifaces = ctx.s.get("interfaces")
         for host in [k for k in ifaces if _is_text(k) and k] if isinstance(ifaces, dict) else ():
             ports = ifaces[host]
@@ -4883,6 +5170,53 @@ class _GatewayScan:
                     seen[(host, port)] = None
             self._unscoped = list(seen)
         return list(self._unscoped)
+
+    def same_l2(self, a: str, b: str, vid: int) -> bool:
+        """Positive stored evidence that switches `a` and `b` share one layer-2 domain for VLAN `vid` (W51): both
+        report the same spanning-tree root bridge for it (:func:`_stp_root`), or a stored cable path joins them every
+        hop of which is a cable_map.cables row whose two ends are collected ports trunking the VLAN
+        (:func:`_trunks_vlan`). A matching subnet, VRF, FHRP group or virtual address is not such evidence: cloned
+        sites reuse every one of them. Anything that cannot be read proves nothing."""
+        root = _stp_root(self.ctx.s, a, vid)
+        if root is not None and root == _stp_root(self.ctx.s, b, vid):
+            return True
+        if vid not in self._l2:
+            self._l2[vid] = self._trunk_graph(vid)
+        graph = self._l2[vid]
+        seen, frontier = {a}, [a]
+        while frontier:
+            here = frontier.pop()
+            for there in graph.get(here, ()):
+                if there == b:
+                    return True
+                if there not in seen:
+                    seen.add(there)
+                    frontier.append(there)
+        return False
+
+    def _trunk_graph(self, vid: int) -> Dict[str, Set[str]]:
+        """Host -> the hosts one stored cable joins it to over two ports both trunking VLAN `vid`."""
+        graph: Dict[str, Set[str]] = {}
+        cables = _get(self.ctx.s, ("cable_map", "cables"))
+        ifaces = self.ctx.s.get("interfaces")
+        if not (isinstance(cables, list) and isinstance(ifaces, dict)):
+            return graph
+        for cable in cables:
+            if not isinstance(cable, dict):
+                continue
+            ends = [(cable.get(h), cable.get(p)) for h, p in (("a", "a_port"), ("b", "b_port"))]
+            if not all(_is_text(host) and host and _is_text(port) and port for host, port in ends):
+                continue
+            (ha, pa), (hb, pb) = ends
+            if ha == hb:
+                continue
+            ports_a, ports_b = ifaces.get(ha), ifaces.get(hb)
+            if not (isinstance(ports_a, dict) and isinstance(ports_b, dict)):
+                continue
+            if _trunks_vlan(ports_a.get(pa), vid) and _trunks_vlan(ports_b.get(pb), vid):
+                graph.setdefault(ha, set()).add(hb)
+                graph.setdefault(hb, set()).add(ha)
+        return graph
 
     def vrf(self, host: Any, vid: int) -> Optional[str]:
         """The VRF of `host`'s one SVI for VLAN `vid` (:func:`_port_vrf`), or ``None`` when no single such port exists
@@ -5020,16 +5354,18 @@ def _gateway_tracking_pre(split: bool) -> _Pre:
 def _gateway_segment_hold(scan: _GatewayScan, vid: int, j: int, sel: Sequence[int], recs: Mapping[int, Any],
                           segs: Mapping[int, FrozenSet[Any]]) -> Optional[Tuple[Any, ...]]:
     """``None`` when another switch's gateway row of the VLAN provably shares row `j`'s segment: the same readable
-    primary subnet and SVI network, and the same VRF where both SVIs' VRFs can be read. The producer counts gateways
-    by VLAN id across the scan, so without that proof a second row may be VLAN-id reuse, not a second gateway, and
-    the false it implies is unverified, citing every row of the VLAN and their SVIs (bounded by the gap cap)."""
+    primary subnet and SVI network, the same VRF where both SVIs' VRFs can be read, and (W51) positive evidence that
+    the two switches share one layer-2 domain for the VLAN (:meth:`_GatewayScan.same_l2`). The producer counts
+    gateways by VLAN id across the scan, so without that proof a second row may be VLAN-id reuse -- at another site
+    that reuses the subnet in the same table too -- not a second gateway, and the false it implies is unverified,
+    citing every row of the VLAN and their SVIs (bounded by the gap cap)."""
     host = recs[j]["switch"]
     mine, my_vrf = segs[j], scan.vrf(host, vid)
     for k in sel:
         other = recs[k]["switch"]
         if other != host and mine and segs[k] == mine:
             theirs = scan.vrf(other, vid)
-            if my_vrf is None or theirs is None or my_vrf == theirs:
+            if (my_vrf is None or theirs is None or my_vrf == theirs) and scan.same_l2(host, other, vid):
                 return None
     order = [j] + [k for k in sel if k != j]
     wit: List[Tuple[str, Sequence[Any]]] = []
@@ -5702,6 +6038,23 @@ _R_SOURCE_NC = ("not collected: {section}, the section the engine folds the {cat
                 "collected")
 _R_SOURCE_AU = "{failed} ({section} is the section the engine folds the {category} findings from)"
 _R_SOURCE_ZERO = "{why}, so a zero count of this category is not a clean result"
+#: W51: a category source stored as a container other than its producer's (G21 P2).
+_R_SOURCE_TYPE = ("unverified: {section}, the section the engine folds the {category} findings from, is present but is "
+                  "not {kind}, and the engine's fold reads such a value as holding nothing, so it is not complete "
+                  "evidence")
+_R_SOURCE_NO_KIND = ("unverified: this projection registers no container type for {section}, the section the engine "
+                     "folds the {category} findings from (CATEGORY_SOURCE_KINDS), so its stored value cannot be checked")
+#: Each category source section (``analyze.PUNCH_CATEGORY_SECTION``'s values) -> the container its producer writes.
+#: A source stored as anything else is no evidence (:func:`_category_sources`). tests/test_ui_projection_finding_facets.py
+#: holds the key set equal to the owner map's sections and each type to the engine-built snapshots' stored sections.
+CATEGORY_SOURCE_KINDS: Mapping[str, type] = MappingProxyType({
+    **{section: list for section in ("cross_layer", "fhrp", "health_scores", "l3_forwarding", "link_phy",
+                                     "operational_drift", "physical_health", "protocol_health", "trunk_native")},
+    **{section: dict for section in ("addressing_conflicts", "config_hygiene", "device_dossiers", "devices",
+                                     "ipv6_routing_adjacency_baseline", "multicast_intelligence", "platform_health",
+                                     "qos_audit", "security", "service_map", "software_risk", "stp_roots",
+                                     "syslog_intelligence", "vtp_safety_baseline")},
+})
 _R_SEVERITY_SOURCE_ZERO = ("{words}: no stored punch-list row has this severity, but a row of any category can carry "
                            "any severity, and these categories are folded from sections that are not complete evidence: "
                            "{detail}; so this zero is not a clean result")
@@ -5739,12 +6092,18 @@ def _with_refs(ctx: _Ctx, refs: List[Dict[str, str]],
 
 def _category_sources(ctx: _Ctx) -> Dict[str, _SourceHold]:
     """Category -> its :data:`_SourceHold`, in owner order, for every category whose source section (the engine's
-    ``analyze.PUNCH_CATEGORY_SECTION``) is not complete evidence for its count: the section's phase failed
-    (analysis_unavailable, with its failure records), the abstention core could not read it (unverified, with the
-    owner fault) or it was not collected (not_collected). The whole closed vocabulary is checked, never a hand list
-    of sections, and a category the owner maps to no section is unverified. A complete source is not listed. The
-    held section is cited as a witness of the incompleteness, never as a basis: a lower bound over it stays
-    published, and a basis ref to a failed section belongs only to a value that is itself unavailable."""
+    ``analyze.PUNCH_CATEGORY_SECTION``) is not complete evidence for its count, first match wins: the section's phase
+    failed (analysis_unavailable, with its failure records); the abstention core could not read it (unverified, with
+    the owner fault); a failure the run recorded could not be attributed to sections -- an intermediate phase, a label
+    nobody classified, or a failed-phase record that is not a list -- so it could have fed this section (W51:
+    analysis_unavailable, with those failure records; the module's full failed-phase census, ``ssot.failed_sections``
+    over ``ssot.PHASE_SECTIONS``, never only the one directly attributed failure); it was not collected
+    (not_collected); or it is stored as a container other than its producer's (:data:`CATEGORY_SOURCE_KINDS`), which
+    the engine's fold reads as holding nothing (unverified). The whole closed vocabulary is checked, never a hand list
+    of sections, and a category the owner maps to no section, or to a section with no registered container, is
+    unverified. A complete source is not listed. The held section is cited as a witness of the incompleteness, never
+    as a basis: a lower bound over it stays published, and a basis ref to a failed section belongs only to a value
+    that is itself unavailable."""
     out: Dict[str, _SourceHold] = {}
     for category in FINDING_CATEGORIES:
         section = PUNCH_CATEGORY_SECTION.get(category)
@@ -5753,7 +6112,8 @@ def _category_sources(ctx: _Ctx) -> Dict[str, _SourceHold]:
             continue
         token = ctx.abst(section)
         entries: List[Tuple[str, Sequence[Any]]] = [("witness", (section,))]
-        if token == AU:
+        kind = CATEGORY_SOURCE_KINDS.get(section)
+        if token == AU or (token != _FAULT and ctx.unattributed):
             out[category] = (AU, _R_SOURCE_AU.format(failed=ctx.unavailable_reason((section,)), section=section,
                                                      category=category),
                              entries + ctx.failure_entries((section,), True))
@@ -5761,6 +6121,11 @@ def _category_sources(ctx: _Ctx) -> Dict[str, _SourceHold]:
             out[category] = (_UV, ctx.fault((section,)), entries)
         elif token == _NC:
             out[category] = (_NC, _R_SOURCE_NC.format(section=section, category=category), entries)
+        elif kind is None:
+            out[category] = (_UV, _R_SOURCE_NO_KIND.format(section=section, category=category), entries)
+        elif not isinstance(ctx.s.get(section), kind):
+            out[category] = (_UV, _R_SOURCE_TYPE.format(section=section, category=category, kind=_KIND[kind]),
+                             entries)
     return out
 
 
@@ -6168,7 +6533,7 @@ def _roc_false(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
         if raw is False else None
 
 
-def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     ifr = _resolve(ctx, ("interfaces",), ("interfaces",), key=host, host=host, forced=forced,
                    absent=(_NC, "not collected: interfaces carries no parse result for this device"))
     rows: List[Dict[str, Any]] = []
@@ -6192,7 +6557,7 @@ def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -
                              bare=ifr.bare)}
 
 
-def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], block: str, toks: Tuple[str, ...],
+def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[_Forced], block: str, toks: Tuple[str, ...],
                     fields: Tuple[str, ...], basis: str, cbe: Union[str, Tuple[str, str]],
                     build: Callable[[int, Any], Dict[str, Any]], *,
                     multi: bool = False, base_state: Optional[Tuple[str, Optional[str], Any]] = None,
@@ -6265,7 +6630,7 @@ def _cable_row(ctx: _Ctx, i: int, rec: Any) -> Dict[str, Any]:
             "op_status": _cell(ctx, row, "op_status", "enum", basis + "op_status", vocab=OP_STATUSES)}
 
 
-def _routes_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _routes_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     rr = _resolve(ctx, ("routes",), ("routes",), key=host, host=host, want=list, forced=forced,
                   absent=(_NC, "not collected: routes carries no in-scope route for this device, or its routing "
                                "table was not parsed"))
@@ -6289,7 +6654,7 @@ def _routes_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Di
                     extra=rr.extra, caveats=("routes_in_scope_only",), bare=rr.bare)
 
 
-def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     rn = _resolve(ctx, ("routing_neighbors",), ("routing_neighbors",), key=host, host=host, forced=forced,
                   absent=(_NC, "not collected: routing_neighbors carries no row for this device"))
     group_basis = "build.build_routing_neighbors:routing_neighbors{}{}"
@@ -6325,7 +6690,7 @@ def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) ->
                     caveats=("routing_neighbors_empty_is_ambiguous",))
 
 
-def _security_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _security_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     sr = _resolve(ctx, ("security",), ("security",), key=host, host=host, forced=forced,
                   absent=(_NC, "not collected: security carries no row for this device (no captured running-config)"))
     state, reason, toks, raw = _sub_list(ctx, sr, "findings", empty=(_CBE, "collected but empty: the check list is "
@@ -6336,7 +6701,7 @@ def _security_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> 
     return {"summary": _cell(ctx, sr, "summary", "security_summary", _B_SEC + "summary"), "checks": checks}
 
 
-def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     plan = _resolve(ctx, ("remediation_plan",), ("remediation_plan",), forced=forced)
     rb = _resolve(ctx, ("remediation_plan", "by_device"), ("remediation_plan",), key=host, host=host, want=list,
                   forced=forced, absent=(_CBE, "collected but empty: the engine generated no remediation item for "
@@ -6374,7 +6739,7 @@ def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) 
                               caveats=(("move_group_label_absent",) if ctx.mg_legacy else ()))}
 
 
-def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     toks = ("nrfu_commands", "waves")
     basis = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases"
     if forced is not None:
@@ -7090,8 +7455,10 @@ def _address_coverage(ctx: _Ctx) -> Tuple[bool, Tuple[_CoverageGap, ...]]:
     (:func:`_run_config_captured`), the only capture its interface addresses come from. Every record row that does not
     name a roster device (by the owner's name rule) is a gap, whatever its status: a device outside the roster, or a
     row that names none (not an object, or a host that is not text). The roster itself is unknown, so completeness is
-    never claimed, when the devices map cannot be read, or when the record is not readable: absent, failed or faulted
-    (``ssot.abstention_reason`` is neither published nor collected but empty), or its 'devices' is not a list."""
+    never claimed, when the devices map cannot be read, or when the record cannot be trusted, read through its one
+    coverage verdict (:meth:`_Ctx.cc_coverage`, W51): absent, failed (its failure records ride in the gap), faulted,
+    a list or section of the wrong type, or a summary that cannot be read or does not reconcile with its rows or with
+    the roster. The record's own row rule here (a row naming no roster device) stands in for its unread-rows gap."""
     ifaces = ctx.s.get("interfaces")
     gaps: List[_CoverageGap] = []
     roster: Dict[str, str] = {}               # device -> the first roster section naming it (its witness otherwise)
@@ -7116,11 +7483,10 @@ def _address_coverage(ctx: _Ctx) -> Tuple[bool, Tuple[_CoverageGap, ...]]:
         elif not _run_config_captured(ctx, name):
             gaps.append((("witness", ("interfaces", name) if isinstance(ifaces, dict) and name in ifaces
                           else (roster[name], name)),))
-    record = ctx.abst(_ADDRESS_ROSTER_RECORD)
+    for cc_gap in ctx.cc_coverage().gaps:
+        if cc_gap.kind != _CC_UNREAD_ROWS:             # the row rule below reads every row that names no roster device
+            gaps.append(tuple(cc_gap.entries()))
     rows = _get(ctx.s, (_ADDRESS_ROSTER_RECORD, "devices"))
-    if record not in (_PUB, _CBE) or not isinstance(rows, list):
-        where = (_ADDRESS_ROSTER_RECORD,) if rows is _MISSING else (_ADDRESS_ROSTER_RECORD, "devices")
-        gaps.append((("witness", where),) + tuple(ctx.failure_entries((_ADDRESS_ROSTER_RECORD,), record == AU)))
     if isinstance(rows, list):
         named = {_norm(name) for name in roster}
         for i, row in enumerate(rows):
@@ -7170,6 +7536,7 @@ _R_PEER_WHY_GAPS = ("it has {n} coverage gap(s): a collected device whose interf
                     "a device roster (the devices map, or the collection_completeness record that completes it) that "
                     "is absent, failed or unreadable{cited}")
 _R_PEER_CITED = "; the witnesses cite the first {k} of them"
+_R_PEER_CITED_FAILURES = ", and every failure record behind the rest"
 _R_PEER_TAIL_ABSENT = "an address it does not hold is not a clean result"
 _R_PEER_TAIL_OWNER = ("the one device it places this address on cannot be named the only owner: a second owner was "
                       "never ruled out, and more than one owner is ambiguous (fib._hosts_owning_ip)")
@@ -7193,7 +7560,7 @@ def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
     or faulted index input -> an address that is not an IP -> more than one owning device, or only this device ->
     an unreadable source record that could also carry it -> an owning observation the index withholds -> an IPv6
     address -> an index that may be incomplete (an uncollected input, or a coverage gap of :func:`_address_coverage`,
-    the first :data:`_PEER_GAPS_CITED` cited): not collected, for a sole observed owner as for an absence, since an
+    the first :data:`_PEER_GAPS_CITED` cited, and every failure record behind any of them): not collected, for a sole observed owner as for an absence, since an
     unheld device could be a second owner -> over a complete index, one owner is published, citing every observation of
     it, and no owner is 'not resolved', collected but empty."""
     from cisco_toolkit import fib
@@ -7247,9 +7614,13 @@ def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
     complete, gaps = ctx.address_coverage
     if not complete:
         cited = gaps[:_PEER_GAPS_CITED]
+        # a failure record is never dropped by the cap (W51): the failed phase is what explains the gap
+        failures = [entry for gap in gaps[_PEER_GAPS_CITED:] for entry in gap if entry[0] == "failure_record"]
         why = _R_PEER_WHY_GAPS.format(
-            n=len(gaps), cited=_R_PEER_CITED.format(k=len(cited)) if len(cited) < len(gaps) else "")
-        return _envelope(_NC, None, None, ctx.refs(base + wit + [entry for gap in cited for entry in gap]), basis,
+            n=len(gaps), cited=(_R_PEER_CITED.format(k=len(cited)) + (_R_PEER_CITED_FAILURES if failures else ""))
+            if len(cited) < len(gaps) else "")
+        return _envelope(_NC, None, None,
+                         ctx.refs(base + wit + [entry for gap in cited for entry in gap] + failures), basis,
                          _R_PEER_INCOMPLETE.format(why=why, tail=tail))
     if owner is not None:
         return _envelope(_PUB, owner, None, ctx.refs(base + wit), basis, "", caveats=(_PEER_CAVEAT,))
@@ -8397,5 +8768,5 @@ __all__ = [
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
     "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES", "NEIGHBOR_ADDRESS_FIELDS",
     "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
-    "FINDING_CATEGORIES", "FINDING_FACETS",
+    "FINDING_CATEGORIES", "FINDING_FACETS", "CATEGORY_SOURCE_KINDS",
 ]

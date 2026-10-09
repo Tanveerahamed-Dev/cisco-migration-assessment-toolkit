@@ -490,6 +490,35 @@ def test_without_the_blind_spot_owner_every_list_may_be_incomplete(sample):
         assert _items(row) == expected[axis], axis
 
 
+@pytest.mark.parametrize("case", ["list_absent", "list_null", "summary_counts_unlisted", "summary_unreadable"])
+def test_a_blind_spot_record_that_cannot_list_every_device_withholds_every_count(sample, case):
+    """W51 (the shared coverage verdict): the device lists are taken over the inventory the blind-spot record
+    completes. A record whose list is missing from a section the snapshot carries (the section rollup reads it as
+    present), or whose summary counts a blind spot the list does not carry or cannot be read, cannot show every
+    inventory device collected or listed, so no list or count is published or a clean zero. Before W51 they were."""
+    snap = copy.deepcopy(sample)
+    cc = snap["collection_completeness"]
+    if case == "list_absent":
+        del cc["devices"]
+        want, pointer = NC, "/collection_completeness"
+    elif case == "list_null":
+        cc["devices"] = None
+        want, pointer = NC, "/collection_completeness/devices"
+    elif case == "summary_counts_unlisted":
+        cc["summary"]["not_collected"] = 2
+        want, pointer = UV, "/collection_completeness/summary"
+    else:
+        cc["summary"]["partial"] = "two"
+        want, pointer = UV, "/collection_completeness/summary"
+    clean = _rows(copy.deepcopy(sample))
+    for axis, row in _rows(snap).items():
+        assert row["hosts"]["state"] == want and row["n"]["state"] == want, (case, axis, row["hosts"])
+        assert row["n"]["value"] is None, (case, axis)
+        assert "collection_completeness" in row["hosts"]["reason"], (case, axis, row["hosts"]["reason"])
+        assert {"pointer": pointer, "role": "witness"} in row["hosts"]["refs"], (case, axis, row["hosts"]["refs"])
+        assert clean[axis]["hosts"]["state"] in (PUB, CBE), axis                 # the control publishes
+
+
 def test_without_the_register_only_blind_spots_are_listed(sample):
     snap, host = _with_blind(sample)
     del snap["device_dossiers"]

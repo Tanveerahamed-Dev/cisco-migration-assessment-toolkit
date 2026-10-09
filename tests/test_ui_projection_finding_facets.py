@@ -634,6 +634,76 @@ def test_f6_a_failed_category_source_phase_is_unavailable_with_its_failure_recor
     assert (link["state"], link["value"]) == (PUB, 0) and SOURCE_CAVEAT not in link.get("caveats", ())
 
 
+@pytest.mark.parametrize("record", [["dependency map"], ["A phase nobody classified"], "Health Scores"])
+def test_f6_a_failure_no_section_owns_holds_every_category_never_clean(record):
+    """W51 (G21 P1): the run records a failure the phase-to-section owner cannot attribute (an intermediate phase that
+    feeds several sections, a label nobody classified, or a failed-phase record that is not a list), so it could have
+    fed any category's source section. The module's full failed-phase census (ssot.failed_sections over
+    ssot.PHASE_SECTIONS) holds every category: a positive count is a lower bound carrying the source caveat with the
+    failure record, and a zero is analysis_unavailable, never a clean published 0. Before W51 a category whose own
+    section was not directly attributed read as complete."""
+    snap, _patched = _captured_sample()
+    snap["assessment_integrity"] = {"failed_phases": record}
+    direct, unattributed = ssot.failed_sections(snap)
+    assert unattributed and not direct                                   # the precondition: nothing attributable
+    findings = uip.project_findings(snap)
+    category = _by_key(findings["facets"]["category"])
+    severity = _by_key(findings["facets"]["severity"])
+    record_ref = ("/assessment_integrity/failed_phases/0" if isinstance(record, list)
+                  else "/assessment_integrity/failed_phases")
+    for facet, buckets in (("category", category), ("severity", severity)):
+        for key, n in buckets.items():
+            if n["state"] == PUB:
+                assert n["value"] > 0 and SOURCE_CAVEAT in n["caveats"], (facet, key, n)
+            else:
+                assert n["state"] == AU and n["value"] is None, (facet, key, n)
+            assert {"pointer": record_ref, "role": "failure_record"} in n["refs"], (facet, key, n["refs"])
+    # control: the same fleet with no failure recorded publishes clean, uncaveated counts
+    clean, _patched = _captured_sample()
+    category = _by_key(uip.project_findings(clean)["facets"]["category"])
+    assert any(n["state"] == PUB and SOURCE_CAVEAT not in n.get("caveats", ()) for n in category.values())
+
+
+@pytest.mark.parametrize("value", [["not", "a", "record"], "text", 7, {"_": 1}])
+def test_f6_a_category_source_stored_as_the_wrong_container_is_unverified(value):
+    """W51 (G21 P2): a source section stored as a container other than its producer's (CATEGORY_SOURCE_KINDS) reads as
+    holding nothing in the engine's fold, so it is no complete evidence: the category's zero is unverified, its
+    severities follow, and the section is cited. Before W51 a wrong-typed source counted as complete."""
+    snap, _patched = _captured_sample()
+    section, category = "multicast_intelligence", "Multicast/Media"
+    assert analyze.PUNCH_CATEGORY_SECTION[category] == section
+    want = uip.CATEGORY_SOURCE_KINDS[section]
+    if isinstance(value, want):
+        value = []                                                       # the other container type
+    snap[section] = value
+    findings = uip.project_findings(snap)
+    held = _by_key(findings["facets"]["category"])[category]
+    assert sum(1 for row in snap["punchlist"] if row["category"] == category) == 0
+    assert (held["state"], held["value"]) == (UV, None), held
+    assert held["reason"].startswith(f"unverified: {section}, the section the engine folds the {category} findings "
+                                     "from, is present but is not"), held["reason"]
+    assert {"pointer": f"/{section}", "role": "witness"} in held["refs"]
+    info = _by_key(findings["facets"]["severity"])["Info"]
+    assert sum(1 for row in snap["punchlist"] if row["severity"] == "Info") == 0
+    assert (info["state"], info["value"]) == (UV, None) and f"{category} ({section} unverified)" in info["reason"]
+
+
+def test_f6_every_category_source_kind_is_its_producers_stored_container():
+    """The registry the wrong-container rule reads: exactly the owner map's source sections, each the container the
+    engine-built sample and golden snapshots store (where they store it)."""
+    assert isinstance(uip.CATEGORY_SOURCE_KINDS, MappingProxyType)
+    assert set(uip.CATEGORY_SOURCE_KINDS) == set(analyze.PUNCH_CATEGORY_SECTION.values())
+    seen = set()
+    for name in STORED:
+        snap = _stored(name)
+        for section, kind in uip.CATEGORY_SOURCE_KINDS.items():
+            assert kind in (list, dict), section
+            if section in snap and snap[section] is not None:
+                assert type(snap[section]) is kind, (name, section, type(snap[section]))
+                seen.add(section)
+    assert seen == set(uip.CATEGORY_SOURCE_KINDS)                        # every kind is held by stored evidence
+
+
 def test_f6_a_category_the_owner_maps_to_no_section_is_unverified_never_complete(monkeypatch):
     """The fail-closed path for a category the map does not name (the map is total today; this proves the guard)."""
     unmapped = ("STP", "QoS")

@@ -405,11 +405,12 @@ def test_a_sole_owner_over_an_incomplete_index_is_never_published(doc_validator)
     for mutate, witness in (
             # r2's address survives but no interface of it carries the capture marker
             (lambda s: s["interfaces"]["r2"]["Gi1"].pop("run_config_observed"), "/interfaces/r2"),
-            # an inventory device with no interface record at all
-            (lambda s: s["devices"].update(r3={"hostname": "r3"}), "/devices/r3"),
+            # an inventory device with no interface record at all (the producer counts it in its inventory, W51)
+            (lambda s: (s["devices"].update(r3={"hostname": "r3"}), _counted(s, complete=1)), "/devices/r3"),
             # an inventory device the collection never reached (a blind-spot row naming no collected device)
-            (lambda s: s["collection_completeness"]["devices"].append(
+            (lambda s: (s["collection_completeness"]["devices"].append(
                 {"host": "r9", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]}),
+                        _counted(s, not_collected=1)),
              "/collection_completeness/devices/0")):
         snap = _base()
         mutate(snap)
@@ -445,6 +446,17 @@ def test_an_owner_whose_rival_capture_did_not_parse_is_not_published(doc_validat
     _assert_gaps(gap, 1, OWNER_TAIL, {"/interfaces/r2/Vlan99/svi_ip", "/interfaces/r3"})
 
 
+def _counted(snap, **extra):
+    """Count devices the mutation adds into the record's own summary, as the producer would (one inventory device
+    each, under its status): W51 reconciles the summary with the rows and the roster, so a fixture that adds a device
+    without counting it would test that contradiction instead."""
+    summary = snap["collection_completeness"]["summary"]
+    for key, n in extra.items():
+        summary[key] += n
+        summary["inventory"] += n
+    return snap
+
+
 #: Every way the collection_completeness record can fail to complete the roster: (case, mutation, the gap's witness
 #: pointer or None when nothing of it resolves, the failure record it must cite or None).
 _UNREADABLE_RECORDS = (
@@ -460,18 +472,26 @@ _UNREADABLE_RECORDS = (
     ("devices_absent", lambda s: s["collection_completeness"].pop("devices"), "/collection_completeness", None),
     ("row_not_an_object", lambda s: s["collection_completeness"]["devices"].append("r9"),
      "/collection_completeness/devices/0", None),
-    ("row_status_not_text", lambda s: s["collection_completeness"]["devices"].append({"host": "r9", "status": 0}),
+    ("row_status_not_text", lambda s: (s["collection_completeness"]["devices"].append({"host": "r9", "status": 0}),
+                                       _counted(s, complete=1)),
      "/collection_completeness/devices/0", None),
     ("row_host_not_text", lambda s: s["collection_completeness"]["devices"].append(
         {"host": 9, "status": "not collected"}), "/collection_completeness/devices/0", None),
-    ("partial_row_outside_the_roster", lambda s: s["collection_completeness"]["devices"].append(
-        {"host": "r9", "status": "partial", "data_quality": 50, "missing": ["interfaces"]}),
+    ("partial_row_outside_the_roster", lambda s: (s["collection_completeness"]["devices"].append(
+        {"host": "r9", "status": "partial", "data_quality": 50, "missing": ["interfaces"]}), _counted(s, partial=1)),
      "/collection_completeness/devices/0", None),
+    # W51 (G17 P2): a readable record whose own summary does not reconcile with its rows or with the roster
+    ("summary_counts_an_unlisted_blind_spot", lambda s: s["collection_completeness"]["summary"].update(
+        not_collected=1), "/collection_completeness/summary", None),
+    ("inventory_off_the_roster", lambda s: s["collection_completeness"]["summary"].update(inventory=5),
+     "/collection_completeness/summary/inventory", None),
 )
 
 
-#: W51: the cases above that F6 also reads as a device-scope doubt (ssot._device_not_collected passes over the record).
-_SCOPE_DOUBTED = frozenset({"devices_not_a_list", "row_not_an_object", "row_host_not_text"})
+#: W51: the cases above that F6 also reads as a device-scope doubt (ssot._device_not_collected passes over the record,
+#: or the record cannot be trusted for any device: a failed phase, or a summary counting an unlisted blind spot).
+_SCOPE_DOUBTED = frozenset({"devices_not_a_list", "row_not_an_object", "row_host_not_text", "failed_phase_fallback",
+                            "failed_phase_absent", "summary_counts_an_unlisted_blind_spot"})
 
 
 @pytest.mark.parametrize("case, mutate, witness, failure", _UNREADABLE_RECORDS,
@@ -483,16 +503,21 @@ def test_a_record_that_cannot_complete_the_roster_is_a_gap_never_a_clean_index(c
     snap = _base()
     mutate(snap)
     if case in _SCOPE_DOUBTED:
-        # W51 (F6 x G17): a blind-spot list that cannot be read, or a row of it the host join cannot read, also
-        # leaves the owner's device scope in doubt for every device (F6), so r1's own routing-neighbour rows are
-        # unverified, citing that record, and name no peer at all. The address index's coverage gap stands, read
-        # from its owner directly.
+        # W51 (F6 x G17): a blind-spot list that cannot be read, a row of it the host join cannot read, a failed
+        # phase or a summary counting an unlisted blind spot also leaves the owner's device scope in doubt for every
+        # device (F6), so r1's own routing-neighbour rows are unverified, citing that record (and any failure record),
+        # and name no peer at all. The address index's coverage gap stands, read from its owner directly.
         rn = _page(snap, "r1", doc_validator)["routing_neighbors"]
         assert (rn["state"], rn["items"]) == (UV, []), (case, rn)
-        assert witness in _refs(rn, "witness"), (case, rn["refs"])
         complete, gaps = ui._address_coverage(ui._Ctx(snap))
         assert not complete, case
-        assert witness in {ui.json_pointer(*toks) for gap in gaps for role, toks in gap if role == "witness"}, gaps
+        cited = {(ui.json_pointer(*toks), role) for gap in gaps for role, toks in gap}
+        if witness is not None:
+            assert witness in _refs(rn, "witness"), (case, rn["refs"])
+            assert (witness, "witness") in cited, gaps
+        if failure is not None:
+            assert failure in _refs(rn, "failure_record"), (case, rn["refs"])
+            assert (failure, "failure_record") in cited, gaps
         return
     owner, absent = _peers(snap, doc_validator)["ospf"]
     _assert_gaps(owner, 1, OWNER_TAIL, {"/interfaces/r2/Gi1/svi_ip"} | ({witness} if witness else set()))
@@ -568,6 +593,47 @@ def test_coverage_gap_witnesses_are_bounded_on_a_large_fleet(doc_validator):
         for pointer in _refs(fact):
             _resolve(snap, pointer)
     assert "/interfaces/r002/Gi1/svi_ip" in _refs(facts[0], "witness")
+
+
+def test_a_failure_record_behind_the_cited_gaps_is_always_cited():
+    """W51 (G17 P3): the witness cap bounds the gaps cited, never the failure record behind one: a failed
+    collection_completeness phase is what explains its gap, so its failure record is cited whatever the gap's place.
+    The record's gap follows the roster's own gaps, so a fleet with more uncaptured devices than the cap pushes it past
+    the cap; before W51 its failure record was dropped with it. (A failed record also doubts every device's own
+    observations, F6, so the owner is read directly for an address no device carries.)"""
+    snap = _base()
+    for i in range(ui._PEER_GAPS_CITED + 4):
+        snap["devices"][f"x{i:02d}"] = {"hostname": f"x{i:02d}"}     # reached, no interface capture: one gap each
+    snap["collection_completeness"] = {}                              # the failed phase's fallback
+    snap["assessment_integrity"] = {"failed_phases": ["Collection completeness"]}
+    ctx = ui._Ctx(snap)
+    complete, gaps = ui._address_coverage(ctx)
+    record = ("failure_record", ("assessment_integrity", "failed_phases", 0))
+    places = [k for k, gap in enumerate(gaps) if record in gap]
+    assert not complete and places and min(places) >= ui._PEER_GAPS_CITED, (places, len(gaps))   # past the cap
+    cell = {"state": PUB, "value": "198.51.100.9", "refs": []}        # no collected device carries it
+    fact = ui._peer_host(ctx, "r1", "ospf", ("routing_neighbors", "r1", "ospf", 1), {"address": cell})
+    _assert_gaps(fact, len(gaps), ABSENT_TAIL)
+    assert "/assessment_integrity/failed_phases/0" in _refs(fact, "failure_record"), fact["refs"]
+    assert f"the witnesses cite the first {ui._PEER_GAPS_CITED} of them, and every failure record" in fact["reason"]
+
+
+def test_a_record_whose_summary_does_not_reconcile_is_a_gap(doc_validator):
+    """W51 (G17 P2): a readable record is read through its one coverage verdict, so its own summary is reconciled with
+    its rows and the roster. An inventory count off the roster is a coverage gap citing that count; the same record
+    counting each device it lists completes the roster (the control)."""
+    snap = _base()
+    snap["collection_completeness"]["summary"]["inventory"] = 3
+    owner, absent = _peers(snap, doc_validator)["ospf"]
+    witness = "/collection_completeness/summary/inventory"
+    _assert_gaps(owner, 1, OWNER_TAIL, {witness, "/interfaces/r2/Gi1/svi_ip"})
+    _assert_gaps(absent, 1, ABSENT_TAIL, {witness})
+    control = _counted(_base(), not_collected=1)
+    control["collection_completeness"]["devices"].append(
+        {"host": "r9", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]})
+    assert ui._Ctx(control).cc_coverage().gaps == ()
+    owner, _absent = _peers(control, doc_validator)["ospf"]
+    _assert_gaps(owner, 1, OWNER_TAIL, {"/collection_completeness/devices/0"})   # the listed blind spot alone
 
 
 def test_ipv6_is_never_resolved_and_never_cleared(doc_validator):

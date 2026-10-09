@@ -280,3 +280,17 @@ Still required before merge:
 - every protected exact-head hosted check, including the native-parity group and `api:check`;
 - independent refutation;
 - the supervisor's push and merge.
+
+## Second refutation round on the W51 train (2026-10-09)
+
+* **P2 (summary not reconciled):** `_address_coverage` now reads the record through the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`). A readable record
+  whose summary counts a blind spot its list does not carry, cannot be read, or counts an inventory other than the
+  roster's is a coverage gap citing that summary or count (probe: `_base()` with `summary.inventory = 5` published
+  `r2`; now not_collected). The row rule (a row naming no roster device) stays this reader's own, standing in for
+  the unread-rows gap.
+* **P3 (failure record past the cap):** `_peer_host` cites the first `_PEER_GAPS_CITED` gaps and, from the rest,
+  every failure record; the reason says so. A failed record also doubts every device's own observations (F6), so the
+  owner path is withheld before the cap; the cap fix covers the absence path, tested by calling `_peer_host` on a
+  fleet whose failed record's gap sits past the cap.
+* **Fixtures:** cases that add a device to the record or the devices map now count it in the summary, as the
+  producer does (`_counted`); the failed-record cases and the unlisted-summary case are device-scope doubted.

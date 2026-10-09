@@ -1014,6 +1014,9 @@ def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind
     or not collected: the note counts and words the two kinds apart, by the projection's own classifier."""
     from backend import engine
     snap = copy.deepcopy(sample)
+    # every case below lists one device outside the devices map (ghost1, then x), which the producer counts in its
+    # inventory; W51 reconciles that count with the roster, so an uncounted one would be a third kind of witness
+    snap["collection_completeness"]["summary"]["inventory"] += 1
     snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)            # the control: two readable rows
     view = summary.impact_view(snap)
     assert (view["blind"], view["blind_unread"]) == (2, 0)
@@ -1041,6 +1044,14 @@ def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind
     assert (view["blind"], view["blind_unread"]) == (2, 1)
     assert summary.impact_blind_note(view) == "; ".join(
         [summary._R_IMPACT_BLIND.format(n=2), summary._R_IMPACT_BLIND_UNREAD.format(n=1)])
+
+    absent = copy.deepcopy(sample)                  # W51: a record the snapshot does not carry is no listed device
+    del absent["collection_completeness"]
+    assert "fleet_lists_exclude_blind_devices" in engine.failure_impact_projection(absent)["caveats"]
+    view = summary.impact_view(absent)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+    assert "lists 1 device(s)" not in summary.impact_blind_note(view)
 
     snap["collection_completeness"]["devices"] = {"core1": {"status": "not collected"}}   # a list it cannot read
     view = summary.impact_view(snap)

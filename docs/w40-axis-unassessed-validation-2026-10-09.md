@@ -275,3 +275,17 @@ Still required before merge:
 - every protected exact-head hosted check, including the native-parity group and `api:check`;
 - independent refutation;
 - the supervisor's merge.
+
+## Second refutation round on the W51 train (2026-10-09)
+
+* **P1 (wrong layer count):** the release-train layer is read from its own could-not-assess count,
+  `software_risk.summary.train_bands.Unknown` (rows: `per_device[].train_band == 'Unknown'`, a sparse counter now in
+  `AXIS_UNASSESSED_SPARSE`), never `n_version_known`, which counts releases captured, not classified. The layer
+  entry also names its coverage key (`n_version_known`), whose uncovered devices the count must hold (class guard).
+  A layer count its rows contradict is unverified. Probe: two devices with every release captured as `8.4(2)` and
+  every configuration captured published `n = 0`; now not_collected, "could not assess 2 of the 2 device(s)".
+* **P2 (qualification only on a listed row):** the qualification is the fleet qualifier, now built on
+  the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`), so an absent record, a failed record (failure record cited) or a summary that does not reconcile
+  withholds a zero the same way. Probe: the sample's QoS zero under each case published 0; now not_collected.
+* **Stored data:** on the sample the only change is the Software risk reason and its witness pointer
+  (`/software_risk/summary/train_bands/Unknown`); the numbers are unchanged (1 of 23).

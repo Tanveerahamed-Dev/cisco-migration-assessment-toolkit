@@ -16,8 +16,11 @@ same kind of join, held to one rule:
   row they cannot read, with a witness, rather than passing over it;
 * the blind-spot list itself is held to it: carried as something other than a list (or its section as something
   other than an object), its owner reads it as listing no blind spot, so every device value is ``unverified`` and
-  every fleet list qualified, with a witness to that value, while a list the snapshot does not carry stays the
-  abstention core's ``not_collected``;
+  every fleet list qualified, with a witness to that value; so it is (W51) when its phase failed (citing the failure
+  record) or its summary counts a blind spot the list does not carry. A list the snapshot does not carry stays the
+  abstention core's ``not_collected`` on the device's own record, but is never read as "no blind spot": every fleet
+  list is qualified by it (the record's one coverage verdict, ``_Ctx.cc_coverage``);
+* a forced device-page state (an unknown host) has a varying arity, so no reader unpacks it (W51);
 * the topology joins are the same kind of join: the exact-hostname join over ``cable_map.nodes`` (a cable's ends, a
   failure-impact row, an address observation, a path hop), the host-pair join over ``cable_map.cables`` and the
   failure-impact neighbour bound's far-end join.
@@ -700,10 +703,6 @@ def test_an_nrfu_device_entry_the_host_join_cannot_read_is_witnessed(sample, doc
         assert [it["pointer"] for it in sel["items"]] == [it["pointer"] for it in clean["items"]]
 
 
-# --------------------------------------------------------------------------------------------------
-# (e) the real stored data reads clean, and the scope is read through one door
-# --------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("source", [SAMPLE, GOLDEN], ids=["sample", "golden"])
 def test_a_risk_register_row_the_trust_input_join_cannot_read_is_witnessed(sample):
     """W51 (F6 x G08): the analysis-input gap summary joins each inventory device to its one risk-register row by
     exact host. A register row that join cannot read could be any device's, so under every input the device list and
@@ -720,6 +719,10 @@ def test_a_risk_register_row_the_trust_input_join_cannot_read_is_witnessed(sampl
         assert witness in _refs(row["hosts"]) and witness in _refs(row["n"]), row["input"]
 
 
+# --------------------------------------------------------------------------------------------------
+# (e) the real stored data reads clean, and the scope is read through one door
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("source", [SAMPLE, GOLDEN], ids=["sample", "golden"])
 def test_the_stored_snapshots_raise_no_doubt(source, doc_validator):
     """Both stored snapshots come from the real producers: no row of theirs is unreadable, so no device page doubts
     a join or its scope, and no value says it is unverified for that reason."""
@@ -1066,10 +1069,13 @@ def test_a_blind_spot_list_that_cannot_be_read_doubts_every_device_and_qualifies
 
 
 @pytest.mark.parametrize("case", ["section_missing", "section_null", "devices_missing", "devices_null"])
-def test_a_blind_spot_list_the_snapshot_does_not_carry_stays_the_abstention_cores_not_collected(
-        sample, doc_validator, payload_validator, case):
-    """The boundary of the doubt: a list (or section) the snapshot does not carry is the abstention core's
-    not_collected on the device's own record, and no device is doubted for it."""
+def test_a_blind_spot_list_the_snapshot_does_not_carry_is_never_read_as_no_blind_spot(
+        sample, doc_validator, payload_validator, topology_validator, case):
+    """W51 (F6 P2): a list (or section) the snapshot does not carry is the abstention core's not_collected on the
+    device's own record, and no single device is doubted for it (each page's facts are its own evidence) -- but it is
+    never read as "no blind spot" (ssot._as_list -> []): the blind-spot record's coverage verdict calls it absent, so
+    every fleet list is qualified and an empty one is not_collected, never "nothing found". Before W51 the fleet lists
+    published as if every inventory device had been collected."""
     snap = copy.deepcopy(sample)
     if case == "section_missing":
         del snap["collection_completeness"]
@@ -1081,10 +1087,130 @@ def test_a_blind_spot_list_the_snapshot_does_not_carry_stays_the_abstention_core
         snap["collection_completeness"]["devices"] = None
     ctx = ui._Ctx(snap)
     assert ctx.cc_unreadable() is None
+    assert [gap.kind for gap in ctx.cc_coverage().gaps] == ["absent"]
+    assert ctx.cc_coverage().state == NC
     for host in sorted(snap["devices"]):
         assert ctx.scope_doubt(host) is None, host
     page = _page(snap, HOST, doc_validator)
     assert page["collection"]["status"]["state"] == NC, page["collection"]["status"]
     assert page["health"]["score"]["state"] == PUB, page["health"]["score"]
     payload = _payload(snap, payload_validator)
-    assert "fleet_lists_exclude_blind_devices" not in payload["topology"]["failure_impact"].get("caveats", ())
+    for a, b in (("findings", "rows"), ("findings", "total"), ("topology", "failure_impact"),
+                 ("topology", "structural_links")):
+        fact = payload[a][b]
+        assert fact["state"] == PUB and "fleet_lists_exclude_blind_devices" in fact["caveats"], (case, a, b)
+    snap["failure_impact"], snap["link_centrality"] = [], []
+    topology = _topology(snap, topology_validator)
+    for key in ("failure_impact", "structural_links"):
+        assert topology[key]["state"] == NC, (case, key, topology[key])
+        assert "collection_completeness cannot be read" in topology[key]["reason"], topology[key]["reason"]
+        assert "not a clean result" in topology[key]["reason"], topology[key]["reason"]
+    # the control: the stored, readable record lists no blind spot, so the same empty list is a measurement
+    clean = copy.deepcopy(sample)
+    clean["failure_impact"] = []
+    assert _topology(clean, topology_validator)["failure_impact"]["state"] == CBE
+
+
+def test_a_failed_blind_spot_record_doubts_every_device_and_always_cites_its_failure_record(
+        sample, doc_validator, payload_validator):
+    """W51 (F6 P2): a failed phase leaves the record's fallback (here the real _run_phase default, {}), which the
+    owner's device scope reads as listing no blind spot (ssot._as_list -> []). Its coverage verdict is
+    analysis_unavailable, so every device value the scope governs is unverified, and every one cites the failure
+    record; every fleet list is qualified the same way. Before W51 every device read as collected."""
+    read = _read_facts(_page(sample, HOST, doc_validator))
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"] = {}
+    snap["assessment_integrity"] = {"failed_phases": ["Collection completeness"]}
+    assert ssot.abstention_reason(snap, "devices", device=HOST) == PUB        # the owner reads it as collected
+    ctx = ui._Ctx(snap)
+    assert ctx.cc_coverage().state == AU and [gap.kind for gap in ctx.cc_coverage().gaps] == ["failed"]
+    record = ("/assessment_integrity/failed_phases/0", "failure_record")
+    facts = dict(_top_facts(_page(snap, HOST, doc_validator)))
+    for where in sorted(read):
+        fact = facts[where]
+        if where.startswith("/collection/"):
+            assert fact["state"] == AU, (where, fact)                          # the record's own cells
+            continue
+        assert fact["state"] == UV, (where, fact)
+        assert "collection_completeness cannot be read (analysis unavailable" in fact["reason"], (where, fact)
+        assert record in _refs(fact), (where, fact["refs"])
+    payload = _payload(snap, payload_validator)
+    fleet = payload["topology"]["failure_impact"]
+    assert fleet["state"] == PUB and "fleet_lists_exclude_blind_devices" in fleet["caveats"]
+    assert record in _refs(fleet)
+
+
+def test_a_summary_that_counts_an_unlisted_blind_spot_doubts_every_device(sample, doc_validator):
+    """W51 (F6 P2): the producer writes one devices row per partial or not-collected device and counts it in its
+    summary, so a summary counting more than the list carries says a blind spot is missing from it, and it could be
+    any device. Every device value the scope governs is unverified, citing the summary. A list carrying more rows
+    than its summary counts over-reports and hides nothing (the control)."""
+    read = _read_facts(_page(sample, HOST, doc_validator))
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"]["summary"]["not_collected"] = 2
+    facts = dict(_top_facts(_page(snap, HOST, doc_validator)))
+    witness = ("/collection_completeness/summary", "witness")
+    for where in sorted(read):
+        if where.startswith("/collection/"):
+            continue
+        assert facts[where]["state"] == UV, (where, facts[where])
+        assert "summary counts 2 partial or not-collected device(s)" in facts[where]["reason"], where
+        assert witness in _refs(facts[where]), where
+    over = copy.deepcopy(sample)
+    over["collection_completeness"]["devices"] = [
+        {"host": "access2", "status": "partial", "data_quality": 75, "missing": ["switchport"]}]
+    assert ui._Ctx(over).scope_doubt(HOST) is None
+    assert _page(over, HOST, doc_validator)["health"]["score"]["state"] == PUB
+
+
+def test_an_unknown_host_beside_an_unjoinable_blind_spot_row_renders_its_finding_rollup(sample, doc_validator):
+    """W51 (F6 P1): a host no readable roster names, beside a roster row the host join cannot read, is forced to a
+    three-element state (state, reason, witnesses). Every reader takes forced[0] and forced[1]; the finding rollup
+    unpacked two and raised ValueError on every such page before W51."""
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"]["devices"].append(copy.deepcopy(UNJOINABLE_CC))
+    rosters, forced = ui._roster_join(ui._Ctx(snap), "no-such-host")
+    assert not any(rosters.values()) and len(forced) == 3
+    page = _page(snap, "no-such-host", doc_validator)
+    witness = (_ptr("collection_completeness", "devices", len(snap["collection_completeness"]["devices"]) - 1),
+               "witness")
+    for key in ("worst", "by_severity"):
+        fact = page["findings_rollup"][key]
+        assert fact["state"] == UV and fact["value"] is None, (key, fact)
+        assert witness in _refs(fact), (key, fact["refs"])
+
+
+def _unpacked_names(node):
+    """The names a ``Name`` target or a tuple/list unpacking binds."""
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [n for elt in node.elts for n in _unpacked_names(elt)]
+    return []
+
+
+def test_no_reader_unpacks_a_forced_state_or_the_roster_join():
+    """W51 (F6 P1): the class, read from the source, not the one crashing line. A forced device-page state has a
+    varying arity (two elements, or three beside a roster it cannot read), so no function may unpack a name `forced`
+    into a tuple target (only forced[0], forced[1] and _forced_wit read it), and every call of _roster_join is
+    unpacked into exactly its two results (rosters, forced)."""
+    tree = _source_tree()
+    unpacks, roster_calls = [], []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (isinstance(target, (ast.Tuple, ast.List)) and isinstance(node.value, ast.Name)
+                            and node.value.id == "forced"):
+                        unpacks.append((fn.name, node.lineno))
+                    if isinstance(node.value, ast.Call) and getattr(node.value.func, "id", None) == "_roster_join":
+                        roster_calls.append((fn.name, len(_unpacked_names(target)) if isinstance(
+                            target, (ast.Tuple, ast.List)) else 1))
+            if isinstance(node, ast.For) and isinstance(node.iter, ast.Name) and node.iter.id == "forced":
+                unpacks.append((fn.name, node.lineno))
+    assert unpacks == [], unpacks
+    assert roster_calls and all(n == 2 for _fn, n in roster_calls), roster_calls
+    # every function taking a forced state reads it only by index or through _forced_wit / a callee
+    takers = [fn for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
+              and any(a.arg == "forced" for a in fn.args.args + fn.args.kwonlyargs)]
+    assert len(takers) >= 13, [fn.name for fn in takers]

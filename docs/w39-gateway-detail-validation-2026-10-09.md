@@ -314,3 +314,16 @@ the module cites, such as `build.build_fhrp_detail` and `parse.parse_hsrp_detail
 unreviewed slice); the SSOT citation resolver; an AST scan for locals shadowing module names (no new
 hit); the independent static read of the stored sample and golden above; the repository privacy
 verifier and the client-marker scan. No test, projection, build or browser run (owner rule).
+
+## Second refutation round on the W51 train (2026-10-09)
+
+* **Coverage:** the blind-spot part of `_gateway_coverage` is the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`); its clauses are unchanged
+  (`_R_CC_*`, moved from `_R_GW_CC_*`), a failed record's failure records ride outside the witness cap, and two new
+  gaps are covered by `GAPS`: a list absent from its section and an inventory count off the roster.
+* **P2 (segment proof):** matching networks and VRFs no longer prove one segment. `_gateway_segment_hold` also
+  requires `_GatewayScan.same_l2`: a stored cable path every hop of which joins two ports trunking the VLAN
+  (`trunk_status` 'trunking' and the VLAN in a readable `trunk_allowed_vlans`), or the same spanning-tree root
+  bridge for the VLAN on both switches (`is_mst` exactly false). A shared subnet, FHRP group or virtual address is
+  not evidence: cloned sites reuse them. Probe: the sample with core2's cables removed published VLAN 10's pair as
+  false; now unverified. The stored sample's pairs are each joined by a trunked `Po1`, so every stored published
+  false stays published (projection diff of sample and golden: no risk change).

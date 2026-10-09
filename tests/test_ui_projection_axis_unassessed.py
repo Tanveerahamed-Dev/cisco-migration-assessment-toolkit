@@ -10,10 +10,13 @@ brief's headline text. Coverage honesty is the point:
 * a count its own denominator or per-device rows contradict, or whose rows cannot be read, is unverified;
 * a zero over a zero denominator is collected_but_empty, never a measurement;
 * a count that covers one layer of an axis whose producer assesses another (``AXIS_UNASSESSED_LAYERS``) is withheld
-  while that layer's stored count shows a gap, its value and the gap named in the reason;
+  while that layer's OWN could-not-assess count is above zero, its value and the gap named in the reason (W51: Software
+  risk's release-train layer is its train_bands Unknown count -- a release captured but never classified is not
+  assessed -- never n_version_known);
 * while collection_completeness lists a blind spot, no producer universe holds the unreached device: a published
   count or denominator carries ``fleet_lists_exclude_blind_devices`` with a witness to each blind-spot row, and a zero
-  is not_collected;
+  is not_collected; so it does (W51) while the record itself cannot show every device collected or listed (absent,
+  failed with its failure record cited, or a summary that does not reconcile with its rows);
 * a failed input withholds the block exactly as it withholds the row's fact.
 
 The fixtures come from the engine's own code: the shipped engine-built sample fleet, the golden snapshot's producer
@@ -135,16 +138,29 @@ def _marked(rows, field, mark):
     return sum(1 for row in rows if type(row[field]) is type(mark) and row[field] == mark)
 
 
+def _layer_count(snap, layer):
+    """A further layer's own could-not-assess count, read independently: the stored entry, or a sparse counter's
+    omitted zero confirmed by its per-device rows; ``None`` when neither can be read."""
+    path, _name, rows_path, field, mark, _cover = layer
+    stored = _dotted(snap, path)
+    if stored is _MISSING and path.rsplit(".", 1)[0] in uip.AXIS_UNASSESSED_SPARSE:
+        rows = _dotted(snap, rows_path)
+        if isinstance(rows, list) and all(isinstance(r, dict) and type(r.get(field)) is type(mark) for r in rows):
+            return _marked(rows, field, mark)
+        return None
+    return stored if type(stored) is int else None
+
+
 def _layer_gaps(snap, label):
-    """The further layers whose stored count shows a device they could not assess, or cannot be read: ``[(pointer,
-    stored count or None, device count)]``, read independently from the snapshot."""
+    """The further layers whose own count shows a device they could not assess, or cannot be read: ``[(pointer,
+    count or None, device count)]``, read independently from the snapshot."""
     of = _dotted(snap, uip.AXIS_UNASSESSED[label][2])
     out = []
-    for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ()):
-        known = _dotted(snap, path)
-        readable = type(known) is int and type(of) is int
-        if not readable or known != of:
-            out.append((_ptr(path), known if readable else None, of))
+    for layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ()):
+        count = _layer_count(snap, layer)
+        readable = count is not None and type(of) is int
+        if not readable or count != 0:
+            out.append((_ptr(layer[0]), count if readable else None, of))
     return out
 
 
@@ -197,7 +213,8 @@ def test_registry_partitions_every_brief_axis_exactly_once():
         assert callable(getattr(analyze, PRODUCERS[section])), label
         assert isinstance(field, str) and type(mark) in (str, bool), label
     parents = {spec[1].rsplit(".", 1)[0] for spec in uip.AXIS_UNASSESSED.values()}
-    assert uip.AXIS_UNASSESSED_SPARSE and uip.AXIS_UNASSESSED_SPARSE <= parents
+    layer_parents = {layer[0].rsplit(".", 1)[0] for layers in uip.AXIS_UNASSESSED_LAYERS.values() for layer in layers}
+    assert uip.AXIS_UNASSESSED_SPARSE and uip.AXIS_UNASSESSED_SPARSE <= parents | layer_parents
     for label, why in uip.AXIS_UNASSESSED_ABSENT.items():
         assert why and why == why.strip(), label
     assert isinstance(uip.AXIS_UNASSESSED_LAYERS, types.MappingProxyType)
@@ -206,15 +223,19 @@ def test_registry_partitions_every_brief_axis_exactly_once():
     assert set(uip.AXIS_UNASSESSED_LAYERS) <= set(uip.AXIS_UNASSESSED)
     for label, layers in uip.AXIS_UNASSESSED_LAYERS.items():
         assert isinstance(layers, tuple) and layers, label
-        for path, layer in layers:
-            assert path.split(".")[0] == uip.AXIS_UNASSESSED[label][1].split(".")[0], (label, path)
+        for path, layer, rows_path, field, mark, cover in layers:
+            section = uip.AXIS_UNASSESSED[label][1].split(".")[0]
+            assert path.split(".")[0] == rows_path.split(".")[0] == section, (label, path)
             assert path != uip.AXIS_UNASSESSED[label][1] and layer and layer == layer.strip(), (label, path)
+            assert isinstance(field, str) and type(mark) in (str, bool) and cover, (label, path)
 
 
 def test_every_per_layer_coverage_count_is_a_registered_layer_or_the_counts_complement():
     """The class guard for AXIS_UNASSESSED_LAYERS: every count a registered producer's REAL summary keeps of the devices
-    one layer could assess is either a registered further layer of that axis or the registered count's own
-    complement, and a complement leaves no device outside the registered count."""
+    one layer could assess is either a registered further layer's coverage key or the registered count's own
+    complement. A complement leaves no device outside the registered count, and a layer's coverage key leaves none
+    outside that layer's own could-not-assess count (W51: n_version_known's uncovered devices all sit in train_bands
+    Unknown, which also holds the captured releases the producer could not classify)."""
     snap = _producer_snapshot()
     seen = set()
     for label, spec in uip.AXIS_UNASSESSED.items():
@@ -222,16 +243,35 @@ def test_every_per_layer_coverage_count_is_a_registered_layer_or_the_counts_comp
         section = n_path.split(".")[0]
         summary = snap[section]["summary"]
         keys = {key for key in summary if COVERAGE_KEY.fullmatch(key) and "not_" not in key}
-        layers = {path.rsplit(".", 1)[1] for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ())}
+        layers = uip.AXIS_UNASSESSED_LAYERS.get(label, ())
+        covers = {layer[5] for layer in layers}
         complement = COMPLEMENTS.get(section)
-        assert keys == layers | ({complement} if complement else set()), (label, sorted(keys))
-        for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ()):
-            assert type(_dotted(snap, path)) is int, (label, path)        # the real producer writes it
+        assert keys == covers | ({complement} if complement else set()), (label, sorted(keys))
+        for layer in layers:
+            count = _layer_count(snap, layer)
+            assert type(count) is int, (label, layer[0])                   # the real producer's count reads
+            uncovered = _dotted(snap, of_path) - summary[layer[5]]
+            assert 0 <= uncovered <= count, (label, layer[5], count)
         if complement:
             uncovered = _dotted(snap, of_path) - summary[complement]
             assert 0 <= uncovered <= _expected_count(snap, spec), (label, complement)
         seen |= keys
     assert "n_version_known" in seen                    # the guard reaches the one further layer that exists today
+
+
+def test_each_layer_count_is_its_real_producers_own_rule():
+    """The real producer writes a layer's could-not-assess count equal to its rows carrying the registered value, and
+    omits the entry exactly when no row carries it (a sparse counter)."""
+    rich = analyze.compute_software_risk({"a": PLAIN_CONFIG}, {"a": {"sw_version": "17.9.4"},
+                                                                 "b": {"sw_version": "8.4(2)"},
+                                                                 "c": {"sw_version": ""}}, all_hosts=["a", "b", "c"])
+    calm = analyze.compute_software_risk({"a": PLAIN_CONFIG}, {"a": {"sw_version": "17.9.4"}}, all_hosts=["a"])
+    for layer in uip.AXIS_UNASSESSED_LAYERS["Software risk"]:
+        path, _name, rows_path, field, mark, _cover = layer
+        rows = _dotted({"software_risk": rich}, rows_path)
+        assert _dotted({"software_risk": rich}, path) == _marked(rows, field, mark) == 2   # uncaptured AND unclassified
+        assert _dotted({"software_risk": calm}, path) is _MISSING                           # omitted at zero
+        assert path.rsplit(".", 1)[0] in uip.AXIS_UNASSESSED_SPARSE
 
 
 @pytest.mark.parametrize("label", sorted(uip.AXIS_UNASSESSED))
@@ -328,10 +368,10 @@ def test_engine_built_snapshots_publish_the_stored_counts(source):
             if gaps:                                    # one layer's count is not the axis's: withheld, named
                 assert _sv(block["n"]) == (NC, None), (label, block["n"])
                 assert NEVER_ZERO in block["n"]["reason"] and f"({want_n})" in block["n"]["reason"]
-                for pointer, known, of in gaps:
-                    if known is not None:
+                for pointer, count, of in gaps:
+                    if count is not None:
                         assert {"pointer": pointer, "role": "witness"} in block["n"]["refs"]
-                        assert f"could not assess {of - known} of the {of} device(s)" in block["n"]["reason"]
+                        assert f"could not assess {count} of the {of} device(s)" in block["n"]["reason"]
                 assert block["n"]["engine_state"] == (CBE if want_n == 0 else PUB)   # the owner's own token
             else:
                 assert _sv(block["n"]) == (PUB, want_n), (label, block["n"])
@@ -495,16 +535,27 @@ def test_a_contradicted_count_is_unverified_never_published():
             assert words in block[key]["reason"]
             assert {"pointer": "/software_risk/per_device", "role": "witness"} in block[key]["refs"]
     # a further layer's count above the device count contradicts the summary as well
-    block = projected(lambda sr: sr["summary"].update(n_version_known=summary["n_devices"] + 1))
+    block = projected(lambda sr: sr["summary"]["train_bands"].update(Unknown=summary["n_devices"] + 1))
     for key in ("n", "of"):
         assert _sv(block[key]) == (UV, None) and "further layer" in block[key]["reason"], key
-        assert {"pointer": "/software_risk/summary/n_version_known", "role": "witness"} in block[key]["refs"]
+        assert {"pointer": "/software_risk/summary/train_bands/Unknown", "role": "witness"} in block[key]["refs"]
 
-    # no raw basis at all: the stored summary is published as it stands, with no row witness (every version is
-    # captured here, so the configuration layer's count is the axis's)
+    # W51: a further layer's count its own per-device rows contradict (a row the counter omits)
+    def unlisted_unknown(sr):
+        row = next(r for r in sr["per_device"] if r["train_band"] != "Unknown")
+        row["train_band"] = "Unknown"
+
+    block = projected(unlisted_unknown)
+    for key in ("n", "of"):
+        assert _sv(block[key]) == (UV, None), (key, block[key])
+        assert "disagrees with its per-device rows" in block[key]["reason"], block[key]["reason"]
+        assert {"pointer": "/software_risk/per_device", "role": "witness"} in block[key]["refs"]
+
+    # no raw basis at all: the stored summary is published as it stands, with no row witness (the release-train
+    # layer's own count is a stored zero here, so the configuration layer's count is the axis's)
     def no_rows(sr):
         sr.pop("per_device")
-        sr["summary"]["n_version_known"] = sr["summary"]["n_devices"]
+        sr["summary"]["train_bands"]["Unknown"] = 0
 
     block = projected(no_rows)
     assert _sv(block["n"]) == (PUB, summary["n_config_not_assessable"])
@@ -549,11 +600,17 @@ def test_an_unreadable_or_unregistered_axis_label_claims_nothing():
 # a further layer the count does not cover (Software risk's release-train layer)
 # --------------------------------------------------------------------------------------------------
 def _software_only(configs, versions, hosts=("acc1", "acc2")):
-    """The real software-risk producer over `hosts`, with the brief recomputed by its real producer."""
+    """The real software-risk producer over `hosts`, with the brief recomputed by its real producer. The real
+    collection-completeness producer over an empty capture set supplies a readable blind-spot record that lists none
+    (W51: a record the snapshot does not carry would qualify every count instead)."""
     snap = {"software_risk": analyze.compute_software_risk(
         {h: PLAIN_CONFIG for h in configs}, {h: {"model": "", "sw_version": versions.get(h, "")} for h in hosts},
-        all_hosts=list(hosts))}
+        all_hosts=list(hosts)),
+        "collection_completeness": analyze.compute_collection_completeness([], {})}
     return _rebrief(snap)
+
+
+UNKNOWN_TRAIN = "/software_risk/summary/train_bands/Unknown"
 
 
 def test_a_count_that_covers_one_layer_is_withheld_while_another_layer_has_a_gap():
@@ -561,15 +618,15 @@ def test_a_count_that_covers_one_layer_is_withheld_while_another_layer_has_a_gap
     release-train layer assessed nothing. The axis is never 'could not assess 0'; the reason names both stored counts."""
     snap = _software_only(configs=("acc1", "acc2"), versions={})
     summary = snap["software_risk"]["summary"]
-    assert summary["n_config_not_assessable"] == 0 and summary["n_version_known"] == 0      # the real producer
+    assert summary["n_config_not_assessable"] == 0 and summary["train_bands"] == {"Unknown": 2}   # the real producer
     assert summary["n_devices"] == 2
     block = _unassessed(snap, "Software risk")
     n = block["n"]
     assert _sv(n) == (NC, None), n
     assert "this count (0) covers one layer of the axis only" in n["reason"]
     assert "release-train layer" in n["reason"] and "could not assess 2 of the 2 device(s)" in n["reason"]
-    assert "software_risk.summary.n_version_known is 0" in n["reason"] and NEVER_ZERO in n["reason"]
-    assert {"pointer": "/software_risk/summary/n_version_known", "role": "witness"} in n["refs"]
+    assert "software_risk.summary.train_bands.Unknown is 2" in n["reason"] and NEVER_ZERO in n["reason"]
+    assert {"pointer": UNKNOWN_TRAIN, "role": "witness"} in n["refs"]
     assert n["subject"] == "/software_risk/summary/n_config_not_assessable"
     assert n["engine_state"] == CBE                                    # the owner's own stored zero
     assert _sv(block["of"]) == (PUB, 2)
@@ -583,16 +640,33 @@ def test_a_count_that_covers_one_layer_is_withheld_while_another_layer_has_a_gap
 
     # an unreadable layer count cannot show the layer complete
     unread = copy.deepcopy(snap)
-    del unread["software_risk"]["summary"]["n_version_known"]
+    del unread["software_risk"]["summary"]["train_bands"]
     n = _unassessed(unread, "Software risk")["n"]
     assert _sv(n) == (NC, None) and "is not a readable count" in n["reason"] and NEVER_ZERO in n["reason"]
 
-    # control: every version captured, so the configuration layer's zero is the axis's measured zero
+    # control: every version captured and classified, so the configuration layer's zero is the axis's measured zero
+    # (the counter omits the empty Unknown band; the per-device rows confirm it)
     full = _software_only(configs=("acc1", "acc2"), versions={"acc1": "17.12.1", "acc2": "17.9.4"})
-    assert full["software_risk"]["summary"]["n_version_known"] == 2
+    assert "Unknown" not in full["software_risk"]["summary"]["train_bands"]
     n = _unassessed(full, "Software risk")["n"]
     assert _sv(n) == (PUB, 0) and "measured_zero_mapping" in n["caveats"]
-    assert all(ref["pointer"] != "/software_risk/summary/n_version_known" for ref in n["refs"])
+    assert all(ref["pointer"] != UNKNOWN_TRAIN for ref in n["refs"])
+
+
+def test_a_release_captured_but_never_classified_is_not_assessed():
+    """W51 (G05 P1, the reviewer's case): every release captured (n_version_known equals n_devices) and every
+    configuration captured, yet the producer classifies no release train. The release-train layer is read from its
+    own could-not-assess count (train_bands Unknown), so the axis is never 'could not assess 0'. Before W51 the layer
+    was read from n_version_known and the 0 was published as a measurement."""
+    snap = _software_only(configs=("acc1", "acc2"), versions={"acc1": "8.4(2)", "acc2": "8.4(2)"})
+    summary = snap["software_risk"]["summary"]
+    assert summary["n_version_known"] == summary["n_devices"] == 2                           # every release captured
+    assert summary["n_config_not_assessable"] == 0 and summary["train_bands"] == {"Unknown": 2}   # none classified
+    n = _unassessed(snap, "Software risk")["n"]
+    assert _sv(n) == (NC, None), n
+    assert "could not assess 2 of the 2 device(s)" in n["reason"] and NEVER_ZERO in n["reason"]
+    assert {"pointer": UNKNOWN_TRAIN, "role": "witness"} in n["refs"]
+    assert n["engine_state"] == CBE
 
 
 # --------------------------------------------------------------------------------------------------
@@ -714,6 +788,50 @@ def test_a_count_over_no_device_beside_a_blind_spot_is_not_a_clean_result():
     clean["collection_completeness"] = analyze.compute_collection_completeness([], {})
     block = _unassessed(clean, "QoS posture")
     assert _sv(block["of"]) == (PUB, 0) and _sv(block["n"]) == (CBE, None)
+
+
+_ZERO_QOS = "qos_audit"
+
+
+def _zero_qos(sample):
+    """The stored sample with every device's QoS assessable: its could-not-assess count is a stored 0."""
+    snap = copy.deepcopy(sample)
+    for row in snap[_ZERO_QOS]["per_device"]:
+        row["assessable"] = True
+    snap[_ZERO_QOS]["summary"]["n_not_assessable"] = 0
+    return snap
+
+
+@pytest.mark.parametrize("case", ["section_absent", "list_absent", "phase_failed", "summary_counts_unlisted",
+                                  "inventory_off_roster"])
+def test_a_blind_spot_record_that_cannot_show_every_device_never_lets_a_zero_publish(case):
+    """W51 (G05 P2): the qualification fires on the blind-spot record's one coverage verdict, not only on a listed row.
+    A record the snapshot does not carry, a failed phase (its failure record cited), a summary counting a blind spot
+    its list does not carry, or an inventory count off the roster each leaves the record unable to show every
+    inventory device collected or listed, so a zero count is never shown as 0. Before W51 each published 0."""
+    snap = _zero_qos(_sample())
+    cc = snap["collection_completeness"]
+    failure = None
+    if case == "section_absent":
+        del snap["collection_completeness"]
+    elif case == "list_absent":
+        del cc["devices"]
+    elif case == "phase_failed":
+        snap["collection_completeness"] = {}                        # the _run_phase fallback
+        snap["assessment_integrity"] = {"failed_phases": ["Collection completeness"]}
+        failure = {"pointer": "/assessment_integrity/failed_phases/0", "role": "failure_record"}
+    elif case == "summary_counts_unlisted":
+        cc["summary"]["not_collected"] = 2
+    else:
+        cc["summary"]["inventory"] += 1
+    n = _unassessed(snap, "QoS posture")["n"]
+    assert _sv(n) == (NC, None), (case, n)
+    assert NEVER_ZERO in n["reason"] and "collection_completeness" in n["reason"], (case, n["reason"])
+    if failure is not None:
+        assert failure in n["refs"], (case, n["refs"])
+    # control: the same zero over the stored, reconciled record is a measurement
+    control = _unassessed(_zero_qos(_sample()), "QoS posture")["n"]
+    assert _sv(control) == (PUB, 0) and BLIND not in control.get("caveats", ())
 
 
 # --------------------------------------------------------------------------------------------------
