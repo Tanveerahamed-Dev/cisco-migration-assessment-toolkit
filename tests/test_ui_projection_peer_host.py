@@ -5,16 +5,18 @@ fleet topology publishes as ``topology.source_addresses`` (``fib._connected_inde
 interface addresses and local/FHRP host routes, never a connected subnet). The projection builds no second index and
 never guesses from a subnet:
 
-* exactly one collected device carries the address -> published, citing every observation of it, and every collected
-  device whose interface addresses were never captured (it could be a second owner);
 * two or more devices, or only this device itself -> unverified, every observation a witness;
-* no collected device carries it -> ``collected_but_empty`` ("not resolved") ONLY over a readable, complete IPv4 index:
-  every input collected and every collected device's interface addresses captured. Otherwise the absence is
-  ``not_collected``, never "not resolved"; an IPv6 address is always ``not_collected`` (the index holds IPv4
-  interface addresses only).
+* exactly one collected device carries the address -> published, citing every observation of it, and no collected
+  device carries it -> ``collected_but_empty`` ("not resolved"), BOTH only over a readable, complete IPv4 index: every
+  input collected, every collected device's interface addresses captured, and a readable collection_completeness record
+  (the inventory devices never reached complete the roster). Otherwise a device the index cannot hold could be a
+  second owner, so a sole owner is ``not_collected`` exactly like an absence, citing a bounded number of the coverage
+  gaps and stating their total; an IPv6 address is always ``not_collected`` (the index holds IPv4 interface addresses
+  only).
 
-Every value is checked against an INDEPENDENT lookup in the snapshot or the engine's own exact-owner function, never
-the module's own join. No test here is run locally: the hosted gates run them.
+Every resolved value is checked against an INDEPENDENT lookup in the snapshot or the engine's own exact-owner function,
+never the module's own join; the coverage owner (``_address_coverage``) is read directly only where a device page cannot
+reach it. No test here is run locally: the hosted gates run them.
 """
 from __future__ import annotations
 
@@ -37,6 +39,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
 PUB, CBE, NC, AU, UV = "published", "collected_but_empty", "not_collected", "analysis_unavailable", "unverified"
 CAVEAT = "routing_peer_resolution_scope"
+#: The withheld reasons' fixed parts, written out here rather than read from the module.
+INCOMPLETE = "not collected: the address index (topology.source_addresses) may be incomplete, because "
+ABSENT_TAIL = "so an address it does not hold is not a clean result"
+OWNER_TAIL = ("so the one device it places this address on cannot be named the only owner: a second owner was never "
+              "ruled out, and more than one owner is ambiguous (fib._hosts_owning_ip)")
 #: The neighbour row's cells, in the producer's field order (``build.build_routing_neighbors`` rows).
 ROW_CELLS = ("neighbor", "state", "address", "interface", "as")
 #: The stored sample's routing neighbours, resolved by hand from its interfaces and local routes: the collected
@@ -128,11 +135,15 @@ def _engine_owners(snap, address):
 
 
 def _base():
-    """Two collected routers on a /30, both with their scoped interface running-config captured; r1 sees r2 over
-    OSPF and BGP, and an OSPF neighbour at an address no collected device carries."""
+    """Two collected routers on a /30, both with their scoped interface running-config captured, and a readable
+    collection_completeness record listing no blind spot (the producer's shape: it lists only the inventory devices
+    that were not fully collected); r1 sees r2 over OSPF and BGP, and an OSPF neighbour at an address no collected
+    device carries."""
     return {
         "schema": "collect_parse_snapshot/1",
         "devices": {"r1": {"hostname": "r1"}, "r2": {"hostname": "r2"}},
+        "collection_completeness": {"summary": {"inventory": 2, "complete": 2, "partial": 0, "not_collected": 0},
+                                    "devices": []},
         "interfaces": {
             "r1": {"Gi1": {"svi_ip": "192.0.2.1 255.255.255.252", "run_config_observed": True}},
             "r2": {"Gi1": {"svi_ip": "192.0.2.2/30", "run_config_observed": True}},
@@ -243,7 +254,8 @@ def test_sample_peer_hosts_are_the_engines_exact_owners(sample, doc_validator):
 
 def test_peer_host_agrees_with_the_published_topology_index(sample, doc_validator):
     """The one index: every published peer is the single owner topology.source_addresses lists for the address, and
-    every 'not resolved' address appears nowhere in it."""
+    every 'not resolved' address appears nowhere in it. Both read the same index, so this guards consumer drift only;
+    the independent check is test_sample_peer_hosts_are_the_engines_exact_owners."""
     index = ui.project_topology(sample)["source_addresses"]
     assert index["state"] == PUB
     listed = {}
@@ -300,6 +312,9 @@ def test_one_exact_owner_is_published_and_an_absent_address_is_not_resolved(doc_
     assert owner["caveats"] == [CAVEAT]
     assert (absent["state"], absent["value"]) == (CBE, None)
     assert absent["reason"].startswith("collected but empty: not resolved")
+    # it states what was observed, never that the neighbour is proven to be no collected device
+    assert "No record in the address index (topology.source_addresses) states this address" in absent["reason"]
+    assert absent["reason"].endswith("so this does not prove that the neighbour is not a collected device")
     assert _refs(absent) == {"/routing_neighbors/r1/ospf/1/address", "/interfaces", "/routes"}
     assert absent["caveats"] == [CAVEAT]
     bgp = peers["bgp"][0]
@@ -362,39 +377,181 @@ def test_an_address_on_this_device_is_unverified_alone_or_with_another_owner(doc
 
 
 # --------------------------------------------------------------------------------------------------
-# coverage honesty: an absence over an incomplete index is never "not resolved"
+# coverage honesty: over an incomplete index neither a sole owner nor "not resolved" is claimed
 # --------------------------------------------------------------------------------------------------
+def _assert_gaps(fact, n, tail, witnesses=()):
+    """A withheld peer over an index with `n` coverage gaps: not_collected, the gap total stated, the given witnesses
+    cited, and no caveat (the scope limitation qualifies published and 'not resolved' values only)."""
+    assert (fact["state"], fact["value"]) == (NC, None), fact
+    assert fact["reason"].startswith(INCOMPLETE + f"it has {n} coverage gap(s): "), fact["reason"]
+    assert fact["reason"].endswith(tail), fact["reason"]
+    assert set(witnesses) <= _refs(fact, "witness"), (witnesses, fact["refs"])
+    assert "caveats" not in fact
+
+
 def test_a_device_whose_addresses_were_never_captured_makes_absence_not_collected(doc_validator):
     snap = _base()
     snap["interfaces"]["r2"] = {}                     # r2 was reached, but its interface running-config was not parsed
     peers = _peers(snap, doc_validator)
     for fact in (peers["ospf"][0], peers["ospf"][1], peers["bgp"][0]):
-        assert (fact["state"], fact["value"]) == (NC, None), fact
-        assert fact["reason"].startswith("not collected: 1 collected device record(s) have no interface addresses")
-        assert "/interfaces/r2" in _refs(fact, "witness")
-        assert "caveats" not in fact
+        _assert_gaps(fact, 1, ABSENT_TAIL, {"/interfaces/r2"})
 
 
-def test_a_published_owner_cites_every_device_it_cannot_rule_out(doc_validator):
+def test_a_sole_owner_over_an_incomplete_index_is_never_published(doc_validator):
+    """The complete control publishes r2; each gap -- a device that could be a second owner -- withholds the very same
+    owner as not_collected, so a published value always means a sole owner over a complete index."""
+    control = _peers(_base(), doc_validator)["ospf"]
+    assert (control[0]["state"], control[0]["value"], control[1]["state"]) == (PUB, "r2", CBE)
     for mutate, witness in (
             # r2's address survives but no interface of it carries the capture marker
             (lambda s: s["interfaces"]["r2"]["Gi1"].pop("run_config_observed"), "/interfaces/r2"),
             # an inventory device with no interface record at all
             (lambda s: s["devices"].update(r3={"hostname": "r3"}), "/devices/r3"),
             # an inventory device the collection never reached (a blind-spot row naming no collected device)
-            (lambda s: s.update(collection_completeness={"devices": [
-                {"host": "r9", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]}]}),
+            (lambda s: s["collection_completeness"]["devices"].append(
+                {"host": "r9", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]}),
              "/collection_completeness/devices/0")):
         snap = _base()
         mutate(snap)
-        peers = _peers(snap, doc_validator)
-        owner, absent = peers["ospf"]
-        assert (owner["state"], owner["value"]) == (PUB, "r2"), witness
-        assert witness in _refs(owner, "witness") and "/interfaces/r2/Gi1/svi_ip" in _refs(owner, "witness")
-        assert owner["caveats"] == [CAVEAT]
-        assert (absent["state"], absent["value"]) == (NC, None), witness
-        assert absent["reason"].startswith("not collected: 1 collected device record(s)"), absent["reason"]
-        assert witness in _refs(absent, "witness")
+        assert _engine_owners(snap, "192.0.2.2") == ["r2"]                  # the engine still sees one owner
+        owner, absent = _peers(snap, doc_validator)["ospf"]
+        _assert_gaps(owner, 1, OWNER_TAIL, {witness, "/interfaces/r2/Gi1/svi_ip"})
+        _assert_gaps(absent, 1, ABSENT_TAIL, {witness})
+        assert "/interfaces/r2/Gi1/svi_ip" not in _refs(absent)
+
+
+def test_an_owner_whose_rival_capture_did_not_parse_is_not_published(doc_validator):
+    """The review's counterexample: r2 carries the neighbour's address on Vlan99 in VRF MGMT; r3, the real adjacency,
+    holds it in the global table, but r3's interface running-config capture did not parse. Over the complete control
+    (r3 captured, with another address) r2 is published; with r3's capture missing the same r2 is withheld."""
+    def fleet(r3_captured):
+        snap = _base()
+        snap["routing_neighbors"]["r1"]["ospf"][0]["address"] = "10.0.0.2"
+        snap["interfaces"]["r2"]["Vlan99"] = {"svi_ip": "10.0.0.2 255.255.255.0", "vrf": "MGMT",
+                                              "run_config_observed": True}
+        snap["devices"]["r3"] = {"hostname": "r3"}
+        snap["interfaces"]["r3"] = {"Gi0/1": {"status": "connected"}}
+        if r3_captured:
+            snap["interfaces"]["r3"]["Gi0/1"].update(svi_ip="10.9.9.3 255.255.255.0", run_config_observed=True)
+        return snap
+
+    complete = _peers(fleet(True), doc_validator)["ospf"][0]
+    assert (complete["state"], complete["value"], complete["caveats"]) == (PUB, "r2", [CAVEAT])
+    assert _refs(complete, "witness") == {"/interfaces/r2/Vlan99/svi_ip"}
+    snap = fleet(False)
+    assert _engine_owners(snap, "10.0.0.2") == ["r2"]
+    gap = _peers(snap, doc_validator)["ospf"][0]
+    assert (gap["state"], gap["value"]) != (complete["state"], complete["value"])
+    _assert_gaps(gap, 1, OWNER_TAIL, {"/interfaces/r2/Vlan99/svi_ip", "/interfaces/r3"})
+
+
+#: Every way the collection_completeness record can fail to complete the roster: (case, mutation, the gap's witness
+#: pointer or None when nothing of it resolves, the failure record it must cite or None).
+_UNREADABLE_RECORDS = (
+    ("absent", lambda s: s.pop("collection_completeness"), None, None),
+    ("failed_phase_fallback", lambda s: s.update(collection_completeness={},
+                                                 assessment_integrity={"failed_phases": ["Collection completeness"]}),
+     "/collection_completeness", "/assessment_integrity/failed_phases/0"),
+    ("failed_phase_absent", lambda s: (s.pop("collection_completeness"),
+                                       s.update(assessment_integrity={"failed_phases": ["Collection completeness"]})),
+     None, "/assessment_integrity/failed_phases/0"),
+    ("devices_not_a_list", lambda s: s["collection_completeness"].update(devices={"r9": "not collected"}),
+     "/collection_completeness/devices", None),
+    ("devices_absent", lambda s: s["collection_completeness"].pop("devices"), "/collection_completeness", None),
+    ("row_not_an_object", lambda s: s["collection_completeness"]["devices"].append("r9"),
+     "/collection_completeness/devices/0", None),
+    ("row_status_not_text", lambda s: s["collection_completeness"]["devices"].append({"host": "r9", "status": 0}),
+     "/collection_completeness/devices/0", None),
+    ("row_host_not_text", lambda s: s["collection_completeness"]["devices"].append(
+        {"host": 9, "status": "not collected"}), "/collection_completeness/devices/0", None),
+    ("partial_row_outside_the_roster", lambda s: s["collection_completeness"]["devices"].append(
+        {"host": "r9", "status": "partial", "data_quality": 50, "missing": ["interfaces"]}),
+     "/collection_completeness/devices/0", None),
+)
+
+
+@pytest.mark.parametrize("case, mutate, witness, failure", _UNREADABLE_RECORDS,
+                         ids=[c[0] for c in _UNREADABLE_RECORDS])
+def test_a_record_that_cannot_complete_the_roster_is_a_gap_never_a_clean_index(case, mutate, witness, failure,
+                                                                                 doc_validator):
+    """Absent, failed or unreadable: the roster of devices never reached is then unknown, so neither the owner nor the
+    absence is claimed; the same address over _base()'s readable record is published / not resolved."""
+    snap = _base()
+    mutate(snap)
+    owner, absent = _peers(snap, doc_validator)["ospf"]
+    _assert_gaps(owner, 1, OWNER_TAIL, {"/interfaces/r2/Gi1/svi_ip"} | ({witness} if witness else set()))
+    _assert_gaps(absent, 1, ABSENT_TAIL, {witness} if witness else set())
+    for fact in (owner, absent):
+        if failure:
+            assert failure in _refs(fact, "failure_record"), (case, fact["refs"])
+        else:
+            assert not _refs(fact, "failure_record"), (case, fact["refs"])
+        for pointer in _refs(fact):
+            _resolve(snap, pointer)
+
+
+def test_an_unreadable_devices_map_is_a_gap(sample):
+    """A devices map that is absent, not a map, or keyed by a non-text name leaves the roster unknown. (A device page
+    for such a snapshot is forced to its unknown-host state, so the coverage owner is read directly.)"""
+    def gaps(snap):
+        complete, found = ui._address_coverage(ui._Ctx(snap))
+        assert complete is (not found)
+        return [list(gap) for gap in found]
+
+    assert gaps(_base()) == []
+    assert gaps(sample) == []                               # the real sample: every device captured, a readable record
+    for mutate in (lambda s: s.pop("devices"), lambda s: s.update(devices=["r1", "r2"]),
+                   lambda s: s["devices"].update({7: {"hostname": "seven"}})):
+        snap = _base()
+        mutate(snap)
+        assert gaps(snap) == [[("witness", ("devices",))]]
+
+
+def test_a_roster_row_naming_a_collected_device_adds_no_gap(doc_validator):
+    """A collection_completeness row is a gap only when it names no roster device: a partial row for r2, whose capture
+    is observed, leaves the index complete (r2's own capture is what the index needs)."""
+    snap = _base()
+    snap["collection_completeness"]["devices"].append(
+        {"host": " R2 ", "status": "partial", "data_quality": 75, "missing": ["cdp"]})
+    owner, absent = _peers(snap, doc_validator)["ospf"]
+    assert (owner["state"], owner["value"], absent["state"]) == (PUB, "r2", CBE)
+
+
+def test_coverage_gap_witnesses_are_bounded_on_a_large_fleet(doc_validator):
+    """A 300-device fleet whose interface running-config was captured on two devices only: every neighbour row states
+    the full gap total, but cites a bounded number of gaps, so one page's references never grow with the fleet."""
+    hosts = [f"r{i:03d}" for i in range(300)]
+    snap = {
+        "schema": "collect_parse_snapshot/1",
+        "devices": {h: {"hostname": h} for h in hosts},
+        "collection_completeness": {"summary": {"inventory": 300, "complete": 300, "partial": 0, "not_collected": 0},
+                                    "devices": []},
+        "interfaces": {h: {"Gi1": {"status": "connected"}} for h in hosts},
+        "routes": {h: [] for h in hosts},
+        "routing_neighbors": {"r001": {
+            "ospf": [{"neighbor": f"10.255.1.{i}", "state": "FULL/-", "address": f"198.51.100.{i}",
+                      "interface": "Gi1"} for i in range(1, 41)],
+            "eigrp": [], "bgp": []}},
+    }
+    for h in ("r001", "r002"):
+        snap["interfaces"][h]["Gi1"].update(svi_ip=f"192.0.2.{int(h[1:])} 255.255.255.0", run_config_observed=True)
+    snap["routing_neighbors"]["r001"]["ospf"][0]["address"] = "192.0.2.2"            # r002's address: a sole owner
+    uncaptured = sum(1 for ports in snap["interfaces"].values()
+                     if not any(p.get("run_config_observed") is True for p in ports.values()))
+    assert uncaptured == 298
+    assert 1 <= ui._PEER_GAPS_CITED <= 16
+    facts = _peers(snap, doc_validator, host="r001")["ospf"]
+    assert len(facts) == 40
+    for i, fact in enumerate(facts):
+        tail = OWNER_TAIL if i == 0 else ABSENT_TAIL
+        _assert_gaps(fact, uncaptured, tail)
+        assert f"; the witnesses cite the first {ui._PEER_GAPS_CITED} of them, " in fact["reason"]
+        gap_witnesses = {p for p in _refs(fact, "witness") if p != "/interfaces/r002/Gi1/svi_ip"}
+        assert len(gap_witnesses) == ui._PEER_GAPS_CITED
+        assert len(fact["refs"]) <= 3 + ui._PEER_GAPS_CITED + 1             # subject, two bases, gaps, one owner
+        for pointer in _refs(fact):
+            _resolve(snap, pointer)
+    assert "/interfaces/r002/Gi1/svi_ip" in _refs(facts[0], "witness")
 
 
 def test_ipv6_is_never_resolved_and_never_cleared(doc_validator):
@@ -408,6 +565,10 @@ def test_ipv6_is_never_resolved_and_never_cleared(doc_validator):
     owned = _peers(snap, doc_validator)["bgp"][0]
     assert (owned["state"], owned["value"]) == (NC, None)
     assert _refs(owned, "witness") == {"/interfaces/r2/Gi1/svi_ips/0"}
+    # the reason agrees with the witness it cites: an owner WAS observed, a sole owner is what cannot be claimed
+    assert "never observed" not in owned["reason"]
+    assert owned["reason"].startswith("not collected: an IPv6 owner is observed")
+    assert owned["reason"].endswith("a sole owner cannot be claimed")
     snap["routing_neighbors"]["r1"]["bgp"][0]["neighbor"] = "2001:db8::2%Gi1"       # a zone id is the same address
     zoned = _peers(snap, doc_validator)["bgp"][0]
     assert (zoned["state"], _refs(zoned, "witness")) == (NC, {"/interfaces/r2/Gi1/svi_ips/0"})
@@ -461,11 +622,15 @@ def test_a_failed_or_uncollected_index_input(doc_validator):
             assert "/assessment_integrity/interfaces" in _refs(fact, "failure_record")
     snap = _base()
     del snap["routes"]
+    assert _engine_owners(snap, "192.0.2.2") == ["r2"]
     owner, absent = _peers(snap, doc_validator)["ospf"]
-    assert (owner["state"], owner["value"]) == (PUB, "r2")              # an observed owner stands
-    assert (absent["state"], absent["value"]) == (NC, None)             # but its absence is no clean result
-    assert absent["reason"].startswith("not collected: the address index (topology.source_addresses) may be "
-                                       "incomplete") and "(routes)" in absent["reason"]
+    # an uncollected input could hold a second owner (a local or FHRP host route), so the observed owner is withheld
+    # exactly like the absence is, citing its observation
+    why = INCOMPLETE + "inputs it is built from were not collected (routes), "
+    assert (owner["state"], owner["value"], owner["reason"]) == (NC, None, why + OWNER_TAIL)
+    assert _refs(owner, "witness") == {"/interfaces/r2/Gi1/svi_ip"} and "caveats" not in owner
+    assert (absent["state"], absent["value"], absent["reason"]) == (NC, None, why + ABSENT_TAIL)
+    assert _refs(absent, "witness") == set() and "caveats" not in absent
 
 
 def test_an_unusable_address_cell_withholds_the_peer_with_its_own_state(doc_validator):

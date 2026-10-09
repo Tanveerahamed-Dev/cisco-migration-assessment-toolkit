@@ -645,13 +645,15 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "local and FHRP host routes. OSPF resolves its adjacency address, never its router ID. VRF selection is not "
         "modelled: the index spans every VRF a captured interface configures, so an address on two devices in any "
         "VRFs is unverified, and a published owner may carry the address in another VRF than the adjacency, where an "
-        "uncollected device could reuse it. A collected device whose interface addresses were not captured cannot be "
-        "ruled out as a second owner; a published value cites each such device as a witness. 'Not resolved' "
-        "(collected_but_empty) is stated only over a readable, complete index: every collected device's interface "
-        "addresses captured and every input collected. It means that no collected device is configured with the "
-        "address. Addresses no configuration line states are not observed: DHCP or negotiated interface addresses "
-        "and a firewall's failover standby address. Every IPv6 address is not_collected, because the interface "
-        "addresses the index holds are IPv4 only.",
+        "uncollected device could reuse it. Both a published owner and 'not resolved' (collected_but_empty) are "
+        "stated only over a readable, complete index: every input collected, every collected device's interface "
+        "addresses captured, and a readable collection_completeness record, which completes the device roster with "
+        "the inventory devices never reached. Otherwise a device the index cannot hold could be a second owner, so a "
+        "sole observed owner is not_collected, like an absence, and the reason states how many coverage gaps there "
+        "are (a capped number of them are cited). 'Not resolved' means that no record in the index states the "
+        "address. An address neither source states is not observed: a DHCP or negotiated interface address whose "
+        "local route was not captured in scope, or a firewall's failover standby address. Every IPv6 address is "
+        "not_collected, because the interface addresses the index takes from the running-config are IPv4 only.",
         ["/device/routing_neighbors"]),
 )
 #: The payload limitations a device page can cite, re-addressed into a ``DeviceDocument`` (so the document defines
@@ -879,7 +881,8 @@ class _Ctx:
 
     @property
     def address_coverage(self) -> Any:
-        """Whether that index holds every collected device's interface addresses (:func:`_address_coverage`)."""
+        """Whether that index holds every collected device's interface addresses, and its coverage gaps
+        (:func:`_address_coverage`)."""
         if self._addr_cov is _UNSET:
             self._addr_cov = _address_coverage(self)
         return self._addr_cov
@@ -4860,18 +4863,25 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
 #: The sections whose host keys name a collected device to the address index's coverage check: the inventory (devices),
 #: and every per-host capture that only a reached device can carry.
 _ADDRESS_ROSTER: Tuple[str, ...] = ("devices", "interfaces", "routes", "routing_neighbors")
+#: The record that completes that roster: analyze.compute_collection_completeness lists every inventory device that was
+#: not fully collected (its 'devices' rows), including one the collection never reached, which no roster section names.
+_ADDRESS_ROSTER_RECORD = "collection_completeness"
+#: One coverage gap of the address index: the witness ref entries that show it (none may resolve: an absent record).
+_CoverageGap = Tuple[Tuple[str, Sequence[Any]], ...]
 
 
-def _address_coverage(ctx: _Ctx) -> Tuple[bool, int, Tuple[Tuple[str, Sequence[Any]], ...]]:
+def _address_coverage(ctx: _Ctx) -> Tuple[bool, Tuple[_CoverageGap, ...]]:
     """Whether the address index can hold every collected device's interface addresses, read through
-    :attr:`_Ctx.address_coverage`: ``(complete, number of gaps, witness ref entries)``. Each device named by a
-    host key of :data:`_ADDRESS_ROSTER` is a gap when collection_completeness calls it not collected, or when no
-    interface of it carries run_config_observed (:func:`_run_config_captured`), the only capture its interface
-    addresses come from. So is a blind-spot row naming no such device (the inventory is the union of both), and a
-    devices map that cannot be read: the roster is then unknown, so completeness is never claimed."""
+    :attr:`_Ctx.address_coverage`: ``(complete, gaps)``. The roster is every device a host key of
+    :data:`_ADDRESS_ROSTER` names, completed by the :data:`_ADDRESS_ROSTER_RECORD` rows. Each roster device is a gap
+    when collection_completeness calls it not collected, or when no interface of it carries run_config_observed
+    (:func:`_run_config_captured`), the only capture its interface addresses come from. Every record row that does not
+    name a roster device (by the owner's name rule) is a gap, whatever its status: a device outside the roster, or a
+    row that names none (not an object, or a host that is not text). The roster itself is unknown, so completeness is
+    never claimed, when the devices map cannot be read, or when the record is not readable: absent, failed or faulted
+    (``ssot.abstention_reason`` is neither published nor collected but empty), or its 'devices' is not a list."""
     ifaces = ctx.s.get("interfaces")
-    gaps: List[Tuple[str, Sequence[Any]]] = []
-    n_gaps = 0
+    gaps: List[_CoverageGap] = []
     roster: Dict[str, str] = {}               # device -> the first roster section naming it (its witness otherwise)
     for section in _ADDRESS_ROSTER:
         keyed = ctx.s.get(section)
@@ -4880,27 +4890,27 @@ def _address_coverage(ctx: _Ctx) -> Tuple[bool, int, Tuple[Tuple[str, Sequence[A
                 if _is_text(name):
                     roster.setdefault(name, section)
                 elif section == "devices":
-                    n_gaps += 1
-                    gaps.append(("witness", ("devices",)))
+                    gaps.append((("witness", ("devices",)),))
         elif section == "devices":
-            n_gaps += 1
-            gaps.append(("witness", ("devices",)))
+            gaps.append((("witness", ("devices",)),))
     for name in sorted(roster):
         if ctx.device_blind("interfaces", name):
-            n_gaps += 1
-            gaps += ctx.cc_witness(name)
+            gaps.append(tuple(ctx.cc_witness(name)))
         elif not _run_config_captured(ctx, name):
-            n_gaps += 1
-            gaps.append(("witness", ("interfaces", name) if isinstance(ifaces, dict) and name in ifaces
-                         else (roster[name], name)))
-    named = {_norm(name) for name in roster}
-    rows = _get(ctx.s, ("collection_completeness", "devices"))
-    for i in ctx.blind_rows():
-        blind = rows[i].get("host")
-        if not (_is_text(blind) and _norm(blind) in named):
-            n_gaps += 1
-            gaps.append(("witness", ("collection_completeness", "devices", i)))
-    return n_gaps == 0, n_gaps, tuple(gaps)
+            gaps.append((("witness", ("interfaces", name) if isinstance(ifaces, dict) and name in ifaces
+                          else (roster[name], name)),))
+    record = ctx.abst(_ADDRESS_ROSTER_RECORD)
+    rows = _get(ctx.s, (_ADDRESS_ROSTER_RECORD, "devices"))
+    if record not in (_PUB, _CBE) or not isinstance(rows, list):
+        where = (_ADDRESS_ROSTER_RECORD,) if rows is _MISSING else (_ADDRESS_ROSTER_RECORD, "devices")
+        gaps.append((("witness", where),) + tuple(ctx.failure_entries((_ADDRESS_ROSTER_RECORD,), record == AU)))
+    if isinstance(rows, list):
+        named = {_norm(name) for name in roster}
+        for i, row in enumerate(rows):
+            listed = row.get("host") if isinstance(row, dict) else None
+            if not (_is_text(listed) and _norm(listed) in named):
+                gaps.append((("witness", (_ADDRESS_ROSTER_RECORD, "devices", i)),))
+    return not gaps, tuple(gaps)
 
 
 #: G17: the owner chain a peer_host fact cites. The address index is fib._connected_index's exact ownership (published
@@ -4927,15 +4937,34 @@ _R_PEER_HELD = ("{why} (the one device the address index places this address on)
 _R_PEER_FAMILY = ("not collected: the address index holds interface addresses only from the running-config 'ip "
                   "address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), which are IPv4, so whether a "
                   "collected device carries this IPv6 address was never observed")
-_R_PEER_INPUT_NC = ("not collected: the address index (topology.source_addresses) may be incomplete, because inputs it "
-                    "is built from were not collected ({sections}), so an address it does not hold is not a clean "
-                    "result")
-_R_PEER_GAPS = ("not collected: {n} collected device record(s) have no interface addresses in the address index (a "
-                "collection blind spot, or no interface carries run_config_observed: true, so no scoped interface "
-                "running-config was parsed), so an owner among them was never observed")
-_R_PEER_NOT_RESOLVED = ("collected but empty: not resolved. The address index (topology.source_addresses) holds every "
-                        "collected device's configured IPv4 interface addresses, and none of them is this address, so "
-                        "the neighbour is not a collected device")
+_R_PEER_FAMILY_OWNED = ("not collected: an IPv6 owner is observed (each observation is a witness), but the address "
+                        "index's IPv6 coverage is incomplete: the interface addresses it takes from the running-config "
+                        "are the IPv4 'ip address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), so "
+                        "another device carrying this IPv6 address was never ruled out and a sole owner cannot be "
+                        "claimed")
+#: A sole owner, like an absence, is claimed only over a complete index: a device the index cannot hold could be a
+#: second owner, and more than one owner is ambiguous (fib._hosts_owning_ip).
+_R_PEER_INCOMPLETE = ("not collected: the address index (topology.source_addresses) may be incomplete, because {why}, "
+                      "so {tail}")
+_R_PEER_WHY_INPUTS = "inputs it is built from were not collected ({sections})"
+_R_PEER_WHY_GAPS = ("it has {n} coverage gap(s): a collected device whose interface addresses it does not hold (a "
+                    "collection blind spot, or no interface carries run_config_observed: true, so no scoped interface "
+                    "running-config was parsed), a collection_completeness row that names no device of the roster, or "
+                    "a device roster (the devices map, or the collection_completeness record that completes it) that "
+                    "is absent, failed or unreadable{cited}")
+_R_PEER_CITED = "; the witnesses cite the first {k} of them"
+_R_PEER_TAIL_ABSENT = "an address it does not hold is not a clean result"
+_R_PEER_TAIL_OWNER = ("the one device it places this address on cannot be named the only owner: a second owner was "
+                      "never ruled out, and more than one owner is ambiguous (fib._hosts_owning_ip)")
+#: At most this many coverage gaps are cited as witnesses on one peer_host fact. The reason states the total, so a fleet
+#: whose interface addresses were mostly not captured does not repeat its roster on every neighbour row.
+_PEER_GAPS_CITED = 8
+_R_PEER_NOT_RESOLVED = ("collected but empty: not resolved. No record in the address index (topology.source_addresses) "
+                        "states this address: no collected device's configured IPv4 interface address (the 'ip "
+                        "address' and 'ipv4 address' lines of its captured interface running-config) and no in-scope "
+                        "local or FHRP host route. An address neither source states is not observed, such as a DHCP or "
+                        "negotiated interface address whose local route was not captured in scope, or a firewall's "
+                        "failover standby address, so this does not prove that the neighbour is not a collected device")
 
 
 def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
@@ -4946,9 +4975,10 @@ def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
     first match wins, in the module's precedence (analysis unavailable, then unverified, then not collected): a failed
     or faulted index input -> an address that is not an IP -> more than one owning device, or only this device ->
     an unreadable source record that could also carry it -> an owning observation the index withholds -> an IPv6
-    address -> published, citing every observation of it and every device the index cannot hold. With no owner: an
-    uncollected index input, or a device the index cannot hold, is not collected; otherwise 'not resolved' is
-    collected but empty."""
+    address -> an index that may be incomplete (an uncollected input, or a coverage gap of :func:`_address_coverage`,
+    the first :data:`_PEER_GAPS_CITED` cited): not collected, for a sole observed owner as for an absence, since an
+    unheld device could be a second owner -> over a complete index, one owner is published, citing every observation of
+    it, and no owner is 'not resolved', collected but empty."""
     from cisco_toolkit import fib
 
     field = NEIGHBOR_ADDRESS_FIELDS.get(proto)
@@ -4991,16 +5021,21 @@ def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
         return _envelope(worst, None, None, ctx.refs(base + wit + [w for hold in held for w in hold[1]]), basis,
                          _R_PEER_HELD.format(why=why))
     if ip.version != 4:
-        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_FAMILY)
-    complete, n_gaps, gaps = ctx.address_coverage
-    if owner is not None:
-        return _envelope(_PUB, owner, None, ctx.refs(base + wit + list(gaps)), basis, "", caveats=(_PEER_CAVEAT,))
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_FAMILY_OWNED if hits else _R_PEER_FAMILY)
+    tail = _R_PEER_TAIL_ABSENT if owner is None else _R_PEER_TAIL_OWNER
     uncollected = [s for s in _ADDRESS_SECTIONS if ctx.abst(s) == _NC]
     if uncollected:
-        return _envelope(_NC, None, None, ctx.refs(base), basis,
-                         _R_PEER_INPUT_NC.format(sections=", ".join(uncollected)))
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_INCOMPLETE.format(
+            why=_R_PEER_WHY_INPUTS.format(sections=", ".join(uncollected)), tail=tail))
+    complete, gaps = ctx.address_coverage
     if not complete:
-        return _envelope(_NC, None, None, ctx.refs(base + list(gaps)), basis, _R_PEER_GAPS.format(n=n_gaps))
+        cited = gaps[:_PEER_GAPS_CITED]
+        why = _R_PEER_WHY_GAPS.format(
+            n=len(gaps), cited=_R_PEER_CITED.format(k=len(cited)) if len(cited) < len(gaps) else "")
+        return _envelope(_NC, None, None, ctx.refs(base + wit + [entry for gap in cited for entry in gap]), basis,
+                         _R_PEER_INCOMPLETE.format(why=why, tail=tail))
+    if owner is not None:
+        return _envelope(_PUB, owner, None, ctx.refs(base + wit), basis, "", caveats=(_PEER_CAVEAT,))
     return _envelope(_CBE, None, None, ctx.refs(base), basis, _R_PEER_NOT_RESOLVED, caveats=(_PEER_CAVEAT,))
 
 
