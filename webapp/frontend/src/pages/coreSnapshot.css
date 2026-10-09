@@ -24,6 +24,9 @@
 .projection-state.state-published { background: var(--accent-soft); border-color: var(--border); color: var(--text); }
 .projection-state:not(.state-published) { background-image: repeating-linear-gradient(135deg,transparent,transparent 4px,var(--border-faint) 4px,var(--border-faint) 5px); }
 .projection-reason { font-size: 12px; color: var(--text-dim); }
+/* A sentence built from qualified counts keeps the count's qualifications control beside it. */
+.projection-ratio { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.projection-ratio .projection-qualifications { display: inline-block; margin-top: 0; }
 .projection-caveats { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-dim); }
 .projection-disclosure { padding: 12px 14px; border-left: 3px solid var(--border-strong); background: var(--surface-2); color: var(--text-dim); font-size: 13px; }
 .projection-list-state { margin-bottom: 16px; }

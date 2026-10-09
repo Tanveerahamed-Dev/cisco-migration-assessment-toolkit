@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { loadPathProjection, ProjectionContextError, type Fact, type PathProjection, type SourceList } from "../../projection";
 import { ApiError } from "../../api";
-import { FactView, ListState, ValueText } from "./ProjectionEvidence";
+import { FactView, ImpactFactView, ListState, ValueText } from "./ProjectionEvidence";
 import { ProjectionList } from "./ProjectionList";
 import { TopologyDiagram } from "./TopologyDiagram";
 import { TopologyScope } from "./TopologyScope";
@@ -17,11 +17,17 @@ type NestedEvidence = SourceList & { readonly items: readonly ({ readonly index?
   readonly a_port?: Fact; readonly b_port?: Fact })[] };
 
 function fieldLabel(name: string) { return name.replaceAll("_", " "); }
-function RowFacts({ row }: { row: TopologyRow }) {
+function RowFacts({ row, list }: { row: TopologyRow; list: TopologyListName }) {
   // Every fact here is a typed engine field. This merely selects envelope fields for display;
-  // it does not classify their values or construct a replacement for a withheld fact.
+  // it does not classify their values or construct a replacement for a withheld fact. A
+  // failure-impact row goes through ImpactFactView, the view the device page's rows share
+  // (one row builder, ui_projection._topology_impact), so the owner's lower-bound mark (a
+  // published measure citing a witness) reads "≥ N" here as on every failure-impact surface.
+  // A witness on a fact of any other list means something else and stays a plain FactView.
   const facts = Object.entries(row).filter(([, value]) => typeof value === "object" && value !== null && "value" in value) as [string, Fact][];
-  return <div className="projection-fact-grid">{facts.map(([name, fact]) => <FactView key={name} label={fieldLabel(name)} fact={fact} compact />)}</div>;
+  return <div className="projection-fact-grid">{facts.map(([name, fact]) => list === "failure_impact"
+    ? <ImpactFactView key={name} field={name} label={fieldLabel(name)} fact={fact} row={row.pointer} />
+    : <FactView key={name} label={fieldLabel(name)} fact={fact} compact />)}</div>;
 }
 function RowEvidence({ row }: { row: TopologyRow }) {
   const lists = Object.entries(row).filter(([, value]) => typeof value === "object" && value !== null && "items" in value) as [string, NestedEvidence][];
@@ -183,7 +189,7 @@ export function TopologyPaths({ document, reload }: { document: TopologyDocument
       <TopologyDiagram rows={rows} legend={document.payload.legend} selected={selected} pathNodes={pathNodeKeys(path, rows)} select={choose} />
       <section className="panel topology-inspector" aria-label="Topology record details"><h2>Record details</h2>
         {selected && selectedRow ? <><h3>{TITLES[selected.list]} · source row {selected.row.index}</h3><code>{selected.row.pointer}</code>
-          <RowFacts row={selectedRow} /><RowEvidence row={selectedRow} /><button className="btn" onClick={() => choose(null)}>Clear selected record</button></>
+          <RowFacts row={selectedRow} list={selected.list} /><RowEvidence row={selectedRow} /><button className="btn" onClick={() => choose(null)}>Clear selected record</button></>
           : <p>Select a node, link or evidence-list record. Facts and their qualifications come from the engine.</p>}
       </section>
     </div>
@@ -201,7 +207,7 @@ export function TopologyPaths({ document, reload }: { document: TopologyDocument
     {path && <PathResult path={path} rows={rows} select={choose} />}
     <details className="panel topology-records"><summary>Topology evidence lists</summary>
       {TOPOLOGY_LISTS.map((name) => <ProjectionList key={name} title={TITLES[name]} document={document} initial={document.payload[name]}
-        renderRow={(row) => <><code>{row.pointer}</code><RowFacts row={row} />
+        renderRow={(row) => <><code>{row.pointer}</code><RowFacts row={row} list={name} />
           <button className="btn" disabled={!hasTarget(rows, { list: name, row })}
             onClick={() => choose({ list: name, row: { index: row.index, pointer: row.pointer } })}>Inspect {TITLES[name].toLowerCase()} row {row.index}</button>
           {name === "source_addresses" && "address" in row && row.address.state === "published" && <div className="topology-address-actions">

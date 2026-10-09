@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -299,6 +300,69 @@ def test_the_impact_fields_and_tokens_are_the_projections_own(sample):
         ("witness", ("failure_impact", 7, "blind_links"))]
     assert ia.blind_bound({}, ("failure_impact", 7)).witnesses == [("witness", ("failure_impact", 7))]
     assert ia.blind_bound({"blind_links": 0}, ("failure_impact", 7)) is None
+
+
+# --------------------------------------------------------------------------------------------------
+# the SPA's hand-copied constants (W47 / F8) are their Python owners' own
+# --------------------------------------------------------------------------------------------------
+IMPACT_VALUE_TSX = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "ImpactValue.tsx")
+#: One exported or module-level constant: ``const NAME[: type] = <value>;``. The value runs to the first ``;`` that
+#: ends a line, so a multi-line array literal is read whole.
+_TS_CONST = r"^(?:export\s+)?const\s+{name}\b(?:\s*:[^=\n]+)?\s*=\s*(?P<value>.+?);\s*$"
+_TS_STRING = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def _ts_const(source: str, name: str) -> str:
+    found = re.findall(_TS_CONST.format(name=re.escape(name)), source, re.M | re.S)
+    assert len(found) == 1, f"ImpactValue.tsx must declare `{name}` exactly once, found {len(found)}"
+    return found[0].strip()
+
+
+def _ts_string_array(source: str, name: str):
+    """The constant as a tuple of strings. Fails unless its value is a plain array of double-quoted string literals:
+    a spread, a reference, a template or a computed entry would hide what the SPA actually holds."""
+    value = _ts_const(source, name)
+    assert value.startswith("[") and value.endswith("]"), f"{name} is not an array literal: {value!r}"
+    body = value[1:-1]
+    residue = _TS_STRING.sub("", body)
+    assert re.fullmatch(r"[\s,]*", residue), f"{name} holds something other than string literals: {residue!r}"
+    return tuple(json.loads(f'"{item}"') for item in _TS_STRING.findall(body))
+
+
+def _ts_string(source: str, name: str) -> str:
+    value = _ts_const(source, name)
+    assert _TS_STRING.fullmatch(value), f"{name} is not one string literal: {value!r}"
+    return json.loads(value)
+
+
+def test_the_spa_impact_constants_equal_their_python_owners_in_order():
+    """components/ImpactValue.tsx hand-copies the failure-impact vocabulary. The snapshot tab builds its columns from
+    IMPACT_FIELDS, and the classifier reads IMPACT_MEASURES and IMPACT_SEVERITIES, so a field the engine adds, renames
+    or reorders would be silently dropped or misread by the SPA. Exact equality, in order, with each owner."""
+    source = IMPACT_VALUE_TSX.read_text(encoding="utf-8")
+    assert _ts_string_array(source, "IMPACT_FIELDS") == summary.IMPACT_FIELDS
+    assert _ts_string_array(source, "IMPACT_MEASURES") == summary.IMPACT_MEASURES == ui._IMPACT_MEASURES
+    assert _ts_string_array(source, "IMPACT_SEVERITIES") == ui.IMPACT_SEVERITIES
+    assert _ts_string(source, "IMPACT_NOT_ASSESSED") == summary.IMPACT_NOT_ASSESSED
+    assert _ts_string(source, "IMPACT_BOUND_MARK") == summary.IMPACT_BOUND_MARK
+    # the tab-cell parser strips the backend's own lead (summary._R_BOUND_LEAD, written as "lead: ")
+    assert _ts_string(source, "LOWER_BOUND_LEAD") + ": " == summary._R_BOUND_LEAD
+    # the value columns are the measures plus the off-scan count; host and detail are the text columns
+    assert _ts_const(source, "IMPACT_VALUE_FIELDS") == '[...IMPACT_MEASURES, "off_scan_gw_vlans"]'
+    assert [f for f in summary.IMPACT_FIELDS if f not in summary.IMPACT_MEASURES] == ["host", "off_scan_gw_vlans",
+                                                                                     "detail"]
+
+
+def test_the_spa_constant_reader_is_not_vacuous():
+    """The reader above must see a drift, a spread and a duplicate, or its equality proves nothing."""
+    drifted = 'export const IMPACT_FIELDS: readonly string[] = [\n  "host", "severity",\n];\n'
+    assert _ts_string_array(drifted, "IMPACT_FIELDS") == ("host", "severity") != summary.IMPACT_FIELDS
+    with pytest.raises(AssertionError, match="something other than string literals"):
+        _ts_string_array('export const IMPACT_FIELDS = [...OTHER, "detail"];\n', "IMPACT_FIELDS")
+    with pytest.raises(AssertionError, match="exactly once"):
+        _ts_const('const X = "a";\nconst X = "b";\n', "X")
+    with pytest.raises(AssertionError, match="exactly once"):
+        _ts_const('const IMPACT_FIELDS_OLD = ["a"];\n', "IMPACT_FIELDS")
 
 
 # --------------------------------------------------------------------------------------------------

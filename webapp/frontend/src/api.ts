@@ -13,11 +13,57 @@ export interface Summary {
     crit_high: number;
   };
   readiness: Record<"READY" | "CAUTION" | "NOT READY", number>;
-  keystones: Array<Record<string, any>>;
+  keystones: KeystoneEntry[];
+  /** Which keystone ranking produced `keystones` (summary.KEYSTONE_CONTRACT_VERSION); an older cached summary
+   *  is recomputed on read, so the SPA never needs to branch on it. */
+  keystone_contract?: number;
   lifecycle: LifecycleSummary;
   verification?: SnapshotVerification;
   sections: Array<{ key: string; label: string; count: number }>;
 }
+
+/** One failure-impact entry as webapp/backend/summary.py::impact_entry shapes it (W27): a keystone, or a cutover
+ *  wave's worst-case blast radius. Read from the engine-owned projection, so four states reach the SPA and must stay
+ *  distinct (components/ImpactValue.tsx renders every one of them):
+ *  - a measured count (a published 0 stays 0);
+ *  - `lower_bound: true`: the engine publishes this row's counts only as lower bounds ("at least N"), with
+ *    `lower_bound_reasons` and the witness `lower_bound_pointers`;
+ *  - `severity: "NOT ASSESSED"` (summary.IMPACT_NOT_ASSESSED) with null counts: nothing could be ranked, and the
+ *    detail says why; `n_not_ranked` counts the rows the engine withholds;
+ *  - a null count on a ranked entry (today only `vlans_impacted`): the engine withholds that value. It is
+ *    unavailable, never 0. */
+export interface ImpactEntry {
+  host: string;
+  severity: string;
+  stranded: number | null;
+  vlans_impacted: number | null;
+  detail: string;
+  lower_bound?: boolean;
+  lower_bound_reasons?: string[];
+  lower_bound_pointers?: string[];
+  n_not_ranked?: number;
+}
+
+/** A dashboard keystone (summary._keystones). `device` survives only for hand-made legacy shapes. */
+export interface KeystoneEntry extends ImpactEntry {
+  device?: string;
+}
+
+/** A wave's worst-case blast radius (cutover._worst_blast_radius). `complete: false` says the wave's worst case may
+ *  be larger than this entry: a switch in the wave is withheld, has no row, names no readable host, or publishes its
+ *  counts only as lower bounds. */
+export interface BlastRadius extends ImpactEntry {
+  complete?: boolean;
+}
+
+/** One row of the snapshot "Failure impact" tab (summary.failure_impact_table), in summary.IMPACT_FIELDS order. A
+ *  published cell keeps its value; a published lower bound reads `"≥ N — a lower bound, not an exact measurement:
+ *  why"`; a withheld cell is the projection's own reason, which opens with its state. */
+export type FailureImpactTableRow = Record<string, string | number | null>;
+
+/** The tab's payload: the rows, or, for a section that is not a list (or an empty list the projection withholds),
+ *  the projection's own disclosure of the list. */
+export type FailureImpactTable = FailureImpactTableRow[] | { state: string; reason: string };
 
 /** Hardware-lifecycle (EoX) census as projected by webapp/backend/summary.py::_lifecycle.
  *
@@ -1033,7 +1079,7 @@ export interface CutoverWave {
   sequence_note: string;
   gateways: string[];
   spanning_vlans: Array<[number, string, number]>;
-  blast_radius: { host: string; severity: string; stranded: number; vlans_impacted: number; detail: string } | null;
+  blast_radius: BlastRadius | null;
   keystones: string[];
   n_fail: number;
   n_warn: number;
