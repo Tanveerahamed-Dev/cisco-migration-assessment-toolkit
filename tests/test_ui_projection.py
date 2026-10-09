@@ -1160,6 +1160,9 @@ def test_t7_minimal_snapshot_is_blind_spots_not_health(snaps, payloads):
     assert "census_present_keys_only" in _limitation_ids(p)
     assert p["engine"]["snapshot_schema"]["state"] == PUB and p["engine"]["snapshot_schema_supported"] is True
     assert p["engine"]["script_version"]["state"] == NC
+    # G41: a snapshot handed over already parsed names no file; its identity is a blind spot, never a hash of it.
+    for key in ("snapshot_sha256", "snapshot_bytes"):
+        assert _sv(p["engine"][key]) == (NC, None) and "re-serialisation" in p["engine"][key]["reason"], key
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1306,7 +1309,9 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # uncollected-neighbour bound, duplicate host) are owned by the engine module impact_assessability, which
     # the deliverables share; it imports only ssot, so admitting it reaches no producer (pinned by
     # tests/test_impact_assessability.py). Trust inputs (G08) admit the dossier's public per-axis input
-    # registry by its exact name, so the input list is imported, never copied.
+    # registry by its exact name, so the input list is imported, never copied. G41: the source identity is read
+    # from its one owner, the exact-byte marker class and its public receipt reader; the projection itself
+    # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
@@ -1315,7 +1320,9 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
                "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",
                "cisco_toolkit.coverage_matrix:compute_device_coverage", "cisco_toolkit.coverage_matrix:COVERAGE_STATE_ORDER",
-               "cisco_toolkit.coverage_matrix:COVERAGE_DIMENSIONS", "cisco_toolkit.coverage_matrix:COVERAGE_VERDICT_SOURCES"}
+               "cisco_toolkit.coverage_matrix:COVERAGE_DIMENSIONS", "cisco_toolkit.coverage_matrix:COVERAGE_VERDICT_SOURCES",
+               "cisco_toolkit.protocol_assurance:BoundSnapshot",
+               "cisco_toolkit.protocol_assurance:bound_snapshot_source"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}
     assert not extra, extra
     private = sorted({node.attr for node in ast.walk(tree)

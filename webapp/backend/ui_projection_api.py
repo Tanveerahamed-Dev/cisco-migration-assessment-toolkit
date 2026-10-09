@@ -573,6 +573,20 @@ _PROJECTION_VERSION = (
 )
 
 
+def _require_engine_source(document: dict[str, Any], digest: str, size: int) -> None:
+    """A published engine source identity (G41) must name the exact store bytes this cache entry was admitted from.
+
+    The owner publishes it only from the exact-byte marker that ``bind_ui_projection_snapshot`` mints over
+    these same bytes, so both digests are taken over one byte string, not compared across forms. A
+    withheld identity is left exactly as the owner wrote it: the transport never writes an engine fact.
+    """
+    block = document["engine"]
+    for key, expected in (("snapshot_sha256", digest), ("snapshot_bytes", size)):
+        fact = block[key]
+        if fact["state"] == "published" and fact["value"] != expected:
+            raise ValueError("Engine projection names other source bytes than the store read")
+
+
 class _SnapshotProjection:
     def __init__(self) -> None:
         self.lock = Lock()
@@ -614,6 +628,7 @@ class _ProjectionCache:
             _require_json_native(produced)
             document = deepcopy(produced)
             (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+            _require_engine_source(document, digest, len(raw))
             with self.lock:
                 entry.documents[host] = document
             return document

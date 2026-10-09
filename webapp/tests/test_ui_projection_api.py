@@ -117,10 +117,22 @@ def test_view_preserves_owner_data_and_exact_store_identity(client, sample, view
     assert body["identity"] == {"snapshot_id": sid, "sha256": "sha256:" + hashlib.sha256(blob).hexdigest(),
                                 "bytes": len(blob), "digest_form": "assesshub-store-blob"}
     assert body["identity"]["sha256"] == binding["sha256"]
-    snapshot = json.loads(blob)
+    # The owner document is projected from the same exact-byte binding the transport uses; a bare json.loads of
+    # the blob would name no file (G41), so its engine block could not equal the served one.
+    snapshot = engine.bind_ui_projection_snapshot(blob)
     document = owner.project_device(snapshot, params["host"]) if view == "device" else owner.project(snapshot)
     assert body["projection_schema"] == document["schema"]
     assert body["engine"] == document["engine"]
+    # G41: the engine block names the very bytes the store served, in the owner's exact-parsed-bytes form.
+    assert body["engine"]["snapshot_sha256"] == {
+        "state": "published", "value": "sha256:" + hashlib.sha256(blob).hexdigest(), "subject": None, "refs": [],
+        "basis": "protocol_assurance.bound_snapshot_source:sha256"}
+    assert body["engine"]["snapshot_bytes"] == {
+        "state": "published", "value": len(blob), "subject": None, "refs": [],
+        "basis": "protocol_assurance.bound_snapshot_source:bytes"}
+    assert body["engine"]["snapshot_digest_form"] == owner.SNAPSHOT_DIGEST_FORM == "exact-parsed-bytes"
+    assert body["engine"]["snapshot_sha256"]["value"] == body["identity"]["sha256"]
+    assert body["engine"]["snapshot_bytes"]["value"] == body["identity"]["bytes"]
     assert body["limitations"] == (document["device"]["limitations"] if view == "device" else document["trust"]["limitations"])
     rebuilt = deepcopy(body["payload"])
     for pointer in LIST_CATALOG[view]:
@@ -1991,3 +2003,90 @@ def test_owner_vocab_stays_in_engine_documents_and_out_of_every_transport_envelo
         api.UiProjectionViewResponse.model_validate({**bodies["overview"], "vocab": deepcopy(vocab)})
     with pytest.raises(ModelValidationError):
         api.UiProjectionPathResponse.model_validate({**path.json(), "vocab": deepcopy(vocab)})
+
+
+def test_engine_source_identity_names_the_served_bytes_on_every_view_list_and_path(client, sample):
+    """G41: every response's engine block names the exact store bytes its envelope identity names. The identity
+    rides inside the existing engine member, so no envelope gains a key (the test above pins the key sets)."""
+    from backend import ui_projection_api as api
+    # One digest spelling on both sides of the envelope: the store identity and the engine owner's fact.
+    assert api._IDENTITY["properties"]["sha256"]["pattern"] == owner.SNAPSHOT_SHA256_PATTERN
+    sid = seed(client, sample)
+    blob, binding = client.app.state.store.get_snapshot_blob(sid)
+    digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+    host = next(iter(sample["devices"]))
+    bodies = []
+    for view in api.VIEWS:
+        params = {"limit": 1, **({"host": host} if view == "device" else {})}
+        response = client.get(url(sid, view), params=params)
+        assert response.status_code == 200, response.text[:200]
+        bodies.append(response.json())
+        pointer = next(iter(api.LIST_CATALOG[view]))
+        listed = client.get(url(sid, view) + "/lists", params={**params, "pointer": pointer})
+        assert listed.status_code == 200, listed.text[:200]
+        bodies.append(listed.json())
+    path = client.get(path_url(sid), params=_PATH_QUERY)
+    assert path.status_code == 200, path.text[:200]
+    bodies.append(path.json())
+    assert len(bodies) == 2 * len(api.VIEWS) + 1
+    for body in bodies:
+        source = body["engine"]
+        assert (source["snapshot_sha256"]["state"], source["snapshot_sha256"]["value"]) == ("published", digest)
+        assert (source["snapshot_bytes"]["state"], source["snapshot_bytes"]["value"]) == ("published", len(blob))
+        assert source["snapshot_digest_form"] == owner.SNAPSHOT_DIGEST_FORM
+        assert body["identity"]["sha256"] == digest == binding["sha256"]
+        assert body["identity"]["bytes"] == len(blob) == binding["bytes"]
+        assert source == bodies[0]["engine"]
+
+
+@pytest.mark.parametrize("forgery", ["equal_content_other_bytes", "digest", "byte_count"])
+def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(client, monkeypatch, forgery):
+    """A published engine identity that names any byte string other than the admitted store blob is refused before
+    caching, even when that other byte string parses to the same JSON content: the identity names a file, not a value."""
+    sid = seed(client, {"devices": {"edge": {}}, "script_version": "3.23.0"})
+    blob, _binding = client.app.state.store.get_snapshot_blob(sid)
+    other_bytes = blob + b"\n"                        # valid JSON, equal content, a different byte string
+    assert json.loads(other_bytes) == json.loads(blob) and other_bytes != blob
+    project = engine.ui_projection
+    produced = []
+
+    def forged(snapshot, host=None):
+        if forgery == "equal_content_other_bytes":
+            document = project(engine.bind_ui_projection_snapshot(other_bytes), host)
+        else:
+            document = project(snapshot, host)
+            if forgery == "digest":
+                document["engine"]["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
+            else:
+                document["engine"]["snapshot_bytes"]["value"] += 1
+        produced.append(document)
+        return document
+
+    with monkeypatch.context() as changed:
+        changed.setattr(engine, "ui_projection", forged)
+        with pytest.raises(ValueError, match="names other source bytes than the store read"):
+            client.get(url(sid))
+    # The refused document was schema-valid and published; only its source binding was wrong.
+    assert len(produced) == 1
+    assert Draft202012Validator(owner.ui_projection_schema()).is_valid(produced[0])
+    assert {produced[0]["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")} == {"published"}
+    accepted = client.get(url(sid))                   # a refused admission is never cached
+    assert accepted.status_code == 200, accepted.text[:200]
+    body = accepted.json()
+    assert body["engine"]["snapshot_sha256"]["value"] == body["identity"]["sha256"]
+    assert body["engine"]["snapshot_bytes"]["value"] == body["identity"]["bytes"] == len(blob)
+
+
+def test_transport_serves_a_withheld_engine_identity_exactly_as_the_owner_wrote_it(client, sample, monkeypatch):
+    """The transport never writes an engine fact: a producer document that names no file keeps its withheld identity
+    beside the envelope's store identity, rather than being filled in from the store binding."""
+    sid = seed(client)
+    document = owner.project(sample)                  # handed over already parsed: the owner names no file
+    assert [document["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")] == ["not_collected"] * 2
+    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    response = client.get(url(sid))
+    assert response.status_code == 200, response.text[:200]
+    body = response.json()
+    assert body["engine"] == document["engine"]
+    assert body["engine"]["snapshot_sha256"]["value"] is None and body["engine"]["snapshot_bytes"]["value"] is None
+    assert body["identity"]["bytes"] > 0
