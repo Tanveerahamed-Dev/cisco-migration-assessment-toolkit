@@ -471,3 +471,51 @@ all10 strict mutations/restoration/build/B3/hub/8pure/8browser, Reference/webapp
 Distribution/installed/portable and every protected instance/whole workflow plus
 independent final source/base/tested-tree/body/title/protection review. No ready
 handoff or whole-union runtime qualification is claimed at this source stage.
+
+## Fresh combined Scope impact-family adoption
+
+Actual1ddd Scope37956931206/job113909696710 completed FAILURE16:20:45Z:
+111failed7489passed27skipped in13failed242passed files. The saved complete log
+joins actualD419/ec+1ddd/tree8d and records7direct fabric reproduction failures,
+1old core1 host-cite mismatch and103 UI/focus/citation failures. ImpactSection
+DevicePane886:96 reads missing row.cite; all23 old bootstrap impacts lack row.
+Stopped-pane and missing-tab consequences are actual negatives. New owner22,
+synthetic real-pane9 and engine-silent11 focused controls pass, but do not erase
+the whole failure. All10 strict mutants, standalone/hub/B3/mount/pure/browser
+product gates are skipped; six ignore-empty uploads succeed without artifacts.
+
+Earlier bind/export/capture/upload/typecheck all passed. Independent diagnostic
+selection11627859068 binds source1ddd/actualD419/currentd015/run37956931206a1;
+122110bytes, API/uploader digestde639274faabd93dcd5fea6f71870516fd4f04ea527df5ad6d71a795e1210582.
+Root ONE60s ordinarygh read completed16:32:38Z/exit0/no timeout into six files.
+No local compiler/hash/receipt/archive controller or old-artifact reread occurred.
+This CLI review-data transport does not authenticate archive custody.
+
+Independent actual material review joins458before/after Git input entries and
+four old output records, exact modes/blobs/sizes/context/processor owners and
+all28sample-binding occurrences. Six delivered files total903677bytes; four
+members total652484bytes. Fabric595738bytes matches the hosted rebuilt size.
+Only23 impact subtrees differ from129; all other fabric keys includingmetadata
+are unchanged. All non-meta fabric values equal owner-merged mainEC, while five
+sample/time metadata fields differ from that older sample. Three sidecars equal
+129 exactly. Copy all four reviewed members without reserialization; no other
+source, sample, GOLDEN_SHA or extra golden expectation edit is needed.
+
+Actual23 unique dossier/pointer/host/raw/verbatimreason joins match stored sample:
+20published and3lower-bound, with3 topology-only hosts remaining null. Admitted
+published zeros remain exact; lower-bound positive counts remain floors while
+zero/severity/detail are held. Nested selected raw rows retain values/detail and
+separate exact index citations;23owner+23raw cite fields are46 impact cites,
+not the587finding-reference instances or377projected evidence records. All140
+findings,377records,26compiled nodes/44links, source findings/counters and caps
+remain. Inspector bearer/source reasoning is not actual browser validation.
+
+This source adoption removes the demonstrated old-shape mismatch as edit data;
+recovery of all111 failures remains UNVERIFIED until a fresh whole unit result.
+Require exact current family reproduction/typecheck, all10 strict mutations and
+restoration, standalone/hub/B3/mount/8pure/8browser, every supported Python leg,
+LF/native-stock/directreturn/STP/default/golden/UTC sample, Reference/webapp/
+Distribution/installed/portable and all protected instances/whole workflows,
+then independent final source/base/tested-tree/body/title/protection review.
+No compiler consumer change, handler fallback, test/cap/baseline relaxation,
+W53/Preview-label implementation or ready/merge/release promotion occurs here.
