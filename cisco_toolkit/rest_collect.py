@@ -154,10 +154,16 @@ def _get_json(opener, url: str, headers=None, timeout: int = 30):
 
 
 def _write(out_dir: str, cmd: str, obj) -> str:
-    """Write one raw JSON export to out_dir/<offline-filename(cmd)> so --no-collect reads it like a show-file."""
+    """Write one raw JSON export to out_dir/<offline-filename(cmd)> so --no-collect reads it like a show-file.
+
+    The stored bytes are the parsed response re-serialised (``json.dump(obj, indent=2)``: ASCII, LF line breaks),
+    not the controller's wire bytes. ``newline=""`` (W44/F10) keeps them exactly that on every host: a default
+    text-mode write on a Windows collecting host turned every line break into "\\r\\n", and the engine reads,
+    hashes and parses these files as raw bytes with no newline translation, so the evidence receipts depended on
+    which host collected them."""
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, _cmd_filename(cmd))
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="") as f:
         json.dump(obj, f, indent=2)
     return path
 

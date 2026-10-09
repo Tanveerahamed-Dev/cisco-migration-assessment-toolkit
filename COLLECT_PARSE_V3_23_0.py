@@ -1334,7 +1334,16 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
         fn  = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_") + ".txt"
         p   = os.path.join(out_dir, fn)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
+        # W44/F10 -- host-independent evidence bytes. A default text-mode write translates every "\n"
+        # to os.linesep, so a Windows collecting host (Atlas runs there) stored "\r\n" where the device
+        # session delivered "\n" (and "\r\r\n" for a received "\r\n"). Nothing downstream undoes that:
+        # input_custody reads the raw bytes, hashes them into the run's evidence receipts and hands them
+        # to the parsers WITHOUT newline translation, so receipts and parser input depended on the
+        # collecting host. newline="" writes `out` untranslated -- exactly out.encode("utf-8") on every
+        # host, the rule redact_collection_dir already follows when it rewrites these same files. ("" and
+        # "\n" are the same on a write; "" is chosen because it says "no translation", not "normalise":
+        # whatever line endings the transport delivered are stored verbatim.)
+        with open(p, "w", encoding="utf-8", newline="") as f:
             f.write(out)
         paths[cmd] = p
 
@@ -1630,7 +1639,12 @@ def _write_json_atomic(path: str, dump) -> None:
     # concurrent runs sharing an output dir cannot collide on the temp name.
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # newline="" (W44/F10): no host newline translation. This writer also publishes evidence --
+        # the capture-metadata sidecar `_evidence_records` hashes into the raw-evidence receipts, and
+        # the archive index beside the captures -- so its bytes must be the dump's own LF bytes on
+        # every host, not "\r\n" on a Windows collecting host. Every other JSON written here gets the
+        # same host-independent bytes; on a POSIX host nothing changes.
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             dump(f)
             f.flush()
             os.fsync(f.fileno())          # bytes reach the medium BEFORE the rename publishes them
@@ -1701,7 +1715,8 @@ def write_json_file(path: str, data: dict, compact: bool = False) -> None:
             "open viewer); close it and re-run to restore the atomic path.",
             os.path.basename(path), type(e).__name__, e)
 
-    with open(path, "w", encoding="utf-8") as f:
+    # Same no-translation rule as the atomic path: the degraded write must not change the bytes.
+    with open(path, "w", encoding="utf-8", newline="") as f:
         _dump(f)
 
 
