@@ -345,3 +345,53 @@ complete LF/native/stock controls and all fresh whole workflows remain pending.
 New Scope and admissible frontend receipt/dist work remain mandatory; W53's raw
 consumer is still exclusively the separate thread. No archive custody, acceptance
 or ready handoff follows from this material adoption.
+
+## Current Scope binding and hosted frontend receipt
+
+On f2/tested `3e94f2a7`/tree178, the ordinary webapp run `37928004506` completed
+successfully with all six jobs. Its frontend passed canonical API agreement,
+32 files / 454 tests, TypeScript and Vite build, privacy and source-bound capture.
+The unfiltered backend suite completed with all three Scope requirements enabled
+and jsonschema-rs0.58.5 installed; quiet output supplies no aggregate count or
+separate named-case trace. Mandatory G14 native True/False/False, no-exception,
+stock-parity and six positive relation assertions remain in that selected source.
+This suite-level evidence is independently reviewed; final source still needs
+fresh native/default coverage.
+
+Scope run `37928004760` / job `113811521593` completed with 47 failed tests,
+7,334 passes and 27 skips, plus four failed suite initializations. The successful
+canonical export/capture before those failures produced artifact `11615445337`,
+received once as six inert files. Independent review joins all 456 processing
+inputs, four old-output identities and 28 sample-binding fields to d015/3,782,932
+bytes/Git blob `444afbd6ccf16da57ae64ac9f8655d5e93578a50`.
+All non-metadata values remain equal, including 140 findings, 377 evidence records,
+26 compiled device/node records, 44 links, complete accounting and geometry inputs.
+Only four exact JSON members and GOLDEN_SHA change. No sixth expectation or W53
+consumer edit is indicated. The original failure and skipped mutation/build/B3/
+hub/browser tail remain; the corrected source must execute those gates freshly.
+
+The successful frontend produced artifact `11615425593`. Before any local SPA
+adoption, the independently reviewed closed selector chose that whole-success run,
+frontend job, actual tested parents/source tree, Node24.19.0/npm11.17.0, artifact
+identity/size/digest and all 146 frontend inputs. One existing HOSTED webapp-ci
+receiver dispatch ran as `37932877616` on f2. Its frontend job `113827736793`
+completed receipt and preservation successfully; the ordinary backend/whole manual
+workflow was still pending when the receipt data was selected.
+
+Receipt artifact `11616343266` was received once as nine inert files. Its raw result
+is ADMITTED_EDIT_DATA_REVIEW_REQUIRED with no errors and every readiness/acceptance/
+compatibility/dependency/release flag false. Independent review joins the complete
+selector, 146 source inputs, seven receiver/current-policy inputs, identical opening
+and closing API records and the selected original six-job successful producer.
+The exact admitted patch changes only three JavaScript asset names/bytes and
+index.html; all five desired files are 100644 and CSS is unchanged. Root applies
+that exact patch as Git source editing. The nested subject.zip remains opaque:
+no local extraction, archive/hash/receiver controller or separate SPA download.
+
+Only Scope bindings, admitted dist and owned evidence/board records change in this
+follow-up. Frontend inputs remain unchanged, so these received bytes are concrete
+edit data for the selected build. Fresh committed-dist reproduction, Distribution's
+previously skipped package/installed tail, portable source/binary, complete Scope,
+default/golden/UTC sample/LF/native checks and all current protected/workflow gates
+still decide readiness. No runtime result or final green handoff is inferred from
+successful receipt or patch application.
