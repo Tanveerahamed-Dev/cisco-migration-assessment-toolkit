@@ -6,18 +6,21 @@ absence as health:
 
 * the producer's ``[NOT OBSERVED]`` tracking marker is not collected, never "no tracking"; an empty tracking text is
   "captured, no tracked object" only where the snapshot proves its producer separates the two (before 2026-07-28 it
-  wrote '' for both);
-* ``risk`` is the producer's single-gateway flag alone, a boolean. Its absence is published as false whatever the
-  coverage (an unscanned device can only add gateways), but the flag is a published risk only when the scan covers
-  every possible gateway of the VLAN: no collection blind spot, no cable-map neighbour the collection never reached
-  that could route, and every collected device's interface running-config captured. A flag the stored rows contradict
-  is unverified;
+  wrote '' for both); a text that disagrees with the row's own tracked-object-down flag is unverified;
+* ``risk`` is the producer's single-gateway flag alone, a boolean. The producer counts gateways by VLAN id, so its
+  absence is published as false only where another switch's row provably shares the segment (subnet and VRF), and
+  then whatever the coverage (an unscanned device can only add gateways). The flag is a published risk only when the
+  scan covers every gateway the producer's VlanN rule could count and nothing stored contradicts it: no collection
+  blind spot, no cable-map neighbour the collection never reached that could route, every collected device's interface
+  running-config captured, no other collected interface holding an address in the gateway's subnet, and no stored FHRP
+  evidence of another router in its group. A flag the stored rows contradict is unverified;
 * an empty gateway list is a clean "no gateway in the scan" only under that same coverage, and a row the VLAN join
-  cannot read makes every gateway list unverified.
+  cannot read makes every gateway list unverified;
+* the VLAN row's "sole gateway on X (no FHRP)" fhrp text is published only where X's own sole-gateway risk is.
 
 Every value is checked against an INDEPENDENT lookup in the snapshot, never the module's own join. The stored sample and
 golden snapshots carry a real coverage gap (an uncollected WAN router), and the producer's own markers and flags are
-pinned by driving ``excel.write_l3_forwarding_sheet`` itself.
+pinned by driving ``excel.write_l3_forwarding_sheet`` (and the HSRP detail builder) itself.
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from openpyxl import Workbook
 
-from cisco_toolkit import analyze, excel
+from cisco_toolkit import analyze, build, excel
 from cisco_toolkit import ui_projection as ui
 from cisco_toolkit.model import InterfaceData
 
@@ -47,6 +50,9 @@ CAVEAT = "vlan_gateway_rows"
 SOLE = "single-gateway"
 MARKER = "[NOT OBSERVED]"
 TRACK_NOT_ASSESSED = "[NOT OBSERVED] - no 'show track' evidence; object tracking NOT assessed"
+DOWN_SOLE = "tracked-object-down; single-gateway"
+#: The most witnesses one coverage gap cites (its reason then says "(8 of N cited)").
+CAP = 8
 #: analyze.compute_cable_map's kinds for POSITIVELY identified edge gear, which cannot be a VLAN's gateway.
 EDGE_KINDS = ("ap", "phone", "endpoint")
 BLIND = {"host": "access2", "status": "partial", "data_quality": 75, "missing": ["interface status"]}
@@ -330,6 +336,19 @@ def _gap_completeness_failed(snap):
     return AU, None, "collection_completeness cannot be read"
 
 
+def _gap_summary_counts_unlisted(snap):
+    # the producer counts each blind spot in its summary AND lists it; a count the list does not carry is a blind spot
+    # the list may be missing, never "no blind spot"
+    assert snap["collection_completeness"]["devices"] == []
+    snap["collection_completeness"]["summary"]["not_collected"] = 3
+    return UV, _ptr("collection_completeness", "summary"), "summary counts 3 partial or not-collected device(s)"
+
+
+def _gap_summary_unreadable(snap):
+    snap["collection_completeness"]["summary"]["partial"] = "two"
+    return UV, _ptr("collection_completeness", "summary"), "partial or not_collected count cannot be read"
+
+
 GAPS = {
     "partial_device": _gap_partial,
     "not_collected_device": _gap_not_collected,
@@ -350,6 +369,8 @@ GAPS = {
     "devices_not_a_map": _gap_devices_not_a_map,
     "cable_map_phase_failed": _gap_cable_map_failed,
     "completeness_phase_failed": _gap_completeness_failed,
+    "summary_counts_an_unlisted_blind_spot": _gap_summary_counts_unlisted,
+    "summary_count_unreadable": _gap_summary_unreadable,
 }
 WORD = {NC: "not collected", UV: "unverified", AU: "analysis unavailable"}
 
@@ -408,10 +429,16 @@ def test_a_flag_the_stored_rows_contradict_is_unverified(sample, inv_validator):
     rj = _gw(inv, vid, j)["risk"]
     assert (rj["state"], rj["value"]) == (UV, None) and "contradict the stored rows" in rj["reason"]
     assert (_ptr("l3_forwarding", j), "witness") in _refs(rj)
+    # the VLAN row's "sole gateway on X" text follows X's own risk, whatever withheld it
+    fhrp = _vlan_row(inv, vid)["fhrp"]
+    assert (fhrp["state"], fhrp["value"]) == (UV, None), fhrp
+    assert fhrp["reason"].startswith("unverified: the engine names a sole gateway for this VLAN, but that gateway row's")
+    assert {(_ptr("l3_forwarding", j, "risk"), "witness"), (_ptr("l3_forwarding", j), "witness")} <= _refs(fhrp)
 
 
 @pytest.mark.parametrize("text", ("single gateway", "", "Single-Gateway", "single-gateway; no-FHRP",
                                   "single-gateway; single-gateway", "ok; single-gateway", "single-gateway;",
+                                  "single-gateway; tracked-object-down", "no-FHRP; tracked-object-down",
                                   7, None, ["single-gateway"]))
 def test_a_risk_text_that_is_not_the_producers_flag_list_is_unverified(sample, inv_validator, text):
     snap = _covered(sample)
@@ -469,6 +496,10 @@ def test_a_row_the_vlan_join_cannot_read_makes_every_gateway_list_unverified(sam
     assert (sole["state"], sole["value"]) == (UV, None) and (_ptr("l3_forwarding", k), "witness") in _refs(sole)
     other = _gw(inv, pair, a)["risk"]                         # two readable gateways stay two
     assert (other["state"], other["value"]) == (PUB, False)
+    fhrp = _vlan_row(inv, vid)["fhrp"]                        # and the row's sole-gateway text is withheld with it
+    assert (fhrp["state"], fhrp["value"]) == (UV, None), fhrp
+    assert fhrp["reason"].startswith("unverified: the engine names a sole gateway for this VLAN")
+    assert (_ptr("l3_forwarding", k), "witness") in _refs(fhrp)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -490,10 +521,33 @@ def test_tracking_cells_never_read_an_absence_as_no_tracking(sample, inv_validat
         cell = _gw(inv, pair, k)["tracking"]
         assert (cell["state"], cell["value"]) == (UV, None) and "contradicts" in cell["reason"], cell
         assert (_ptr("l3_forwarding", k, "risk"), "witness") in _refs(cell)
-    l3[j]["tracking"] = "2 obj (1 DOWN) - T1:Up; T2:Down"
+    # a Down object, beside the tracked-object-down flag the producer always raises with it
+    l3[j].update(tracking="2 obj (1 DOWN) - T1:Up; T2:Down", risk=DOWN_SOLE)
     seen = _gw(_inventory(snap, inv_validator), vid, j)["tracking"]
     assert (seen["state"], seen["value"]) == (PUB, "2 obj (1 DOWN) - T1:Up; T2:Down")
     assert CAVEAT in seen["caveats"]
+
+
+@pytest.mark.parametrize("tracking, risk, agree", (
+    ("", DOWN_SOLE, False),                                   # 'captured, none' beside a Down flag
+    (MARKER, DOWN_SOLE, False),                               # 'never captured' beside a Down flag
+    ("1 obj - T1:Up", DOWN_SOLE, False),                      # no Down object beside a Down flag
+    ("2 obj (1 DOWN) - T1:Up; T2:Down", SOLE, False),         # a Down object with no Down flag
+    ("2 obj (1 DOWN) - T1:Up; T2:Down", DOWN_SOLE, True),
+    ("1 obj - T1:Up", SOLE, True),
+))
+def test_a_tracking_text_the_rows_own_down_flag_contradicts_is_unverified(sample, inv_validator, tracking, risk,
+                                                                          agree):
+    snap = _covered(sample)
+    (j, vid), = _sole_rows(snap)
+    snap["l3_forwarding"][j].update(tracking=tracking, risk=risk)
+    cell = _gw(_inventory(snap, inv_validator), vid, j)["tracking"]
+    if agree:
+        assert (cell["state"], cell["value"]) == (PUB, tracking), cell
+    else:
+        assert (cell["state"], cell["value"]) == (UV, None), cell
+        assert cell["reason"].startswith("unverified: this tracking text and the row's tracked-object-down flag")
+        assert (_ptr("l3_forwarding", j, "risk"), "witness") in _refs(cell)
 
 
 def _pre_split(sample):
@@ -564,12 +618,21 @@ def test_an_unreadable_gateway_source_selects_nothing_and_says_why(sample, inv_v
     assert inv["vlans"]["selection_sources"]["gateways"]["state"] == want
 
 
+def _drop_gateway(snap):
+    """VLAN 30 as the producer would write it with no gateway: its only gateway row names a VLAN with no row, and its
+    SVI holds no address (an addressed SVI with no gateway row would contradict the empty list)."""
+    (j, vid), = _sole_rows(snap)
+    snap["l3_forwarding"][j]["vlan"] = 4094
+    svi = snap["interfaces"][snap["l3_forwarding"][j]["switch"]][f"Vlan{vid}"]
+    svi.update(svi_ip="", svi_ips="")
+    assert not _naming(snap, vid)
+    return vid
+
+
 def test_a_vlan_with_no_gateway_row_is_a_clean_absence_only_under_coverage(sample, inv_validator):
-    for build, want in ((copy.deepcopy, NC), (_covered, CBE)):
-        snap = build(sample)
-        (j, vid), = _sole_rows(snap)
-        snap["l3_forwarding"][j]["vlan"] = 4094               # its only gateway row now names a VLAN with no row
-        assert not _naming(snap, vid)
+    for make, want in ((copy.deepcopy, NC), (_covered, CBE)):
+        snap = make(sample)
+        vid = _drop_gateway(snap)
         gw = _gateways(_inventory(snap, inv_validator), vid)
         assert (gw["state"], gw["items"]) == (want, []), gw
         if want == CBE:
@@ -586,6 +649,341 @@ def test_a_vlan_row_with_no_readable_vlan_joins_no_gateway(sample, inv_validator
     inv = _inventory(snap, inv_validator)
     gw = inv["vlans"]["rows"]["items"][0]["selections"]["gateways"]
     assert (gw["state"], gw["items"]) == (UV, []) and "no readable VLAN id" in gw["reason"]
+
+
+def test_an_addressed_svi_with_no_gateway_row_contradicts_an_empty_list(sample, inv_validator):
+    snap = _covered(sample)
+    (j, vid), = _sole_rows(snap)
+    host = snap["l3_forwarding"][j]["switch"]
+    snap["l3_forwarding"][j]["vlan"] = 4094                   # the row is gone, but the SVI keeps its address
+    assert snap["interfaces"][host][f"Vlan{vid}"]["svi_ip"]
+    gw = _gateways(_inventory(snap, inv_validator), vid)
+    assert (gw["state"], gw["items"]) == (UV, []), gw
+    assert "carry no gateway row" in gw["reason"] and NOT_A_BLIND_SPOT not in gw["reason"]
+    assert (_ptr("interfaces", host, f"Vlan{vid}"), "witness") in _refs(gw)
+
+
+#: Interfaces excel.write_l3_forwarding_sheet never counts as a VLAN's gateway (it counts only SVIs named VlanN): a
+#: routed /30 whose far end is no collected address, a dot1Q subinterface, a bridge-domain interface and an irb unit.
+_UNCOUNTED = {
+    "routed_port_with_a_free_host": ("dist1", "Gi1/0/3", "10.0.141.2 255.255.255.252"),
+    "subinterface": ("core2", "Gi0/0.30", "10.0.31.254 255.255.255.0"),
+    "bridge_domain_interface": ("core2", "BDI30", "10.0.31.254 255.255.255.0"),
+    "irb_unit": ("core2", "irb.30", "10.0.31.254/24"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_UNCOUNTED))
+def test_an_interface_the_vlann_rule_never_counts_withholds_an_empty_list(sample, inv_validator, name):
+    snap = _covered(sample)
+    vid = _drop_gateway(snap)
+    host, port, address = _UNCOUNTED[name]
+    rec = snap["interfaces"][host].setdefault(port, {"port": port, "run_config_observed": True})
+    rec.update(svi_ip=address, svi_ips=address)
+    gw = _gateways(_inventory(snap, inv_validator), vid)
+    assert (gw["state"], gw["items"]) == (NC, []), (name, gw)
+    assert "not named VlanN" in gw["reason"] and NOT_A_BLIND_SPOT not in gw["reason"], gw["reason"]
+    assert (_ptr("interfaces", host, port), "witness") in _refs(gw), gw["refs"]
+
+
+def _routed(snap, port="Gi1/0/48", address="10.0.30.254 255.255.255.0", vrf="TENANT_RED", host="core2", **extra):
+    """A collected interface not named VlanN holding `address` (core1's Vlan30 sits in TENANT_RED)."""
+    rec = {"port": port, "svi_ip": address, "svi_ips": address, "vrf": vrf, "run_config_observed": True}
+    rec.update(extra)
+    snap["interfaces"][host][port] = rec
+    return _ptr("interfaces", host, port)
+
+
+def _hsrp(snap, **fields):
+    """Append one HSRP detail record for core1's Vlan30 (parse.parse_hsrp_detail's shape)."""
+    rec = {"ifname": "Vlan30", "group": "30", "state": "Active", "priority": 110, "cfg_priority": 110, "preempt": True,
+           "preempt_delay": None, "vip": "10.0.30.254", "vmac": "0000.0c07.ac1e", "hello": 3, "hold": 10,
+           "standby_ip": "", "track": [], "version": 1}
+    rec.update(fields)
+    snap["fhrp_detail"]["core1"].append(rec)
+    return _ptr("fhrp_detail", "core1", len(snap["fhrp_detail"]["core1"]) - 1)
+
+
+def _sole_row(snap):
+    (j, _vid), = _sole_rows(snap)
+    return snap["l3_forwarding"][j]
+
+
+def _scoped_role(role):
+    def build_(snap):
+        row = _sole_row(snap)
+        row["role"] = role
+        return UV, _ptr("l3_forwarding", snap["l3_forwarding"].index(row), "role"), "neither Active nor Master"
+    return build_
+
+
+def _scoped_standby(snap):
+    _sole_row(snap)["role"] = "Active"
+    return UV, _hsrp(snap, standby_ip="10.0.30.3") + "/standby_ip", "names a standby router"
+
+
+def _scoped_listen(snap):
+    return UV, _hsrp(snap, state="Listen") + "/state", "records a state other than Active or Master"
+
+
+def _scoped_active_no_record(snap):
+    _sole_row(snap)["role"] = "Active"
+    return NC, _ptr("fhrp_detail", "core1"), "no stored HSRP detail record of this device names its SVI"
+
+
+def _scoped_active_no_device(snap):
+    _sole_row(snap)["role"] = "Active"
+    del snap["fhrp_detail"]["core1"]
+    return NC, _ptr("fhrp_detail"), "no HSRP detail is stored for this device"
+
+
+def _scoped_detail_record_unreadable(snap):
+    snap["fhrp_detail"]["core1"].append(5)
+    return UV, _ptr("fhrp_detail", "core1", len(snap["fhrp_detail"]["core1"]) - 1), "detail record(s) of this device"
+
+
+def _scoped_detail_unreadable(snap):
+    snap["fhrp_detail"] = [5]
+    return UV, _ptr("fhrp_detail"), "HSRP detail (fhrp_detail) cannot be read"
+
+
+def _scoped_routed(**fields):
+    def build_(snap):
+        return UV, _routed(snap, **fields), "hold an address in this VLAN's gateway subnet"
+    return build_
+
+
+def _scoped_secondary(snap):
+    # another VLAN's SVI holds a secondary address in VLAN 30's subnet; its VRF was never read (no running-config
+    # capture of it), so no VRF tells the two apart
+    svi = snap["interfaces"]["core2"]["Vlan20"]
+    assert svi["vrf"] is None
+    svi.update(svi_ips=svi["svi_ip"] + ";10.0.30.5 255.255.255.0", run_config_observed=False)
+    return UV, _ptr("interfaces", "core2", "Vlan20"), "hold an address in this VLAN's gateway subnet"
+
+
+def _scoped_uncounted_svi(snap):
+    snap["interfaces"]["core2"]["Vlan30"] = {"port": "Vlan30", "svi_ip": "", "svi_ips": "10.0.30.2 255.255.255.0",
+                                             "vrf": "TENANT_RED", "run_config_observed": True}
+    return UV, _ptr("interfaces", "core2", "Vlan30"), "carry no gateway row"
+
+
+def _scoped_no_segment(snap):
+    row = _sole_row(snap)
+    row.update(svi_ip="", primary_subnet="")                  # the row names no segment to scope the check by
+    rec = snap["interfaces"]["dist1"]["Gi1/0/3"]
+    rec.update(svi_ip="10.0.141.2 255.255.255.252", svi_ips="10.0.141.2 255.255.255.252")
+    return NC, _ptr("interfaces", "dist1", "Gi1/0/3"), "not named VlanN"
+
+
+def _scoped_address_unreadable(snap):
+    return UV, _routed(snap, address="10.0.30.999 255.255.255.0") + "/svi_ip", "cannot be read"
+
+
+def _scoped_record_unreadable(snap):
+    snap["interfaces"]["core2"]["Gi9/9"] = 5
+    return UV, _ptr("interfaces", "core2", "Gi9/9"), "cannot be read"
+
+
+#: name -> (build, whether the gap reaches VLAN 30's gateway list, whether it reaches every VLAN's list). FHRP evidence
+#: bears on one gateway's risk; an address in a VLAN's subnet on that VLAN; an unreadable address on every VLAN.
+SCOPED = {
+    "own_role_standby": (_scoped_role("Standby"), False, False),
+    "own_role_init": (_scoped_role("Init"), False, False),
+    "hsrp_detail_names_a_standby_router": (_scoped_standby, False, False),
+    "hsrp_detail_state_listen": (_scoped_listen, False, False),
+    "active_with_no_detail_record_for_the_svi": (_scoped_active_no_record, False, False),
+    "active_with_no_detail_for_the_device": (_scoped_active_no_device, False, False),
+    "unreadable_detail_record": (_scoped_detail_record_unreadable, False, False),
+    "unreadable_detail_section": (_scoped_detail_unreadable, False, False),
+    "routed_port_in_the_subnet": (_scoped_routed(), True, False),
+    "subinterface_in_the_subnet": (_scoped_routed(port="Gi0/0.30"), True, False),
+    "routed_port_vrf_unreadable": (_scoped_routed(vrf=None, run_config_observed=False), True, False),
+    "secondary_address_on_another_vlans_svi": (_scoped_secondary, True, False),
+    "addressed_svi_without_a_gateway_row": (_scoped_uncounted_svi, True, False),
+    "row_without_a_segment_and_a_free_routed_port": (_scoped_no_segment, True, False),
+    "unreadable_interface_address": (_scoped_address_unreadable, True, True),
+    "unreadable_interface_record": (_scoped_record_unreadable, True, True),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SCOPED))
+def test_stored_evidence_of_another_gateway_withholds_the_sole_flag(name, sample, inv_validator):
+    snap = _covered(sample)
+    (j, vid), = _sole_rows(snap)
+    pair, a, b = _pair_vlan(snap)
+    build_, listed, fleet = SCOPED[name]
+    want, witness, fragment = build_(snap)
+    inv = _inventory(snap, inv_validator)
+    risk = _gw(inv, vid, j)["risk"]
+    assert (risk["state"], risk["value"]) == (want, None), (name, risk)
+    assert risk["reason"].startswith(f"{WORD[want]}: the producer flags this gateway single-gateway"), risk["reason"]
+    assert fragment in risk["reason"], (name, risk["reason"])
+    assert (witness, "witness") in _refs(risk), (name, risk["refs"])
+    fhrp = _vlan_row(inv, vid)["fhrp"]                        # the row's sole-gateway text is withheld with it
+    assert (fhrp["state"], fhrp["value"]) == (want, None), (name, fhrp)
+    assert (witness, "witness") in _refs(fhrp), (name, fhrp["refs"])
+    own = _gateways(inv, vid)
+    assert own["state"] == PUB and (CAVEAT in own.get("caveats", ())) is listed, (name, own)
+    assert ((witness, "witness") in _refs(own)) is listed, (name, own["refs"])
+    for k in (a, b):                                          # another VLAN's gateways are untouched
+        other = _gw(inv, pair, k)["risk"]
+        assert (other["state"], other["value"]) == (PUB, False), (name, other)
+    assert (CAVEAT in _gateways(inv, pair).get("caveats", ())) is fleet, name
+
+
+#: The same records where they cannot be another gateway of the sole gateway's segment: the rule is scoped, not a
+#: blanket withhold.
+UNRELATED = {
+    "routed_port_in_another_vrf": lambda snap: _routed(snap, vrf=None),
+    "routed_port_outside_the_subnet": lambda snap: _routed(snap, address="10.0.31.254 255.255.255.0"),
+    "active_with_no_standby_router": lambda snap: (_sole_row(snap).update(role="Active"), _hsrp(snap)),
+    "no_role_and_no_hsrp_detail_at_all": lambda snap: snap.pop("fhrp_detail"),
+    "hsrp_detail_for_another_svi": lambda snap: _hsrp(snap, ifname="Vlan31", standby_ip="10.0.31.3"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNRELATED))
+def test_records_that_cannot_be_another_gateway_of_the_segment_keep_the_sole_flag(name, sample, inv_validator):
+    snap = _covered(sample)
+    (j, vid), = _sole_rows(snap)
+    UNRELATED[name](snap)
+    inv = _inventory(snap, inv_validator)
+    risk = _gw(inv, vid, j)["risk"]
+    assert (risk["state"], risk["value"]) == (PUB, True), (name, risk)
+    assert _vlan_row(inv, vid)["fhrp"]["state"] == PUB, name
+
+
+_STANDBY = """Vlan30 - Group 30
+  State is Active
+    2 state changes, last state change 00:10:00
+  Virtual IP address is 10.0.30.254
+  Active virtual MAC address is 0000.0c07.ac1e
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is local
+  Standby router is {standby}
+  Priority 110 (configured 110)
+"""
+
+
+def test_the_producers_hsrp_detail_decides_whether_an_active_sole_gateway_is_alone(sample, inv_validator, tmp_path):
+    base = _covered(sample)
+    ifaces = {}
+    for host, ports in base["interfaces"].items():
+        ifaces[host] = {}
+        for port, rec in ports.items():
+            d = InterfaceData(**{k: v for k, v in rec.items() if k in _IF_FIELDS})
+            d.port = port
+            ifaces[host][port] = d
+    ifaces["core1"]["Vlan30"].hsrp_behavior = "HSRP grp 30 Active VIP 10.0.30.254"   # HSRP, no peer discovered
+    rows = json.loads(json.dumps(_l3(ifaces)))
+    (j, vid), = [(k, r["vlan"]) for k, r in enumerate(rows) if SOLE in r["risk"].split("; ")]
+    assert (rows[j]["switch"], rows[j]["role"]) == ("core1", "Active")
+    for standby, sole in (("10.0.30.3, priority 100 (expires in 9.0 sec)", False), ("unknown", True)):
+        snap = copy.deepcopy(base)
+        snap["l3_forwarding"] = rows
+        capture = _capture(tmp_path, f"standby-{sole}.txt", _STANDBY.format(standby=standby))
+        snap["fhrp_detail"]["core1"] = json.loads(json.dumps(build.build_fhrp_detail({"show standby": capture})))
+        (i, rec), = [(i, r) for i, r in enumerate(snap["fhrp_detail"]["core1"]) if r["ifname"] == "Vlan30"]
+        risk = _gw(_inventory(snap, inv_validator), vid, j)["risk"]
+        if sole:
+            assert rec["standby_ip"] == "" and (risk["state"], risk["value"]) == (PUB, True), risk
+        else:
+            assert rec["standby_ip"] == "10.0.30.3"
+            assert (risk["state"], risk["value"]) == (UV, None), risk
+            assert (_ptr("fhrp_detail", "core1", i, "standby_ip"), "witness") in _refs(risk)
+
+
+# --------------------------------------------------------------------------------------------------
+# (e3) VLAN-id reuse: a second row with the same VLAN id is a second gateway only on the same segment
+# --------------------------------------------------------------------------------------------------
+def _other_site(snap, row, vrf=None):
+    """Move `row` to another segment: its own subnet and SVI address (and, with `vrf`, its SVI's VRF)."""
+    row.update(svi_ip=row["svi_ip"].replace("10.0.", "10.1.", 1), primary_subnet=row["primary_subnet"].replace(
+        "10.0.", "10.1.", 1))
+    svi = snap["interfaces"][row["switch"]][f"Vlan{row['vlan']}"]
+    svi.update(svi_ip=row["svi_ip"], svi_ips=row["svi_ip"], subnet_primary_route=row["primary_subnet"])
+
+
+REUSE = {
+    "different_subnet": lambda snap, rb: _other_site(snap, rb),
+    "same_subnet_different_vrf": lambda snap, rb: snap["interfaces"][rb["switch"]][f"Vlan{rb['vlan']}"].update(
+        vrf="TENANT_BLUE"),
+    "no_segment_recorded": lambda snap, rb: rb.update(svi_ip="", primary_subnet=""),
+    "mask_mismatch": lambda snap, rb: rb.update(svi_ip=rb["svi_ip"].split()[0].split("/")[0] + "/25"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REUSE))
+def test_a_vlan_id_seen_on_two_switches_is_a_second_gateway_only_on_one_segment(name, sample, inv_validator):
+    snap = _covered(sample)
+    pair, a, b = _pair_vlan(snap)
+    l3 = snap["l3_forwarding"]
+    REUSE[name](snap, l3[b])
+    inv = _inventory(snap, inv_validator)
+    for k in (a, b):
+        risk = _gw(inv, pair, k)["risk"]
+        assert (risk["state"], risk["value"]) == (UV, None), (name, k, risk)
+        assert risk["reason"].startswith("unverified: the producer raises no single-gateway flag here because it "
+                                         "counts a VLAN's gateways by VLAN id"), risk["reason"]
+        assert "VLAN-id reuse" in risk["reason"]
+        assert {(_ptr("l3_forwarding", a), "witness"), (_ptr("l3_forwarding", b), "witness")} <= _refs(risk)
+
+
+def test_a_vrf_that_cannot_be_read_does_not_split_one_segment(sample, inv_validator):
+    snap = _covered(sample)
+    pair, a, b = _pair_vlan(snap)
+    svi = snap["interfaces"][snap["l3_forwarding"][b]["switch"]][f"Vlan{pair}"]
+    svi.pop("vrf", None)
+    svi["run_config_observed"] = False                        # its VRF was never read: compared only where both are
+    inv = _inventory(snap, inv_validator)
+    for k in (a, b):
+        risk = _gw(inv, pair, k)["risk"]
+        assert (risk["state"], risk["value"]) == (PUB, False), risk
+
+
+def test_two_sites_reusing_a_vlan_id_each_keep_an_unproven_sole_gateway(sample, inv_validator):
+    """The reviewer's two-site fleet: siteA's core1 and siteB's core2 both carry Vlan30 without FHRP, in different
+    subnets. The producer counts two gateways for VLAN 30 and flags both no-FHRP; neither is published as having a
+    second gateway."""
+    snap = _covered(sample)
+    l3 = snap["l3_forwarding"]
+    (j, vid), = _sole_rows(snap)
+    l3[j]["risk"] = "no-FHRP"
+    l3.append(dict(l3[j], switch="core2", svi_ip="10.1.30.1 255.255.255.0", primary_subnet="10.1.30.0/24"))
+    snap["interfaces"]["core2"][f"Vlan{vid}"] = {"port": f"Vlan{vid}", "svi_ip": "10.1.30.1 255.255.255.0",
+                                                 "svi_ips": "10.1.30.1 255.255.255.0",
+                                                 "subnet_primary_route": "10.1.30.0/24", "vrf": "TENANT_RED",
+                                                 "run_config_observed": True}
+    row = next(r for r in snap["vlan_cutover"] if r["vlan"] == vid)
+    row["fhrp"] = "2 gateways but no FHRP — no first-hop redundancy"   # what the producer writes for two gateways
+    inv = _inventory(snap, inv_validator)
+    k = len(l3) - 1
+    for idx in (j, k):
+        risk = _gw(inv, vid, idx)["risk"]
+        assert (risk["state"], risk["value"]) == (UV, None), (idx, risk)
+        assert "VLAN-id reuse" in risk["reason"]
+    fhrp = _vlan_row(inv, vid)["fhrp"]                        # a risk statement, never a sole-gateway claim
+    assert (fhrp["state"], fhrp["value"]) == (PUB, row["fhrp"])
+
+
+def test_every_gap_cites_a_bounded_witness_list_with_its_full_count(sample, inv_validator):
+    snap = _covered(sample)
+    (j, vid), = _sole_rows(snap)
+    n = 3 * CAP + 6
+    for i in range(n):
+        _add_node(snap, host=f"ghost-{i:02d}")
+    assert ui._GW_GAP_WITNESS_CAP == CAP
+    inv = _inventory(snap, inv_validator)
+    risk = _gw(inv, vid, j)["risk"]
+    nodes = [p for p, role in _refs(risk) if p.startswith("/cable_map/nodes/") and role == "witness"]
+    assert risk["state"] == NC and len(nodes) == CAP, (len(nodes), risk["reason"])
+    assert f"shows {n} neighbour(s)" in risk["reason"] and f"({CAP} of {n} cited)" in risk["reason"]
+    for row in inv["vlans"]["rows"]["items"]:
+        gw = row["selections"]["gateways"]
+        cited = [p for p, _role in _refs(gw) if p.startswith("/cable_map/nodes/")]
+        assert gw["state"] == PUB and len(cited) == CAP, (row["vlan"], len(cited))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -626,12 +1024,23 @@ def test_the_copied_flags_and_markers_are_the_producers(tmp_path):
     assert ui.L3_RISK_TRACKING_NOT_ASSESSED == TRACK_NOT_ASSESSED
     assert set(ui.L3_RISK_FLAGS) == set(analyze.ScoringConfig().l3_weights)
     tree = ast.parse(textwrap.dedent(inspect.getsource(excel.write_l3_forwarding_sheet)))
-    appended = [n.args[0].value for n in ast.walk(tree)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "append"
-                and isinstance(n.func.value, ast.Name) and n.func.value.id == "flags"
-                and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)]
-    assert sorted(appended) == sorted(ui.L3_RISK_FLAGS)
+    calls = sorted((n.lineno, n.col_offset, n.args[0].value) for n in ast.walk(tree)
+                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "append"
+                   and isinstance(n.func.value, ast.Name) and n.func.value.id == "flags"
+                   and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str))
+    # the flags in the order the producer appends them, which the decoder holds every stored risk text to
+    assert tuple(flag for _line, _col, flag in calls) == ui.L3_RISK_FLAGS
+    assert ui.L3_TRACKED_DOWN_FLAG == ui.L3_RISK_FLAGS[0] == "tracked-object-down"
     assert ui.L3_SOLE_GATEWAY_FLAG in ui.L3_RISK_FLAGS and ui.L3_NO_FHRP_FLAG in ui.L3_RISK_FLAGS
+    # excel._track_summary's text: its Down head is what the tracked-object-down flag is held against
+    objects = [{"id": str(i), "desc": "", "state": "Down" if i in (2, 7) else "Up"} for i in range(1, 9)]
+    many = excel._track_summary({"objects": objects, "up": 6, "down": 2, "observed": True})
+    up_only = excel._track_summary({"objects": objects[:1], "up": 1, "down": 0, "observed": True})
+    assert many.startswith("8 obj (2 DOWN) - ") and up_only == "1 obj - T1:Up"
+    assert ui._TRACK_SUMMARY.fullmatch(many).group(2) == "2"
+    assert ui._TRACK_SUMMARY.fullmatch(up_only).group(2) is None
+    assert excel._track_summary({"objects": [], "up": 0, "down": 0, "observed": True}) == ""
+    assert excel._track_summary({"objects": [], "up": 0, "down": 0, "observed": False}) == ui.NOT_OBSERVED_SENTINEL
     # no 'show track': no flag fires on a redundant FHRP pair, so the risk is the whole-text marker
     blind = _l3(_hsrp_pair())
     assert [r["risk"] for r in blind] == [ui.L3_RISK_TRACKING_NOT_ASSESSED] * 2
@@ -719,7 +1128,10 @@ def test_the_closed_schema_carries_the_gateway_fact_list(sample):
     lim = next(lim for lim in ui.LIMITATIONS if lim["id"] == CAVEAT)
     assert lim["applies_to"] == ("/inventory/vlans/rows",)
     for phrase in ("single-gateway flag", "never 'no tracking'", "not that the gateway is healthy",
-                   "at most 6 objects", "VLAN carriage per cable is not stored"):
+                   "at most 6 objects", "VLAN carriage per cable is not stored", "SVI named VlanN",
+                   "counts gateways by VLAN id", "fhrp_detail[].track", "HSRP detail's standby router",
+                   f"at most {CAP} witnesses per gap"):
         assert phrase in lim["text"], phrase
+    assert ui._GW_GAP_WITNESS_CAP == CAP
     trust = ui.project_trust(sample)
     assert [x["applies_to"] for x in trust["limitations"] if x["id"] == CAVEAT] == [["/inventory/vlans/rows"]]

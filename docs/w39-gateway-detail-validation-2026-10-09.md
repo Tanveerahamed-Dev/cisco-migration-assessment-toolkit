@@ -39,20 +39,34 @@ It states the full object count, then the state of at most 6 objects.
   2026-08-10). Without either, `''` is `not_collected` with an ambiguity reason.
 - A tracking text beside the row's own "object tracking NOT assessed" risk marker contradicts it
   and is `unverified`, with a witness to the risk field.
+- The text must agree with the row's own `tracked-object-down` flag. The producer raises that flag
+  exactly when its captured summary reports a Down object (`<N> obj (<D> DOWN)`, read by
+  `_TRACK_SUMMARY`, pinned to `excel._track_summary`). An empty text or the not-observed marker
+  beside the flag, a summary with no Down head beside it, or a Down head without it, is
+  `unverified` with a witness to the risk field.
 
 **Sole-gateway risk.** `risk` reads only the producer's `single-gateway` flag. It never carries
 `no-FHRP` or `tracked-object-down`, so `false` is never a health verdict.
 - The stored risk text must be the producer's flag list: `ok`, its tracking-not-assessed marker,
-  or distinct flags of `tracked-object-down`, `single-gateway` and `no-FHRP` joined by `'; '`, with
-  `single-gateway` never beside `no-FHRP`. Anything else is `unverified`.
+  or distinct flags of `tracked-object-down`, `single-gateway` and `no-FHRP` joined by `'; '` in
+  the producer's append order (`tracked-object-down` first), with `single-gateway` never beside
+  `no-FHRP`. Anything else is `unverified`.
 - The flag must agree with the stored rows. `single-gateway` with two or more distinct switches
   naming the VLAN, or no flag with only one switch, is `unverified`, with a witness to each row. A
   gateway row of the VLAN that names no readable switch makes the count unreadable (`unverified`).
-- Without the flag, `risk` is published as `false` whatever the coverage, because an unscanned
-  device can only add gateways.
-- The flag is published as `true` only when the scan covers every possible gateway of the VLAN.
-  Otherwise it is withheld in the module's precedence (`analysis_unavailable`, then `unverified`,
-  then `not_collected`), with every gap's reason and witness.
+- Without the flag, `risk` is published as `false` only where another switch's gateway row of
+  the VLAN provably shares this row's segment (`_gateway_segment_hold`): the same readable set of
+  networks (the SVI address's network and the primary subnet), and the same VRF where both SVIs'
+  VRFs can be read. The producer counts gateways by VLAN id across the scan, so without that proof
+  a second row may be VLAN-id reuse at another site or in another VRF, and `false` is `unverified`
+  with a witness to each row of the VLAN and its SVI. With the proof, `false` holds whatever the
+  coverage, because an unscanned device can only add gateways. A VRF is read from the row's one
+  `VlanN` interface: a text, or blank where that interface's running-config was captured (the
+  global table); otherwise it cannot be read and is not compared.
+- The flag is published as `true` only when the scan covers every gateway the producer's `VlanN`
+  rule could count and no stored record contradicts it (below). Otherwise it is withheld in the
+  module's precedence (`analysis_unavailable`, then `unverified`, then `not_collected`), with
+  every gap's reason and witness.
 
 **Coverage rule** (`_gateway_coverage`). It is fleet-wide and fails closed, because VLAN carriage per
 cable is not stored (G14), so a gap cannot be scoped to the VLANs it could reach. A gap is:
@@ -62,7 +76,37 @@ cable is not stored (G14), so a gap cannot be scoped to the VLANs it could reach
   (the W23 `_IMPACT_EDGE_KINDS`), an unreadable node, a cable row that cannot be read or whose end
   joins no single node, or an unreadable or failed cable map;
 - a collected device none of whose interfaces carries `run_config_observed: true` (build.py takes
-  `svi_ip` only from that capture), or an unreadable devices or interfaces map.
+  `svi_ip` only from that capture), or an unreadable devices or interfaces map;
+- a `collection_completeness.summary` that counts more partial or not-collected devices than its
+  devices list carries (the producer writes one row per such device), or a summary count that
+  cannot be read (`unverified`).
+
+Each gap cites at most 8 witnesses (`_GW_GAP_WITNESS_CAP`); its reason states the full count and
+"(8 of N cited)", so the payload grows with the number of gap kinds, not with fleet size.
+
+**Gateways the producer cannot count** (`_GatewayScan.attribution`, per VLAN). The producer counts
+only interfaces named `VlanN` (`^Vlan(\d+)$`). Every collected interface address (`svi_ip` and the
+configured set `svi_ips`) is read once per projection, and per VLAN:
+- an addressed SVI named for the VLAN on a switch with no gateway row (the stored rows undercount)
+  is `unverified`;
+- any other interface holding an address inside a segment the VLAN's rows name (a routed port,
+  subinterface, BDI/BVI/irb unit, or another VLAN's SVI, outside a VRF known to differ) is
+  `unverified`. This is scoped by address, so it reaches only the VLAN whose subnet it is in;
+- where a row names no readable segment, or the VLAN has no row, any interface not named `VlanN`
+  whose subnet leaves a host address no collected interface holds is `not_collected` (the snapshot
+  does not store which VLAN it serves). A transit network whose usable addresses are all collected
+  interface addresses (the sample's routed /30) and a /32 leave no host and do not count;
+- an interface record or address that cannot be read is `unverified` for every VLAN, except on the
+  VLAN's own counted SVIs.
+
+**FHRP evidence of another router** (`_GatewayScan.fhrp_gaps`, per sole-flagged row). A role other
+than Active or Master (Standby, Listen, Init and every other word) is `unverified`. The device's
+HSRP detail (`fhrp_detail[host]`, `build.build_fhrp_detail`) for the row's SVI naming a standby
+router no gateway row of the VLAN holds, or a state other than Active or Master, is `unverified`.
+An Active or Master row whose detail is absent for the device or names no group on its SVI is
+`not_collected` (a standby router outside the scan cannot be ruled out). A detail record or
+section that cannot be read is `unverified`. A row with no role and no detail record for its SVI
+carries no stored FHRP evidence; that residual is below.
 
 **The list.**
 - A failed, absent or unreadable source selects nothing, in its own state (as `selection_sources`
@@ -76,9 +120,13 @@ cable is not stored (G14), so a gap cannot be scoped to the VLANs it could reach
   every gap witness; under a blind spot also `fleet_lists_exclude_blind_devices`.
 
 **The VLAN row's `fhrp` text.** `analyze.compute_vlan_cutover_matrix` writes
-`sole gateway on <host> (no FHRP)` for a VLAN with one gateway in the scan. The same coverage rule
-now withholds that text, so one row never states a sole gateway in one cell and withholds it in
-another. Its other texts and its FHRP record only grow more certain with coverage, and are unchanged.
+`sole gateway on <host> (no FHRP)` for a VLAN with one gateway in the scan. That text is published
+only where the gateway row of that switch publishes its sole-gateway risk `true`
+(`_vlan_fhrp_pre`, built after the VLAN's gateway rows). A withheld risk lends its state and
+witnesses, whatever withheld it (a coverage gap, an unjoinable row, a contradicted flag, an
+unreadable risk text, FHRP evidence); a published `false`, or no gateway row naming the switch, is
+`unverified`; an unreadable source keeps its own state. So one row never states a sole gateway in
+one cell and withholds it in another. Its other texts and its FHRP record are unchanged.
 
 **Limitation.** One new payload limitation, `vlan_gateway_rows`, applies to `/inventory/vlans/rows`
 and states all of the above. The `row_selection_by_exact_key` text (instance data) now says that
@@ -98,6 +146,12 @@ gear.
 - VLAN 30: one row (`core1`). Role is `not_collected` (`''`) and tracking is `not_collected`. Risk
   is `not_collected` (single-gateway, coverage unproven) with a witness to node 23. The VLAN row's
   `fhrp` text moves from published to `not_collected` for the same reason.
+- The refutation fixes change no stored outcome, read statically with an independent script (not
+  the projection): VLANs 10, 20, 40 and 41 each have two rows with an equal `/24` and readable
+  global-table VRFs; no collected address lies in any VLAN's subnet outside its own `VlanN` SVIs;
+  every address parses; the routed `/30` (core1 `Gi1/0/40`, dist1 `Gi1/0/3`) has both usable
+  addresses collected; core1's HSRP detail names Vlan10 and Vlan20 only; and the completeness
+  summary counts 0 blind spots over an empty list.
 
 `tests/golden/snapshot.json` has the same shape: 3 VLAN rows, 5 gateway rows, and gap node 4. Neither
 file changes; no golden or sample regeneration is needed.
@@ -170,6 +224,20 @@ and digests it, and no consumer indexes a fixed tuple position.
   sole-gateway `fhrp` text; the producer's own rows over the sample's interfaces project end to end.
 - (g) The closed schema and the registered limitation.
 
+Added by the refutation fixes (below): two summary gaps in (b); a parametrized test of a tracking
+text against the row's own Down flag (four contradictions, two controls); `fhrp` assertions on the
+contradicted-flag and unjoinable-row tests; two order-violating risk texts; an addressed SVI with no
+gateway row; four interfaces the `VlanN` rule never counts withholding an empty list; 16 scoped
+evidence cases withholding the sole flag (FHRP role, HSRP standby router and state, missing or
+unreadable detail, addresses in the subnet, an uncounted SVI, a row with no segment, unreadable
+addresses and records), each also withholding the `fhrp` text and leaving other VLANs untouched;
+five scoped controls that keep it; the real `build.build_fhrp_detail` deciding an Active sole
+gateway both ways; four VLAN-id reuse cases, an unreadable-VRF control and the reviewer's two-site
+fleet; the witness cap with 30 uncollected neighbours; and producer pins for the flag order and the
+`show track` summary's Down head. The tracking test's Down summary now carries the
+`tracked-object-down` flag the producer always writes with it, and the empty-list test now also
+clears VLAN 30's SVI address (an addressed SVI with no row is itself a contradiction, tested apart).
+
 Changed: `tests/test_ui_projection_inventory.py` I14 and I20 assert the fact list (same exact-key
 indices; withheld with a reason where the source cannot be read, instead of `null`). I0 adds the two
 new definitions to its closedness checks. I12's two `excel` cap exemptions are re-reviewed now that
@@ -196,9 +264,19 @@ tracking is projected: the full count is in-band, and object descriptions never 
 - **Undiscoverable gateways.** A gateway that neither the collection nor CDP/LLDP discovered (for
   example a firewall with discovery disabled) cannot be ruled out by any scan. A published `true` is
   the verdict over the discovered fabric, and the limitation says so.
-- **Tracking stays device-level.** The producer does not bind tracked objects to FHRP groups.
-- **Payload weight.** Each published gateway list repeats the fleet's gap witnesses, so the
-  inventory grows by VLANs times gaps. The unchanged 300 ms sample gate remains the latency evidence.
+- **Tracking is projected device-level, though a group-bound owner exists.** The `tracking` cell is
+  the device's `show track` summary (`excel._track_summary`). The HSRP detail's per-group track list
+  (`fhrp_detail[host][i].track`, `parse.parse_hsrp_detail`'s `Track object N ... decrement`) is
+  the SVI-bound record G16 asks for ("object tracking observed or not"). It is not projected here;
+  a separate cell would change the closed schema and re-pin. Recorded as a follow-up.
+- **An FHRP group neither the brief nor the detail captured leaves no in-snapshot peer evidence.**
+  A row with an empty role and no detail record for its SVI is read as having no FHRP evidence; the
+  role cell itself stays `not_collected`.
+- **VRF comparison only where readable.** A blank VRF is the global table only where the
+  interface's running-config was captured; otherwise the two rows are compared on subnet alone.
+- **Payload weight.** Each gap cites at most 8 witnesses with its full count in-band, so a list
+  grows with gap kinds, not fleet size (pinned with 30 uncollected neighbours). The unchanged
+  300 ms sample gate remains the latency evidence.
 - **No page renders `selections.gateways` yet.** The AssessHub VLAN tab still shows `fhrp` and
   `gateway_svi_hosts`; rendering it needs the hosted tracked-SPA handoff.
 - **W28 overlap.** `claude/trust-inputs` also adds a payload limitation, collapses the same 27
@@ -211,3 +289,28 @@ tracking is projected: the full count is in-band, and object descriptions never 
 Still required before merge: every protected exact-head hosted check, including the native-parity
 group, `api:check` and the frontend type check; independent refutation by Codex; and the supervisor's
 merge.
+
+## Refutation fixes (2026-10-09, on `a12e88c0`)
+
+An independent review raised three defects (P1-P2) and four P3 items. Each was checked against
+the code before fixing; all were real. No schema change (instance states and the limitation text
+only), so no re-pin and no `openapi.ts` change; no golden, sample or `atlas-scope/` change.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | P1 | `false` published on VLAN-id reuse: the producer counts gateways per VLAN id fleet-wide, so two sites reusing VLAN 30 in different subnets or VRFs each read "another gateway exists". | Real (`write_l3_forwarding_sheet` builds `vlan_gw` by `int(m.group(1))` alone). `false` now needs another switch's row on the same segment (`_gateway_segment_hold`); otherwise `unverified` with every row and SVI cited. |
+| 2 | P2 | `true` published beside in-snapshot peer evidence: the producer raises `single-gateway` for `gw_count <= 1` whatever the FHRP state. | Real (`gw_count` ignores `role`; `fhrp_detail` was never read). `_GatewayScan.fhrp_gaps` withholds on a non-Active/Master role, an HSRP standby router or state, a missing detail for an Active/Master row, or unreadable detail. |
+| 3 | P2 | Coverage equated "run-config captured" with "every gateway counted", but the producer counts only `VlanN` interfaces. | Real (`^Vlan(\d+)$`). Fixed structurally by address, not by a name list: `_GatewayScan.attribution` (above). The sample's routed /30 is a full transit and does not trip it. The limitation now states the `VlanN` scope. |
+| 4 | P3 | Tracking text vs the row's own `tracked-object-down` flag was unchecked. | Fixed: three contradiction cases are `unverified` (above). |
+| 5 | P3 | The `fhrp` sole text stayed published when the risk was withheld for reasons other than coverage. | Fixed: the text now follows the named gateway's own risk fact (above). |
+| 6 | P3 | The residual claimed no tracked-object/FHRP binding exists. | Corrected: `fhrp_detail[].track` is named as the group-bound owner and recorded as a follow-up; the limitation names it. |
+| 7 | P3 | Fail-open leniencies: summary vs list, flag order, unbounded witnesses. | Fixed: the summary check (a), the producer's flag order (b), and the per-gap witness cap with in-band totals (c), pinned by a 30-neighbour case rather than a timing test. |
+
+Static checks rerun after the fixes: `py_compile` and `ruff check` on the changed Python files;
+the protocol-assessability hand-list scanner and the section-dependency proof on
+`cisco_toolkit/ui_projection.py` (a literal tuple of two completeness summary keys tripped the proof
+and was replaced by a derivation from `CC_STATUSES`); the I12 prefix-slice walk (the new owner names
+the module cites, such as `build.build_fhrp_detail` and `parse.parse_hsrp_detail`, add no
+unreviewed slice); the SSOT citation resolver; an AST scan for locals shadowing module names (no new
+hit); the independent static read of the stored sample and golden above; the repository privacy
+verifier and the client-marker scan. No test, projection, build or browser run (owner rule).
