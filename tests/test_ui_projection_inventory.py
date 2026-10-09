@@ -557,9 +557,11 @@ def test_i0_schema_sections_and_vocabularies():
     assert d["DeviceDocument"]["properties"]["schema"]["const"] == uip.SCHEMA
     for name in ("Inventory", "Findings", "DevicePage", "DeviceRow", "VlanRow", "EndpointRow", "FindingRow",
                  "DualHomedRow", "InterfaceRow", "CableRow", "RouteRow", "NeighborRow", "RemediationRow",
-                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember", "CoverageItem", "DeviceCoverageRollup"):
+                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember", "CoverageItem", "DeviceCoverageRollup",
+                 "VlanGatewayRow", "VlanSelections"):
         assert d[name]["type"] == "object" and d[name]["additionalProperties"] is False, name
-    for name in ("DeviceRowList", "VlanRowList", "EndpointRowList", "FindingRowList", "SharedIpList",
+    for name in ("DeviceRowList", "VlanRowList", "VlanGatewayRowList", "EndpointRowList", "FindingRowList",
+                 "SharedIpList",
                  "DualHomedList", "PeerList", "InterfaceRowList", "CableRowList", "RouteRowList",
                  "NeighborGroupList", "NeighborRowList", "SecurityCheckList", "TrunkNativeList",
                  "RemediationRowList", "NrfuCaseList", "RowRefList", "TextItemList", "ExposureList",
@@ -1382,8 +1384,10 @@ CAP_SITES = {
         "exempt: a length bound on a VTP row's source-key text, which is not projected",
     ("nrfu_export.compute_nrfu_commands", "up[:12]"): "exempt: the NRFU expected text says '+N more' in-band",
     ("nrfu_export._port_key", "p[:2]"): "exempt: a port-name sort key, not a value",
-    ("excel._parse_track", "line.strip()[:40]"): "exempt: l3_forwarding values are not projected (only row indices)",
-    ("excel._track_summary", "tr['objects'][:6]"): "exempt: l3_forwarding values are not projected (only row indices)",
+    ("excel._parse_track", "line.strip()[:40]"):
+        "exempt: a tracked object's description never reaches the stored tracking text the G16 gateway rows project",
+    ("excel._track_summary", "tr['objects'][:6]"):
+        "exempt: the tracking text states the full object count in-band ('N obj') before at most 6 object states",
     ("excel._xls_cell_value", "v[:_XLSX_MAX_CELL - len(note)]"): "exempt: the workbook cell writer, not the snapshot",
     ("analyze.compute_lifecycle_risk", "str(x or '')[:10]"): "exempt: the ISO date part of a timestamp",
     ("analyze.compute_lifecycle_risk", "str(s)[:10]"): "exempt: the ISO date part of a timestamp",
@@ -1649,8 +1653,13 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
         sel = row["selections"]
         assert sel["endpoints"] == ([i for i, r in enumerate(eps) if _digit(r.get("vlan")) == vid]
                                     if readable("endpoint_identity") else None)
-        assert sel["gateways"] == ([i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
-                                   if readable("l3_forwarding") else None)
+        # G16: the gateway selection is a fact list carrying its own state; its rows are the same exact-key selection
+        gateways = sel["gateways"]
+        want_gw = [i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid] if readable("l3_forwarding") else []
+        assert [it["index"] for it in gateways["items"]] == want_gw
+        assert all(it["pointer"] == _ptr("l3_forwarding", it["index"]) for it in gateways["items"])
+        if not readable("l3_forwarding"):
+            assert gateways["state"] not in (PUB, CBE) and gateways["reason"]
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
                       if stp_topology._election_priority(k) == vid
                       and not (isinstance(rec, dict) and rec.get("is_mst")))
@@ -2110,7 +2119,10 @@ def test_i20_selections_carry_their_source_state(snaps, payloads):
     assert vl["selection_sources"]["gateways"]["state"] == NC
     assert vl["rows"]["items"]
     for row in vl["rows"]["items"]:
-        assert row["selections"]["stp_roots"] is None and row["selections"]["gateways"] is None
+        assert row["selections"]["stp_roots"] is None
+        # G16: the gateway fact list says why it is empty instead of a null, never a clean 'no gateway'
+        gateways = row["selections"]["gateways"]
+        assert gateways["state"] == NC and gateways["items"] == [] and gateways["reason"].startswith("not collected")
         assert isinstance(row["selections"]["endpoints"], list)
     failed = copy.deepcopy(snaps["a"])
     failed["endpoint_dependencies"] = {}
