@@ -414,11 +414,11 @@ def library_block(*, paramiko_version: Any, netmiko_version: Any, transport_clas
 
 
 # --------------------------------------------------------------------------------------------------------
-# Consent (PR-1: recorded; the run-level flag arrives with W59 PR-2)
+# Consent (PR-1: recorded; W59 PR-2: the run-level flag, validated by the collector, makes it effective)
 # --------------------------------------------------------------------------------------------------------
 def requested_profile(row: Any) -> str:
     """The profile a devices.json row requests. Only an exact member of ``SSH_PROFILES`` is honoured; anything
-    else reads as ``default`` (the strict load-time validation is W59 PR-2's)."""
+    else reads as ``default`` (the collector's ``load_devices`` refuses any other value at load time, W59 PR-2)."""
     value = row.get("ssh_profile") if isinstance(row, Mapping) else None
     return value if isinstance(value, str) and value in SSH_PROFILES else DEFAULT_PROFILE
 
@@ -458,15 +458,21 @@ def live_consent_block(devices: Iterable[Mapping[str, Any]],
                        run_flag: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """The live run's consent block, built BEFORE the first connection. Hosts are keyed by ``hostname``.
 
+    ``run_flag.hosts_named`` lists the devices.json HOSTNAMES of the rows the flag names (W59 PR-2), never the
+    operator's raw items: a device named by its address is recorded by its hostname, like every other list here
+    (design section 5), so no address enters the block.
+
     ``devices_negotiated_sha1`` is ``None`` here: nothing has been negotiated yet, and an empty list would state
     "no device negotiated SHA-1" before any session ran. :func:`compute_ssh_sessions` fills it from the sealed
     records; if that phase fails, the run manifest keeps ``None`` (not computed), never ``[]``."""
-    requesting, eligible, named_not_req, req_not_named = [], [], [], []
+    requesting, eligible, named_not_req, req_not_named, named_hosts = [], [], [], [], []
     for row in devices or ():
         if not isinstance(row, Mapping):
             continue
         host = str(row.get("hostname") or "")
         c = consent_for(row, run_flag)
+        if c["named_on_run_flag"]:
+            named_hosts.append(host)
         if c["device_profile"] != DEFAULT_PROFILE:
             requesting.append(host)
             if c["effective_profile"] != DEFAULT_PROFILE:
@@ -477,8 +483,7 @@ def live_consent_block(devices: Iterable[Mapping[str, Any]],
             named_not_req.append(host)
     flag = None
     if isinstance(run_flag, Mapping):
-        hosts = [h for h in (run_flag.get("hosts_named") or ()) if isinstance(h, str)]
-        flag = {"profile": run_flag.get("profile"), "hosts_named": sorted(hosts)}
+        flag = {"profile": run_flag.get("profile"), "hosts_named": sorted(named_hosts)}
     return {"mode": "live", "run_flag": flag or {"profile": None, "hosts_named": []},
             "devices_requesting_legacy": sorted(requesting), "devices_eligible": sorted(eligible),
             "named_not_requested": sorted(named_not_req), "requested_not_named": sorted(req_not_named),
@@ -491,8 +496,11 @@ def consent_summary_lines(block: Mapping[str, Any]) -> List[str]:
     lines = [
         "SSH transport consent: run flag "
         + (f"{flag.get('profile')} for {', '.join(flag.get('hosts_named') or []) or '(none)'}"
-           if flag.get("profile") else "not given (this build has no legacy-SSH opt-in)"),
-        "  devices eligible for a legacy profile: " + (", ".join(block.get("devices_eligible") or []) or "none"),
+           if flag.get("profile") else "not given (every device uses the default profile)"),
+        "  devices eligible for a legacy profile (row requests it AND the run names it): "
+        + (", ".join(block.get("devices_eligible") or []) or "none")
+        + ("; SHA-1 is used only when such a device offers nothing stronger, and every session is disclosed"
+           if block.get("devices_eligible") else ""),
     ]
     if block.get("requested_not_named"):
         lines.append("  row requests legacy-sha1 but the run did not name it (collected on the default path): "
@@ -1484,6 +1492,15 @@ def _within_legacy_tier(refusal: Mapping[str, Any], server: Any = None, client: 
     if isinstance(server, Mapping) and isinstance(client, Mapping):
         return legacy_tier_closes(server, client)
     return True
+
+
+def refusal_within_legacy_tier(refusal: Any) -> bool:
+    """W59 PR-2 review (P3-g): True only for a CLASSIFIED ``refused_legacy_only`` refusal whose offered names include
+    one the legacy-sha1 profile adds -- the one failure the ``--allow-legacy-ssh`` opt-in can change. Anything else (no
+    refusal at all: an authentication failure, a timeout, an unreachable host; or any other classification) is False,
+    so the collector's re-run advice can never point at the opt-in for a failure it cannot fix."""
+    return (isinstance(refusal, Mapping) and refusal.get("classification") == "refused_legacy_only"
+            and _within_legacy_tier(refusal))
 
 
 #: W59 PR-1 review (P2-a): the reason a live run gives a sidecar it did not write itself -- a record an earlier run

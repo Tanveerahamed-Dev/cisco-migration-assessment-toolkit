@@ -513,7 +513,9 @@ run flag names it. In every other case it is `default`:
 
 **Printed and recorded before connecting** (§11, decision 2). Before the first connection of a live run, the
 collector prints the eligible hosts (row requests and run names) and the two mismatch lists, and writes them to the
-run manifest. There is no interactive prompt. The run flag can no longer become a standing grant, because it names
+run manifest. The manifest is sealed at the end of the run, so the block is also written to disk BEFORE the first
+connection: the run's `<output>.incomplete.json` marker (stage `collection_started`) carries it until a verified seal
+clears the marker, and a run that dies mid-collection leaves it (PR-2 review P3-h). There is no interactive prompt. The run flag can no longer become a standing grant, because it names
 hosts and every name must match.
 
 **Why two levels:**
@@ -540,6 +542,8 @@ hosts and every name must match.
   "offline"}` with every consent field `null`, so a re-analysis never states a consent it did not observe (critique
   P2-8). Hosts are recorded by the device's `hostname` key, the same key every
   other snapshot block uses; `redact_snapshot` keeps hostnames and pseudonymizes IP addresses wherever they appear;
+- the run's `<output>.incomplete.json` marker, from before the first connection until a verified seal (stage
+  `collection_started`; a failed finalization rewrites it with the same block);
 - the per-device session sidecar (§6.1), which is the **only** source of a device's consent fields in the snapshot.
 
 **Atlas.** `Atlas.exe --allow-live-network --run-engine --devices-file devices.json … --allow-legacy-ssh

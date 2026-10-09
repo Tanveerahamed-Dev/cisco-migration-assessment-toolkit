@@ -9,12 +9,16 @@ snap['attestation'] + the 'Trust & Sovereignty' workbook sheet. These tests pin:
   never a hardcoded badge;
 - a missing source tree / missing collector module yields NOT_EVALUATED with a reason —
   results are COMPUTED, never defaulted (absence of evidence is never a pass);
-- all four claim ids are ALWAYS present, in a stable order;
-- the frozen golden snapshot carries the key (the panel ships on every default run).
+- every claim id is ALWAYS present, in a stable order;
+- the frozen golden snapshot carries the key (the panel ships on every default run);
+- W59 PR-2 (T9): every no-egress charter exclusion is paired with its own published floor claim, the
+  texts derive from that one mapping, and `legacy_ssh_confined` falsifies under planted mutations.
 """
 import json
 import os
 import re
+
+import pytest
 
 from cisco_toolkit.attestation import (
     ATTESTATION_SCHEMA,
@@ -33,21 +37,21 @@ def _by_id(att):
 
 
 # ------------------------------------------------------------------ shape ---
-def test_all_four_claim_ids_always_present_in_stable_order():
+def test_all_claim_ids_always_present_in_stable_order():
     att = compute_attestation()
     assert att["schema"] == ATTESTATION_SCHEMA == "attestation/1"
     assert att["generated_at"]
     assert [c["id"] for c in att["claims"]] == list(CLAIM_IDS) == [
         "read_only_command_surface", "no_egress_import_graph",
-        "rest_collect_get_only", "no_llm_runtime"]
+        "rest_collect_get_only", "no_llm_runtime", "legacy_ssh_confined"]
     for c in att["claims"]:
         assert c["result"] in {HOLDS, VIOLATED, NOT_EVALUATED}
         assert c["method"] and c["detail"], f"{c['id']}: method/detail must never be empty"
 
 
 def test_claim_ids_present_even_when_nothing_is_evaluable(tmp_path):
-    """The four ids are structural: a run where NO check can execute still publishes all
-    four claims — each as an explicit NOT_EVALUATED with a reason, never a silent drop."""
+    """The ids are structural: a run where NO check can execute still publishes every
+    claim — each as an explicit NOT_EVALUATED with a reason, never a silent drop."""
     att = compute_attestation(toolkit_dir=str(tmp_path / "no-such-package"),
                               collector_module="no_such_collector_module_xyz")
     by = _by_id(att)
@@ -86,11 +90,11 @@ def test_no_egress_claim_names_its_documented_exceptions():
     names the thing it is checking cannot notice the thing being removed; it pinned a
     self-contradicting client-facing claim in place instead of catching it.
     """
-    from cisco_toolkit.attestation import NO_EGRESS_EXCEPTIONS, NO_EGRESS_EXCLUDE
+    from cisco_toolkit.attestation import NO_EGRESS_EXCEPTIONS, NO_EGRESS_EXCLUDE, NO_EGRESS_PERMITTED_IMPORTS
 
     c = _by_id(compute_attestation())["no_egress_import_graph"]
     published = c["method"] + c["detail"]
-    for name in sorted(NO_EGRESS_EXCLUDE | NO_EGRESS_EXCEPTIONS):
+    for name in sorted(NO_EGRESS_EXCLUDE | NO_EGRESS_EXCEPTIONS | set(NO_EGRESS_PERMITTED_IMPORTS)):
         assert name in published, (
             f"{name!r} is excluded or exempted by the charter but is not disclosed in the "
             f"published claim — a subtraction the reader cannot see: {published!r}"
@@ -117,7 +121,7 @@ def test_no_egress_walk_reaches_subpackages_and_the_exception_is_not_dead():
     subpackage file (it is a real offender before the exception is subtracted), and the claim
     reports the exception as APPLIED rather than as matching nothing."""
     from cisco_toolkit.attestation import (NETWORK_IMPORTS, NO_EGRESS_EXCEPTIONS,
-                                           NO_EGRESS_EXCLUDE, scan_imports)
+                                           NO_EGRESS_EXCLUDE, NO_EGRESS_PERMITTED_IMPORTS, scan_imports)
     pkg = os.path.join(ROOT, "cisco_toolkit")
     n, offenders = scan_imports(pkg, NETWORK_IMPORTS, exclude=NO_EGRESS_EXCLUDE)
 
@@ -169,7 +173,13 @@ def test_no_egress_walk_reaches_subpackages_and_the_exception_is_not_dead():
         "reads '0 network-library imports'. Decide explicitly whether they must be walked."
     )
 
-    assert set(offenders) <= set(NO_EGRESS_EXCEPTIONS), f"undocumented egress import: {offenders}"
+    # W59 PR-2: a per-file charter permission (legacy_ssh.py -> paramiko) keeps its file IN the walk, so the file
+    # is an offender here before the permission is applied -- and ONLY for its permitted roots.
+    permitted = {rel: bad for rel, bad in offenders.items() if rel in NO_EGRESS_PERMITTED_IMPORTS}
+    assert set(permitted) == set(NO_EGRESS_PERMITTED_IMPORTS), (permitted, "a permission is not doing real work")
+    for rel, bad in permitted.items():
+        assert {b.split(".")[0] for b in bad} <= NO_EGRESS_PERMITTED_IMPORTS[rel], (rel, bad)
+    assert set(offenders) - set(permitted) <= set(NO_EGRESS_EXCEPTIONS), f"undocumented egress import: {offenders}"
     c = _by_id(compute_attestation())["no_egress_import_graph"]
     assert c["result"] == HOLDS
     # The charter is EMPTY on purpose (see NO_EGRESS_EXCEPTIONS): nothing under the package imports
@@ -328,7 +338,8 @@ def test_a_write_tacked_onto_a_read_verb_violates_the_published_claim():
 def test_missing_package_source_is_not_evaluated_with_reason(tmp_path):
     att = compute_attestation(toolkit_dir=str(tmp_path / "wheel-without-sources"))
     by = _by_id(att)
-    for cid in ("no_egress_import_graph", "rest_collect_get_only", "no_llm_runtime"):
+    for cid in ("no_egress_import_graph", "rest_collect_get_only", "no_llm_runtime",
+                "legacy_ssh_confined"):
         assert by[cid]["result"] == NOT_EVALUATED
         assert "source" in by[cid]["detail"].lower() or "not" in by[cid]["detail"].lower()
     # the registry claim imports the collector MODULE (not the tree) so it still runs
@@ -359,7 +370,7 @@ def test_registryless_collector_is_not_evaluated_not_vacuously_holding():
 # ------------------------------------------------------------------ golden ---
 def test_golden_snapshot_carries_the_attestation_key():
     """The panel ships on every default run: the frozen golden carries snap['attestation']
-    with all four claims HOLDING (the golden run executes on this very codebase). The
+    with every claim HOLDING (the golden run executes on this very codebase). The
     nested generated_at is stripped by the golden harness as the one volatile field."""
     with open(os.path.join(ROOT, "tests", "golden", "snapshot.json"), encoding="utf-8") as f:
         golden = json.load(f)
@@ -389,3 +400,194 @@ def test_trust_sheet_renders_claims_and_honest_abstention(tmp_path):
     blob2 = "\n".join(str(c.value) for row in wb2[ATTESTATION_SHEET_NAME].iter_rows()
                       for c in row if c.value)
     assert "UNVERIFIED" in blob2 and "HOLDS" not in blob2
+
+
+# ------------------------------------------- W59 PR-2 (T9): the paired charter + 5th claim ---
+_VOCAB_SRC = (
+    '"""Synthetic vocabulary owner for the attestation falsifiers."""\n'
+    'SSH_PROFILES = ("default", "legacy-sha1")\n'
+    'LEGACY_SHA1_TIER_KEX = ("diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1")\n'
+    'LEGACY_SHA1_TIER_HOST_KEYS = ("ssh-rsa", "ssh-rsa-cert-v01@openssh.com")\n'
+)
+
+
+def _legacy_pkg(tmp_path, monkeypatch, *, legacy_extra="", others=None, vocab=_VOCAB_SRC):
+    """A fake analysis package carrying the REAL legacy_ssh.py (plus a planted suffix), a synthetic
+    vocabulary owner and optional extra modules, and a resolvable fake collector entry module."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    real = open(os.path.join(ROOT, "cisco_toolkit", "legacy_ssh.py"), encoding="utf-8").read()
+    files = {"legacy_ssh.py": real + legacy_extra, "clean.py": "X = 1\n"}
+    if vocab is not None:
+        files["ssh_session.py"] = vocab
+    files.update(others or {})
+    pkg = _fake_pkg(tmp_path, files)
+    collector_dir = tmp_path / "collector_src"
+    collector_dir.mkdir()
+    (collector_dir / "w59_fake_collector_entry.py").write_text("COMMANDS_IOS = ['show version']\n",
+                                                               encoding="utf-8")
+    monkeypatch.syspath_prepend(str(collector_dir))
+    return pkg, "w59_fake_collector_entry"
+
+
+def _legacy_claim(pkg, collector):
+    return _by_id(compute_attestation(toolkit_dir=pkg, collector_module=collector))["legacy_ssh_confined"]
+
+
+def test_every_no_egress_exclusion_is_paired_with_a_published_claim():
+    """Mutation caught: an exclusion added to the walk with no published floor claim (a subtraction the
+    client is told nothing about), or the texts restating the set instead of deriving from it."""
+    from cisco_toolkit.attestation import NO_EGRESS_CHARTER, NO_EGRESS_EXCLUDE, NO_EGRESS_PERMITTED_IMPORTS
+
+    # W59 PR-2 review (P1-a): legacy_ssh.py is NOT excluded whole any more; it stays in the walk with only paramiko
+    # permitted, and every charter entry is exactly one of the two kinds.
+    assert set(NO_EGRESS_CHARTER) == NO_EGRESS_EXCLUDE | set(NO_EGRESS_PERMITTED_IMPORTS)
+    assert not NO_EGRESS_EXCLUDE & set(NO_EGRESS_PERMITTED_IMPORTS)
+    assert NO_EGRESS_EXCLUDE == {"rest_collect.py"}
+    assert dict(NO_EGRESS_PERMITTED_IMPORTS) == {"legacy_ssh.py": frozenset({"paramiko"})}
+    assert set(NO_EGRESS_CHARTER.values()) <= set(CLAIM_IDS)
+    att = _by_id(compute_attestation())
+    c = att["no_egress_import_graph"]
+    for rel, cid in NO_EGRESS_CHARTER.items():
+        kind = "excluded whole" if rel in NO_EGRESS_EXCLUDE else "scanned with only paramiko permitted"
+        assert f"{rel} {kind} (covered by its own published claim {cid})" in c["method"], c["method"]
+    assert f"excluded by charter: {', '.join(sorted(NO_EGRESS_EXCLUDE))}" in c["detail"], c["detail"]
+    assert "network imports permitted by charter: legacy_ssh.py -> paramiko only" in c["detail"], c["detail"]
+    assert "matched nothing" not in c["detail"], c["detail"]
+    assert all(rel in att["no_llm_runtime"]["method"] for rel in NO_EGRESS_CHARTER)
+
+
+def test_legacy_ssh_confined_holds_on_the_real_module(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch)
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == HOLDS, c["detail"]
+    assert "LEGACY_SHA1_TIER_KEX" in c["detail"] and "legacy_ssh.py" in c["detail"]
+    assert "closed allowlist" in c["detail"] and "of its own" in c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_a_store_into_a_paramiko_table(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch,
+        legacy_extra="\n\ndef _open_everyone():\n    Transport._kex_info[_KEX_GROUP14_SHA1] = None\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "store into a paramiko table" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_a_mutating_call_on_a_table(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch, legacy_extra="\n\nRSAKey.HASHES.update({})\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and ".update()" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_a_send_call(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch,
+        legacy_extra="\n\ndef _leak(conn):\n    return conn.send_command('show version')\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "send_command" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_a_sha1_literal_in_another_module(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch, others={"default_path.py": 'HOST_KEYS = ("rsa-sha2-256", "ssh-rsa")\n'})
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "default_path.py" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_when_another_module_reads_the_tier(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch,
+        others={"widen.py": "from .ssh_session import LEGACY_SHA1_TIER_KEX\nX = LEGACY_SHA1_TIER_KEX\n"})
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "widen.py" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_sha1_signing_outside_the_tier(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch,
+        others={"sign.py": "from cryptography.hazmat.primitives import hashes\nH = hashes.SHA1\n"})
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "sign.py" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_is_violated_by_a_mutable_table_definition(tmp_path, monkeypatch):
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch,
+        legacy_extra="\n\nclass _Open(Transport):\n    _kex_info = dict(Transport._kex_info)\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "not a tuple or a MappingProxyType" in c["detail"], c["detail"]
+
+
+def test_legacy_ssh_confined_abstains_without_its_source_or_its_subjects(tmp_path, monkeypatch):
+    """NOT_EVALUATED, never HOLDS, when there is nothing to judge: no module; a vocabulary owner whose
+    literals the pattern cannot recognise; an unscannable collector entry; a module with no table."""
+    (tmp_path / "bare").mkdir()
+    bare = _fake_pkg(tmp_path / "bare", {"clean.py": "X = 1\n"})
+    c = _by_id(compute_attestation(toolkit_dir=bare, collector_module="no_such_collector_module_xyz"))[
+        "legacy_ssh_confined"]
+    assert c["result"] == NOT_EVALUATED and "legacy_ssh.py" in c["detail"]
+
+    pkg, collector = _legacy_pkg(tmp_path / "novocab", monkeypatch,
+                                 vocab='SSH_PROFILES = ("default", "legacy-sha1")\n')
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == NOT_EVALUATED and "recognised no literal" in c["detail"], c["detail"]
+
+    pkg, _collector = _legacy_pkg(tmp_path / "nocollector", monkeypatch)
+    c = _legacy_claim(pkg, "no_such_collector_module_xyz")
+    assert c["result"] == NOT_EVALUATED and "not scannable" in c["detail"], c["detail"]
+
+    (tmp_path / "notables").mkdir()
+    notables = _fake_pkg(tmp_path / "notables", {
+        "legacy_ssh.py": "from .ssh_session import LEGACY_SHA1_TIER_KEX\n",
+        "ssh_session.py": _VOCAB_SRC})
+    c = _legacy_claim(notables, collector)
+    assert c["result"] == NOT_EVALUATED and "no algorithm table" in c["detail"], c["detail"]
+
+
+# --------------------------------------- W59 PR-2 review: the legacy module stays judged by both claims ---
+@pytest.mark.parametrize("plant,lib", [
+    ("\n\nimport socket\n\ndef _leak():\n    return socket.create_connection(('192.0.2.1', 22))\n", "socket"),
+    ("\n\nimport urllib.request\n\ndef _leak():\n    return urllib.request.urlopen('http://192.0.2.1/')\n",
+     "urllib.request"),
+    ("\n\ndef _leak():\n    import requests\n    return requests.post('http://192.0.2.1/', data=b'x')\n", "requests"),
+])
+def test_t9_a_network_library_planted_in_the_legacy_module_violates_both_claims(tmp_path, monkeypatch, plant, lib):
+    """W59 PR-2 review (P1-a). Mutation caught: the whole of legacy_ssh.py excluded from the no-egress walk with
+    nothing standing in for it -- a planted ``socket.create_connection``, ``urllib.request.urlopen`` or
+    ``requests.post`` left BOTH published claims at HOLDS. Now the walk keeps the file and permits only paramiko
+    there, and the confinement claim holds it to a closed import allowlist."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra=plant)
+    att = _by_id(compute_attestation(toolkit_dir=pkg, collector_module=collector))
+    egress, confined = att["no_egress_import_graph"], att["legacy_ssh_confined"]
+    assert egress["result"] == VIOLATED, egress["detail"]
+    assert "legacy_ssh.py" in egress["detail"] and lib in egress["detail"]
+    assert "paramiko" not in egress["detail"], "the permitted paramiko imports must not be reported"
+    assert confined["result"] == VIOLATED, confined["detail"]
+    assert f"imports the network library {lib}" in confined["detail"], confined["detail"]
+
+
+def test_t9_the_legacy_import_allowlist_is_closed(tmp_path, monkeypatch):
+    """W59 PR-2 review (P1-a). A non-network import outside the allowlist (here ``subprocess``) also violates the
+    confinement claim: the allowlist is closed, not a list of network libraries."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra="\n\nimport subprocess\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED and "imports subprocess (outside the closed import allowlist)" in c["detail"]
+
+
+@pytest.mark.parametrize("plant", [
+    "\n\n_T = Transport\n",
+    "\n\ndef _x():\n    dict.update(Transport._kex_info, {})\n",
+    "\n\ndef _x():\n    dict.__setitem__(Transport._kex_info, 'k', None)\n",
+    "\n\nimport operator\n\ndef _x():\n    operator.setitem(Transport._kex_info, 'k', None)\n",
+    "\n\ndef _x():\n    type.__setattr__(Transport, '_kex_info', {})\n",
+    "\n\ndef _x():\n    kex = Transport._kex_info\n    return kex\n",
+    "\n\ndef _x():\n    return RSAKey.HASHES.copy()\n",
+])
+def test_legacy_ssh_confined_allows_a_paramiko_table_only_as_a_copy(tmp_path, monkeypatch, plant):
+    """W59 PR-2 review (P2-c). Mutations caught: an alias of a stock class, an unbound ``dict.update`` /
+    ``dict.__setitem__``, ``operator.setitem``, ``type.__setattr__`` and a plain read of a stock table -- each walked
+    past the old denylist of mutating-method spellings. The rule is now an allowlist of copy shapes."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra=plant)
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED, c["detail"]
+    assert "other than as a class base or the operand of a copy" in c["detail"], c["detail"]

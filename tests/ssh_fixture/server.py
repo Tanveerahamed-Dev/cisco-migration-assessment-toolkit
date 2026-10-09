@@ -13,6 +13,8 @@ Profiles pin EXACT algorithm lists (never asyncssh's defaults):
 * ``modern``         -- ecdh-sha2-nistp256 / diffie-hellman-group14-sha256, rsa-sha2-512/256, aes128-ctr,
                         hmac-sha2-256
 * ``sha1-and-sha2``  -- both, SHA-2 listed first (an IOS XE box with legacy algorithms still enabled)
+* ``sha1-gex-only``  -- kex diffie-hellman-group-exchange-sha1 only (the server picks its group for the client's
+                        requested size), host key ssh-rsa (W59 PR-2: the legacy tier's group-exchange half, end to end)
 
 The fake shell prints a synthetic prompt (``lab-sw1#``) and canned ``show version`` text; every other command
 gets the IOS invalid-input marker. It contains no client data. It appends one JSON line per event to ``--log``:
@@ -54,6 +56,12 @@ PROFILES = {
         "signature_algs": ["rsa-sha2-256", "ssh-rsa"],
         "encryption_algs": ["aes128-ctr"],
         "mac_algs": ["hmac-sha2-256", "hmac-sha1"],
+    },
+    "sha1-gex-only": {
+        "kex_algs": ["diffie-hellman-group-exchange-sha1"],
+        "signature_algs": ["ssh-rsa"],
+        "encryption_algs": ["aes128-ctr"],
+        "mac_algs": ["hmac-sha2-256"],
     },
 }
 
