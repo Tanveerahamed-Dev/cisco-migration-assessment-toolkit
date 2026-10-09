@@ -347,3 +347,36 @@ follow-up.
 
 **Not verified here.** No Python test, Vitest, tsc or build ran. The new TypeScript and Vitest cases rely on the hosted
 frontend job, and the Python cases on the hosted test legs.
+
+### Round 4 dist import (2026-10-09)
+
+The round-4 head `aa9be934` changed frontend source, so the tracked dist was rebuilt from a fresh hosted handoff. The
+verification followed the W29/W46/W51 precedent (`docs/w13-coverage-validation-2026-10-05.md`).
+
+- **Expected record, selected from Git before the archive was read.** GitHub's tested merge for the pushed head
+  `aa9be934` is `77cd79c5`. Its parents are main `6390b66c` (#629 merged) and `aa9be934`, and its tree `bb0e4110`
+  equals the head tree. The record covers 149 committed inputs and is input-for-input equal to the head's.
+- **Run and job.** Webapp-ci run `37927532324` (pull_request, attempt 1). Frontend job `113810038431` succeeded on
+  checkout `77cd79c5`. It ran api:check ("Generated API types match the actual app schema"), Vitest (34 files, 504
+  tests, including round 4's 4 new cases) and the build. The type-check passed, so round 4's TypeScript compiles.
+- **Archive.** Artifact `11614811855`, `frontend-dist-handoff-aa9be93453cf494410b08987d8fc20386486d046-37927532324-1`,
+  569,315 bytes, sha256 `9721cef342dc02028ed1440335943066605fb04237ac58c5ef944ae35746f21d`. The digest equals the API
+  digest and the job log's upload digest, and the size equals the job log's final size. The identity was unchanged on
+  a closing API re-read.
+- **Inventory.** The inventory is closed at seven files: `source-before.json`, `handoff.json` and 5 dist members.
+  There are no directory, duplicate, absolute, backslash, parent or special entries.
+- **Source records.** Both records equal the expected record, and `source-before.json` is byte-canonical.
+  `handoff.json` has a closed key set, `github_head` `aa9be934`, run `37927532324` and attempt 1.
+- **Non-promoting fields hold:** `GENERATED_INPUT_FOR_REVIEW_ONLY`, `release_authority` false and
+  `final_source_rebuild_required` true.
+- **Toolchain.** Node v24.19.0 and npm 11.17.0 match the job log. The member census matches the vite build log.
+- **Members.** The 5 member hashes and sizes pass, and the canonical path-aware marker policy finds 0 hits. The index
+  asset links resolve, and every asset is reachable from `index.html`.
+- **Negative controls are refused:** one altered input hash, a wrong npm version, and the earlier tested-merge records
+  `e808ec12` and `7b8ae69b`.
+
+The members are not byte-identical to the tracked dist: all five differ. So only the 5 verified members are imported:
+`index.html`, `assets/index-C26NudFB.js`, `assets/index-UkC34GZ_.css`, `assets/Topology3D-B_L0iChV.js` and
+`assets/react-force-graph-3d-DZzd_Nay.js`. The 4 superseded files in the owned dist directory are removed, and each
+indexed blob equals its member. The commit changes no source, test, package or lock file. This is review input: the
+new head must reproduce these bytes in fresh hosted gates.
