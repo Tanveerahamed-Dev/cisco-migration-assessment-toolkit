@@ -24,11 +24,17 @@ _ALTERNATE_DISTRIBUTION_BUILD = re.compile(
 )
 
 # Runner selectors and job names are a closed census, not an allowlist which could
-# silently lose a job or add a new matrix axis. The Linux display alias preserves
-# existing branch-protection contexts; it never selects the execution image.
+# silently lose a job or add a new matrix axis. The Linux and Windows display aliases
+# preserve existing branch-protection contexts; they never select the execution image.
 _LINUX_IMAGE = "ubuntu-24.04"
+_WINDOWS_IMAGE = "windows-2025"
 _MATRIX_RUNNER = "${{ matrix.os }}"
-_MATRIX_DISPLAY = "${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}"
+# Pinned image -> the historical display label in its protected context name.
+_DISPLAY_ALIASES = {_LINUX_IMAGE: "ubuntu-latest", _WINDOWS_IMAGE: "windows-latest"}
+_MATRIX_DISPLAY = (
+    "${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || "
+    "matrix.os == 'windows-2025' && 'windows-latest' || matrix.os }}"
+)
 _TEST_JOB_NAME = "Tests · py${{ matrix.python-version }} · " + _MATRIX_DISPLAY
 _RUNNER_JOBS = {
     "atlas-scope-ci.yml": {
@@ -145,10 +151,10 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             "matrix": {
                 "os": [_LINUX_IMAGE],
                 "python-version": ["3.10", "3.11", "3.12", "3.13", "3.14"],
-                "include": [{"os": "windows-latest", "python-version": "3.12"}],
+                "include": [{"os": _WINDOWS_IMAGE, "python-version": "3.12"}],
             },
         },
-        ("ci.yml", "projection-performance"): {"matrix": {"os": ["windows-latest"]}},
+        ("ci.yml", "projection-performance"): {"matrix": {"os": [_WINDOWS_IMAGE]}},
     }
     direct_names = []
     linux_selectors = 0
@@ -173,10 +179,11 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
         {"os": image, "python-version": version}
         for image in matrix["os"] for version in matrix["python-version"]
     ] + matrix["include"]
-    # Evaluate only the exact, source-asserted display expression above, not arbitrary Actions code.
+    # Evaluate only the exact, source-asserted display expression above, not arbitrary Actions code:
+    # its `a && 'x' || b && 'y' || matrix.os` chain maps each pinned image to its alias, else the label.
     contexts = tuple(
         test_job["name"].replace("${{ matrix.python-version }}", leg["python-version"]).replace(
-            _MATRIX_DISPLAY, "ubuntu-latest" if leg["os"] == _LINUX_IMAGE else leg["os"]
+            _MATRIX_DISPLAY, _DISPLAY_ALIASES.get(leg["os"], leg["os"])
         )
         for leg in legs
     )
@@ -339,6 +346,9 @@ def test_hosted_runner_pins_preserve_jobs_matrix_and_protected_contexts():
     ("ci.yml", "lint", "runs-on", ["self-hosted", "Linux", "X64"]),
     ("ci.yml", "test", "runs-on", "ubuntu-24.04"),
     ("ci.yml", "test", "name", "Tests · py${{ matrix.python-version }} · ${{ matrix.os }}"),
+    # The Linux-only alias would publish the pinned Windows leg as `windows-2025`, a context no rule requires.
+    ("ci.yml", "test", "name",
+     "Tests · py${{ matrix.python-version }} · ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}"),
     ("ci.yml", "installed-transition-runtime", "runs-on", "windows-latest"),
     ("ci.yml", "dependency-audit", "name", "Dependency audit (optional)"),
     ("master-reference-ci.yml", "verify", "runs-on", "${{ vars.CI_RUNNER }}"),
@@ -384,7 +394,8 @@ def test_hosted_runner_contract_rejects_census_drift(mutation):
 
 @pytest.mark.parametrize("mutation", [
     "floating_linux", "dropped_python", "dropped_windows", "extra_include", "extra_axis", "excluded_leg",
-    "fail_fast", "windows_image", "performance_linux", "extra_job_strategy",
+    "fail_fast", "floating_windows", "windows_image", "performance_linux", "performance_floating",
+    "extra_job_strategy",
 ])
 def test_hosted_runner_contract_rejects_matrix_drift(mutation):
     documents = _runner_documents()
@@ -405,14 +416,28 @@ def test_hosted_runner_contract_rejects_matrix_drift(mutation):
         matrix["exclude"] = [{"os": "ubuntu-24.04", "python-version": "3.14"}]
     elif mutation == "fail_fast":
         strategy["fail-fast"] = True
+    elif mutation == "floating_windows":
+        matrix["include"][0]["os"] = "windows-latest"
     elif mutation == "windows_image":
-        matrix["include"][0]["os"] = "windows-2025"
+        matrix["include"][0]["os"] = "windows-2022"
     elif mutation == "performance_linux":
         jobs["projection-performance"]["strategy"]["matrix"]["os"] = ["ubuntu-24.04"]
+    elif mutation == "performance_floating":
+        jobs["projection-performance"]["strategy"]["matrix"]["os"] = ["windows-latest"]
     else:
         jobs["lint"]["strategy"] = {"matrix": {"os": ["self-hosted"]}}
     with pytest.raises(AssertionError):
         _assert_hosted_runner_contract(documents, _required_main_contexts())
+
+
+def test_matrix_display_expression_is_exactly_the_alias_table():
+    """The display expression the contract evaluates is the alias table, written out in Actions syntax: each
+    pinned image maps to its historical label, and any other label displays as itself."""
+    chain = "".join(f"matrix.os == '{image}' && '{alias}' || " for image, alias in _DISPLAY_ALIASES.items())
+    assert _MATRIX_DISPLAY == "${{ " + chain + "matrix.os }}"
+    assert _TEST_JOB_NAME in _workflow("ci.yml")
+    assert {_DISPLAY_ALIASES[_LINUX_IMAGE], _DISPLAY_ALIASES[_WINDOWS_IMAGE]} == {
+        context.rsplit(" · ", 1)[1] for context in _TEST_CONTEXTS}
 
 
 def test_runner_yaml_loader_preserves_event_keys_and_boolean_values():
