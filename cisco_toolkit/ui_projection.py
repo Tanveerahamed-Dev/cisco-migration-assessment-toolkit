@@ -8,25 +8,41 @@ re-derives a headline number and never turns an absence into a value.
 Slice 1 covers two screens:
 
 * ``overview`` -- the canonical headline facts (:data:`ssot.CANONICAL_FACTS`), the fleet-health
-  scoring state, the executive-brief axes (and the registered axes the brief does not carry), the
+  scoring state, the executive-brief axes (and the registered axes the brief does not carry), each
+  axis with how many devices it could not assess out of how many, read from its producer
+  (:data:`AXIS_UNASSESSED`; not_collected, never 0, where the producer stores no such count, where it covers one
+  layer of several, or where a listed collection blind spot leaves a zero unproven), the
   top-gating list, the posture statement, and the lifecycle band partition in its canonical order;
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
   unknown-evidence summary, the SSOT self-verification, the analysis-input gap summary (per input of the
   engine's per-device risk register: the inventory devices it could not assess, out of the inventory), and
   the projection's own stated limitations;
 
-plus an ``engine`` block naming the snapshot schema and producer versions.
+plus an ``engine`` block naming the snapshot schema and producer versions, and (G41) the SHA-256 and byte length of
+the exact bytes the snapshot was parsed from, so every pointer names the byte string it resolves in. Only the reader
+that holds those bytes can bind them (``protocol_assurance.bind_snapshot_json_bytes``); a snapshot handed over already
+parsed names no file (``not_collected``), and the projection never hashes a re-serialisation in its place.
 
 Slice 2 adds the row screens:
 
 * ``inventory`` -- device rows (the ``devices`` map joined with the ``collection_completeness`` blind spots,
-  so an unreached device is never dropped), VLAN cutover rows, endpoint rows with their shared-IP and
+  so an unreached device is never dropped), VLAN cutover rows with their stored L3 gateway rows (G16: switch, SVI
+  address, FHRP role, object tracking and the sole-gateway risk), endpoint rows with their shared-IP and
   dual-homed lists, and the cable-map peers nobody collected; every list in a stable order with a total
   from its owner, ready to be paged;
 * ``findings`` -- the engine's punch-list rows, with the severity vocabulary, the remediation the engine
-  links and the show command it cites, and nothing it does not publish;
+  links and the show command it cites, and nothing it does not publish; and their facet totals (G21): row
+  counts by severity and by category from the owner's partition of the stored rows
+  (``analyze.compute_punchlist_facets``), admitted only when they place every row exactly once, never claimed
+  complete over a category whose source section (``analyze.PUNCH_CATEGORY_SECTION``) is incomplete, and, as a
+  roster list with its own state, by inventory device from the per-device rollup (the G09 fold), never a
+  second count; and (G24) the stored cross-layer correlation rows, each host joined by exact name to its
+  collected device record and to the health deduction the row drives there (the scorer's own reference to the
+  row, and the line item carrying the row's label), never recomputed, an unjoinable or repeated host unverified
+  rather than dropped;
 * :func:`project_device` -- one standalone device page per host (identity, physical, blind-spot record,
-  health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks,
+  health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours with each neighbour's
+  collected peer host resolved through the topology's one address index (G17), security checks,
   native-VLAN mismatches, remediation, NRFU cases, the punch-list rows and endpoints naming it, and the stored
   failure-impact and structural-link rows naming it -- selected, never re-simulated; a device with no
   simulation row is a blind spot, never "no impact").
@@ -115,18 +131,20 @@ import ipaddress
 import math
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    DOSSIER_AXIS_INPUTS, PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+    DOSSIER_AXIS_INPUTS, PUNCH_CATEGORIES, PUNCH_CATEGORY_SECTION, PUNCH_SEVERITIES, compute_device_findings,
+    compute_punchlist_facets, device_config_capture, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
     compute_device_coverage, index_coverage_rows, match_coverage_cell,
 )
+from cisco_toolkit.protocol_assurance import BoundSnapshot, bound_snapshot_source
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -145,6 +163,13 @@ TOPOLOGY_WEIGHTS = ("normal", "strong")
 #: The failure-impact owner's bands, worst first (analyze.compute_failure_impact sev_rank order).
 IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES
 ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
+#: G17: the build.build_routing_neighbors row field that carries the neighbour's own address, per protocol key. OSPF's
+#: 'neighbor' is the Neighbor ID column, a router ID that need not be any interface address, and its 'address' is the
+#: adjacency address (parse.parse_ospf_neighbors); EIGRP and BGP name the peer by its address in 'neighbor'
+#: (parse.parse_eigrp_neighbors, parse.parse_bgp_summary). tests/test_ui_projection_peer_host.py holds each entry to
+#: the real parser's output and the keys to the producer's own protocol keys.
+NEIGHBOR_ADDRESS_FIELDS: Mapping[str, str] = MappingProxyType({"ospf": "address", "eigrp": "neighbor",
+                                                               "bgp": "neighbor"})
 #: The FIB owner's route fields a hop may report invalid, and its MTU-gap reasons (fib.trace_fib_path).
 FIB_ROUTE_FIELDS = ("admin_distance", "source", "next_hop", "out_intf")
 FIB_MTU_GAP_REASONS = ("malformed_hop_evidence", "egress_interface_not_observed")
@@ -179,6 +204,10 @@ JS_MAX_SAFE_INT = 2 ** 53 - 1
 
 # Local copies of engine vocabularies; tests/test_ui_projection.py holds each equal to its owner.
 SEVERITIES: Tuple[str, ...] = PUNCH_SEVERITIES
+#: The punch-list category vocabulary (analyze.PUNCH_CATEGORIES, the evidence-policy keys), in owner order.
+FINDING_CATEGORIES: Tuple[str, ...] = PUNCH_CATEGORIES
+#: The finding facets (G21), in payload order: two owner partitions of the rows, then the per-device rollup.
+FINDING_FACETS: Tuple[str, ...] = ("severity", "category", "device")
 HEALTH_BANDS: Tuple[str, ...] = ("Critical", "Poor", "Fair", "Good", "Excellent")   # ssot health-band order
 COVERAGE_STATES: Tuple[str, ...] = ("covered", "not_collected", "partial", "unverified", "unparsed",
                                     "not_observed")                             # unknown_evidence._COVERAGE_STATES
@@ -189,6 +218,17 @@ UE_COMPLETE_STATES: Tuple[str, ...] = ("observed_no_unknowns", "observed_with_un
 UE_SOURCE_STATES: Tuple[str, ...] = ("observed", "observed_empty", "partial", "not_collected",
                                      "malformed")                               # unknown_evidence._SOURCE_STATES
 SNAPSHOT_SCHEMA = "collect_parse_snapshot/1"                                    # html.snapshot_state
+#: G41: the one engine owner of a snapshot's source identity. Only protocol_assurance.bind_snapshot_json_bytes,
+#: which parses and hashes ONE byte string, mints the process-local marker this owner reads back (and refuses once
+#: the content changes). A parsed mapping alone names no file, and this module never hashes a re-serialisation.
+SNAPSHOT_IDENTITY_OWNER = "protocol_assurance.bound_snapshot_source"
+#: The owner's digest spelling (protocol_assurance.bind_snapshot_json_bytes): the algorithm, a colon, 64 lowercase hex.
+SNAPSHOT_SHA256_PATTERN = "^sha256:[0-9a-f]{64}$"
+#: The byte form of that digest: the exact byte string the reader parsed into this snapshot, with no newline or
+#: encoding normalisation. A digest is only comparable with another of the same form (docs/ssot.md, the digest of
+#: "one snapshot"). AssessHub parses its persisted store blob, so there it is the same byte string as the
+#: transport's assesshub-store-blob identity; a file reader parses the file as read.
+SNAPSHOT_DIGEST_FORM = "exact-parsed-bytes"
 #: Lifecycle summary field -> band label (ssot lifecycle-band table), and its inverse.
 LIFECYCLE_BAND_FACTS: Mapping[str, str] = MappingProxyType({
     "n_past_ldos": "Past-LDoS", "n_past_eos": "Past-EoS", "n_near": "Near-LDoS", "n_active": "Active",
@@ -228,6 +268,62 @@ POSTURE_STATEMENT_BASIS: Tuple[str, ...] = ("health_scores", "lifecycle_risk", "
                                             "multicast_intelligence", "migration_readiness")
 #: Every brief input: an unregistered axis label fails CLOSED to all of them.
 BRIEF_INPUTS: Tuple[str, ...] = tuple(sorted(set().union(*AXIS_BASIS.values(), POSTURE_STATEMENT_BASIS)))
+#: G05 -- axis label -> where its producer stores how many devices the axis could NOT assess, and out of how many:
+#: ``(producer, count path, denominator path, per-device rows path, row field, the field's could-not-assess value)``.
+#: The brief publishes no per-axis denominator, so this table is owned HERE. Tests hold every entry against its
+#: producer: the real producer writes the count equal to the number of its per-device rows carrying that value,
+#: and the denominator equal to the number of those rows. The rows are the count's raw basis: a readable row list
+#: that disagrees with the stored count or denominator makes both unverified.
+AXIS_UNASSESSED: Mapping[str, Tuple[str, str, str, str, str, Union[str, bool]]] = MappingProxyType({
+    "Hardware lifecycle (EoL)": ("analyze.compute_lifecycle_risk", "lifecycle_risk.summary.n_unknown",
+                                 "lifecycle_risk.summary.n_devices", "lifecycle_risk.per_device", "band", "Unknown"),
+    "Operational logs": ("analyze.compute_syslog_intelligence", "syslog_intelligence.summary.n_not_collected",
+                         "syslog_intelligence.summary.n_devices", "syslog_intelligence.per_device", "collected", False),
+    "QoS posture": ("analyze.compute_qos_audit", "qos_audit.summary.n_not_assessable", "qos_audit.summary.n_devices",
+                    "qos_audit.per_device", "assessable", False),
+    "Software risk": ("analyze.compute_software_risk", "software_risk.summary.n_config_not_assessable",
+                      "software_risk.summary.n_devices", "software_risk.per_device", "config_assessable", False),
+    "Platform capacity": ("analyze.compute_platform_health", "platform_health.summary.bands.Unknown",
+                          "platform_health.summary.n_devices", "platform_health.per_device", "band", "Unknown"),
+    "Asset risk register": ("analyze.compute_device_dossiers", "device_dossiers.summary.bands.Unassessed",
+                            "device_dossiers.summary.n_devices", "device_dossiers.per_device", "risk_band",
+                            "Unassessed"),
+})
+#: The counters whose producer omits an entry no device holds (a Counter): there, a missing could-not-assess entry is
+#: a zero only when the per-device rows confirm that no device carries the value. Held by a test against the producer.
+AXIS_UNASSESSED_SPARSE: FrozenSet[str] = frozenset({"platform_health.summary.bands",
+                                                    "software_risk.summary.train_bands"})
+#: Axis label -> the further layers its producer assesses beyond the layer its registered count covers: ``(path of the
+#: producer's stored count of the devices that layer could NOT assess, the layer's name, its per-device rows path, the
+#: row field, the field's could-not-assess value, the summary coverage key whose uncovered devices that count holds)``.
+#: A layer's own could-not-assess count is read, never a coverage key standing in for it (W51: Software risk's
+#: release-train layer is its train_bands Unknown count -- a release captured but not classified is not assessed --
+#: never n_version_known). While that count is above zero (or cannot be read, or disagrees with its rows), the
+#: registered count is not the axis's: it is withheld as not_collected, its value and the layer's gap named in the
+#: reason. A test scans every registered producer's real summary for its per-layer coverage counts and holds each one to
+#: this table (the layer's coverage key) or to the registered count it complements.
+AXIS_UNASSESSED_LAYERS: Mapping[str, Tuple[Tuple[str, str, str, str, Union[str, bool], str], ...]] = MappingProxyType({
+    "Software risk": (("software_risk.summary.train_bands.Unknown",
+                       "release-train layer (a captured and classified software release train)",
+                       "software_risk.per_device", "train_band", "Unknown", "n_version_known"),),
+})
+#: The axis whose count an owner computes live: ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored``, the brief's
+#: own unscored health rows (the scored-row predicate the brief averages over), out of ``n_rows``.
+AXIS_UNASSESSED_LIVE: Tuple[str, ...] = ("Fleet health",)
+#: Axis label -> why its producer stores no count of devices it could not assess (both cells are not_collected).
+AXIS_UNASSESSED_ABSENT: Mapping[str, str] = MappingProxyType({
+    "Migration punch-list": "analyze.compute_migration_punchlist writes finding rows only, and keeps no record of "
+                            "the devices it could not assess",
+    "Application domains": "analyze.compute_application_intelligence summarizes application domains and their "
+                           "couplings, not devices",
+    "Cutover sequence": "its producers order application domains and give move-group readiness verdicts, not "
+                        "per-device verdicts",
+    "Segmentation": "analyze.compute_segmentation summarizes gateway interfaces and VRFs, not devices",
+    "Multicast / timing": "analyze.compute_multicast_intelligence summarizes multicast groups, querier VLANs and PTP "
+                          "clocks, not devices",
+    "Remediation": "analyze.compute_remediation_plan counts the devices it generated configuration for, not the "
+                   "devices it could not assess",
+})
 #: Every scalar path this projection cross-checks against ``ssot.reconcile`` (its check names).
 RECONCILED_PATHS: Tuple[str, ...] = tuple(path for path, _c in ssot.CANONICAL_FACTS.values()) + (
     "lifecycle_risk.summary.n_devices",)
@@ -401,13 +497,37 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total", "/topology", "/trust/inputs"]),
+         "/findings/rows", "/findings/total", "/findings/facets", "/findings/cross_layer", "/topology",
+         "/trust/inputs"]),
     _limitation(
-        "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
+        "axis_basis_owned_by_projection",
+        "cisco_toolkit.ui_projection.AXIS_BASIS, cisco_toolkit.ui_projection.AXIS_UNASSESSED",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
         "this projection and held against the producer's source by tests; an unregistered axis label fails "
         "closed to every brief input. The producer omits an axis whose input carries nothing to report; "
-        "absent_axes names every registered axis the brief does not carry.",
+        "absent_axes names every registered axis the brief does not carry. Nor does the brief publish how many "
+        "devices an axis could not assess: each axis's unassessed n, out of of, is read from that axis's producer "
+        "through a table this projection owns (AXIS_UNASSESSED), held against the producers by tests, never from "
+        "the headline text. Hardware lifecycle counts the devices with no authoritative lifecycle band; Operational "
+        "logs, the devices whose log buffer was not collected (a captured buffer counts as assessed even when no "
+        "line in it was recognised: its producer stores no count of those); QoS posture, the devices with no full "
+        "running-config; Software risk, the devices with no running-config, which is only its configuration layer; "
+        "Platform capacity, its Unknown band (capacity output absent or unrecognised; that counter omits a band no "
+        "device holds, so a zero is published only when the per-device rows confirm it); Asset risk register, its "
+        "Unassessed band; Fleet health, ssot.fleet_avg_health's health rows minus its scored rows. Each is out of "
+        "that producer's own device count, so the counts cover different device universes and are never added "
+        "across axes; none of those universes holds an inventory device the collection never reached "
+        "(fleet_lists_exclude_blind_devices). A count that covers one layer of an axis whose producer assesses "
+        "another (AXIS_UNASSESSED_LAYERS: Software risk's release-train layer, read from that layer's own count of the "
+        "devices it could not assess, train_bands Unknown -- a release captured but not classified is not assessed -- "
+        "never from n_version_known) is that axis's count only while that layer's count is zero; otherwise it is "
+        "withheld as not_collected, its value and the other layer's gap named in the reason, with a witness ref to "
+        "that layer's count. A device a dossier axis marked na is not counted. A count is unverified when it, or a "
+        "further layer's count, exceeds its denominator, or when its producer's per-device rows disagree with it "
+        "or cannot be read; these checks are this projection's. A count follows its row: when a failed phase makes "
+        "the row's fact analysis_unavailable (the brief itself, or any input the row's basis names, which for an "
+        "unregistered label is every brief input), both cells are analysis_unavailable with the same failure "
+        "records. An axis whose producer stores no such count is not_collected, never 0.",
         ["/overview/axes", "/overview/absent_axes"]),
     _limitation(
         "reconcile_checks_only_with_raw_basis", "ssot.reconcile",
@@ -421,8 +541,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "basis section is uncollected, ssot.reconcile does not reject it, and its owner's domain state does "
         "not call the input incomplete; engine_state keeps the owner's token. An empty text or mapping "
         "stays collected_but_empty.",
-        ["/overview/facts", "/overview/lifecycle", "/trust/unknown_evidence", "/trust/ssot/engine_stamp",
-         "/inventory/devices/total", "/trust/inputs"]),
+        ["/overview/facts", "/overview/axes", "/overview/lifecycle", "/trust/unknown_evidence",
+         "/trust/ssot/engine_stamp", "/inventory/devices/total", "/trust/inputs"]),
     _limitation(
         "abstention_addresses_dict_paths_only", "ssot.abstention_reason",
         "The abstention core cannot address an array element. A list item takes its list's state, then its "
@@ -430,7 +550,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "address a path through a hostname that contains a dot either: a row cell takes its section's state and "
         "the device scope of ssot.abstention_reason, then its own row join and type check.",
         ["/overview/axes", "/overview/top_gating", "/trust/failures/record", "/trust/unknown_evidence/sources",
-         "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/findings/rows"]),
+         "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/cross_layer"]),
     _limitation(
         "coverage_matrix_shown_as_published", "coverage_matrix.compute_coverage_matrix",
         "The coverage matrix is shown exactly as the engine published it and is never recomputed. The "
@@ -446,13 +566,21 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "axis check, and the unverified state for a failed type check, an integer above 2^53-1, a reconcile "
         "violation or an owner fault. On the row screens: the device total's row-count check, the punch-list "
         "priority and rank checks against the producer's rule, a cap's reached flag, the incomplete state of a list "
-        "whose input a blind spot, a missing essential capture or a missing security row withheld, the empty "
-        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, and the "
-        "completeness claim of the uncollected-peer list.",
+        "whose input a blind spot, a missing essential capture or a missing security row withheld, the unverified "
+        "state of a key join or device scope that a row it cannot read, or a second row naming the key, leaves "
+        "open, the empty "
+        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, the "
+        "completeness claim of the uncollected-peer list, and the finding facets' partition check (a severity or "
+        "category facet is published only when the owner's buckets place every stored row exactly once, each in "
+        "the bucket its own field names, in agreement with the row list and its published total; while that total "
+        "is not published no severity or category count is) and their source-section check against "
+        "analyze.PUNCH_CATEGORY_SECTION, and the cross-layer checks against their producers: a host a row names twice "
+        "or names blank, a host with no devices-map record or no health row, a row naming no host, and a deduction "
+        "reference or line item that is missing, repeated or foreign.",
         ["/trust/census/embedded/matches_live", "/trust/ssot/stamp_matches_live",
          "/engine/snapshot_schema_supported", "/overview/top_gating", "/overview/absent_axes",
          "/inventory/devices/total", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows"]),
+         "/findings/rows", "/findings/facets", "/findings/cross_layer"]),
     _limitation(
         "device_physical_defaults_not_observed", "model.DevicePhysical",
         "The device record defaults its text fields to '' and num_power_supplies, num_modules and total_ports to 0, "
@@ -490,8 +618,10 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "'at least this many'; the projection never computes the missing total. Finding evidence references are "
         "capped separately at the engine's evidence cap; only their producer-published evidence_refs_total can "
         "state the uncapped count. Health reference truncation follows the deduction prefix before missing refs "
-        "are removed, so its shorter subsequence may also be capped.",
-        ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows"]),
+        "are removed, so its shorter subsequence may also be capped. A cross-layer row whose device's published "
+        "deductions reached that cut, and carry no reference to the row, may drive a deduction beyond it: that "
+        "deduction is withheld as not collected, never shown as absent.",
+        ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows", "/findings/cross_layer"]),
     _limitation(
         "move_group_label_absent", "analyze.compute_move_groups",
         "Legacy move-group rows have no stored 'group' labels. This projection does not invent positional labels "
@@ -537,6 +667,38 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "withhold READY rather than replacing it with another verdict.",
         ["/inventory/vlans/rows"]),
     _limitation(
+        "vlan_gateway_rows", "excel.write_l3_forwarding_sheet; cisco_toolkit.ui_projection",
+        "A VLAN row's selections.gateways lists the stored l3_forwarding rows that name its VLAN id: one per scanned "
+        "device SVI named VlanN with an address, an FHRP group or a connected route. The producer counts no other "
+        "interface (a routed port, subinterface, BDI, BVI or irb unit) as a VLAN's gateway. host, svi_ip and role are "
+        "that row's switch, SVI address and FHRP role as captured, a point-in-time state; an empty address or role is "
+        "withheld, never read as 'no FHRP'. tracking is the device's 'show track' summary, not bound to this SVI or its "
+        "FHRP group (the HSRP detail's per-group track list, fhrp_detail[].track, is not projected here); it states the "
+        "full object count, then the state of at most 6 objects. The producer's not-observed marker is withheld as not "
+        "collected, never 'no tracking', and a text that disagrees with the row's tracked-object-down flag is "
+        "unverified. An empty tracking text means a captured 'show track' with no tracked object only where the "
+        "snapshot proves its producer separates the two (a not-observed tracking or risk marker, or an interface "
+        "marked run_config_observed); otherwise it is withheld. risk is the sole-gateway risk alone: the producer's "
+        "single-gateway flag, never its no-FHRP or tracked-object-down flags. The producer counts gateways by VLAN id "
+        "across the scan, so false is published only where another switch's gateway row provably shares this "
+        "gateway's segment: the same primary subnet and SVI network, in the same VRF where both can be read, and "
+        "positive evidence that the two switches share one layer-2 domain for the VLAN -- a stored cable path every "
+        "hop of which joins two collected ports trunking the VLAN, or the same spanning-tree root bridge for the VLAN "
+        "on both. A matching subnet, FHRP group or virtual address alone is not that evidence (cloned sites reuse "
+        "them). It says the scan saw another gateway for the segment, not that the gateway is healthy. These verdicts are this "
+        "projection's: true is published only where the scan covers every gateway the producer's VlanN rule could "
+        "count and no stored record contradicts it. That needs no collection blind spot, no cable-map neighbour the "
+        "collection never reached that could route, every collected device's interface running-config captured, no "
+        "other collected interface holding an address in the gateway's subnet, and no stored FHRP evidence of another "
+        "router in its group (its own role, or the HSRP detail's standby router or state). The fleet-wide parts are "
+        "fleet-wide because VLAN carriage per cable is not stored. A gateway that neither the collection nor CDP/LLDP "
+        "discovered, and that no stored FHRP record names, is outside every scan. A flag that contradicts the stored "
+        "rows' gateway count is unverified. The row's fhrp text naming a sole gateway is published only where that "
+        "gateway's sole-gateway risk is published true. A published gateway list under a coverage gap may be "
+        "incomplete and cites the gap, at most 8 witnesses per gap with the full count in its reason; an empty one is "
+        "then not a clean result.",
+        ["/inventory/vlans/rows"]),
+    _limitation(
         "punch_rows_carry_no_evidence_pointers", "analyze.compute_migration_punchlist",
         "A legacy punch-list row has neither evidence_refs nor evidence_basis. That snapshot publishes no "
         "per-finding evidence pointers; a show command alone does not locate a supporting record.",
@@ -546,44 +708,86 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "Rows are joined to a device, VLAN or endpoint by exact key equality, with the owner's own key rule; a "
         "collection_completeness blind-spot row is joined by the rule of its owner's device scope (the name without "
         "case or surrounding space, ssot.abstention_reason). Two rows naming the same key are unverified, never "
-        "picked between. The inventory is the union of the devices map and the collection_completeness blind spots. "
+        "picked between. A row the join cannot read (not an object, or a key that is missing or not text) could "
+        "name any key, so while a list holds one, every row joined or selected from it by device is unverified, "
+        "with a witness to each such row: a row neither attaches to a device silently nor vanishes from it. The "
+        "device scope is held to the same rule: while collection_completeness holds a row it cannot join, a second "
+        "row naming a device, or a row whose status its owner's vocabulary does not name, or carries its devices as "
+        "something other than a list (or itself as something other than an object, which its owner reads as listing "
+        "no blind spot), a value about a device the scope does not call not collected is unverified, with a witness "
+        "to each such row or value. The inventory is the union of the devices map and the collection_completeness "
+        "blind spots; a blind-spot row it cannot join by host, or a blind-spot list it cannot read, makes the "
+        "inventory rows and their reconciled count unverified, with a witness to that row or value. A host no "
+        "readable roster names is unverified, with a witness to each roster row or roster it cannot read, while any "
+        "is present. "
         "Pointer-only selections are null when their source could not be read (selection_sources says why), and [] "
         "when it was read and names nothing. STP observation selections instead carry their own FactList state and "
         "original record pointers. Their flags are stored parser output, not a new election: even False beside a "
         "parsed root address does not independently prove a non-root device or complete capture, because the parser "
-        "does not retain bridge_address. An empty selection establishes neither root absence nor collection success.",
-        ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans"]),
+        "does not retain bridge_address. An empty selection establishes neither root absence nor collection success. "
+        "A VLAN row's selections.gateways is a fact list instead: it carries its own "
+        "state and reason, and a row of its source the join cannot read makes it unverified. A cross-layer row's "
+        "host joins the devices-map record and the health_scores row of exactly that name. The deduction the row "
+        "drives on that device is the one deduction reference the health row publishes to the cross-layer row, and "
+        "its line item is the published deduction carrying the row's own rule id and severity label "
+        "(analyze.compute_health_scores writes '<id> <severity> (-<points>)'), never paired with a reference by "
+        "position. Several identical line items on one device are one published value with a witness to each and no "
+        "subject. The points are the scorer's per-item weight as published, before its per-category cap and the "
+        "device's criticality factor, so they are not the change in the score.",
+        ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans", "/findings/cross_layer"]),
     _limitation(
         "fleet_lists_exclude_blind_devices", "analyze.compute_collection_completeness",
         "collection_completeness lists devices the collection reached only partly or not at all. A fleet list derived "
         "from device evidence holds only what was collected: an uncollected capture adds no row, and a failure-impact "
         "or structural-link row is computed over the scanned model without it, so even a 'no impact' row or a small "
-        "pairs-cut count was never checked against that evidence. While any blind spot is listed, a published list "
-        "carries this caveat, with a witness ref to each blind-spot row, and an empty one is not_collected, never "
-        "'nothing found'.",
-        ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total", "/topology/structural_links",
-         "/topology/failure_impact"]),
+        "pairs-cut count was never checked against that evidence. Cross-layer correlations are computed over the same "
+        "collected evidence, so an uncollected device can neither add nor clear one. While any blind spot is listed, "
+        "a published list carries this caveat, with a witness ref to each blind-spot row, and an empty one is "
+        "not_collected, never 'nothing found'. The owner lists only blind spots, so a row that cannot be read as one "
+        "(not an object, or a status outside its vocabulary) qualifies the list the same way, with a witness ref to "
+        "that row, and so does a blind-spot list carried as something other than a list (or its section as something "
+        "other than an object), which its owner reads as listing none, with a witness ref to that value. The record "
+        "is never trusted by default: one that the snapshot does not carry, whose phase failed (with a ref to its "
+        "failure record, never dropped by a witness cap), or whose summary counts a partial or not-collected device "
+        "its list does not carry, cannot be read, or counts an inventory other than the inventory rows' count, "
+        "qualifies the list the same way. A finding facet count follows the same rule: a positive severity or "
+        "category count is a lower bound that carries this caveat, and a zero is not_collected. An executive axis's "
+        "count of the devices it could not assess, and its denominator, are likewise taken over its producer's own "
+        "devices, which hold only the devices whose evidence that producer was given: a device the collection never "
+        "reached is in neither. While any blind spot is listed, each published count and denominator carries this "
+        "caveat with the same witness refs, and a zero count, a count over no device, or an empty denominator is "
+        "not_collected, never 'none left unassessed'.",
+        ["/overview/axes", "/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total",
+         "/findings/facets", "/findings/cross_layer", "/topology/structural_links", "/topology/failure_impact"]),
     _limitation(
         "findings_without_running_config", "analyze.compute_migration_punchlist",
         "A device in the devices map with no security row (no captured running-config) contributes no "
         "configuration-derived punch-list row (security, configuration hygiene, QoS). While any device lacks one, "
         "published findings carry this caveat, with a witness ref to each such device record, and an empty list is "
-        "not_collected.",
-        ["/findings/rows", "/findings/total"]),
+        "not_collected. A positive severity or category facet count is then a lower bound that carries this caveat, "
+        "and a zero facet count is not_collected.",
+        ["/findings/rows", "/findings/total", "/findings/facets"]),
 )
 LIMITATIONS += (
     _limitation("device_findings_scope", "analyze.compute_device_findings",
                 "Counts cover stored punch-list rows once per named device. A multi-device row contributes "
                 "to each named device, so device totals are not distinct fleet findings. An assessed-empty "
-                "count is not a clean bill of health; capture custody and input qualification remain visible.",
-                ["/inventory/devices/rows"]),
+                "count is not a clean bill of health; capture custody and input qualification remain visible. "
+                "The device finding facet is this rollup summed for each inventory device (the devices map and "
+                "the collection_completeness blind spots), so a row naming no inventory device counts under no "
+                "device key and a multi-device row under each device it names, so the device counts need not sum "
+                "to the row total.",
+                ["/inventory/devices/rows", "/findings/facets/device"]),
     _limitation("topology_scanned_model", "analyze.compute_cable_map; analyze.compute_link_centrality",
                 "The graph describes captured discovery and the scanned host-pair model. A collected node is not "
                 "a health verdict; an up cable is a reported link state, not end-to-end reachability. Structural "
                 "metrics describe host pairs, not individual cable redundancy, and the owner writes one record per "
                 "unordered host pair: two rows naming one pair, in either orientation, are each kept and unverified "
                 "with a witness to every such row, never picked between. Uncollected peers and ambiguous endpoint "
-                "joins remain visible; absent links are not proof of disconnection.", ["/topology"]),
+                "joins remain visible; absent links are not proof of disconnection. A cable-map node or cable row an "
+                "exact hostname or host-pair join cannot read (not an object, or a host that is missing or not text) "
+                "could carry that name or pair, so beside one the join is unverified, with a witness to each such "
+                "row: never a single node or cable picked, and never 'none'.", ["/topology"]),
     _limitation("impact_scanned_scope", "analyze.compute_failure_impact",
                 "Impact is limited to the scanned VLAN/carriage model. Stranded endpoints exclude those on the "
                 "removed host itself. Info and zero are not an assessed/healthy result; retain the owner's "
@@ -608,10 +812,15 @@ LIMITATIONS += (
                 "count is a lower bound against its own row's blind_links, not against other rows'. A switch the "
                 "stored cable map cables to a peer it does not show as collected "
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
-                "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
+                "node, which every cable end is while a node row cannot be joined by host) cannot account for "
+                "endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
-                "lower bounds that cite each such cable. The owner writes one row per host: two rows naming one "
-                "exact host are each kept and unverified, with a witness to every such row, never picked between, "
+                "lower bounds that cite each such cable. Where the stored cable list cannot be read (absent, "
+                "malformed or from a failed phase), whether a switch faces such a peer cannot be checked, so its row "
+                "is bounded the same way and cites that list, or the nearest record it is missing from: the cable "
+                "map, or the snapshot root when there is no cable map. The owner writes one row per host: two rows "
+                "naming one exact host are each kept and unverified, with a witness to every such row, never picked "
+                "between, "
                 "and a hold or bound that also applies is carried beside that doubt. Detail lists up to 8 per-VLAN "
                 "examples and preserves the owner's '+N more' disclosure; the row counts retain the full model totals.",
                 ["/topology/failure_impact"]),
@@ -621,6 +830,18 @@ LIMITATIONS += (
                 "not management suitability or unique source ownership. A scoped no-route observation is not "
                 "an observed discard. Reached paths can still have dropping ECMP legs. MTU evidence is "
                 "IPv4-specific and does not establish IPv6 suitability.", ["/topology/source_addresses"]),
+    _limitation("finding_facet_source_incomplete", "analyze.PUNCH_CATEGORY_SECTION",
+                "The engine folds each punch-list category from one source section (analyze.PUNCH_CATEGORY_SECTION), "
+                "which is not always a punch-list input. While a category's section was not collected, its phase "
+                "failed, a failure the run recorded cannot be attributed to sections (an intermediate phase or a "
+                "label nobody classified, which could have fed any of them), the section is stored as a container "
+                "other than its producer's, or the abstention core could not read it, that category's count cannot be "
+                "complete: a "
+                "positive count is a lower bound that carries this caveat, with a ref to the section or its failure "
+                "record, and a zero is not_collected, analysis_unavailable or unverified, never a clean result. A row "
+                "of any category can carry any severity, so while any category's section is incomplete every "
+                "severity count follows the same rule.",
+                ["/findings/facets/severity", "/findings/facets/category"]),
 )
 LIMITATIONS += (
     _limitation("trust_inputs_scope",
@@ -663,6 +884,24 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "routing_neighbors_empty_is_ambiguous", "build.build_routing_neighbors",
         "An empty neighbour list means the protocol is not running, or its command was not collected or not "
         "parsed. The engine does not tell these apart, so an empty list is withheld as not_collected.",
+        ["/device/routing_neighbors"]),
+    _limitation(
+        "routing_peer_resolution_scope", "fib._connected_index, fib._hosts_owning_ip, build.build_routing_neighbors",
+        "peer_host is an exact address match, not an adjacency or reachability proof. It names the one collected "
+        "device that the address index (topology.source_addresses) places the neighbour's address on: configured "
+        "IPv4 interface addresses, primary and secondary, from the scoped interface running-config, plus in-scope "
+        "local and FHRP host routes. OSPF resolves its adjacency address, never its router ID. VRF selection is not "
+        "modelled: the index spans every VRF a captured interface configures, so an address on two devices in any "
+        "VRFs is unverified, and a published owner may carry the address in another VRF than the adjacency, where an "
+        "uncollected device could reuse it. Both a published owner and 'not resolved' (collected_but_empty) are "
+        "stated only over a readable, complete index: every input collected, every collected device's interface "
+        "addresses captured, and a readable collection_completeness record, which completes the device roster with "
+        "the inventory devices never reached. Otherwise a device the index cannot hold could be a second owner, so a "
+        "sole observed owner is not_collected, like an absence, and the reason states how many coverage gaps there "
+        "are (a capped number of them are cited). 'Not resolved' means that no record in the index states the "
+        "address. An address neither source states is not observed: a DHCP or negotiated interface address whose "
+        "local route was not captured in scope, or a firewall's failover standby address. Every IPv6 address is "
+        "not_collected, because the interface addresses the index takes from the running-config are IPv4 only.",
         ["/device/routing_neighbors"]),
 )
 #: The payload limitations a device page can cite, re-addressed into a ``DeviceDocument`` (so the document defines
@@ -729,6 +968,7 @@ _SLOT_RULE = {
     "coverage_cell": "a coverage state of its closed vocabulary",
     "shared_ip": "an {ip, switches, macs} record",
     "evidence_ref": "a closed {kind, host, ref, role, cite} record using the engine's evidence vocabulary",
+    "sha256": "a 'sha256:' digest of 64 lowercase hexadecimal digits",
 }
 
 # Slice 2 reasons (a reason that is not collected_but_empty never says "not a blind spot").
@@ -750,6 +990,33 @@ _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row ca
 _R_UNJOINABLE_STEM = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key "
                       "field that is missing or not text), and any of them could name ")
 _R_UNJOINABLE = _R_UNJOINABLE_STEM + "this device"
+#: The blind-spot list the owner's device scope reads (ssot._device_not_collected).
+_CC_ROWS: Tuple[str, str] = ("collection_completeness", "devices")
+#: Why the owner's device scope cannot be trusted to say a device is NOT a blind spot (:meth:`_Ctx.scope_doubt`).
+_R_SCOPE = ("unverified: whether collection_completeness lists this device as partial or not collected cannot be "
+            "read: {parts}")
+_R_SCOPE_UNJOINABLE = ("{n} collection_completeness row(s) cannot be joined by host (not an object, or a host that is "
+                       "missing or not text), and any of them could be this device's")
+_R_SCOPE_AMBIG = ("{n} collection_completeness rows name this device (without case or surrounding space), but the "
+                  "owner's device scope (ssot.abstention_reason) reads only the first of them")
+_R_SCOPE_STATUS = ("the collection_completeness row naming this device states no status its owner's vocabulary names "
+                   "({statuses}), and the owner's device scope reads any other status as collected")
+_R_SCOPE_LIST = ("{path} is present but is not {kind}, and the owner's device scope (ssot.abstention_reason) reads it "
+                 "as listing no blind spot, so any device could be one")
+_R_INVENTORY_UNJOINABLE = ("unverified: {n} collection_completeness row(s) cannot be joined by host (not an object, or "
+                           "a host that is missing or not text), so a blind-spot device they list may be missing from "
+                           "these rows")
+_R_INVENTORY_UNREADABLE = ("unverified: {path} is present but is not {kind}, so the blind-spot devices it lists cannot "
+                           "be read and may be missing from these rows")
+_R_UNKNOWN_HOST_DOUBT = ("unverified: no readable roster in this snapshot names this device (devices, "
+                         "collection_completeness, cable_map), but {parts}")
+_R_ROSTER_UNJOINABLE = ("{n} roster row(s) cannot be joined by host (not an object, or a host that is missing or not "
+                        "text), and any of them could name it")
+_R_ROSTER_UNREADABLE = ("{path} is present but is not {kind}, so no name it holds can be read, and it could name this "
+                        "device")
+#: A host-pair join over cable_map.cables (a structural link's candidate cables) that a row it cannot read leaves open.
+_R_PAIR_UNJOINABLE = ("unverified: {n} row(s) in cable_map.cables cannot be joined by exact host pair (not an object, "
+                      "or an end that is missing or not text), and any of them could cable this host pair")
 _R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
                  "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
@@ -779,6 +1046,42 @@ _R_FLEET_BLIND = ("not collected: collection_completeness lists {n} device(s) as
 _R_FLEET_NO_CONFIG = ("not collected: {n} device(s) in the devices map have no security row (no captured "
                       "running-config), so their configuration-derived rows could not be generated; an empty list is "
                       "not a clean result")
+# G41 (snapshot identity in the engine block).
+_R_SOURCE_UNBOUND = ("not collected: this projection received a parsed snapshot without the exact bytes it was read "
+                     "from, so it names no file. Only the reader that holds those bytes can bind them "
+                     "(protocol_assurance.bind_snapshot_json_bytes); a hash of a re-serialisation would name a "
+                     "different byte string, so none is computed")
+_R_SOURCE_DETACHED = ("unverified: this snapshot was bound to exact bytes, but its content no longer matches them "
+                      "(protocol_assurance.bound_snapshot_source), so it names no file")
+_R_SOURCE_MALFORMED = ("unverified: the source-identity receipt failed this projection's type check (a 'sha256:' digest "
+                       "of 64 lowercase hexadecimal digits and a positive byte count within the browser's exact integer "
+                       "range), so it names no file")
+_R_FLEET_UNREAD = ("not collected: collection_completeness carries {n} row(s) that cannot be read as a partial or "
+                   "not-collected device (not an object, or a status outside its owner's vocabulary); the owner lists "
+                   "only blind spots, so each could be one, and an empty list is not a clean result")
+_R_FLEET_UNREADABLE_LIST = ("not collected: {path} is present but is not {kind}, so which devices it lists as partial "
+                            "or not collected cannot be read; any device could be one, and an empty list is not a "
+                            "clean result")
+#: W51 (second round): any other reason the blind-spot record's coverage verdict (:func:`_cc_coverage`) cannot show
+#: every inventory device collected or listed: an absent, failed or self-contradictory record.
+_R_FLEET_CC_GAP = "not collected: {clause}; an empty list is not a clean result"
+# The blind-spot record's coverage verdict (:func:`_cc_coverage`): its clauses, shared by every consumer.
+_R_CC_UNREAD = "collection_completeness cannot be read ({why}), so no collection blind spot can be ruled out"
+_R_CC_ROWS = ("{k} collection_completeness row(s) name no readable status of their owner's vocabulary (not an object, "
+              "or a status other than partial or not collected; the owner lists only blind spots), so whether they "
+              "are blind spots cannot be read")
+_R_CC_SUMMARY = ("collection_completeness.summary counts {k} partial or not-collected device(s), but its devices list "
+                 "carries only {n} such row(s), and the producer writes one row per such device, so a blind spot may "
+                 "be missing from the list")
+_R_CC_SUMMARY_UNREAD = ("collection_completeness.summary's partial or not_collected count cannot be read, so the "
+                        "blind-spot list cannot be checked against it")
+_R_CC_INVENTORY = ("collection_completeness.summary.inventory counts {typed} device(s), but the inventory rows (the "
+                   "devices map and the blind spots the record lists) number {n}, so the record does not reconcile with "
+                   "the roster and a blind spot may be missing from the list")
+_R_CC_INVENTORY_UNREAD = ("collection_completeness.summary.inventory cannot be read as a count, so the record cannot be "
+                          "reconciled with the roster")
+_R_INVENTORY_RECORD = ("{word}: the inventory rows read the blind spots from collection_completeness, which cannot show "
+                       "every inventory device collected or listed: {clauses}")
 
 
 def _is_text(value: Any) -> bool:
@@ -833,6 +1136,22 @@ def _get(doc: Any, tokens: Sequence[Any]) -> Any:
     return cur
 
 
+def _unreadable_container(doc: Any, toks: Tuple[str, ...], want: type) -> Optional[Tuple[Tuple[str, ...], type]]:
+    """Where the container at the FIXED path `toks` is present but cannot be read, as ``(path, the type it should
+    be)``: the first hop the snapshot carries as something other than an object, or the container itself carried as
+    something other than `want`. ``None`` when it reads, or when a hop is missing or null (the abstention core's
+    not_collected, never this doubt). An owner that coerces such a value to empty (ssot._as_list) reads it as
+    holding nothing, so a reader that needs every row it holds treats it as rows it cannot read."""
+    cur = doc
+    for n, tok in enumerate(toks):
+        if not isinstance(cur, dict):
+            return toks[:n], dict
+        cur = cur.get(tok)
+        if cur is None:
+            return None
+    return None if isinstance(cur, want) else (toks, want)
+
+
 def _tokens(path: str) -> Tuple[str, ...]:
     return tuple(path.split("."))
 
@@ -872,13 +1191,19 @@ class _Ctx:
         self._census_counts: Optional[Dict[str, Any]] = None
         self._mg: Optional[bool] = None
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
+        self._scope_doubt: Dict[str, Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]] = {}
         self._blind_rows: Optional[List[int]] = None
+        self._cc_cov: Optional["_CCCoverage"] = None
         self._no_config: Optional[List[str]] = None
         self._device_findings: Any = _UNSET
+        self._punch_facets: Any = _UNSET
         self._vlan_hosts: Any = _UNSET
         self._coverage_rows: Any = _UNSET
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
         self._impact: Any = _UNSET
+        self._source: Any = _UNSET
+        self._addresses: Any = _UNSET
+        self._addr_cov: Any = _UNSET
 
     @property
     def impact(self) -> impact_assessability.ImpactSnapshot:
@@ -889,6 +1214,46 @@ class _Ctx:
                 self.s, rows_by_host=lambda: self.index(("failure_impact",), ("host",)),
                 cables=lambda: _impact_cable_source(self))
         return self._impact
+
+    @property
+    def source(self) -> Tuple[str, Optional[str], Optional[int], str]:
+        """G41: ``(state, sha256, bytes, reason)`` of the exact bytes this snapshot object was parsed from, read once
+        from its owner (:data:`SNAPSHOT_IDENTITY_OWNER`), so every document built over this context agrees. A mapping
+        that carries no exact-byte marker is not_collected; a marker its owner no longer verifies (the content changed
+        after binding), an owner fault or a malformed receipt is unverified. Nothing here hashes the snapshot."""
+        if self._source is _UNSET:
+            if not isinstance(self.s, BoundSnapshot):
+                self._source = (_NC, None, None, _R_SOURCE_UNBOUND)
+            else:
+                receipt = self._call(SNAPSHOT_IDENTITY_OWNER, bound_snapshot_source, None)
+                fault = self.faults.get(SNAPSHOT_IDENTITY_OWNER)
+                ok_sha, sha = _typed(receipt.get("sha256") if isinstance(receipt, dict) else None, "sha256")
+                ok_n, size = _typed(receipt.get("bytes") if isinstance(receipt, dict) else None, "positive_count")
+                if fault is not None:
+                    self._source = (_UV, None, None, fault)
+                elif not isinstance(receipt, dict) or receipt.get("source_bound") is not True:
+                    self._source = (_UV, None, None, _R_SOURCE_DETACHED)
+                elif not (ok_sha and ok_n):
+                    self._source = (_UV, None, None, _R_SOURCE_MALFORMED)
+                else:
+                    self._source = (_PUB, sha, size, "")
+        return self._source
+
+    @property
+    def addresses(self) -> Any:
+        """The one address index (:func:`_address_sources`), built once: topology.source_addresses publishes it and
+        every routing-neighbour peer resolution (G17) reads it, so the two can never disagree."""
+        if self._addresses is _UNSET:
+            self._addresses = _address_sources(self)
+        return self._addresses
+
+    @property
+    def address_coverage(self) -> Any:
+        """Whether that index holds every collected device's interface addresses, and its coverage gaps
+        (:func:`_address_coverage`)."""
+        if self._addr_cov is _UNSET:
+            self._addr_cov = _address_coverage(self)
+        return self._addr_cov
 
     @property
     def coverage_rows(self) -> Optional[CoverageRowIndex]:
@@ -928,6 +1293,17 @@ class _Ctx:
                 {"problem": "the engine finding fold failed; its partition is unverified", "per_device": {}},
             )
         return self._device_findings
+
+    @property
+    def punch_facets(self) -> Any:
+        """``analyze.compute_punchlist_facets`` over the stored punch list (computed once; ``None`` on a fault)."""
+        if self._punch_facets is _UNSET:
+            self._punch_facets = self._call(
+                "analyze.compute_punchlist_facets",
+                lambda snap: compute_punchlist_facets(snap.get("punchlist")),
+                None,
+            )
+        return self._punch_facets
 
     @property
     def vlan_hosts(self) -> Any:
@@ -1040,9 +1416,86 @@ class _Ctx:
 
     def device_blind(self, section: str, host: Any) -> bool:
         """The owner's device scope says ``not_collected`` where its section-level answer does not: the device
-        is a collection blind spot (``collection_completeness`` lists it as not collected)."""
+        is a collection blind spot (``collection_completeness`` lists it as not collected). Read it only through
+        :meth:`device_scope`, which also says when its negative answer cannot be trusted."""
         return (_is_text(host) and bool(host) and self.abst_dev(section, host) == _NC
                 and self.abst(section) != _NC)
+
+    def device_scope(self, section: str, host: Any) -> Optional[Tuple[str, str, List[Tuple[str, Sequence[Any]]]]]:
+        """The owner's device scope for `host`, as ``(state, reason, witness ref entries)``: ``not_collected`` when it
+        calls the device a blind spot (:meth:`device_blind`); ``unverified`` when it does not, but cannot be trusted
+        to say so (:meth:`scope_doubt`); ``None`` when it neither withholds nor doubts the device. Every reader of
+        the device scope reads it here, so no reader can take the owner's "not a blind spot" without its doubt."""
+        if self.device_blind(section, host):
+            return _NC, _R_DEVICE_NC, self.cc_witness(host)
+        doubt = self.scope_doubt(host)
+        return None if doubt is None else (_UV, doubt[0], doubt[1])
+
+    def scope_doubt(self, host: Any) -> Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
+        """Why the owner's device scope cannot be trusted to say `host` is NOT a blind spot, with a witness to each row
+        that says so, or ``None``. ``ssot._device_not_collected`` is a key join over collection_completeness.devices
+        (the name without case or surrounding space, first match wins) that passes over every row it cannot read, so
+        it is held to the rule of every key join here (:func:`_resolve`): a row it cannot join could be this device's;
+        a second row naming the device is never read; and a row whose status the owner's vocabulary does not name
+        reads as collected. The record itself is held to it too, through its one coverage verdict
+        (:meth:`cc_coverage`, :data:`_CC_RECORD_DOUBTS`): carried as something other than a list (or its section as
+        something other than an object), the owner reads it as listing no blind spot (ssot._as_list); a failed phase
+        leaves only its fallback; and a summary that counts more blind spots than the list carries, or cannot be read,
+        contradicts it. Each puts every device in doubt, with a witness to that value and, for a failed phase, its
+        failure record. A list or section the snapshot does not carry (missing or null) with no failure recorded is the
+        abstention core's not_collected on the collection row's own state (:func:`_joins`), not a doubt about one
+        device; every fleet-level reader still qualifies it (:func:`_fleet_qualify`) (cached per host)."""
+        if not (_is_text(host) and host):
+            return None
+        if host not in self._scope_doubt:
+            parts: List[str] = []
+            wit: List[Tuple[str, Sequence[Any]]] = []
+            for gap in self.cc_coverage().gaps:
+                if gap.kind not in _CC_RECORD_DOUBTS:
+                    continue
+                parts.append(_R_SCOPE_LIST.format(path=".".join(gap.where[0]), kind=_KIND[gap.where[1]])
+                             if gap.kind == _CC_UNREADABLE else gap.clause)
+                wit += gap.entries()
+            named = self.index(_CC_ROWS, ("host",), norm=True).get(_norm(host), [])
+            if len(named) > 1:
+                parts.append(_R_SCOPE_AMBIG.format(n=len(named)))
+                wit += [("witness", _CC_ROWS + (i,)) for i in named]
+            elif named:
+                row = _get(self.s, _CC_ROWS + (named[0],))
+                status = row.get("status") if isinstance(row, dict) else None
+                if not (_is_text(status) and _norm(status) in CC_STATUSES):
+                    parts.append(_R_SCOPE_STATUS.format(statuses=", ".join(CC_STATUSES)))
+                    status_tok = ("status",) if isinstance(row, dict) and "status" in row else ()
+                    wit.append(("witness", _CC_ROWS + (named[0],) + status_tok))
+            lost = self.unjoinable(_CC_ROWS, ("host",))
+            if lost:
+                parts.append(_R_SCOPE_UNJOINABLE.format(n=len(lost)))
+                wit += [("witness", _CC_ROWS + (i,)) for i in lost]
+            self._scope_doubt[host] = (_R_SCOPE.format(parts="; ".join(parts)), wit) if parts else None
+        found = self._scope_doubt[host]
+        return None if found is None else (found[0], list(found[1]))
+
+    def cc_unreadable(self) -> Optional[Tuple[Tuple[str, ...], type]]:
+        """Where the blind-spot list the owner's device scope reads is present but cannot be read as a list, with the
+        type it should be (:func:`_unreadable_container`), or ``None``."""
+        return _unreadable_container(self.s, _CC_ROWS, list)
+
+    def cc_coverage(self) -> "_CCCoverage":
+        """The blind-spot record's one coverage verdict (:func:`_cc_coverage`), computed once: every reader of whether
+        the collection reached every inventory device reads it here, never the record itself."""
+        if self._cc_cov is None:
+            self._cc_cov = _cc_coverage(self)
+        return self._cc_cov
+
+    def partial_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """The one blind-spot row the owner's device scope reads for `host` when it lists the device as partial, or
+        ``(None, None)``. A doubted scope (:meth:`scope_doubt`) names no partial row: its first match may not be the
+        device's own."""
+        if self.scope_doubt(host) is not None:
+            return None, None
+        i, row = self.cc_row(host)
+        status = row.get("status") if isinstance(row, dict) else None
+        return (i, row) if i is not None and _is_text(status) and _norm(status) == "partial" else (None, None)
 
     def cc_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
         """The blind-spot row the owner's device scope reads for `host` (ssot._device_not_collected: the name
@@ -1084,11 +1537,11 @@ class _Ctx:
             self._indexes[key] = out
         return self._indexes[key]
 
-    def unjoinable(self, toks: Tuple[Any, ...], fields: Tuple[str, ...]) -> List[int]:
+    def unjoinable(self, toks: Tuple[Any, ...], fields: Tuple[str, ...], multi: bool = False) -> List[int]:
         """:func:`_unjoinable_rows` of the list at `toks` (one pass, cached): the rows :meth:`index` cannot read."""
-        key = (toks, fields)
+        key = (toks, fields, multi)
         if key not in self._unjoinable:
-            self._unjoinable[key] = _unjoinable_rows(_get(self.s, toks), fields)
+            self._unjoinable[key] = _unjoinable_rows(_get(self.s, toks), fields, multi)
         return list(self._unjoinable[key])
 
     def pairs(self, toks: Tuple[Any, ...], fields: Tuple[str, str]) -> Dict[FrozenSet[str], List[int]]:
@@ -1112,6 +1565,14 @@ class _Ctx:
                                 if isinstance(row, dict) and _is_text(row.get("status"))
                                 and _norm(row["status"]) in CC_STATUSES]
         return list(self._blind_rows)
+
+    def unread_blind_rows(self) -> List[int]:
+        """Every collection_completeness row :meth:`blind_rows` cannot read as a partial or not-collected device (not
+        an object, or a status outside its owner's vocabulary). The owner lists only blind spots, so each could be
+        one; none of them is passed over silently."""
+        rows = _get(self.s, _CC_ROWS)
+        blind = set(self.blind_rows())
+        return [i for i in range(len(rows)) if i not in blind] if isinstance(rows, list) else []
 
     def no_config_hosts(self) -> List[str]:
         """The devices-map hosts the security map carries no row for (no captured running-config)."""
@@ -1225,6 +1686,8 @@ def _text_list(raw: Any) -> Tuple[bool, Any]:
     return False, None
 
 
+#: :data:`SNAPSHOT_SHA256_PATTERN` without its anchors, for a whole-string match (``$`` would admit a trailing newline).
+_SHA256_RE = re.compile(SNAPSHOT_SHA256_PATTERN[1:-1])
 _FHRP_TEXT = ("proto", "group", "vip")
 _FHRP_MEMBER_TEXT = ("host", "proto", "group", "vip", "role", "vmac")
 
@@ -1305,6 +1768,9 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return ok, {k: raw[k] for k in fields} if ok else None
     if slot == "text":
         ok = _is_text(raw)
+        return ok, (raw if ok else None)
+    if slot == "sha256":
+        ok = _is_text(raw) and _SHA256_RE.fullmatch(raw) is not None
         return ok, (raw if ok else None)
     if slot == "flag":
         return isinstance(raw, bool), (raw if isinstance(raw, bool) else None)
@@ -1661,10 +2127,35 @@ def _overview_facts(ctx: _Ctx) -> Dict[str, Any]:
     return out
 
 
-def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
-    fh = ctx.fh
+def _fleet_health_count(ctx: _Ctx, key: str, caveats: Sequence[str] = ()) -> Dict[str, Any]:
+    """``ssot.fleet_avg_health``'s ``n_scored`` or ``n_rows``: a live count over the health rows (no snapshot
+    address). One builder for the fleet-health block and the Fleet health axis's could-not-assess count."""
     hs_t = ctx.abst("health_scores")
     health = ctx.s.get("health_scores")
+    entries: List[Tuple[str, Sequence[Any]]] = [("basis", ("health_scores",))]
+    if key == "n_scored":
+        entries.append(("witness", ("executive_brief", "posture", "n_scored")))
+    reason = ""
+    value = None
+    if hs_t == AU:
+        state = AU
+    elif hs_t == _FAULT:
+        state, reason = _UV, ctx.fault(("health_scores",))
+    elif health is not None and not isinstance(health, list):
+        state, reason = _UV, "unverified: health_scores is not a list, so no row can be counted"
+    elif not isinstance(health, list):
+        state = _NC
+    else:
+        ok, value = _count(ctx.fh.get(key))
+        state = _PUB if ok else _UV
+    refs = ctx.refs(entries + ctx.failure_entries(("health_scores",), state == AU))
+    return _envelope(state, value, None, refs, f"ssot.fleet_avg_health:{key}",
+                     reason or _state_reason(ctx, state, "count", ("health_scores",)),
+                     caveats=caveats if state == _PUB else ())
+
+
+def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
+    fh = ctx.fh
     block: Dict[str, Any] = {"state": avg["state"]}
     if avg["state"] != _PUB:
         block["reason"] = avg["reason"]
@@ -1676,25 +2167,7 @@ def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
         token = raw if isinstance(raw, str) and raw in NOT_ASSESSED_REASONS else None
     block["not_assessed_reason"] = token
     for key in ("n_scored", "n_rows"):
-        entries: List[Tuple[str, Sequence[Any]]] = [("basis", ("health_scores",))]
-        if key == "n_scored":
-            entries.append(("witness", ("executive_brief", "posture", "n_scored")))
-        reason = ""
-        value = None
-        if hs_t == AU:
-            state = AU
-        elif hs_t == _FAULT:
-            state, reason = _UV, ctx.fault(("health_scores",))
-        elif health is not None and not isinstance(health, list):
-            state, reason = _UV, "unverified: health_scores is not a list, so no row can be counted"
-        elif not isinstance(health, list):
-            state = _NC
-        else:
-            ok, value = _count(fh.get(key))
-            state = _PUB if ok else _UV
-        refs = ctx.refs(entries + ctx.failure_entries(("health_scores",), state == AU))
-        block[key] = _envelope(state, value, None, refs, f"ssot.fleet_avg_health:{key}",
-                               reason or _state_reason(ctx, state, "count", ("health_scores",)))
+        block[key] = _fleet_health_count(ctx, key)
     block["bands"] = _health_bands(ctx)
     return block
 
@@ -1862,6 +2335,336 @@ def _readiness(ctx: _Ctx) -> Dict[str, Any]:
                                 + ctx.failure_entries(READINESS_INPUTS, state == AU))}
 
 
+# ---------------------------------------------------------------------------------------------------
+# G05: per axis, the devices it could not assess, out of how many -- read from the axis's producer
+# ---------------------------------------------------------------------------------------------------
+_B_AXIS_TABLE = "cisco_toolkit.ui_projection.AXIS_UNASSESSED"
+_B_AXIS_ABSENT = "cisco_toolkit.ui_projection.AXIS_UNASSESSED_ABSENT"
+_B_FLEET_UNSCORED = "ssot.fleet_avg_health:n_rows - n_scored"
+_R_AXIS_NO_LABEL = ("unverified: the axis row carries no readable label, so no producer count of the devices it could "
+                    "not assess can be chosen")
+_R_AXIS_UNREGISTERED = ("not collected: this projection registers no producer count of the devices this axis label "
+                        "could not assess, so nothing is claimed for it; it is never shown as 0")
+_R_COVERED_NONE = ("collected but empty: the producer covered no device, so no device was left unassessed and none "
+                   "was assessed (not a blind spot)")
+#: While collection_completeness lists a blind spot (fleet_lists_exclude_blind_devices): a zero count, a count over no
+#: device, and an empty denominator are not clean results, because no producer universe holds an unreached device.
+_R_AXIS_BLIND_N = ("not collected: collection_completeness lists {k} device(s) as partial or not collected, and this "
+                   "axis's producer counts only the devices whose evidence it was given (a device the collection never "
+                   "reached is in neither this count nor its denominator), so its count cannot show that every "
+                   "inventory device was assessed; it is never shown as 0")
+_R_AXIS_BLIND_OF = ("not collected: collection_completeness lists {k} device(s) as partial or not collected, and this "
+                    "axis's producer covered no device: its device count holds only the devices whose evidence it was "
+                    "given, so an empty count is not a clean result; it is never shown as 0")
+#: W51 (F6 x G05): the same two holds for a fleet qualification that is not a readable blind-spot row (a row or list
+#: the blind-spot classifier cannot read), worded by that qualification's own reason, never as "lists 0 device(s)".
+_R_AXIS_UNREAD_N = ("{why}; this axis's producer counts only the devices whose evidence it was given, so its count "
+                    "cannot show that every inventory device was assessed; it is never shown as 0")
+_R_AXIS_UNREAD_OF = ("{why}; this axis's producer covered no device, and its device count holds only the devices whose "
+                     "evidence it was given, so an empty count is not a clean result; it is never shown as 0")
+#: One could-not-assess entry: ``(producer, count, denominator, rows, field, value)`` (see :data:`AXIS_UNASSESSED`).
+_UnassessedSpec = Tuple[str, str, str, str, str, Union[str, bool]]
+
+
+def _unassessed_rows(ctx: _Ctx, rows_path: str, field: str, mark: Union[str, bool]) -> Tuple[Optional[bool], int, int]:
+    """A count's raw basis: ``(readable, rows, rows whose `field` is `mark`)``. ``readable`` is ``None`` when the
+    producer's per-device rows are absent (nothing to check the count against) and ``False`` when they are present but
+    are not a list of records each carrying `field` with the type of `mark`."""
+    rows = _get(ctx.s, _tokens(rows_path))
+    if rows is _MISSING or rows is None:
+        return None, 0, 0
+    kind = type(mark)
+    if not isinstance(rows, list) or not all(isinstance(row, dict) and type(row.get(field)) is kind for row in rows):
+        return False, 0, 0
+    return True, len(rows), sum(1 for row in rows if row[field] == mark)
+
+
+def _missing_unassessed(ctx: _Ctx, spec: _UnassessedSpec, of: Dict[str, Any], cav: Tuple[str, ...],
+                        rows: Tuple[Optional[bool], int, int],
+                        doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]) -> Dict[str, Any]:
+    """The count's entry is absent from a summary its producer did write. A counter that omits an entry no device
+    holds (:data:`AXIS_UNASSESSED_SPARSE`) reads as zero only when its per-device rows and a published device count
+    confirm that none carries the value; any other absence is a count this snapshot does not store."""
+    owner, n_path, of_path, rows_path, field, mark = spec
+    n_toks, of_toks, rows_toks = _tokens(n_path), _tokens(of_path), _tokens(rows_path)
+    parent_path, leaf = ".".join(n_toks[:-1]), n_toks[-1]
+    basis = f"{owner}:{n_path}"
+    readable, marked = rows[0], rows[2]
+    witness: List[Tuple[str, Sequence[Any]]] = [("witness", n_toks[:-1]), ("witness", rows_toks)]
+    if parent_path not in AXIS_UNASSESSED_SPARSE:
+        return _envelope(_NC, None, json_pointer(*n_toks), ctx.refs(witness[:1]), basis,
+                         f"not collected: {parent_path} stores no {leaf} (for example a snapshot that predates this "
+                         "count, or a summary edited after it was written), so how many devices this axis could not "
+                         "assess is not known; it is never shown as 0")
+    if doubt:
+        return _envelope(_UV, None, json_pointer(*n_toks), ctx.refs(witness + doubt[1]), basis, doubt[0])
+    if readable and marked:
+        return _envelope(_UV, None, json_pointer(*n_toks), ctx.refs(witness), basis,
+                         f"unverified: {parent_path} stores no {leaf} entry, yet {marked} of the rows in {rows_path} "
+                         f"carry {field} {mark!r}")
+    if readable and of["state"] == _PUB:
+        refs = ctx.refs(witness + [("denominator", of_toks)])
+        live = f"{basis} (an entry its counter omits; zero confirmed by {rows_path})"
+        if of["value"] == 0:
+            return _envelope(_CBE, None, None, refs, live, _R_COVERED_NONE)
+        return _envelope(_PUB, 0, None, refs, live, "", caveats=cav)
+    return _envelope(_NC, None, json_pointer(*n_toks), ctx.refs(witness), basis,
+                     f"not collected: {parent_path} stores no {leaf} entry, which its producer omits when no device "
+                     f"holds it, and {rows_path} with a published device count cannot confirm that here, so the count "
+                     "is not known; it is never shown as 0")
+
+
+def _stored_unassessed(ctx: _Ctx, label: str, spec: _UnassessedSpec, cav: Tuple[str, ...]) -> Dict[str, Any]:
+    """The producer's stored count and denominator, each through :func:`_scalar` (failure, blind spot, type and
+    reconcile rules), then held against each other, against a further layer's stored count
+    (:data:`AXIS_UNASSESSED_LAYERS`) and against the producer's per-device rows: any disagreement withholds both as
+    unverified, and a zero over a zero denominator is no measurement."""
+    owner, n_path, of_path, rows_path, field, mark = spec
+    n_toks, of_toks = _tokens(n_path), _tokens(of_path)
+    rows = _unassessed_rows(ctx, rows_path, field, mark)
+    readable, total, marked = rows
+    n_raw = _get(ctx.s, n_toks)
+    n_ok, n_val = _count(n_raw)
+    of_ok, of_val = _count(_get(ctx.s, of_toks))
+    over: List[Tuple[str, int]] = []                # a further layer's count above the device count
+    off: List[Tuple[Tuple[Any, ...], Any, int]] = []   # a further layer's count its own per-device rows contradict
+    for layer in AXIS_UNASSESSED_LAYERS.get(label, ()):
+        layer_ok, layer_val, layer_marked, present = _layer_count(ctx, layer)
+        if layer_ok and of_ok and layer_val > of_val:
+            over.append((layer[0], layer_val))
+        elif layer_ok and layer_marked is not None and layer_marked != layer_val:
+            off.append((layer, layer_val if present else None, layer_marked))
+    doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = None
+    if n_ok and of_ok and n_val > of_val:
+        doubt = (f"unverified: the producer's count of devices this axis could not assess ({n_val}) exceeds its own "
+                 f"device count ({of_val})", [("witness", n_toks), ("witness", of_toks)])
+    elif over:
+        doubt = (f"unverified: the producer's count of the devices a further layer of this axis could not assess "
+                 f"({over[0][0]}: {over[0][1]}) exceeds its own device count ({of_val})",
+                 [("witness", _tokens(over[0][0])), ("witness", of_toks)])
+    elif readable is False:
+        doubt = (f"unverified: {rows_path} cannot be read as per-device records each carrying {field}, so the "
+                 "stored count cannot be checked against its raw basis", [("witness", _tokens(rows_path))])
+    elif readable and ((of_ok and total != of_val) or (n_ok and marked != n_val)):
+        stored = (f"{n_val}" if n_ok else "no readable count") + " of " + (
+            f"{of_val}" if of_ok else "no readable device count")
+        doubt = (f"unverified: {rows_path} holds {total} device row(s), {marked} of them with {field} {mark!r}, "
+                 f"while the producer's summary stores {stored}", [("witness", _tokens(rows_path))])
+    elif off:
+        (lpath, _lname, lrows, lfield, lmark, _cover), stored_val, lmarked = off[0]
+        stored_txt = "no entry" if stored_val is None else str(stored_val)
+        doubt = (f"unverified: the producer's count of the devices a further layer of this axis could not assess "
+                 f"({lpath}: {stored_txt}) disagrees with its per-device rows ({lmarked} of the rows in {lrows} carry "
+                 f"{lfield} {lmark!r})", [("witness", _tokens(lpath)[:-1]), ("witness", _tokens(lrows))])
+
+    def of_gate(_ctx: _Ctx, _value: Any, _zero: bool):
+        return (_UV, doubt[0], list(doubt[1])) if doubt else None
+
+    def n_gate(_ctx: _Ctx, typed: Any, _zero: bool):
+        if doubt:
+            return _UV, doubt[0], list(doubt[1])
+        if typed == 0 and of_ok and of_val == 0:
+            return _CBE, _R_COVERED_NONE, []
+        return None
+
+    of = _scalar(ctx, of_path, "count", f"{owner}:{of_path}", gate=of_gate, published_caveats=cav)
+    # A missing entry the abstention core calls a blind spot (not a failed phase or an owner fault) inside a summary
+    # the producer did write: a sparse counter's zero, or a count this snapshot does not store.
+    if n_raw is _MISSING and isinstance(_get(ctx.s, n_toks[:-1]), dict) and ctx.abst(n_path) == _NC:
+        n = _missing_unassessed(ctx, spec, of, cav, rows, doubt)
+    else:
+        n = _scalar(ctx, n_path, "count", f"{owner}:{n_path}", gate=n_gate, witness=[("denominator", of_toks)],
+                    published_caveats=cav)
+    return {"n": n, "of": of}
+
+
+def _fleet_unassessed(ctx: _Ctx, cav: Tuple[str, ...]) -> Dict[str, Any]:
+    """Fleet health: the brief's unscored health rows, ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored`` (the
+    predicate the brief averages over), out of ``n_rows``; the same live counts the fleet-health block publishes."""
+    of = _fleet_health_count(ctx, "n_rows", caveats=cav)
+    scored = _fleet_health_count(ctx, "n_scored")
+    refs = [dict(ref) for ref in of["refs"]] + [dict(ref) for ref in scored["refs"] if ref not in of["refs"]]
+    if of["state"] != _PUB or scored["state"] != _PUB:
+        source = of if of["state"] != _PUB else scored
+        n = _envelope(source["state"], None, None, refs, _B_FLEET_UNSCORED, source["reason"])
+    elif scored["value"] > of["value"]:
+        n = _envelope(_UV, None, None, refs, _B_FLEET_UNSCORED,
+                      "unverified: ssot.fleet_avg_health counts more scored health rows than health rows")
+    elif of["value"] == 0:
+        n = _envelope(_CBE, None, None, refs, _B_FLEET_UNSCORED,
+                      "collected but empty: the snapshot publishes no health row, so no row was left unscored and "
+                      "none was scored (not a blind spot)")
+    else:
+        n = _envelope(_PUB, of["value"] - scored["value"], None, refs, _B_FLEET_UNSCORED, "", caveats=cav)
+    return {"n": n, "of": of}
+
+
+def _failed_unassessed(ctx: _Ctx, label: Optional[str], basis: Sequence[str]) -> Dict[str, Any]:
+    """Both cells of a row whose fact a failed phase makes analysis_unavailable (the brief itself, or an input the row's
+    basis names): the same verdict and the same failure records as the fact beside them, whatever the label."""
+    sections = ("executive_brief",) + tuple(basis)
+    reason = ctx.unavailable_reason(sections)
+    failure = ctx.failure_entries(sections, True)
+    spec = AXIS_UNASSESSED.get(label) if label is not None else None
+    cells: List[Tuple[str, Optional[Tuple[str, ...]]]]
+    if spec is not None:
+        cells = [(f"{spec[0]}:{spec[1]}", _tokens(spec[1])), (f"{spec[0]}:{spec[2]}", _tokens(spec[2]))]
+    elif label is not None and label in AXIS_UNASSESSED_LIVE:
+        cells = [(_B_FLEET_UNSCORED, None), ("ssot.fleet_avg_health:n_rows", None)]
+    else:
+        name = _B_AXIS_ABSENT if label is not None and label in AXIS_UNASSESSED_ABSENT else _B_AXIS_TABLE
+        cells = [(name, None), (name, None)]
+    out: Dict[str, Any] = {}
+    for key, (name, subject) in zip(("n", "of"), cells):
+        entries = (([("subject", subject)] if subject else []) + [("basis", (s,)) for s in basis] + list(failure))
+        out[key] = _envelope(AU, None, json_pointer(*subject) if subject else None, ctx.refs(entries), name, reason,
+                             owner_token=ctx.abst(".".join(subject)) if subject else None)
+    return out
+
+
+def _layer_count(ctx: _Ctx, layer: Tuple[str, str, str, str, Union[str, bool], str]
+                 ) -> Tuple[bool, Any, Optional[int], bool]:
+    """A further layer's own could-not-assess count (:data:`AXIS_UNASSESSED_LAYERS`): ``(readable, value, rows carrying
+    the could-not-assess value or None when its per-device rows cannot be read, whether the entry is stored)``. A
+    counter that omits an entry no device holds (:data:`AXIS_UNASSESSED_SPARSE`) reads a missing entry as zero only
+    when its per-device rows can be read, and then the rows say what it should hold."""
+    layer_path, _name, rows_path, field, mark, _cover = layer
+    toks = _tokens(layer_path)
+    readable, _total, marked = _unassessed_rows(ctx, rows_path, field, mark)
+    rows_marked = marked if readable else None
+    raw = _get(ctx.s, toks)
+    if raw is _MISSING and isinstance(_get(ctx.s, toks[:-1]), dict) and ".".join(toks[:-1]) in AXIS_UNASSESSED_SPARSE:
+        return (True, 0, rows_marked, False) if readable else (False, None, None, False)
+    ok, value = _count(raw)
+    return ok, value, rows_marked, raw is not _MISSING
+
+
+def _layer_gaps(ctx: _Ctx, label: Optional[str], n: Dict[str, Any],
+                of: Dict[str, Any]) -> List[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
+    """``(reason, witness entries)`` for each further layer of the axis (:data:`AXIS_UNASSESSED_LAYERS`) whose own
+    could-not-assess count (:func:`_layer_count`) is above zero, or cannot be read over a published device count: the
+    registered count then covers one layer only, and the producer stores none that spans every layer. A layer's
+    coverage key (a release captured) never stands in for its own count (a release classified)."""
+    out: List[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = []
+    for layer in (AXIS_UNASSESSED_LAYERS.get(label, ()) if label is not None else ()):
+        layer_path, name = layer[0], layer[1]
+        layer_toks = _tokens(layer_path)
+        layer_ok, layer_val, _marked, present = _layer_count(ctx, layer)
+        if layer_ok and of["state"] == _PUB and layer_val == 0:
+            continue
+        held = f" ({n['value']})" if n["state"] == _PUB else ""
+        if layer_ok and of["state"] == _PUB and 0 < layer_val <= of["value"]:
+            why = (f"not collected: this count{held} covers one layer of the axis only; its {name} could not assess "
+                   f"{layer_val} of the {of['value']} device(s) ({layer_path} is {layer_val}), and the producer stores "
+                   "no count of the devices it could not assess in every layer, so how many devices this axis could "
+                   "not assess is not known; it is never shown as 0")
+        else:
+            why = (f"not collected: this count{held} covers one layer of the axis only, and {layer_path} is not a "
+                   f"readable count over a published device count, so whether its {name} assessed every device is "
+                   "not known; it is never shown as 0")
+        out.append((why, [("witness", layer_toks if present else layer_toks[:-1])]))
+    return out
+
+
+def _withheld_count(ctx: _Ctx, fact: Dict[str, Any], holds: Sequence[Tuple[str, Sequence[Tuple[str, Sequence[Any]]]]],
+                    owner_token: Optional[str]) -> Dict[str, Any]:
+    """`fact` withheld as not_collected for every reason in `holds`, with its refs and each hold's witness refs; the
+    owner's own token for the stored value stays in ``engine_state``."""
+    refs = [dict(ref) for ref in fact["refs"]]
+    for ref in ctx.refs([entry for _why, wit in holds for entry in wit]):
+        if ref not in refs:
+            refs.append(ref)
+    return _envelope(_NC, None, fact["subject"], refs, fact["basis"], "; ".join(why for why, _wit in holds),
+                     owner_token=owner_token)
+
+
+def _caveated_count(ctx: _Ctx, fact: Dict[str, Any], caveat: str,
+                    witness: Sequence[Tuple[str, Sequence[Any]]]) -> Dict[str, Any]:
+    """A published `fact` that also carries `caveat`, with `witness` refs added."""
+    out = dict(fact)
+    refs = [dict(ref) for ref in fact["refs"]]
+    for ref in ctx.refs(witness):
+        if ref not in refs:
+            refs.append(ref)
+    out["refs"] = refs
+    kept = set(fact.get("caveats", ())) | {caveat}
+    out["caveats"] = [c for c in _ALL_LIMITATION_IDS if c in kept]
+    return out
+
+
+def _qualify_unassessed(ctx: _Ctx, label: str, block: Dict[str, Any],
+                        owner_tokens: Tuple[Optional[str], Optional[str]]) -> Dict[str, Any]:
+    """Two qualifications no producer count carries itself. A further layer the count does not cover
+    (:data:`AXIS_UNASSESSED_LAYERS`) withholds ``n``. A listed collection blind spot (the fleet-list qualification,
+    :func:`_fleet_qualify`) puts its caveat and a witness ref to each blind-spot row on a published count or denominator
+    and withholds a zero count, a count over no device and an empty denominator: no producer universe holds an
+    unreached device, so none of them is a clean result."""
+    n, of = block["n"], block["of"]
+    blind = _fleet_qualify(ctx)
+    n_blind = len(ctx.blind_rows())
+    # the readable blind-spot rows are counted as devices; any other qualification (F6: a row or list the blind-spot
+    # classifier cannot read) keeps its own reason
+    counted = _R_FLEET_BLIND.format(n=n_blind)
+
+    def blind_hold(why: str, wit: Sequence[Tuple[str, Sequence[Any]]], listed: str,
+                   unread: str) -> Tuple[str, Sequence[Tuple[str, Sequence[Any]]]]:
+        return (listed.format(k=n_blind) if why == counted else unread.format(why=why)), wit
+
+    holds: List[Tuple[str, Sequence[Tuple[str, Sequence[Any]]]]] = []
+    if n["state"] == _PUB:                       # a count over no device has no layer left unassessed
+        holds.extend(_layer_gaps(ctx, label, n, of))
+    if n["state"] in (_PUB, _CBE):
+        if blind and (holds or n["state"] == _CBE or n["value"] == 0):
+            holds.extend(blind_hold(why, wit, _R_AXIS_BLIND_N, _R_AXIS_UNREAD_N) for _cid, why, wit in blind)
+    if holds:
+        n = _withheld_count(ctx, n, holds, owner_tokens[0])
+    elif blind and n["state"] == _PUB:
+        for cid, _why, wit in blind:
+            n = _caveated_count(ctx, n, cid, wit)
+    if blind and (of["state"] == _CBE or (of["state"] == _PUB and of["value"] == 0)):
+        of = _withheld_count(ctx, of, [blind_hold(why, wit, _R_AXIS_BLIND_OF, _R_AXIS_UNREAD_OF)
+                                       for _cid, why, wit in blind], owner_tokens[1])
+    elif blind and of["state"] == _PUB:
+        for cid, _why, wit in blind:
+            of = _caveated_count(ctx, of, cid, wit)
+    return {"n": n, "of": of}
+
+
+def _axis_unassessed(ctx: _Ctx, label: Optional[str], toks: Tuple[Any, ...], basis: Sequence[str],
+                     base: str) -> Dict[str, Any]:
+    """G05: how many devices this axis could not assess (``n``), out of how many (``of``), read from the axis's producer
+    (:data:`AXIS_UNASSESSED`, :data:`AXIS_UNASSESSED_LIVE`), never from its headline, then qualified by the further
+    layers it does not cover and by the collection blind spots no producer universe holds
+    (:func:`_qualify_unassessed`). `basis` and `base` are the row's own: a failed input that makes the row's fact
+    analysis_unavailable makes both cells so too. An axis whose producer stores no such count
+    (:data:`AXIS_UNASSESSED_ABSENT`) or an unregistered label is not_collected, never 0; a row with no readable label
+    is unverified."""
+    if base == AU or _item_basis_state(ctx, basis)[0] == AU:
+        return _failed_unassessed(ctx, label, basis)              # a failed input always wins, row and block alike
+    cav = _brief_caveats(ctx, "axis_basis_owned_by_projection")
+    if label is not None and label in AXIS_UNASSESSED_LIVE:
+        return _qualify_unassessed(ctx, label, _fleet_unassessed(ctx, cav), (None, None))
+    spec = AXIS_UNASSESSED.get(label) if label is not None else None
+    if spec is not None:
+        return _qualify_unassessed(ctx, label, _stored_unassessed(ctx, label, spec, cav),
+                                   (ctx.abst(spec[1]), ctx.abst(spec[2])))
+    name = _B_AXIS_TABLE
+    if label is None:
+        state, reason, entries = _UV, _R_AXIS_NO_LABEL, [("witness", toks)]
+    else:
+        why = AXIS_UNASSESSED_ABSENT.get(label)
+        state, entries = _NC, [("basis", (s,)) for s in basis]
+        if why:
+            name = _B_AXIS_ABSENT
+            reason = (f"not collected: {why}; how many devices this axis could not assess is not stored, so it is "
+                      "never shown as 0")
+        else:
+            reason = _R_AXIS_UNREGISTERED
+    refs = ctx.refs(entries)
+    return {"n": _envelope(state, None, None, refs, name, reason),
+            "of": _envelope(state, None, None, [dict(ref) for ref in refs], name, reason)}
+
+
 def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
     path = "executive_brief.axes"
     base, owner, raw, breason = _list_base(ctx, path)
@@ -1888,7 +2691,8 @@ def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
         fact = _envelope(state, value, json_pointer(*toks), refs, "analyze.compute_executive_brief",
                          reason or _state_reason(ctx, state, "axis", basis),
                          caveats=cav if state == _PUB else ())
-        items.append({"index": i, "axis": label, "basis_sections": list(basis), "fact": fact})
+        items.append({"index": i, "axis": label, "basis_sections": list(basis), "fact": fact,
+                      "unassessed": _axis_unassessed(ctx, label, toks, basis, base)})
     present = {it["axis"] for it in items}
     contradiction = None
     missing_always = [lab for lab in ALWAYS_EMITTED_AXES if lab not in present]
@@ -2240,6 +3044,16 @@ _R_INPUTS_NO_REGISTER = ("not collected: the snapshot carries no device_dossiers
                          "is not a clean result")
 _R_INPUTS_UNJOINABLE = _R_UNJOINABLE_STEM + ("any inventory device, so the count of devices this input could not "
                                              "assess is not verified")
+#: W51 (F6 x G08): a device whose owner device scope cannot say it is not a blind spot (:meth:`_Ctx.device_scope`).
+_R_INPUTS_SCOPE = ("unverified: whether collection_completeness lists {n} device(s) as partial or not collected cannot "
+                   "be read (a row the host join cannot read, a second row naming the device, a status outside its "
+                   "owner's vocabulary, or a record that failed or whose summary counts a blind spot its list does not "
+                   "carry; ssot.abstention_reason reads only the first row it can), so the count of devices this input "
+                   "could not assess is not verified")
+#: W51: the blind-spot record cannot show which inventory devices were not collected (:func:`_roster_gaps`).
+_R_INPUTS_RECORD = ("{word}: collection_completeness, which lists the inventory devices no input could assess, cannot "
+                    "show every inventory device collected or listed: {clauses}; so the count of devices this input "
+                    "could not assess is not verified")
 #: How one inventory device stands before any axis is read: ``(fixed custody, witness pointer, why)`` when the same
 #: custody holds for every input, else ``None`` with the dossier row and its axis index.
 _HostCustody = Tuple[Optional[Tuple[str, str, str]], Optional[Tuple[Tuple[Any, ...], List[Any], Dict[str, List[int]]]]]
@@ -2249,14 +3063,17 @@ def _host_custody(ctx: _Ctx, host: str, dev_keys: FrozenSet[str], index: Mapping
                   readable: bool, lifecycle_failed: bool) -> _HostCustody:
     """One inventory device, first match wins: a collection blind spot (every input) -> an unreadable register (no
     claim) -> no row (unavailable when the lifecycle phase that guarantees every device a row failed, else a
-    contradiction with the producer: unverified) -> two rows naming it -> a row whose exposures cannot be indexed."""
-    i, _row = ctx.cc_row(host)
-    if i is not None and ctx.device_blind("collection_completeness", host):
-        return (_NC, json_pointer("collection_completeness", "devices", i), "blind"), None
+    contradiction with the producer: unverified) -> two rows naming it -> a row whose exposures cannot be indexed.
+    The blind-spot answer is read only through the device scope's door (:meth:`_Ctx.device_scope`, F6): a scope that
+    cannot say the device is not a blind spot makes its custody unverified for every input (``doubt``)."""
+    scope = ctx.device_scope("collection_completeness", host)
+    if scope is not None:
+        where = json_pointer(*scope[2][0][1]) if scope[2] else json_pointer("collection_completeness", "devices")
+        return ((_NC, where, "blind") if scope[0] == _NC else (_UV, where, "doubt")), None
     if not readable:
         return None, None
-    own = json_pointer("devices", host) if host in dev_keys or i is None else json_pointer(
-        "collection_completeness", "devices", i)
+    row = ctx.cc_witness(host)             # the scope is not in doubt, so the owner's first-match row is the one
+    own = json_pointer("devices", host) if host in dev_keys or not row else json_pointer(*row[0][1])
     rows = index.get(host, [])
     if not rows:
         return ((AU, own, "lost") if lifecycle_failed else (_UV, own, "unreadable")), None
@@ -2347,11 +3164,14 @@ def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
             state = AU
             reason = (ctx.unavailable_reason(("lifecycle_risk",)) + f"; {lost} device(s) have no risk-register "
                       "row, and the phase that guarantees every collected device one failed")
-        elif "unreadable" in whys:
+        elif "unreadable" in whys or "doubt" in whys:
             state, doubt = _UV, unjoinable
-            reason = (f"unverified: {whys.count('unreadable')} device(s) carry no single readable exposure for this "
+            parts = ([f"unverified: {whys.count('unreadable')} device(s) carry no single readable exposure for this "
                       "input in device_dossiers (a missing, duplicated or malformed row or record), so the count of "
-                      "devices it could not assess is not verified")
+                      "devices it could not assess is not verified"] if "unreadable" in whys else [])
+            if "doubt" in whys:
+                parts.append(_R_INPUTS_SCOPE.format(n=whys.count("doubt")))
+            reason = "; ".join(parts)
         elif unjoinable is not None:
             state, reason, doubt = _UV, None, unjoinable
         else:
@@ -2361,6 +3181,15 @@ def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
             state, reason = _UV, "; ".join(r for r in (reason, doubt) if r)
             extra += [("witness", dd_toks + (i,)) for i in bad]
         state, reason = _rolled(ctx, state, reason, secs, ("collection_completeness",))
+        # W51: the blind-spot record's coverage verdict, for the gaps neither the rollup nor the inventory total reads;
+        # its witnesses are cited whatever else withholds the list (a record doubt also doubts every device's custody)
+        record = _roster_gaps(ctx)
+        if record:
+            extra += [entry for gap in record for entry in gap.entries()]
+            if state in (_PUB, _CBE):
+                state = impact_assessability.bound_state([(gap.state,) for gap in record])
+                reason = _R_INPUTS_RECORD.format(word=impact_assessability.STATE_WORD[state],
+                                                 clauses="; ".join(gap.clause for gap in record))
         of = _inventory_total(ctx, len(hosts))
         if state in (_PUB, _CBE) and of["state"] != _PUB:
             state, reason = of["state"], (f"{of['reason']}; the inventory denominator is withheld, so the device "
@@ -2412,11 +3241,19 @@ def _engine(ctx: _Ctx) -> Dict[str, Any]:
     stamp = out["snapshot_schema"]
     out["snapshot_schema_supported"] = (stamp["value"] == SNAPSHOT_SCHEMA) if stamp["state"] == _PUB else None
     out["code_schema_version"] = str(_CODE_SCHEMA_VERSION)
+    # G41: which exact byte string every pointer in this document resolves in. A value the owner computes from those
+    # bytes, not from a snapshot address: no subject and no ref. Both facts share one state and one reason.
+    state, sha, size, reason = ctx.source
+    out["snapshot_sha256"] = _envelope(state, sha, None, [], f"{SNAPSHOT_IDENTITY_OWNER}:sha256", reason)
+    out["snapshot_bytes"] = _envelope(state, size, None, [], f"{SNAPSHOT_IDENTITY_OWNER}:bytes", reason)
+    out["snapshot_digest_form"] = SNAPSHOT_DIGEST_FORM
     return out
 
 
 def project_engine(snap: Any) -> Dict[str, Any]:
-    """Which snapshot schema and producer versions this payload was projected from."""
+    """Which snapshot schema and producer versions this payload was projected from, and (G41) which exact bytes:
+    the SHA-256 and length its owner bound when a reader parsed them (:func:`protocol_assurance.bind_snapshot_json_bytes`),
+    or not_collected for a snapshot handed over already parsed."""
     return _engine(_Ctx(snap))
 
 
@@ -2431,7 +3268,9 @@ _KIND = {dict: "an object", list: "a list"}
 
 
 class _Row:
-    """One engine row joined for its cells: where it is, or why none of its fields can be read."""
+    """One engine row joined for its cells: where it is, or why none of its fields can be read. A `bare` row (a
+    forced page: an unknown or non-text host) names no snapshot location, so its cells cite no subject, basis or
+    failure record; they cite only the row's own `extra` witnesses (:func:`_forced_wit`)."""
     __slots__ = ("state", "reason", "toks", "raw", "sections", "extra", "basis_refs", "bare")
 
     def __init__(self, state: Optional[str], reason: Optional[str], toks: Optional[Tuple[Any, ...]], raw: Any,
@@ -2447,6 +3286,18 @@ class _Row:
         self.bare = bare
 
 
+#: A forced device-page state (:func:`_roster_join`, :func:`_device_page`): ``(state, reason)``, or ``(state, reason,
+#: witness ref entries)`` beside a roster row or list the host join cannot read. Its arity varies, so a reader takes
+#: ``forced[0]`` and ``forced[1]`` and the witnesses only through :func:`_forced_wit`; it never unpacks the tuple.
+_Forced = Tuple[Any, ...]
+
+
+def _forced_wit(forced: Optional[_Forced]) -> List[Tuple[str, Sequence[Any]]]:
+    """The witness ref entries a forced page carries: its optional third element, the roster rows or lists that leave
+    an unknown host's absence open (:func:`_device_page`). ``(state, reason)`` alone carries none."""
+    return list(forced[2]) if forced is not None and len(forced) > 2 else []
+
+
 def _secs_fail(ctx: _Ctx, sections: Sequence[str]) -> Optional[Tuple[str, str]]:
     """``analysis_unavailable`` when any section failed; ``unverified`` when an owner raised on one."""
     if any(ctx.abst(s) == AU for s in sections):
@@ -2459,19 +3310,27 @@ def _secs_fail(ctx: _Ctx, sections: Sequence[str]) -> Optional[Tuple[str, str]]:
 
 def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, key: Any = _MISSING,
              key_field: Optional[str] = None, want: Any = dict, host: Any = None,
-             absent: Optional[Tuple[str, str]] = None, forced: Optional[Tuple[str, str]] = None,
+             absent: Optional[Tuple[str, str]] = None, forced: Optional[_Forced] = None,
              norm: bool = False) -> _Row:
     """Join one row. `path_toks` is a FIXED container path (never a host). With `key` alone the container is a
     map keyed by it; with `key_field` it is a list whose rows name the key in that field (with `norm`, compared
     without case or surrounding space); with neither the container itself is the row. First match wins: forced
     (an unknown device) -> the device's blind spot (owner order) -> a failed or faulted section -> an uncollected
-    section -> a wrong container -> the join (absent / ambiguous) -> a row of the wrong type."""
+    section -> a wrong container -> a device scope that cannot say the device is not a blind spot -> the join
+    (unreadable / absent / ambiguous) -> a row of the wrong type.
+
+    Every list join (`key_field`) is held to one rule: it reads one unique row or none from a list it can read in
+    full. A row it cannot read (:func:`_unjoinable_rows`: not an object, or the key field missing or not text) could
+    name this key, so with any such row in the list the join is unverified, with a witness to each such row and to
+    each row that does name the key, whether one, several or none do: a row neither attaches silently nor vanishes.
+    The device scope (`host`) is read only through :meth:`_Ctx.device_scope`, under the same rule."""
     keyed = key is not _MISSING and key_field is None
     cand: Optional[Tuple[Any, ...]] = (path_toks + (key,)) if keyed else (path_toks if key is _MISSING else None)
     if forced is not None:
-        return _Row(forced[0], forced[1], None, None, sections, basis_refs=False, bare=True)
-    if host is not None and ctx.device_blind(sections[0], host):
-        return _Row(_NC, _R_DEVICE_NC, cand, None, sections, ctx.cc_witness(host), basis_refs=False)
+        return _Row(forced[0], forced[1], None, None, sections, _forced_wit(forced), basis_refs=False, bare=True)
+    scope = ctx.device_scope(sections[0], host) if host is not None else None
+    if scope is not None and scope[0] == _NC:
+        return _Row(_NC, scope[1], cand, None, sections, scope[2], basis_refs=False)
     path = ".".join(path_toks)
     hit = _secs_fail(ctx, (path,) + tuple(sections))
     if hit:
@@ -2482,10 +3341,14 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
     if key is _MISSING:
         if not isinstance(container, want):
             return _Row(_UV, f"unverified: {path} is not {_KIND[want]}", cand, None, sections)
+        if scope is not None:
+            return _Row(scope[0], scope[1], cand, None, sections, scope[2], basis_refs=False)
         return _Row(None, None, path_toks, container, sections)
     need = dict if keyed else list
     if not isinstance(container, need):
         return _Row(_UV, f"unverified: {path} is not {_KIND[need]}, so no row can be read", cand, None, sections)
+    if scope is not None:
+        return _Row(scope[0], scope[1], cand, None, sections, scope[2], basis_refs=False)
     miss = absent or (_NC, _R_NO_ROW.format(section=path))
     if keyed:
         if not _is_text(key) or key not in container:
@@ -2494,6 +3357,12 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
     else:
         idx = (ctx.index(path_toks, (key_field,), norm=norm).get(_norm(key) if norm else key, [])
                if _is_text(key) else [])
+        lost = ctx.unjoinable(path_toks, (key_field,))
+        if lost:
+            doubts = ([_R_AMBIG.format(n=len(idx), section=path)] if len(idx) > 1 else []) + [
+                _R_UNJOINABLE.format(n=len(lost), section=path)]
+            return _Row(_UV, "; ".join(doubts), None, None, sections,
+                        [("witness", path_toks + (i,)) for i in idx + lost])
         if not idx:
             return _Row(miss[0], miss[1], None, None, sections)
         if len(idx) > 1:
@@ -2575,7 +3444,7 @@ def _cell(ctx: _Ctx, row: _Row, field: Optional[str], slot: str, basis: str, *, 
                 else:
                     state, value = _PUB, typed
     if row.bare:
-        refs: List[Dict[str, str]] = []
+        refs: List[Dict[str, str]] = ctx.refs(row.extra)        # a forced row's own witnesses only (_forced_wit)
     else:
         entries: List[Tuple[str, Sequence[Any]]] = [("subject", toks)] if toks is not None else []
         if row.basis_refs:
@@ -2635,7 +3504,7 @@ def _listing(ctx: _Ctx, state: str, reason: Optional[str], toks: Optional[Tuple[
             state, reason = _NC, "; ".join(why for _c, why, _w in qualify)
     if state != _PUB and not reason:
         reason = _R_CBE if state == _CBE else _state_reason(ctx, state, "list", all_secs)
-    entries: List[Tuple[str, Sequence[Any]]] = []
+    entries: List[Tuple[str, Sequence[Any]]] = list(extra)      # bare (a forced page): its own witnesses only
     if not bare:
         entries = (([("subject", toks)] if toks is not None else []) + [("basis", (s,)) for s in rollup]
                    + ctx.failure_entries(all_secs, state == AU) + list(extra) + witness)
@@ -2714,13 +3583,15 @@ def _device_gap(ctx: _Ctx, host: Any, section: str, needs: Sequence[str],
                 config: bool = False) -> Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
     """Why rows naming `host` may be missing from a list derived from `needs` (essential captures), first match
     wins: the owner's device scope calls it not collected -> its blind-spot row names a needed capture as
-    missing -> it has no interface parse -> (with `config`) it has no security row. ``None``: nothing withheld."""
+    missing -> it has no interface parse -> (with `config`) it has no security row. ``None``: nothing withheld.
+    A device scope in doubt names no partial row here (:meth:`_Ctx.partial_row`); the caller carries that doubt."""
     if not _is_text(host):
         return None
-    if ctx.device_blind(section, host):
-        return _R_DEVICE_BLIND, ctx.cc_witness(host)
-    i, row = ctx.cc_row(host)
-    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+    scope = ctx.device_scope(section, host)
+    if scope is not None and scope[0] == _NC:
+        return _R_DEVICE_BLIND, scope[2]
+    i, row = ctx.partial_row(host)
+    if i is not None and isinstance(row, dict):
         missing = row.get("missing")
         if isinstance(missing, list):
             hit = [m for m in missing if _is_text(m) and m in needs]
@@ -2807,14 +3678,29 @@ def _total(ctx: _Ctx, section: str, listing: Dict[str, Any], *, sections: Sequen
                      caveats=cav if state == _PUB else ())
 
 
+def _fleet_gap_reason(gap: "_CCGap") -> str:
+    """How a fleet list words one gap of the blind-spot record's coverage verdict (:func:`_cc_coverage`)."""
+    if gap.kind == _CC_UNREAD_ROWS:
+        return _R_FLEET_UNREAD.format(n=len(gap.rows))
+    if gap.kind == _CC_UNREADABLE:
+        return _R_FLEET_UNREADABLE_LIST.format(path=".".join(gap.where[0]), kind=_KIND[gap.where[1]])
+    return _R_FLEET_CC_GAP.format(clause=gap.clause)
+
+
 def _fleet_qualify(ctx: _Ctx, config: bool = False) -> List[_Qualify]:
-    """The fleet-list qualifications (see :data:`_Qualify`): blind devices, and, for the punch-list, devices whose
-    running-config was not captured."""
+    """The fleet-list qualifications (see :data:`_Qualify`), read from the blind-spot record's one coverage verdict
+    (:meth:`_Ctx.cc_coverage`): blind devices, then every gap that leaves the record unable to show each inventory
+    device collected or listed -- a record the snapshot does not carry, a failed phase (its failure record always
+    cited), a list or section that cannot be read (its owner reads it as listing none), rows that cannot be read as a
+    blind spot (never passed over), and a summary that cannot be read or does not reconcile with the rows or the
+    roster -- and, for the punch-list, devices whose running-config was not captured."""
     out: List[_Qualify] = []
-    blind = ctx.blind_rows()
-    if blind:
-        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(blind)),
-                    [("witness", ("collection_completeness", "devices", i)) for i in blind]))
+    cov = ctx.cc_coverage()
+    if cov.blind:
+        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(cov.blind)),
+                    [("witness", ("collection_completeness", "devices", i)) for i in cov.blind]))
+    for gap in cov.gaps:
+        out.append(("fleet_lists_exclude_blind_devices", _fleet_gap_reason(gap), gap.entries()))
     if config:
         lacking = ctx.no_config_hosts()
         if lacking:
@@ -2943,7 +3829,7 @@ def _move_group_problem(raw: Any) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _move_group_fact(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+def _move_group_fact(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> Dict[str, Any]:
     source = _resolve(ctx, ("move_groups",), ("move_groups",), want=list, host=host, forced=forced)
     basis = "analyze.compute_move_groups:move_groups[].group"
     if source.state is not None:
@@ -2987,11 +3873,12 @@ def _dev_basis(field: str) -> str:
     return "html.snapshot_state:devices{}." + field
 
 
-def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, _Row]:
+def _joins(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> Dict[str, _Row]:
     """The rows one device joins: its record, health, lifecycle, dossier and blind-spot rows. The blind-spot
     row itself is evidence of non-collection, so the device scope does not withhold it; it is joined by the rule
     of its owner's device scope (no case, no surrounding space). Its absence means "not a blind spot" only for a
-    device the devices map carries."""
+    device the devices map carries, and only while every row of that list can be joined: each list join here follows
+    the one rule of :func:`_resolve` (a row it cannot read, or a second row naming the device, makes it unverified)."""
     devices = ctx.s.get("devices")
     in_devices = _is_text(host) and isinstance(devices, dict) and host in devices
     return {
@@ -3003,10 +3890,24 @@ def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Di
                               key_field="host", host=host, absent=_ABSENT_LIFECYCLE, forced=forced),
         "dossier": _resolve(ctx, ("device_dossiers", "per_device"), ("device_dossiers",), key=host,
                             key_field="host", host=host, absent=_ABSENT_DOSSIER, forced=forced),
-        "collection": _resolve(ctx, ("collection_completeness", "devices"), ("collection_completeness",),
-                               key=host, key_field="host", norm=True,
-                               absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER, forced=forced),
+        "collection": _collection_join(ctx, host, in_devices, forced),
     }
+
+
+def _collection_join(ctx: _Ctx, host: Any, in_devices: bool, forced: Optional[_Forced]) -> _Row:
+    """The device's blind-spot row (:func:`_joins`). A device the devices map carries that no row names is "not a
+    blind spot" (:data:`_ABSENT_CC`) only while the record itself can be trusted to list every blind spot: W51 round 4
+    holds that absence to the device scope's own doubt (:meth:`_Ctx.scope_doubt`, the record's coverage verdict), so a
+    record its own summary contradicts (it counts a partial or not-collected device its list does not carry), or whose
+    summary cannot be read, makes the absence unverified with the doubt's reason and witnesses, as every other field of
+    the device already reads. A row that names the device is evidence of non-collection and is joined as before."""
+    row = _resolve(ctx, _CC_ROWS, ("collection_completeness",), key=host, key_field="host", norm=True,
+                   absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER, forced=forced)
+    if in_devices and forced is None and row.state == _ABSENT_CC[0] and row.reason == _ABSENT_CC[1]:
+        doubt = ctx.scope_doubt(host)
+        if doubt is not None:
+            return _Row(_UV, doubt[0], None, None, row.sections, doubt[1], basis_refs=False)
+    return row
 
 
 def _row_pointer(row: _Row) -> Optional[str]:
@@ -3028,8 +3929,8 @@ def _health_caveat(ctx: _Ctx, host: Any,
             if isinstance(exp, dict) and exp.get("axis") == "Security posture" and exp.get("state") == "na":
                 witness.append(("witness", dossier.toks + ("exposures", j)))
                 break
-    i, row = ctx.cc_row(host)
-    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+    i = ctx.partial_row(host)[0]
+    if i is not None:
         cav.append("health_scored_over_partial_collection")
         witness.append(("witness", ("collection_completeness", "devices", i, "missing")))
     return tuple(cav), witness
@@ -3090,7 +3991,7 @@ def _capture_record(ctx: _Ctx, section: str, host: str) -> Tuple[Any, Any, Optio
 
 
 def _device_finding_rollup(ctx: _Ctx, host: Any,
-                           forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+                           forced: Optional[_Forced] = None) -> Dict[str, Any]:
     """Publish the pure owner fold only after scoped input and positive capture custody."""
     sections = ("punchlist",) + PUNCHLIST_INPUTS
     base, reason, _raw = _list_state(ctx, ("punchlist",), ("punchlist",))
@@ -3098,12 +3999,19 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     witness: List[Tuple[str, Sequence[Any]]] = [("basis", ("punchlist",))]
     values: Dict[str, Any] = {"worst": None, "by_severity": None}
     if forced is not None:
-        state, reason = forced
+        # a forced state is ``(state, reason)`` or, beside a roster it cannot read, ``(state, reason, witnesses)``
+        # (:func:`_roster_join`); its witnesses ride in the row's extra (:func:`_forced_wit`), never in the unpacking
+        state, reason = forced[0], forced[1]
     elif not _is_text(host) or not host.strip():
         state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
     elif state in (_PUB, _CBE):
+        scope = ctx.device_scope("punchlist", host)
         gap = _device_gap(ctx, host, "punchlist", SELECTION_NEEDS["findings"], config=True)
-        if gap is not None:
+        if scope is not None and scope[0] == _UV:
+            # unverified wins over a capture gap (as in _selection_rows); the gap is carried beside it
+            state, reason = _UV, scope[1] + (f"; the device also has a collection gap: {gap[0]}" if gap else "")
+            witness += scope[2] + (gap[1] if gap else [])
+        elif gap is not None:
             why, extra = gap
             state, reason = _NC, f"not collected: finding counts may be incomplete: {why}"
             witness += extra
@@ -3143,7 +4051,8 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
                         values = result
                         witness += [("witness", ("punchlist", index)) for index in indices]
     held = None if state in (_PUB, _CBE) else state
-    row = _Row(held, reason, None, values, sections, basis_refs=forced is None, bare=forced is not None)
+    row = _Row(held, reason, None, values, sections, _forced_wit(forced), basis_refs=forced is None,
+               bare=forced is not None)
 
     def empty_worst(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
         return (_CBE, "collected but empty: no stored punch-list finding names this captured device; not a clean bill of health") \
@@ -3158,7 +4067,7 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     }
 
 
-def _coverage_scope(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> _Row:
+def _coverage_scope(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> _Row:
     return _resolve(ctx, ("coverage_matrix", "by_device"), ("coverage_matrix",), key=host,
                     host=host, forced=forced,
                     absent=(_NC, "not collected: coverage_matrix carries no row for this device"))
@@ -3186,7 +4095,7 @@ def _coverage_join(ctx: _Ctx, cov: _Row, host: str, axis: str) -> _Row:
 
 
 def _device_coverage_rollup(ctx: _Ctx, host: Any,
-                            forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+                            forced: Optional[_Forced] = None) -> Dict[str, Any]:
     """The complete stored axis fold, with no zero/all-covered assurance from silent sources."""
     cov = _coverage_scope(ctx, host, forced)
     state, reason = cov.state, cov.reason
@@ -3252,27 +4161,60 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
     return row
 
 
+def _cc_universe(ctx: _Ctx) -> Tuple[Dict[str, List[int]], Any, List[int], Optional[Tuple[Tuple[str, ...], type]],
+                                      List[Tuple[str, Sequence[Any]]]]:
+    """``(index, rows, lost rows, unreadable list, witnesses)``: the blind-spot list as the inventory universe reads it,
+    in one place, under the one key-join rule (F6). Its exact-key index by the owner's device-scope rule (the name
+    without case or surrounding space), the list itself, the rows that join cannot read, where the list itself cannot
+    be read (:meth:`_Ctx.cc_unreadable`), and a witness to each of those. A row the host join cannot read names a
+    device this universe cannot list, and a list (or section) carried as the wrong type hides every row it holds the
+    same way: both are disclosed with a witness, never dropped."""
+    index = ctx.index(_CC_ROWS, ("host",), norm=True)
+    lost = ctx.unjoinable(_CC_ROWS, ("host",))
+    unreadable = ctx.cc_unreadable()
+    wit: List[Tuple[str, Sequence[Any]]] = [("witness", _CC_ROWS + (i,)) for i in lost] + (
+        [("witness", unreadable[0])] if unreadable is not None else [])
+    return index, _get(ctx.s, _CC_ROWS), lost, unreadable, wit
+
+
 def _inventory_universe(ctx: _Ctx) -> Tuple[List[str], FrozenSet[str], Dict[str, List[int]]]:
-    """``(hosts, devices-map keys, blind-spot index)``: the inventory rows' devices, sorted. One owner for the device
-    rows and the analysis-input gaps, so both count the same universe."""
+    """``(hosts, devices-map keys, blind-spot index)``: the inventory roster, sorted. It is the devices map's text
+    keys plus the collection_completeness blind spots it does not name (:func:`_cc_universe`, whose rows and list it
+    cannot read the roster list and the inventory count disclose). One owner for the inventory device rows, the
+    analysis-input gaps (G08) and the device finding facet (G21), so all three count the same universe."""
     devices = ctx.s.get("devices")
     dev_keys = frozenset(k for k in devices if _is_text(k)) if isinstance(devices, dict) else frozenset()
-    cc_norm = ctx.index(("collection_completeness", "devices"), ("host",), norm=True)
+    cc_norm, cc_rows, _lost, _unreadable, _wit = _cc_universe(ctx)
     dev_norm = {_norm(k) for k in dev_keys}
-    cc_rows = _get(ctx.s, ("collection_completeness", "devices"))
     # a blind spot the devices map names (without case or surrounding space) is that device's row, not a new one;
     # the rest are named by their first row's own spelling
     blind_only = {cc_rows[idx[0]]["host"] for name, idx in cc_norm.items() if name not in dev_norm}
     return sorted(dev_keys | blind_only), dev_keys, cc_norm
 
 
+def _inventory_reconcile(ctx: _Ctx, typed: Any, n_rows: int) -> Optional[Tuple[str, str, List[Tuple[str, Sequence[Any]]]]]:
+    """The one rule the owner's inventory count is held to (the inventory rows' total, :func:`_inventory_total`, and
+    the blind-spot record's coverage verdict, :func:`_cc_coverage`, both read it here): ``None`` when the count equals
+    the inventory rows' count; otherwise why not, as an unverified gate result. While the blind-spot list holds a row
+    or value the universe cannot read (:func:`_cc_universe`), the two cannot be reconciled at all."""
+    _index, _rows, lost, unreadable, lost_wit = _cc_universe(ctx)
+    if unreadable is not None:
+        return (_UV, f"unverified: {'.'.join(unreadable[0])} is present but is not {_KIND[unreadable[1]]}, so the "
+                     f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
+    if lost:
+        return (_UV, f"unverified: {len(lost)} collection_completeness row(s) cannot be joined by host, so the "
+                     f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
+    if typed == n_rows:
+        return None
+    return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
+                 f"number {n_rows}; the owner's inventory count says {typed}", [])
+
+
 def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
-    """The owner's inventory count, published only when it equals the inventory rows' count."""
+    """The owner's inventory count, published only when it equals the inventory rows' count, and never while the
+    blind-spot list holds a row or value the universe cannot read (:func:`_inventory_reconcile`)."""
     def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
-        if typed == n_rows:
-            return None
-        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
-                     f"number {n_rows}; the owner's inventory count says {typed}", [])
+        return _inventory_reconcile(ctx, typed, n_rows)
 
     return _scalar(ctx, "collection_completeness.summary.inventory", "count",
                    "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
@@ -3281,17 +4223,180 @@ def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
                    published_caveats=_brief_caveats(ctx))
 
 
-def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
-    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
-    items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
+# ---------------------------------------------------------------------------------------------------
+# the blind-spot record's one coverage verdict (W51 second round)
+# ---------------------------------------------------------------------------------------------------
+#: The record shows every inventory device collected or listed (no gap, no listed blind spot) ...
+_CC_COMPLETE = "complete"
+#: ... or it lists blind spots and nothing leaves that list in doubt.
+_CC_INCOMPLETE = "incomplete"
+#: The gap kinds of :func:`_cc_coverage`. At most one of the first four (the record cannot be read as a list at all);
+#: the rest are found only in a list that can be read.
+_CC_FAILED, _CC_FAULTED, _CC_UNREADABLE, _CC_ABSENT = "failed", "faulted", "unreadable", "absent"
+_CC_UNREAD_ROWS, _CC_SUMMARY_UNREAD, _CC_SUMMARY_UNLISTED, _CC_INVENTORY = (
+    "unread_rows", "summary_unread", "summary_unlisted", "inventory")
+#: The gaps that leave the record itself untrusted for EVERY device (failed, faulted, unreadable, or its own summary
+#: counting a blind spot the list does not carry): the device scope's doubt (:meth:`_Ctx.scope_doubt`) reads exactly
+#: these. A record the snapshot does not carry is the collection row's own not_collected; rows that cannot be read are
+#: doubted per device by the scope's own row rules; and the inventory count is a statement about the roster, which
+#: only the fleet-level readers count over.
+_CC_RECORD_DOUBTS: FrozenSet[str] = frozenset({_CC_FAILED, _CC_FAULTED, _CC_UNREADABLE, _CC_SUMMARY_UNREAD,
+                                              _CC_SUMMARY_UNLISTED})
+
+
+class _CCGap:
+    """One reason the blind-spot record cannot show every inventory device collected or listed. ``clause`` states it
+    without a state word; ``witness`` are the ref entries showing it (a reader may cap them); ``failure`` are the
+    failure-record entries of a failed phase, which every reader cites in full, never capped; ``rows`` the row indices
+    of an unread-rows gap; ``where`` the ``(path, type)`` of an unreadable record, or, for an absent one, what is not
+    carried: the list (inside a section the snapshot carries) or the section itself."""
+    __slots__ = ("kind", "state", "clause", "witness", "failure", "rows", "where")
+
+    def __init__(self, kind: str, state: str, clause: str, witness: Sequence[Tuple[str, Sequence[Any]]],
+                 failure: Sequence[Tuple[str, Sequence[Any]]] = (), rows: Sequence[int] = (),
+                 where: Any = None) -> None:
+        self.kind, self.state, self.clause = kind, state, clause
+        self.witness: Tuple[Tuple[str, Sequence[Any]], ...] = tuple(witness)
+        self.failure: Tuple[Tuple[str, Sequence[Any]], ...] = tuple(failure)
+        self.rows: Tuple[int, ...] = tuple(rows)
+        self.where = where
+
+    def entries(self, cap: Optional[int] = None) -> List[Tuple[str, Sequence[Any]]]:
+        """Its witnesses (the first `cap` of them), then every failure record."""
+        return list(self.witness if cap is None else self.witness[:cap]) + list(self.failure)
+
+
+class _CCCoverage:
+    """:func:`_cc_coverage`'s verdict: ``state`` is :data:`_CC_COMPLETE`, :data:`_CC_INCOMPLETE`, or the strongest gap
+    state (analysis_unavailable, then unverified, then not_collected); ``blind`` the readable blind-spot rows; ``gaps``
+    every :class:`_CCGap`, in the order found."""
+    __slots__ = ("state", "blind", "gaps")
+
+    def __init__(self, blind: Sequence[int], gaps: Sequence[_CCGap]) -> None:
+        self.blind: Tuple[int, ...] = tuple(blind)
+        self.gaps: Tuple[_CCGap, ...] = tuple(gaps)
+        self.state = (impact_assessability.bound_state([(gap.state,) for gap in self.gaps]) if self.gaps
+                      else _CC_INCOMPLETE if self.blind else _CC_COMPLETE)
+
+
+def _cc_coverage(ctx: _Ctx) -> _CCCoverage:
+    """Whether collection_completeness shows every inventory device collected or listed: the one verdict every reader
+    of the collection's blind spots takes (:meth:`_Ctx.cc_coverage`: the fleet qualifier, the device scope's doubt, the
+    gateway and address coverage, the axis denominators, the trust inputs and the inventory rows). The record is never
+    trusted by default; first match wins for the record itself:
+
+    * its phase failed (the abstention core's analysis_unavailable): ``failed``, analysis_unavailable, citing every
+      failure record, whatever the fallback holds;
+    * an owner fault: ``faulted``, unverified;
+    * the list, or its section, carried as the wrong type (the owner reads it as listing none): ``unreadable``;
+    * the section or the list not carried (missing or null): ``absent``, not_collected -- no blind spot can be ruled
+      out, so it is never "no blind spot";
+
+    and, over a list that can be read, every one of: rows that cannot be read as a blind spot (``unread_rows``); a
+    summary that is not an object or whose partial, not_collected or inventory count is not a count
+    (``summary_unread``); a summary counting more partial and not-collected devices than the list carries
+    (``summary_unlisted``: the producer writes one row per such device, so one may be missing); and, over a readable
+    devices map and a list every row of which the host join can read, an inventory count other than the inventory
+    rows' count, by the one rule the inventory total applies (:func:`_inventory_reconcile`; ``inventory``). A list
+    carrying MORE such rows than its summary counts over-reports, so it hides no blind spot and is no gap."""
+    section = ctx.s.get("collection_completeness")
+    where = _CC_ROWS if isinstance(section, dict) and "devices" in section else ("collection_completeness",)
+    hit = _secs_fail(ctx, (".".join(_CC_ROWS), "collection_completeness"))
+    if hit is not None:
+        if hit[0] == AU:
+            return _CCCoverage((), [_CCGap(_CC_FAILED, AU, _R_CC_UNREAD.format(why=hit[1]), [("witness", where)],
+                                           ctx.failure_entries(("collection_completeness",), True))])
+        return _CCCoverage((), [_CCGap(_CC_FAULTED, _UV, _R_CC_UNREAD.format(why=hit[1]), [("witness", where)])])
+    unreadable = ctx.cc_unreadable()
+    if unreadable is not None:
+        why = f"unverified: {'.'.join(unreadable[0])} is present but is not {_KIND[unreadable[1]]}"
+        return _CCCoverage((), [_CCGap(_CC_UNREADABLE, _UV, _R_CC_UNREAD.format(why=why), [("witness", unreadable[0])],
+                                       where=unreadable)])
+    state, reason, rows = _list_state(ctx, _CC_ROWS, ("collection_completeness",))
+    if not isinstance(rows, list):
+        kind = _CC_ABSENT if state == _NC else _CC_FAULTED
+        # `where` of an absent record: the list when its section is carried (the section rollup reads that as present)
+        absent_at = _CC_ROWS if isinstance(section, dict) else ("collection_completeness",)
+        return _CCCoverage((), [_CCGap(kind, _NC if state == _NC else _UV, _R_CC_UNREAD.format(why=reason or _R_NC),
+                                       [("witness", where)], where=absent_at)])
+    blind = ctx.blind_rows()
+    gaps: List[_CCGap] = []
+    unread = ctx.unread_blind_rows()
+    if unread:
+        gaps.append(_CCGap(_CC_UNREAD_ROWS, _UV, _R_CC_ROWS.format(k=len(unread)),
+                           [("witness", ("collection_completeness", "devices", i)) for i in unread], rows=unread))
+    stoks = ("collection_completeness", "summary")
+    summary = _get(ctx.s, stoks)
+    if summary is not _MISSING and summary is not None and not isinstance(summary, dict):
+        gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+    elif isinstance(summary, dict):
+        # analyze.compute_collection_completeness counts each blind-spot status under that status's own summary key
+        # (its space written '_'), and lists one devices row per such device
+        keys = tuple(status.replace(" ", "_") for status in CC_STATUSES)
+        if any(key in summary for key in keys):
+            counts = [_count(summary.get(key, 0)) for key in keys]
+            if not all(ok for ok, _n in counts):
+                gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+            elif sum(n for _ok, n in counts) > len(blind):
+                gaps.append(_CCGap(_CC_SUMMARY_UNLISTED, _UV,
+                                   _R_CC_SUMMARY.format(k=sum(n for _ok, n in counts), n=len(blind)),
+                                   [("witness", stoks)]))
+        if "inventory" in summary:
+            ok, typed = _count(summary["inventory"])
+            if not ok:
+                gaps.append(_CCGap(_CC_SUMMARY_UNREAD, _UV, _R_CC_INVENTORY_UNREAD, [("witness", stoks + ("inventory",))]))
+            elif isinstance(ctx.s.get("devices"), dict) and not _cc_universe(ctx)[2]:
+                n_rows = len(_inventory_universe(ctx)[0])
+                if _inventory_reconcile(ctx, typed, n_rows) is not None:
+                    gaps.append(_CCGap(_CC_INVENTORY, _UV, _R_CC_INVENTORY.format(typed=typed, n=n_rows),
+                                       [("witness", stoks + ("inventory",))]))
+    return _CCCoverage(blind, gaps)
+
+
+#: The coverage gaps the inventory rows and the trust inputs take from the record's verdict themselves: the ones their
+#: own section rollup (an absent section, a failed phase) and the inventory total (an unreadable list, an inventory
+#: count off the roster) do not already report. An absent list inside a present section is the rollup's blind spot.
+_CC_ROSTER_GAPS: FrozenSet[str] = frozenset({_CC_SUMMARY_UNREAD, _CC_SUMMARY_UNLISTED})
+
+
+def _roster_gaps(ctx: _Ctx) -> List[_CCGap]:
+    """The record gaps a roster-derived list must take itself (:data:`_CC_ROSTER_GAPS`, and a devices list absent
+    from a section the snapshot does carry, which the section rollup reads as present)."""
+    return [gap for gap in ctx.cc_coverage().gaps
+            if gap.kind in _CC_ROSTER_GAPS or (gap.kind == _CC_ABSENT and gap.where == _CC_ROWS)]
+
+
+def _roster_list(ctx: _Ctx, items: List[Any], basis: str, caveats: Sequence[str]) -> Dict[str, Any]:
+    """A list with one item per :func:`_inventory_universe` host, in the roster's own state: the devices map's state,
+    then the collection_completeness rollup. An absent or unreadable devices map is never an empty roster, and (F6) a
+    blind-spot row or list the universe cannot read makes it unverified with a witness; so does (W51) a record whose
+    summary counts a blind spot its list does not carry, or whose list is absent from its section
+    (:func:`_roster_gaps`). The inventory rows and the device finding facet share this one state."""
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
         base = _PUB if items else _CBE
-    rows = _listing(ctx, base, reason, ("devices",),
-                    "html.snapshot_state:devices + analyze.compute_collection_completeness:"
-                    "collection_completeness.devices", items, sections=("devices",),
-                    rollup=("collection_completeness",),
-                    caveats=("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
+    # F6: a blind-spot row the host join cannot read, or a blind-spot list it cannot read, may hide a roster device
+    _index, _rows, lost, unreadable, lost_wit = _cc_universe(ctx)
+    extra = list(lost_wit)
+    if lost_wit and base in (_PUB, _CBE):
+        base, reason = _UV, (_R_INVENTORY_UNJOINABLE.format(n=len(lost)) if unreadable is None else
+                             _R_INVENTORY_UNREADABLE.format(path=".".join(unreadable[0]), kind=_KIND[unreadable[1]]))
+    held = _roster_gaps(ctx)
+    extra += [entry for gap in held for entry in gap.entries()]
+    if held and base in (_PUB, _CBE):
+        base = impact_assessability.bound_state([(gap.state,) for gap in held])
+        reason = _R_INVENTORY_RECORD.format(word=impact_assessability.STATE_WORD[base],
+                                            clauses="; ".join(gap.clause for gap in held))
+    return _listing(ctx, base, reason, ("devices",), basis, items, sections=("devices",),
+                    rollup=("collection_completeness",), extra=extra, caveats=caveats)
+
+
+def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
+    items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
+    rows = _roster_list(ctx, items, "html.snapshot_state:devices + analyze.compute_collection_completeness:"
+                                    "collection_completeness.devices",
+                        ("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
     return {"total": _inventory_total(ctx, len(items)), "rows": rows}
 
 
@@ -3540,8 +4645,11 @@ def _stp_observation(ctx: _Ctx, host: str, key: Any, raw: Any) -> Dict[str, Any]
     toks = ("stp_roots", host, key)
     held = _secs_fail(ctx, ("stp_roots",))
     extra = []
-    if held is None and ctx.device_blind("stp_roots", host):
-        held, extra = (_NC, _R_DEVICE_NC), ctx.cc_witness(host)
+    # W51 (F6 x G15): the device scope is read only through its doubt-aware door: a blind spot is not collected, and
+    # a scope that cannot say this device is not a blind spot leaves its observation unverified, with the witnesses
+    scope = ctx.device_scope("stp_roots", host) if held is None else None
+    if scope is not None:
+        held, extra = (scope[0], scope[1]), list(scope[2])
     if held is None and isinstance(raw, dict) and "is_mst" in raw and type(raw["is_mst"]) is not bool:
         held = (_UV, "unverified: the stored STP namespace marker is not a boolean; this may be an MST instance")
         extra = [("witness", toks + ("is_mst",))]
@@ -3627,6 +4735,839 @@ def _vlan_wave_pre(ctx: _Ctx) -> _Pre:
     return pre
 
 
+# ---------------------------------------------------------------------------------------------------
+# inventory: VLAN gateway rows (G16) -- the stored l3_forwarding rows naming a VLAN, selected, never recomputed
+# ---------------------------------------------------------------------------------------------------
+#: excel.write_l3_forwarding_sheet's L3 Risk flags, in the order it appends them (tracked-object-down first, then
+#: single-gateway or no-FHRP, never both); the key set of analyze.ScoringConfig.l3_weights. Pinned by tests.
+L3_RISK_FLAGS: Tuple[str, ...] = ("tracked-object-down", "single-gateway", "no-FHRP")
+#: The flag the producer raises first, exactly when its device's captured 'show track' lists a Down object.
+L3_TRACKED_DOWN_FLAG = "tracked-object-down"
+#: The flag the producer raises when its VLAN has at most one gateway in the scan (gw_count <= 1).
+L3_SOLE_GATEWAY_FLAG = "single-gateway"
+#: The flag the producer raises for two or more gateways with no FHRP; it is never raised beside single-gateway.
+L3_NO_FHRP_FLAG = "no-FHRP"
+#: The producer's joiner for several flags, its word for "no flag fired and object tracking was observed", and its
+#: whole-text marker for "no flag fired, but object tracking was NOT assessed" (no 'show track' capture; the
+#: not-observed split of 2026-07-28). The marker is the risk text only when no flag fired.
+L3_RISK_JOINER = "; "
+L3_RISK_CLEAR = "ok"
+L3_RISK_TRACKING_NOT_ASSESSED = NOT_OBSERVED_SENTINEL + " - no 'show track' evidence; object tracking NOT assessed"
+#: analyze.compute_vlan_cutover_matrix's fhrp text for a VLAN whose gateway evidence shows exactly one gateway in the
+#: scan and no FHRP (f"sole gateway on {host} (no FHRP)"): its opening and its closing. Pinned to the producer by tests.
+VLAN_SOLE_GATEWAY_FHRP: Tuple[str, str] = ("sole gateway on ", " (no FHRP)")
+#: excel._track_summary's text for a captured 'show track' that lists objects: '<N> obj', then ' (<D> DOWN)' when any
+#: object is Down, then ' - ' and at most 6 object states. Group 2 is the Down count. Pinned to the producer by tests.
+_TRACK_SUMMARY = re.compile(r"([0-9]+) obj(?: \(([0-9]+) DOWN\))?(?: - .*)?", re.DOTALL)
+#: The FHRP state words (parse._parse_fhrp's role, parse.parse_hsrp_detail's state; compared without case) in which a
+#: router forwards for its group and names no other router by itself: HSRP/GLBP Active and VRRP Master. Every other
+#: word says another router takes part (Standby, Listen, Backup) or that the group's election is unsettled (Init,
+#: Speak), so it is never read as a sole gateway.
+_FHRP_SOLE_STATES = frozenset({"active", "master"})
+#: The most witnesses one gap cites; its reason then states how many of how many it cites (the payload stays bounded
+#: by the number of gap kinds, not by fleet size, while every count stays in-band).
+_GW_GAP_WITNESS_CAP = 8
+_B_GW = "excel.write_l3_forwarding_sheet:l3_forwarding[]."
+_GW_CAVEAT = "vlan_gateway_rows"
+_R_GW_NO_HOST = "not collected: the engine row names no switch"
+_R_GW_NO_SVI_IP = ("not collected: no SVI address was recorded for this gateway. excel.write_l3_forwarding_sheet "
+                   "writes '' when the row comes from an FHRP group or a connected route alone, and build.py takes "
+                   "svi_ip only from the scoped interface running-config capture")
+_R_GW_NO_ROLE = ("not collected: no FHRP role was recorded for this gateway. excel.write_l3_forwarding_sheet writes '' "
+                 "when the device's FHRP brief names no group for this SVI or was not captured, and it does not tell "
+                 "these apart, so this is not 'no FHRP'")
+_R_GW_TRACK_NOT_OBSERVED = ("not collected: 'show track' was not captured on this device (the producer's own "
+                            "not-observed marker), so object tracking was not assessed; this is never 'no tracking'")
+_R_GW_TRACK_NONE = ("collected but empty: 'show track' was captured on this device and lists no tracked object "
+                    "(not a blind spot)")
+_R_GW_TRACK_LEGACY = ("not collected: an empty tracking text is ambiguous in this snapshot. Before 2026-07-28 "
+                      "excel.write_l3_forwarding_sheet wrote '' both when 'show track' listed no tracked object and "
+                      "when it was never captured, and this snapshot carries nothing that proves its producer "
+                      "separates the two (no not-observed tracking or risk marker, and no interface marked "
+                      "run_config_observed), so this is not 'no tracking'")
+_R_GW_TRACK_CONTRADICTED = ("unverified: the row's risk text is the producer's 'object tracking NOT assessed' marker, "
+                            "which contradicts this tracking text, so neither reading can be chosen")
+_R_GW_TRACK_FLAG_CONTRADICTED = ("unverified: this tracking text and the row's tracked-object-down flag disagree. The "
+                                 "producer raises that flag exactly when the device's captured 'show track' summary "
+                                 "reports a Down object ('<N> obj (<D> DOWN)'), so neither reading can be chosen")
+_R_GW_RISK_UNREAD = ("unverified: the stored risk text is not the producer's flag list (tracked-object-down, then "
+                     "single-gateway or no-FHRP, joined by '; ' in that order; 'ok'; or its tracking-not-assessed "
+                     "marker), so whether this gateway is its VLAN's sole gateway cannot be read")
+_R_GW_RISK_HOSTS_UNREAD = ("unverified: {k} gateway row(s) of this VLAN name no readable switch, so the producer's "
+                           "gateway count cannot be checked against the stored rows")
+_R_GW_RISK_SOLE_CONTRADICTED = ("unverified: the producer flags this gateway single-gateway (its VLAN's only gateway "
+                                "in the scan), yet {n} scanned devices carry a gateway row for this VLAN, so the flag "
+                                "contradicts the stored rows")
+_R_GW_RISK_PEER_CONTRADICTED = ("unverified: the producer raises no single-gateway flag here, which says this VLAN has "
+                                "another gateway in the scan, yet only one scanned device carries a gateway row for "
+                                "it, so the flags contradict the stored rows")
+_R_GW_RISK_SEGMENT = ("unverified: the producer raises no single-gateway flag here because it counts a VLAN's "
+                      "gateways by VLAN id across the scan, but no gateway row of this VLAN on another switch provably "
+                      "shares this gateway's segment (the same readable primary subnet and SVI network, the same VRF "
+                      "where both SVIs' VRFs can be read, and positive evidence of one layer-2 domain between the two "
+                      "switches: a stored cable path every hop of which joins two ports trunking the VLAN, or the same "
+                      "spanning-tree root bridge for the VLAN). VLAN-id reuse at another site -- even one that reuses "
+                      "the subnet in the same table -- or in another VRF is not a second gateway, so whether this is "
+                      "its segment's only gateway cannot be read")
+_R_GW_RISK_UNPROVEN = ("{word}: the producer flags this gateway single-gateway, but the scan does not cover every "
+                       "possible gateway of this VLAN: {clauses}. One gateway in the scan is not proven to be the "
+                       "VLAN's only gateway")
+_R_GW_FHRP_RISK_WITHHELD = ("{word}: the engine names a sole gateway for this VLAN, but that gateway row's "
+                            "sole-gateway risk is withheld (its own reason and witnesses say why), so one gateway in "
+                            "the scan is not proven to be the VLAN's only gateway")
+_R_GW_FHRP_RISK_FALSE = ("unverified: the engine names a sole gateway for this VLAN, but that gateway row's "
+                         "sole-gateway risk is published false, so the two contradict")
+_R_GW_FHRP_NO_ROW = ("unverified: the engine names a sole gateway for this VLAN, but no gateway row of the VLAN names "
+                     "that switch, so the two contradict")
+_R_GW_FHRP_SOURCE = "{word}: the engine names a sole gateway for this VLAN, but its gateway rows cannot be read ({why})"
+_R_GW_UNJOINABLE = ("{k} row(s) in l3_forwarding cannot be joined by VLAN (not an object, or a vlan that is not a VLAN "
+                    "id), and any of them could be another gateway of this VLAN")
+_R_GW_NO_VLAN = "unverified: this VLAN row names no readable VLAN id, so no gateway row can be joined to it"
+_R_GW_NONE = ("collected but empty: no scanned device records a gateway for this VLAN "
+              "(excel.write_l3_forwarding_sheet writes a row for every SVI named VlanN with an address, an FHRP group "
+              "or a connected route), no other collected interface could be its gateway, and the scan covers every "
+              "device the collection discovered (not a blind spot)")
+_R_GW_NONE_UNPROVEN = ("{word}: no scanned device records a gateway for this VLAN, but the scan does not cover every "
+                       "possible gateway of the VLAN: {clauses}; an absent gateway row is not a clean result")
+_R_GW_CC_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected, and any of them could "
+                  "carry another gateway")
+_R_GW_MAP_UNREAD = ("the stored cable map's {what} cannot be read ({why}), so no neighbour the collection never "
+                    "reached can be ruled out")
+_R_GW_PEERS = ("the stored cable map shows {n} neighbour(s) the collection never reached that could route (a "
+               "cable_map.nodes row not marked collected: true whose kind is not ap, phone or endpoint)")
+_R_GW_PEERS_LOOSE = ("{k} stored cable row(s) fail closed as such neighbours, because they cannot be read or an end "
+                     "does not join exactly one cable_map.nodes row")
+_R_GW_ROSTER_UNREAD = ("the {what} cannot be read ({why}), so whether every collected device's gateway SVIs were "
+                       "captured cannot be checked")
+_R_GW_NO_RUN_CONFIG = ("{n} collected device(s) carry no interface marked run_config_observed: true. build.py takes "
+                       "SVI addresses (svi_ip) only from the scoped interface running-config capture, so an SVI of "
+                       "theirs with no FHRP group and no connected route would be missing from the gateway rows")
+_R_GW_ROSTER_KEYS = "{k} device key(s) in the devices or interfaces map are not text, so they name no device"
+_R_GW_ADDR_UNCOUNTED_SVI = ("{n} collected SVI(s) named for this VLAN hold an address but carry no gateway row "
+                            "(excel.write_l3_forwarding_sheet reads only svi_ip, an FHRP group or a connected route), "
+                            "so the stored rows undercount this VLAN's gateways")
+_R_GW_ADDR_IN_SEGMENT = ("{n} other collected interface(s) hold an address in this VLAN's gateway subnet, in no VRF "
+                         "known to differ. excel.write_l3_forwarding_sheet counts only SVIs named VlanN for this VLAN, "
+                         "so a routed port, subinterface, BDI, BVI or irb unit, or another VLAN's SVI there is never "
+                         "counted, and any of them could be another gateway of this segment")
+_R_GW_ADDR_UNSCOPED = ("{n} collected interface(s) not named VlanN hold an address on a subnet that leaves a host "
+                       "address no collected interface holds. excel.write_l3_forwarding_sheet never counts them, the "
+                       "snapshot does not store which VLAN they serve, and this VLAN's subnet cannot be read from its "
+                       "gateway rows, so any of them could be its gateway")
+_R_GW_ADDR_UNREAD = ("{k} collected interface record(s) or address(es) cannot be read, so whether they could gateway "
+                     "this VLAN cannot be checked")
+_R_GW_FHRP_ROLE = ("the gateway's own FHRP role is neither Active nor Master, so another router takes part in its "
+                   "group or the group's election is unsettled")
+_R_GW_FHRP_ROLE_UNREAD = ("the gateway's FHRP role cannot be read, so whether another router takes part in its group "
+                          "cannot be checked")
+_R_GW_FHRP_STANDBY = ("the device's HSRP detail for this SVI names a standby router that no gateway row of this VLAN "
+                      "holds, a router outside the gateway rows")
+_R_GW_FHRP_STATE = ("the device's HSRP detail for this SVI records a state other than Active or Master, so another "
+                    "router takes part in the group or its election is unsettled")
+_R_GW_FHRP_ENTRY_UNREAD = ("{k} stored HSRP detail record(s) of this device cannot be read, and any of them could name "
+                           "a standby router for this SVI")
+_R_GW_FHRP_NO_DETAIL = ("the gateway runs FHRP as Active or Master, but {why}, so a standby router outside the scan "
+                        "cannot be ruled out")
+_R_GW_FHRP_DETAIL_UNREAD = ("the stored HSRP detail (fhrp_detail) cannot be read ({why}), so a standby router it names "
+                            "cannot be ruled out")
+#: A gap in the scan's coverage of a VLAN's possible gateways: ``(state, reason clause, witness ref entries)``.
+_GatewayGap = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
+def _l3_risk_flags(raw: Any) -> Optional[Tuple[str, ...]]:
+    """The producer's flags in one stored risk text (excel.write_l3_forwarding_sheet), or ``None`` when it is not its
+    flag list: its clean word and its tracking-not-assessed marker both mean no flag fired; anything else must be
+    distinct flags of :data:`L3_RISK_FLAGS` joined by :data:`L3_RISK_JOINER` in the producer's order (so
+    tracked-object-down first), never single-gateway beside no-FHRP."""
+    if not _is_text(raw):
+        return None
+    if raw in (L3_RISK_CLEAR, L3_RISK_TRACKING_NOT_ASSESSED):
+        return ()
+    flags = tuple(raw.split(L3_RISK_JOINER))
+    if flags != tuple(flag for flag in L3_RISK_FLAGS if flag in flags) or (
+            L3_SOLE_GATEWAY_FLAG in flags and L3_NO_FHRP_FLAG in flags):
+        return None
+    return flags
+
+
+def _gw_gap(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]]) -> _GatewayGap:
+    """One gap citing at most :data:`_GW_GAP_WITNESS_CAP` witnesses; the clause then says how many of how many."""
+    if len(wit) > _GW_GAP_WITNESS_CAP:
+        return state, f"{clause} ({_GW_GAP_WITNESS_CAP} of {len(wit)} cited)", wit[:_GW_GAP_WITNESS_CAP]
+    return state, clause, wit
+
+
+def _gap_unread(ctx: _Ctx, state: str, toks: Tuple[str, ...], section: str, clause: str) -> _GatewayGap:
+    """A coverage input that cannot be read: its own failed or malformed state, else not collected, citing it."""
+    st = state if state in (AU, _UV) else _NC
+    where = toks if _get(ctx.s, toks) is not _MISSING else (section,)
+    return st, clause, [("witness", where)] + ctx.failure_entries((section,), st == AU)
+
+
+def _gateway_coverage(ctx: _Ctx) -> List[_GatewayGap]:
+    """Why the scan may not cover every possible gateway of a VLAN (empty: it covers every device the collection
+    discovered). Fleet-wide and fail-closed, because VLAN carriage per cable is not stored (G14), so no gap can be
+    scoped to the VLANs it could reach: a collection blind spot, or any gap of the blind-spot record's one coverage
+    verdict (:meth:`_Ctx.cc_coverage`: absent, failed, unreadable, or a summary that does not reconcile with its rows or
+    the roster), a cable-map neighbour the collection never reached that could route (the
+    failure-impact owner's :data:`impact_assessability.IMPACT_EDGE_KINDS` names the only kinds that cannot), and a
+    collected device whose scoped interface running-config, the only source of its SVI addresses, was not captured (no
+    interface marked run_config_observed: true, read through :func:`_run_config_captured`, the owner's scan; absent is
+    never read as captured). Each input that cannot be read is a gap with its own state. The gateways
+    the producer's VlanN rule cannot count are per VLAN (:meth:`_GatewayScan.attribution`)."""
+    gaps: List[_GatewayGap] = []
+    # the blind-spot record is read only through its one coverage verdict (W51): a listed blind spot, then every gap
+    # that leaves the record unable to show each device collected or listed; a failed phase's failure records ride
+    # outside the witness cap, so they are always cited
+    cov = ctx.cc_coverage()
+    if cov.blind:
+        gaps.append(_gw_gap(_NC, _R_GW_CC_BLIND.format(n=len(cov.blind)),
+                            [("witness", ("collection_completeness", "devices", i)) for i in cov.blind]))
+    for cc_gap in cov.gaps:
+        state, clause, wit = _gw_gap(cc_gap.state, cc_gap.clause, list(cc_gap.witness))
+        gaps.append((state, clause, wit + list(cc_gap.failure)))
+    ntoks, ctoks = ("cable_map", "nodes"), ("cable_map", "cables")
+    nstate, nreason, nodes = _topology_source(ctx, ntoks)
+    cstate, creason, cables = _topology_source(ctx, ctoks)
+    for got, why, where in ((nstate, nreason, ntoks), (cstate, creason, ctoks)):
+        if got not in (_PUB, _CBE):
+            gaps.append(_gap_unread(ctx, got, where, "cable_map",
+                                    _R_GW_MAP_UNREAD.format(what=where[1], why=why or _R_NC)))
+    if nstate in (_PUB, _CBE) and isinstance(nodes, list):
+        peers = []
+        for i, node in enumerate(nodes):
+            if isinstance(node, dict) and _is_text(node.get("host")):
+                kind = node.get("kind")
+                if node.get("collected") is True or (node.get("collected") is False and _is_text(kind)
+                                                     and kind in impact_assessability.IMPACT_EDGE_KINDS):
+                    continue
+            peers.append(i)
+        loose = []
+        if cstate in (_PUB, _CBE) and isinstance(cables, list):
+            joined = ctx.index(ntoks, ("host",))
+            for j, cable in enumerate(cables):
+                if not (isinstance(cable, dict) and _is_text(cable.get("a")) and _is_text(cable.get("b"))):
+                    loose.append(j)
+                elif len(joined.get(cable["a"], ())) != 1 or len(joined.get(cable["b"], ())) != 1:
+                    loose.append(j)
+        if peers:
+            gaps.append(_gw_gap(_NC, _R_GW_PEERS.format(n=len(peers)), [("witness", ntoks + (i,)) for i in peers]))
+        if loose:
+            gaps.append(_gw_gap(_NC, _R_GW_PEERS_LOOSE.format(k=len(loose)),
+                                [("witness", ctoks + (j,)) for j in loose]))
+    dstate, dreason, devices = _list_state(ctx, ("devices",), ("devices",), want=dict)
+    istate, ireason, ifaces = _list_state(ctx, ("interfaces",), ("interfaces",), want=dict)
+    for got, why, section in ((dstate, dreason, "devices"), (istate, ireason, "interfaces")):
+        if got not in (_PUB, _CBE):
+            gaps.append(_gap_unread(ctx, got, (section,), section,
+                                    _R_GW_ROSTER_UNREAD.format(what=section + " map", why=why or _R_NC)))
+    if dstate in (_PUB, _CBE) and istate in (_PUB, _CBE) and isinstance(devices, dict) and isinstance(ifaces, dict):
+        keys_seen = list(devices) + [k for k in ifaces if k not in devices]
+        odd = [k for k in keys_seen if not (_is_text(k) and k)]
+        uncaptured = []
+        for host in sorted(k for k in keys_seen if _is_text(k) and k):
+            if not _run_config_captured(ctx, host):           # the failure-impact owner's scan (one rule)
+                uncaptured.append(("witness", ("interfaces", host) if host in ifaces else ("devices", host)))
+        if uncaptured:
+            gaps.append(_gw_gap(_NC, _R_GW_NO_RUN_CONFIG.format(n=len(uncaptured)), uncaptured))
+        if odd:
+            gaps.append((_UV, _R_GW_ROSTER_KEYS.format(k=len(odd)), [("witness", ("devices",)),
+                                                                      ("witness", ("interfaces",))]))
+    return gaps
+
+
+def _tracking_split(ctx: _Ctx) -> bool:
+    """Whether this snapshot proves its producer writes an empty tracking text only for a captured 'show track' that
+    lists no tracked object: excel.write_l3_forwarding_sheet separates that from "never captured" since 2026-07-28
+    (its not-observed tracking text and risk marker), and build.py marks run_config_observed since 2026-08-10, so
+    either one in the snapshot proves the later producer. Before the split, '' meant both."""
+    rows = ctx.s.get("l3_forwarding")
+    for row in rows if isinstance(rows, list) else ():
+        if isinstance(row, dict) and (row.get("tracking") == NOT_OBSERVED_SENTINEL
+                                      or row.get("risk") == L3_RISK_TRACKING_NOT_ASSESSED):
+            return True
+    ifaces = ctx.s.get("interfaces")
+    for ports in ifaces.values() if isinstance(ifaces, dict) else ():
+        for port in ports.values() if isinstance(ports, dict) else ():
+            if isinstance(port, dict) and port.get("run_config_observed") is True:
+                return True
+    return False
+
+
+def _svi_address(raw: Any) -> Any:
+    """One stored interface address ('addr mask', 'addr/len' or a bare address) as an ``ipaddress`` interface, by
+    analyze.svi_subnet_leaves_no_host_address's spelling rule; ``None`` when it does not parse."""
+    if not _is_text(raw):
+        return None
+    text = raw.strip()
+    parts = text.split()
+    spelled = f"{parts[0]}/{parts[1]}" if len(parts) == 2 else text
+    try:
+        return ipaddress.ip_interface(spelled)
+    except ValueError:
+        return None
+
+
+def _row_segment(rec: Any) -> FrozenSet[Any]:
+    """The segment networks one stored l3_forwarding row names: the network of its SVI address and its primary subnet
+    (the SVI's connected route), each only when it parses as a network wider than one address."""
+    if not isinstance(rec, dict):
+        return frozenset()
+    nets = []
+    iface = _svi_address(rec.get("svi_ip"))
+    if iface is not None:
+        nets.append(iface.network)
+    sub = rec.get("primary_subnet")
+    if _is_text(sub) and sub.strip():
+        try:
+            nets.append(ipaddress.ip_network(sub.strip(), strict=False))
+        except ValueError:
+            pass
+    return frozenset(net for net in nets if net.prefixlen < net.max_prefixlen)
+
+
+def _port_vrf(rec: Any) -> Optional[str]:
+    """The VRF one interface record names ('' for the global table), or ``None`` when it cannot be read. build.py takes
+    vrf from the scoped interface running-config ('vrf forwarding', 'ip vrf forwarding', 'vrf member') or 'show vrf
+    interface', so a blank vrf is the global table only where that interface's running-config was captured."""
+    if not isinstance(rec, dict):
+        return None
+    vrf = rec.get("vrf")
+    if _is_text(vrf) and vrf.strip():
+        return vrf.strip()
+    if (vrf is None or _is_text(vrf)) and rec.get("run_config_observed") is True:
+        return ""
+    return None
+
+
+def _vlan_listed(raw: Any, vid: int) -> Optional[bool]:
+    """Whether a stored allowed-VLAN text ('10,20,30', ranges '1-4094', 'ALL', 'none') lists VLAN `vid`; ``None`` when
+    any part of it cannot be read (the owners' VLAN-id key rule, :func:`_vid`; a range outside 1-4094 is unreadable)."""
+    if not _is_text(raw):
+        return None
+    text = raw.strip().lower()
+    if text == "all":
+        return 1 <= vid <= 4094
+    if text in ("", "none"):
+        return False
+    hit = False
+    for part in text.split(","):
+        lo_text, sep, hi_text = part.strip().partition("-")
+        lo = _vid(lo_text)
+        hi = _vid(hi_text) if sep else lo
+        if lo is None or hi is None or not 1 <= lo <= hi <= 4094:
+            return None
+        hit = hit or lo <= vid <= hi
+    return hit
+
+
+def _trunks_vlan(rec: Any, vid: int) -> bool:
+    """One stored interface record is a port trunking VLAN `vid`: its trunk status is 'trunking' and its allowed-VLAN
+    list (build.py's trunk_allowed_vlans) can be read and lists the VLAN. Anything else carries no proof."""
+    if not isinstance(rec, dict):
+        return False
+    status = rec.get("trunk_status")
+    return (_is_text(status) and status.strip().lower() == "trunking"
+            and _vlan_listed(rec.get("trunk_allowed_vlans"), vid) is True)
+
+
+def _stp_root(snap: Mapping[str, Any], host: str, vid: int) -> Optional[str]:
+    """The spanning-tree root bridge `host` reports for VLAN `vid` (build.build_stp_roots: stp_roots{host}{vid}), as
+    lower-case text, only for a per-VLAN instance (is_mst exactly false) whose root address can be read; else
+    ``None``. A bridge address names one bridge, so two switches reporting it share that VLAN's spanning tree."""
+    roots = snap.get("stp_roots")
+    per_host = roots.get(host) if isinstance(roots, dict) else None
+    rec = per_host.get(str(vid)) if isinstance(per_host, dict) else None
+    if not (isinstance(rec, dict) and rec.get("is_mst") is False):
+        return None
+    address = rec.get("root_address")
+    return address.strip().lower() if _is_text(address) and address.strip() else None
+
+
+def _interface_addresses(rec: Mapping[str, Any], base: Tuple[Any, ...]) -> Tuple[List[Any], List[Tuple[Any, ...]]]:
+    """Every address one interface record holds (svi_ip, and the configured set svi_ips, ';'-joined text or a list),
+    parsed, and the tokens of every address value that cannot be read."""
+    found: List[Any] = []
+    bad: List[Tuple[Any, ...]] = []
+    values: List[Tuple[Any, Tuple[Any, ...]]] = [(rec["svi_ip"], base + ("svi_ip",))] if "svi_ip" in rec else []
+    many = rec.get("svi_ips")
+    if _is_text(many):
+        values += [(value, base + ("svi_ips",)) for value in many.split(";")]
+    elif isinstance(many, list):
+        values += [(value, base + ("svi_ips", k)) for k, value in enumerate(many)]
+    elif many is not None:
+        bad.append(base + ("svi_ips",))
+    for raw, toks in values:
+        if raw is None or (_is_text(raw) and not raw.strip()):
+            continue
+        iface = _svi_address(raw)
+        if iface is None:
+            bad.append(toks)
+        elif iface not in found:
+            found.append(iface)
+    return found, bad
+
+
+class _GatewayScan:
+    """What every VLAN's gateway rows read, once per projection (G16): the fleet-wide coverage gaps, the tracking-split
+    proof, the l3_forwarding join, and every collected interface address. excel.write_l3_forwarding_sheet counts only
+    interfaces named VlanN, so the addresses are what can show a gateway it never counted."""
+
+    def __init__(self, ctx: _Ctx) -> None:
+        self.ctx = ctx
+        rows = ctx.s.get("l3_forwarding")
+        self.by_vid = _vid_index(ctx, ("l3_forwarding",))
+        self.loose = [j for j, rec in enumerate(rows if isinstance(rows, list) else ())
+                      if not (isinstance(rec, dict) and _vid(rec.get("vlan")) is not None)]
+        self.cover = _gateway_coverage(ctx)
+        self.split = _tracking_split(ctx)
+        #: (host, port, address, the port's VLAN id or None) of every readable collected interface address
+        self.held: List[Tuple[str, str, Any, Optional[int]]] = []
+        #: (host, port, witness tokens, the port's VLAN id or None) of every record or address that cannot be read
+        self.bad: List[Tuple[str, str, Tuple[Any, ...], Optional[int]]] = []
+        #: (host, VLAN id) -> its ports named for that VLAN (compute_vlan_cutover_matrix's SVI rule)
+        self.svis: Dict[Tuple[str, int], List[str]] = {}
+        #: VLAN id -> (host, port) of every SVI named for it that holds an address
+        self.addressed: Dict[int, List[Tuple[str, str]]] = {}
+        self._by_len: Dict[Tuple[int, int], Dict[int, List[int]]] = {}
+        self._free: Dict[Any, bool] = {}
+        self._unscoped: Optional[List[Tuple[str, str]]] = None
+        #: VLAN id -> the trunk graph :meth:`same_l2` walks (built on first use)
+        self._l2: Dict[int, Dict[str, Set[str]]] = {}
+        ifaces = ctx.s.get("interfaces")
+        for host in [k for k in ifaces if _is_text(k) and k] if isinstance(ifaces, dict) else ():
+            ports = ifaces[host]
+            for port in [p for p in ports if _is_text(p)] if isinstance(ports, dict) else ():
+                match = _SVI.match(port)
+                vid = _vid(match.group(1)) if match else None
+                if vid is not None:
+                    self.svis.setdefault((host, vid), []).append(port)
+                base = ("interfaces", host, port)
+                rec = ports[port]
+                if not isinstance(rec, dict):
+                    self.bad.append((host, port, base, vid))
+                    continue
+                found, bad = _interface_addresses(rec, base)
+                self.bad += [(host, port, toks, vid) for toks in bad]
+                self.held += [(host, port, iface, vid) for iface in found]
+                if found and vid is not None:
+                    self.addressed.setdefault(vid, []).append((host, port))
+
+    def within(self, net: Any) -> List[int]:
+        """Indices into :attr:`held` of every address inside `net` (one index per prefix length, built on first use)."""
+        key = (net.version, net.prefixlen)
+        shift = net.max_prefixlen - net.prefixlen
+        if key not in self._by_len:
+            index: Dict[int, List[int]] = {}
+            for i, (_host, _port, iface, _vid_of) in enumerate(self.held):
+                if iface.version == net.version:
+                    index.setdefault(int(iface.ip) >> shift, []).append(i)
+            self._by_len[key] = index
+        return list(self._by_len[key].get(int(net.network_address) >> shift, ()))
+
+    def leaves_host(self, net: Any) -> bool:
+        """Whether `net` leaves a usable host address that no collected interface holds, over
+        analyze.svi_subnet_leaves_no_host_address's usable set (both addresses of a two-address network, every host of
+        one up to 256 addresses); a larger network always does."""
+        if net not in self._free:
+            if net.num_addresses > 256:
+                self._free[net] = True
+            else:
+                usable = ({net.network_address, net.broadcast_address} if net.num_addresses == 2
+                          else set(net.hosts()))
+                self._free[net] = bool(usable - {self.held[i][2].ip for i in self.within(net)})
+        return self._free[net]
+
+    def unscoped(self) -> List[Tuple[str, str]]:
+        """Every collected interface not named VlanN that holds an address on a subnet leaving a host address free: a
+        gateway the producer never counts, for a VLAN the snapshot does not store."""
+        if self._unscoped is None:
+            seen: Dict[Tuple[str, str], None] = {}
+            for host, port, iface, vid in self.held:
+                if vid is None and (host, port) not in seen and self.leaves_host(iface.network):
+                    seen[(host, port)] = None
+            self._unscoped = list(seen)
+        return list(self._unscoped)
+
+    def same_l2(self, a: str, b: str, vid: int) -> bool:
+        """Positive stored evidence that switches `a` and `b` share one layer-2 domain for VLAN `vid` (W51): both
+        report the same spanning-tree root bridge for it (:func:`_stp_root`), or a stored cable path joins them every
+        hop of which is a cable_map.cables row whose two ends are collected ports trunking the VLAN
+        (:func:`_trunks_vlan`). A matching subnet, VRF, FHRP group or virtual address is not such evidence: cloned
+        sites reuse every one of them. Anything that cannot be read proves nothing."""
+        root = _stp_root(self.ctx.s, a, vid)
+        if root is not None and root == _stp_root(self.ctx.s, b, vid):
+            return True
+        if vid not in self._l2:
+            self._l2[vid] = self._trunk_graph(vid)
+        graph = self._l2[vid]
+        seen, frontier = {a}, [a]
+        while frontier:
+            here = frontier.pop()
+            for there in graph.get(here, ()):
+                if there == b:
+                    return True
+                if there not in seen:
+                    seen.add(there)
+                    frontier.append(there)
+        return False
+
+    def _trunk_graph(self, vid: int) -> Dict[str, Set[str]]:
+        """Host -> the hosts one stored cable joins it to over two ports both trunking VLAN `vid`."""
+        graph: Dict[str, Set[str]] = {}
+        cables = _get(self.ctx.s, ("cable_map", "cables"))
+        ifaces = self.ctx.s.get("interfaces")
+        if not (isinstance(cables, list) and isinstance(ifaces, dict)):
+            return graph
+        for cable in cables:
+            if not isinstance(cable, dict):
+                continue
+            ends = [(cable.get(h), cable.get(p)) for h, p in (("a", "a_port"), ("b", "b_port"))]
+            if not all(_is_text(host) and host and _is_text(port) and port for host, port in ends):
+                continue
+            (ha, pa), (hb, pb) = ends
+            if ha == hb:
+                continue
+            ports_a, ports_b = ifaces.get(ha), ifaces.get(hb)
+            if not (isinstance(ports_a, dict) and isinstance(ports_b, dict)):
+                continue
+            if _trunks_vlan(ports_a.get(pa), vid) and _trunks_vlan(ports_b.get(pb), vid):
+                graph.setdefault(ha, set()).add(hb)
+                graph.setdefault(hb, set()).add(ha)
+        return graph
+
+    def vrf(self, host: Any, vid: int) -> Optional[str]:
+        """The VRF of `host`'s one SVI for VLAN `vid` (:func:`_port_vrf`), or ``None`` when no single such port exists
+        or its VRF cannot be read."""
+        ports = self.svis.get((host, vid), []) if _is_text(host) else []
+        if len(ports) != 1:
+            return None
+        return _port_vrf(self.ctx.s["interfaces"][host][ports[0]])
+
+    def attribution(self, vid: int, hosts: FrozenSet[str], segments: Sequence[FrozenSet[Any]],
+                    vrfs: Sequence[Optional[str]]) -> List[_GatewayGap]:
+        """The gateways of VLAN `vid` the producer's VlanN rule could not count, from the collected interface
+        addresses: an addressed SVI named for the VLAN on a switch with no gateway row; any other interface holding an
+        address in a segment the VLAN's rows name (outside a VRF known to differ); where a row names no readable
+        segment (or the VLAN has no row), any interface not named VlanN on a subnet leaving a host address free; and
+        every record or address that cannot be read, except on the VLAN's own counted SVIs."""
+        gaps: List[_GatewayGap] = []
+        uncounted = [hp for hp in self.addressed.get(vid, ()) if hp[0] not in hosts]
+        if uncounted:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_UNCOUNTED_SVI.format(n=len(uncounted)),
+                                [("witness", ("interfaces",) + hp) for hp in uncounted]))
+        known = set(vrfs) if vrfs and all(v is not None for v in vrfs) else None
+        ifaces = self.ctx.s.get("interfaces")
+        hits: Dict[Tuple[str, str], None] = {}
+        for net in sorted({net for seg in segments for net in seg}, key=str):
+            for i in self.within(net):
+                host, port, _iface, pvid = self.held[i]
+                if pvid == vid or (host, port) in hits:
+                    continue
+                pvrf = _port_vrf(ifaces[host][port])
+                if known is not None and pvrf is not None and pvrf not in known:
+                    continue
+                hits[(host, port)] = None
+        if hits:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_IN_SEGMENT.format(n=len(hits)),
+                                [("witness", ("interfaces",) + hp) for hp in hits]))
+        if not segments or not all(segments):
+            rest = [hp for hp in self.unscoped() if hp not in hits]
+            if rest:
+                gaps.append(_gw_gap(_NC, _R_GW_ADDR_UNSCOPED.format(n=len(rest)),
+                                    [("witness", ("interfaces",) + hp) for hp in rest]))
+        bad = [toks for host, _port, toks, pvid in self.bad if not (pvid == vid and host in hosts)]
+        if bad:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_UNREAD.format(k=len(bad)), [("witness", toks) for toks in bad]))
+        return gaps
+
+    def fhrp_gaps(self, j: int, rec: Mapping[str, Any], vid: int, owned: FrozenSet[Any]) -> List[_GatewayGap]:
+        """Stored FHRP evidence that another router takes part in this gateway's group, which a sole-gateway reading
+        would contradict: the row's own role (any word but Active or Master), and the device's HSRP detail
+        (parse.parse_hsrp_detail via build.build_fhrp_detail) for its SVI naming a standby router no gateway row of
+        the VLAN holds, or a state other than Active or Master. An Active or Master gateway whose detail is absent
+        cannot rule out a standby router outside the scan; a detail record or section that cannot be read could name
+        one."""
+        ctx = self.ctx
+        gaps: List[_GatewayGap] = []
+        host, role = rec.get("switch"), rec.get("role")
+        active = False
+        if role is not None and not _is_text(role):           # absent or '': no role recorded (the role cell says so)
+            gaps.append((_UV, _R_GW_FHRP_ROLE_UNREAD, [("witness", ("l3_forwarding", j, "role"))]))
+        elif _is_text(role) and role.strip():
+            if role.strip().lower() in _FHRP_SOLE_STATES:
+                active = True
+            else:
+                gaps.append((_UV, _R_GW_FHRP_ROLE, [("witness", ("l3_forwarding", j, "role"))]))
+        toks = ("fhrp_detail",)
+        state, reason, detail = _list_state(ctx, toks, toks, want=dict)
+        if state not in (_PUB, _CBE):
+            if active or state in (AU, _UV):
+                gaps.append(_gap_unread(ctx, state, toks, "fhrp_detail",
+                                        _R_GW_FHRP_DETAIL_UNREAD.format(why=reason or _R_NC)))
+            return gaps
+        records = detail.get(host, _MISSING) if _is_text(host) and isinstance(detail, dict) else _MISSING
+        if records is _MISSING:
+            if active:
+                gaps.append((_NC, _R_GW_FHRP_NO_DETAIL.format(why="no HSRP detail is stored for this device"),
+                             [("witness", toks)]))
+            return gaps
+        if not isinstance(records, list):
+            return gaps + [(_UV, _R_GW_FHRP_ENTRY_UNREAD.format(k=1), [("witness", toks + (host,))])]
+        mine = 0
+        unread: List[Tuple[str, Sequence[Any]]] = []
+        for i, entry in enumerate(records):
+            here = toks + (host, i)
+            name = entry.get("ifname") if isinstance(entry, dict) else None
+            match = _SVI.match(name) if _is_text(name) else None
+            if not _is_text(name):
+                unread.append(("witness", here))
+                continue
+            if not (match and _vid(match.group(1)) == vid):
+                continue
+            mine += 1
+            standby, group_state = entry.get("standby_ip"), entry.get("state")
+            if not ((standby is None or _is_text(standby)) and (group_state is None or _is_text(group_state))):
+                unread.append(("witness", here))
+                continue
+            if _is_text(standby) and standby.strip():
+                addr = _svi_address(standby)
+                if addr is None or addr.ip not in owned:
+                    gaps.append((_UV, _R_GW_FHRP_STANDBY, [("witness", here + ("standby_ip",))]))
+            if _is_text(group_state) and group_state.strip() and group_state.strip().lower() not in _FHRP_SOLE_STATES:
+                gaps.append((_UV, _R_GW_FHRP_STATE, [("witness", here + ("state",))]))
+        if unread:
+            gaps.append(_gw_gap(_UV, _R_GW_FHRP_ENTRY_UNREAD.format(k=len(unread)), unread))
+        if active and not mine:
+            gaps.append((_NC, _R_GW_FHRP_NO_DETAIL.format(why="no stored HSRP detail record of this device names "
+                                                              "its SVI"), [("witness", toks + (host,))]))
+        return gaps
+
+
+def _gateway_tracking_pre(split: bool) -> _Pre:
+    """The tracking cell: a text that disagrees with the row's own tracked-object-down flag (the producer raises it
+    exactly when its summary reports a Down object) is unverified; the producer's not-observed marker is never 'no
+    tracking'; a tracking text beside the row's own tracking-not-assessed risk marker contradicts it; and an empty
+    text is a captured 'show track' with no tracked object only where :func:`_tracking_split` proves the producer
+    separates the two."""
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        risk = row.raw.get("risk") if isinstance(row.raw, dict) else None
+        flags = _l3_risk_flags(risk)
+        wit = [("witness", row.toks + ("risk",))]
+        if _is_text(raw) and flags is not None:
+            shape = _TRACK_SUMMARY.fullmatch(raw)
+            down = bool(shape and shape.group(2) and int(shape.group(2)) > 0)
+            if down != (L3_TRACKED_DOWN_FLAG in flags):
+                return _UV, _R_GW_TRACK_FLAG_CONTRADICTED, wit
+        if raw == NOT_OBSERVED_SENTINEL:
+            return _NC, _R_GW_TRACK_NOT_OBSERVED
+        if _is_text(raw) and risk == L3_RISK_TRACKING_NOT_ASSESSED:
+            return _UV, _R_GW_TRACK_CONTRADICTED, wit
+        if raw == "":
+            return (_CBE, _R_GW_TRACK_NONE) if split else (_NC, _R_GW_TRACK_LEGACY)
+        return None
+    return pre
+
+
+def _gateway_segment_hold(scan: _GatewayScan, vid: int, j: int, sel: Sequence[int], recs: Mapping[int, Any],
+                          segs: Mapping[int, FrozenSet[Any]]) -> Optional[Tuple[Any, ...]]:
+    """``None`` when another switch's gateway row of the VLAN provably shares row `j`'s segment: the same readable
+    primary subnet and SVI network, the same VRF where both SVIs' VRFs can be read, and (W51) positive evidence that
+    the two switches share one layer-2 domain for the VLAN (:meth:`_GatewayScan.same_l2`). The producer counts
+    gateways by VLAN id across the scan, so without that proof a second row may be VLAN-id reuse -- at another site
+    that reuses the subnet in the same table too -- not a second gateway, and the false it implies is unverified,
+    citing every row of the VLAN and their SVIs (bounded by the gap cap)."""
+    host = recs[j]["switch"]
+    mine, my_vrf = segs[j], scan.vrf(host, vid)
+    for k in sel:
+        other = recs[k]["switch"]
+        if other != host and mine and segs[k] == mine:
+            theirs = scan.vrf(other, vid)
+            if (my_vrf is None or theirs is None or my_vrf == theirs) and scan.same_l2(host, other, vid):
+                return None
+    order = [j] + [k for k in sel if k != j]
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    for k in order:
+        wit.append(("witness", ("l3_forwarding", k)))
+        wit += [("witness", ("interfaces", recs[k]["switch"], port))
+                for port in scan.svis.get((recs[k]["switch"], vid), ())]
+    state, reason, entries = _gw_gap(_UV, _R_GW_RISK_SEGMENT, wit)
+    return state, reason, entries
+
+
+def _gateway_risk_pre(scan: _GatewayScan, vid: int, sel: Sequence[int], recs: Mapping[int, Any], n_hosts: int,
+                      unnamed: Sequence[int], cover: Sequence[_GatewayGap],
+                      segs: Mapping[int, FrozenSet[Any]]) -> _Pre:
+    """The sole-gateway risk cell. The producer's single-gateway flag must agree with the stored rows: it says the
+    VLAN has exactly one scanned gateway, and its absence says it has two or more. Its absence is published as false
+    only where another switch's gateway row provably shares this row's segment (:func:`_gateway_segment_hold`), and
+    then whatever the coverage, because an unscanned device can only add gateways. The flag itself is published as
+    true only when the scan covers every possible gateway of the VLAN (``cover``: the fleet gaps of
+    :func:`_gateway_coverage` and the VLAN's :meth:`_GatewayScan.attribution`), no row l3_forwarding cannot join by
+    VLAN could be that other gateway, and no stored FHRP record shows another router in its group
+    (:meth:`_GatewayScan.fhrp_gaps`)."""
+    owned = frozenset(addr.ip for addr in (_svi_address(recs[k].get("svi_ip")) for k in sel) if addr is not None)
+
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        flags = _l3_risk_flags(raw)
+        if flags is None:
+            return _UV, _R_GW_RISK_UNREAD
+        if unnamed:
+            return (_UV, _R_GW_RISK_HOSTS_UNREAD.format(k=len(unnamed)),
+                    [("witness", ("l3_forwarding", k)) for k in unnamed])
+        j = row.toks[-1]
+        sole = L3_SOLE_GATEWAY_FLAG in flags
+        if sole and n_hosts != 1:
+            return (_UV, _R_GW_RISK_SOLE_CONTRADICTED.format(n=n_hosts),
+                    [("witness", ("l3_forwarding", k)) for k in sel])
+        loose_gap = [_gw_gap(_UV, _R_GW_UNJOINABLE.format(k=len(scan.loose)),
+                             [("witness", ("l3_forwarding", k)) for k in scan.loose])] if scan.loose else []
+        if not sole:
+            if n_hosts < 2:
+                if loose_gap:                    # the other gateway may be a row the join cannot read
+                    return _UV, "unverified: " + loose_gap[0][1], loose_gap[0][2]
+                return _UV, _R_GW_RISK_PEER_CONTRADICTED, [("witness", ("l3_forwarding", k)) for k in sel]
+            return _gateway_segment_hold(scan, vid, j, sel, recs, segs)
+        gaps = list(cover) + loose_gap + scan.fhrp_gaps(j, recs[j], vid, owned)
+        if gaps:
+            state = impact_assessability.bound_state(gaps)
+            return (state, _R_GW_RISK_UNPROVEN.format(word=impact_assessability.STATE_WORD[state],
+                                                      clauses="; ".join(gap[1] for gap in gaps)),
+                    [w for gap in gaps for w in gap[2]])
+        return None
+    return pre
+
+
+#: One gateway row's sole-gateway risk as the VLAN row's fhrp cell reads it: ``(risk fact, the ref entries its
+#: pre-check cited, the row's raw switch)``.
+_GatewayRisk = Tuple[Dict[str, Any], List[Tuple[str, Sequence[Any]]], Any]
+
+
+def _vlan_fhrp_pre(ctx: _Ctx, src_state: str, listing: Mapping[str, Any], risks: Mapping[int, _GatewayRisk]) -> _Pre:
+    """The VLAN row's fhrp cell: the engine's not-observed marker as before, and its "sole gateway on <host> (no FHRP)"
+    text only where the gateway row of that switch publishes its sole-gateway risk true, so one VLAN row never states
+    a sole gateway in one cell and withholds it in another, whatever withheld the risk. A withheld risk lends its
+    state and witnesses; a published false, or no gateway row naming the switch, contradicts the text. Its other
+    texts (two or more gateways without FHRP, a transit subnet) and its FHRP record pass through."""
+    opening, closing = VLAN_SOLE_GATEWAY_FHRP
+
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        early = _marker(raw, row)
+        if early is not None:
+            return early
+        if not (_is_text(raw) and len(raw) >= len(opening) + len(closing) and raw.startswith(opening)
+                and raw.endswith(closing)):
+            return None
+        host = raw[len(opening):len(raw) - len(closing)]
+        named = [(j, fact, held) for j, (fact, held, switch) in risks.items() if switch == host]
+        if any(fact["state"] == _PUB and fact.get("value") is True for _j, fact, _held in named):
+            return None
+        withheld = [(j, fact, held) for j, fact, held in named if fact["state"] != _PUB]
+        if withheld:
+            j, fact, held = withheld[0]
+            state = fact["state"] if fact["state"] in impact_assessability.STATE_WORD else _UV
+            return (state, _R_GW_FHRP_RISK_WITHHELD.format(word=impact_assessability.STATE_WORD[state]),
+                    [("witness", ("l3_forwarding", j, "risk")), ("witness", ("l3_forwarding", j))] + held
+                    + ctx.failure_entries(("l3_forwarding",), state == AU))
+        if named:
+            j = named[0][0]
+            return _UV, _R_GW_FHRP_RISK_FALSE, [("witness", ("l3_forwarding", j, "risk"))]
+        if src_state not in (_PUB, _CBE) or listing["state"] in (AU, _UV):
+            state = listing["state"] if listing["state"] in impact_assessability.STATE_WORD else _UV
+            return (state, _R_GW_FHRP_SOURCE.format(word=impact_assessability.STATE_WORD[state],
+                                                    why=listing.get("reason") or _R_NC),
+                    [("witness", ("l3_forwarding",))] + ctx.failure_entries(("l3_forwarding",), state == AU))
+        return _UV, _R_GW_FHRP_NO_ROW, [("witness", ("l3_forwarding",))]
+    return pre
+
+
+def _gateway_row(ctx: _Ctx, j: int, rec: Any, risk_pre: _Pre,
+                 tracking_pre: _Pre) -> Tuple[Dict[str, Any], List[Tuple[str, Sequence[Any]]]]:
+    """One stored l3_forwarding row as a gateway of its VLAN: its switch, SVI address, FHRP role and tracking as the
+    producer wrote them, and the sole-gateway risk read from its single-gateway flag (a boolean, never the producer's
+    other flags); with the ref entries the risk's pre-check cited when it withheld the risk."""
+    toks = ("l3_forwarding", j)
+    row = _list_row(toks, rec, ("l3_forwarding",))
+    held: List[Tuple[str, Sequence[Any]]] = []
+
+    def risk_hold(raw: Any, cell_row: _Row) -> Optional[Tuple[Any, ...]]:
+        out = risk_pre(raw, cell_row)
+        if out is not None and len(out) > 2:
+            held.extend(out[2])
+        return out
+
+    out: Dict[str, Any] = {"index": j, "pointer": json_pointer(*toks)}
+    out["host"] = _cell(ctx, row, "switch", "text", _B_GW + "switch", pre=_blank(_R_GW_NO_HOST))
+    out["svi_ip"] = _cell(ctx, row, "svi_ip", "text", _B_GW + "svi_ip", pre=_blank(_R_GW_NO_SVI_IP))
+    out["role"] = _cell(ctx, row, "role", "text", _B_GW + "role", pre=_blank(_R_GW_NO_ROLE),
+                        published_caveats=(_GW_CAVEAT,))
+    out["tracking"] = _cell(ctx, row, "tracking", "text", _B_GW + "tracking", pre=tracking_pre,
+                            published_caveats=(_GW_CAVEAT,))
+    risk = _cell(ctx, row, "risk", "text", _B_GW + "risk (its single-gateway flag: the sole-gateway risk)",
+                 pre=risk_hold, published_caveats=(_GW_CAVEAT,))
+    if risk["state"] == _PUB:
+        risk["value"] = L3_SOLE_GATEWAY_FLAG in (_l3_risk_flags(risk["value"]) or ())
+    out["risk"] = risk
+    return out, held
+
+
+def _vlan_gateways(ctx: _Ctx, src: Tuple[str, Optional[str], Any], ok: bool, vid: Any,
+                   scan: _GatewayScan) -> Tuple[Dict[str, Any], Dict[int, _GatewayRisk]]:
+    """``selections.gateways`` of one VLAN row: the stored l3_forwarding rows naming its VLAN id (the owners' key rule,
+    :func:`_vid`), each a :func:`_gateway_row`, and each row's risk as the fhrp cell reads it. Never a clean absence
+    by silence: a row the join cannot read makes the list unverified (it could name this VLAN), and an empty selection
+    is collected but empty only when the scan covers every possible gateway of the VLAN. A published list under a
+    coverage gap may be incomplete and cites the gap."""
+    toks = ("l3_forwarding",)
+    base, reason, raw = src
+    basis = "excel.write_l3_forwarding_sheet:l3_forwarding[] (the rows naming this VLAN)"
+    cav = ("row_selection_by_exact_key",)
+    # A failed, absent or unreadable source selects nothing (selection_sources says why, as before G16); a list the
+    # abstention core calls empty although it holds rows is still read, and stays unverified below.
+    if not (base in (_PUB, _CBE) or (base == _UV and isinstance(raw, list))):
+        return _listing(ctx, base, reason, toks, basis, [], sections=toks, caveats=cav), {}
+    sel = list(scan.by_vid.get(vid, ())) if ok else []
+    recs = {j: raw[j] for j in sel}                       # _vid_index selects objects only
+    unnamed = [j for j in sel if not (_is_text(recs[j].get("switch")) and recs[j]["switch"])]
+    hosts = frozenset(recs[j]["switch"] for j in sel if j not in unnamed)
+    segs = {j: _row_segment(recs[j]) for j in sel}
+    cover = list(scan.cover)
+    if ok:
+        cover += scan.attribution(vid, hosts, [segs[j] for j in sel],
+                                  [scan.vrf(recs[j]["switch"], vid) for j in sel if j not in unnamed])
+    risk_pre = _gateway_risk_pre(scan, vid, sel, recs, len(hosts), unnamed, cover, segs)
+    tracking_pre = _gateway_tracking_pre(scan.split)
+    items: List[Dict[str, Any]] = []
+    risks: Dict[int, _GatewayRisk] = {}
+    for j in sel:
+        item, held = _gateway_row(ctx, j, recs[j], risk_pre, tracking_pre)
+        items.append(item)
+        risks[j] = (item["risk"], held, recs[j].get("switch"))
+    doubts = [reason] if base == _UV and reason else []
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    if not ok:
+        doubts.append(_R_GW_NO_VLAN)
+    elif scan.loose:
+        _st, clause, cited = _gw_gap(_UV, _R_GW_UNJOINABLE.format(k=len(scan.loose)),
+                                     [("witness", toks + (j,)) for j in scan.loose])
+        doubts.append("unverified: " + clause)
+        wit += cited
+    if doubts or base == _UV:
+        return _listing(ctx, _UV, "; ".join(doubts) or _R_OWNER_EMPTY, toks, basis, items, sections=toks, extra=wit,
+                        caveats=cav), risks
+    gap_state = impact_assessability.bound_state(cover) if cover else _NC
+    unproven = _R_GW_NONE_UNPROVEN.format(word=impact_assessability.STATE_WORD[gap_state],
+                                          clauses="; ".join(gap[1] for gap in cover))
+    gap_wit = [w for gap in cover for w in gap[2]]
+    if not sel:
+        if cover:
+            return _listing(ctx, gap_state, unproven, toks, basis, [], sections=toks, extra=gap_wit,
+                            caveats=cav), risks
+        return _listing(ctx, _CBE, _R_GW_NONE, toks, basis, [], sections=toks, caveats=cav), risks
+    qualify = _fleet_qualify(ctx) + ([(_GW_CAVEAT, unproven, gap_wit)] if cover else [])
+    return _listing(ctx, _PUB, None, toks, basis, items, sections=toks, caveats=cav, qualify=qualify), risks
+
+
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
@@ -3653,12 +5594,14 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                     and type(record["is_mst"]) is not bool):
                 uncertain_namespaces.setdefault(vid, []).extend(
                     (json_pointer("stp_roots", host, key), json_pointer("stp_roots", host, key, "is_mst")))
-    src_gw, ok_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",),
-                            "excel.write_l3_forwarding_sheet:l3_forwarding[]")
+    src_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",), "excel.write_l3_forwarding_sheet:l3_forwarding[]")[0]
     src_ep, ok_ep = _source(ctx, ("endpoint_identity",), ("endpoint_identity",),
                             "analyze.compute_endpoint_identity:endpoint_identity[]")
-    roots, gateways, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("l3_forwarding",)), _vid_index(
-        ctx, ("endpoint_identity",))
+    roots, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("endpoint_identity",))
+    # G16: every VLAN row's gateway list reads one source state and one scan (the join census, the coverage verdict
+    # and the collected interface addresses), built on the first VLAN row.
+    gw_src = _list_state(ctx, ("l3_forwarding",), ("l3_forwarding",))
+    gw_scan: Optional[_GatewayScan] = None
     pres = {"dependencies": _vlan_deps_pre(ctx), "wave": _vlan_wave_pre(ctx)}
     capped = ENGINE_LIST_CAPS["vlan_cutover[].app_domain"]
     owner_rows: Dict[int, List[int]] = {}
@@ -3672,6 +5615,11 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
         item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks, i)}
         ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
         duplicates = owner_rows.get(vid, []) if ok else []
+        if gw_scan is None:
+            gw_scan = _GatewayScan(ctx)
+        # the gateway rows first: the fhrp cell states a sole gateway only where that gateway's own risk is true
+        gw_list, gw_risks = _vlan_gateways(ctx, gw_src, ok, vid, gw_scan)
+        row_pres = {**pres, "fhrp": _vlan_fhrp_pre(ctx, gw_src[0], gw_list, gw_risks)}
 
         def duplicate_owner_pre(_raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
             return (_UV, "unverified: multiple published VLAN rows name this VLAN; no single STP verdict is "
@@ -3684,7 +5632,7 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                     pub_cav = pub_cav + ("engine_list_capped",)
             ready = field == "readiness" and isinstance(rec, dict) and rec.get(field) == "READY"
             check = (duplicate_owner_pre if len(duplicates) > 1 and (field.startswith("stp_root") or ready)
-                     else pres.get(field, pre))
+                     else row_pres.get(field, pre))
             item[field] = _cell(ctx, row, field, slot, _B_VLAN + field, vocab=vocab,
                                 sections=toks + VLAN_FIELD_BASIS[field], pre=check, empty=empty,
                                 published_caveats=pub_cav)
@@ -3692,7 +5640,7 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                                   ctx, src_roots, roots.get(vid, ()) if ok else (), ok, toks + (i,),
                                   root_collision, unreadable_root_maps,
                                   sorted(uncertain_namespaces.get(vid, ())) if ok else ()),
-                              "gateways": (list(gateways.get(vid, ())) if ok else []) if ok_gw else None,
+                              "gateways": gw_list,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
     qualify = _fleet_qualify(ctx)
@@ -4078,12 +6026,501 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     axes = _get(ctx.s, ("executive_brief", "axes"))
     heads = [k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"] \
         if isinstance(axes, list) else []
-    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing}
+    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing,
+            "facets": _finding_facets(ctx, listing, total, raw, qualify), "cross_layer": _cross_layer(ctx)}
+
+
+# ---------------------------------------------------------------------------------------------------
+# findings: facet totals (G21)
+# ---------------------------------------------------------------------------------------------------
+#: The facets the owner partitions, each with its closed vocabulary in owner order (the device facet is the G09 fold).
+_OWNER_FACETS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (("severity", SEVERITIES), ("category", FINDING_CATEGORIES))
+_B_FACET = "analyze.compute_punchlist_facets:stored punch-list rows by {facet}"
+_B_DEVICE_FACET = ("analyze.compute_device_findings:stored punch-list rows by exact device.by_severity, summed "
+                   "(each stored row once per named device)")
+_R_FACET_EMPTY = ("collected but empty: the punch list carries no row, so no {facet} bucket holds a finding (not a "
+                  "blind spot)")
+_R_FACET_ZERO = ("not collected: no stored punch-list row has this {facet}, but the punch list may be incomplete, so "
+                 "this zero is not a clean result: {why}")
+_R_FACET_REFUSED = ("unverified: the engine's {facet} facet fold cannot place every stored punch-list row ({problem}), "
+                    "so no {facet} count is published")
+_R_FACET_UNRECONCILED = ("unverified: the engine's {facet} buckets do not place each of the {n} stored punch-list rows "
+                         "exactly once, in the bucket its own {facet} names{total}, so no {facet} count is published")
+_R_FACET_TOTAL = ("unverified: the punch list's row total is {state}, so the engine's {facet} buckets cannot be "
+                  "reconciled with it and no {facet} count is published")
+_B_DEVICE_FACETS = ("analyze.compute_device_findings:stored punch-list rows per inventory device (the devices map and "
+                    "the collection_completeness blind spots)")
+_R_SOURCE_NONE = ("unverified: the engine names no source section for the {category} findings "
+                  "(analyze.PUNCH_CATEGORY_SECTION), so nothing says what this count was computed over")
+_R_SOURCE_NC = ("not collected: {section}, the section the engine folds the {category} findings from, was not "
+                "collected")
+_R_SOURCE_AU = "{failed} ({section} is the section the engine folds the {category} findings from)"
+_R_SOURCE_ZERO = "{why}, so a zero count of this category is not a clean result"
+#: W51: a category source stored as a container other than its producer's (G21 P2).
+_R_SOURCE_TYPE = ("unverified: {section}, the section the engine folds the {category} findings from, is present but is "
+                  "not {kind}, and the engine's fold reads such a value as holding nothing, so it is not complete "
+                  "evidence")
+_R_SOURCE_NO_KIND = ("unverified: this projection registers no container type for {section}, the section the engine "
+                     "folds the {category} findings from (CATEGORY_SOURCE_KINDS), so its stored value cannot be checked")
+#: Each category source section (``analyze.PUNCH_CATEGORY_SECTION``'s values) -> the container its producer writes.
+#: A source stored as anything else is no evidence (:func:`_category_sources`). tests/test_ui_projection_finding_facets.py
+#: holds the key set equal to the owner map's sections and each type to the engine-built snapshots' stored sections.
+CATEGORY_SOURCE_KINDS: Mapping[str, type] = MappingProxyType({
+    **{section: list for section in ("cross_layer", "fhrp", "health_scores", "l3_forwarding", "link_phy",
+                                     "operational_drift", "physical_health", "protocol_health", "trunk_native")},
+    **{section: dict for section in ("addressing_conflicts", "config_hygiene", "device_dossiers", "devices",
+                                     "ipv6_routing_adjacency_baseline", "multicast_intelligence", "platform_health",
+                                     "qos_audit", "security", "service_map", "software_risk", "stp_roots",
+                                     "syslog_intelligence", "vtp_safety_baseline")},
+})
+_R_SEVERITY_SOURCE_ZERO = ("{words}: no stored punch-list row has this severity, but a row of any category can carry "
+                           "any severity, and these categories are folded from sections that are not complete evidence: "
+                           "{detail}; so this zero is not a clean result")
+#: A category source's withheld state, in the precedence a list rollup gives it (a failure, an owner fault, a blind
+#: spot), with the words a reason opens with.
+_SOURCE_HOLDS: Tuple[Tuple[str, str], ...] = ((AU, "analysis unavailable"), (_UV, "unverified"), (_NC, "not collected"))
+#: ``(state, reason, ref entries)``: why a category's source section keeps its count from being complete.
+_SourceHold = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
+def _facet_refs(ctx: _Ctx, listing: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The punch list as the basis, then the row list's own witness and failure-record refs (its fleet
+    qualifications and failed phases). The row list's subject and per-input basis refs stay on the list."""
+    out = ctx.refs([("basis", ("punchlist",))])
+    seen = {(ref["pointer"], ref["role"]) for ref in out}
+    for ref in listing["refs"]:
+        key = (ref["pointer"], ref["role"])
+        if ref["role"] in ("witness", "failure_record") and key not in seen:
+            seen.add(key)
+            out.append({"pointer": ref["pointer"], "role": ref["role"]})
+    return out
+
+
+def _with_refs(ctx: _Ctx, refs: List[Dict[str, str]],
+               entries: Sequence[Tuple[str, Sequence[Any]]]) -> List[Dict[str, str]]:
+    """A fresh copy of `refs`, then each resolving entry it does not already carry."""
+    out = [dict(ref) for ref in refs]
+    seen = {(ref["pointer"], ref["role"]) for ref in out}
+    for ref in ctx.refs(entries):
+        if (ref["pointer"], ref["role"]) not in seen:
+            seen.add((ref["pointer"], ref["role"]))
+            out.append(ref)
+    return out
+
+
+def _category_sources(ctx: _Ctx) -> Dict[str, _SourceHold]:
+    """Category -> its :data:`_SourceHold`, in owner order, for every category whose source section (the engine's
+    ``analyze.PUNCH_CATEGORY_SECTION``) is not complete evidence for its count, first match wins: the section's phase
+    failed (analysis_unavailable, with its failure records); the abstention core could not read it (unverified, with
+    the owner fault); a failure the run recorded could not be attributed to sections -- an intermediate phase, a label
+    nobody classified, or a failed-phase record that is not a list -- so it could have fed this section (W51:
+    analysis_unavailable, with those failure records; the module's full failed-phase census, ``ssot.failed_sections``
+    over ``ssot.PHASE_SECTIONS``, never only the one directly attributed failure); it was not collected
+    (not_collected); or it is stored as a container other than its producer's (:data:`CATEGORY_SOURCE_KINDS`), which
+    the engine's fold reads as holding nothing (unverified). The whole closed vocabulary is checked, never a hand list
+    of sections, and a category the owner maps to no section, or to a section with no registered container, is
+    unverified. A complete source is not listed. The held section is cited as a witness of the incompleteness, never
+    as a basis: a lower bound over it stays published, and a basis ref to a failed section belongs only to a value
+    that is itself unavailable."""
+    out: Dict[str, _SourceHold] = {}
+    for category in FINDING_CATEGORIES:
+        section = PUNCH_CATEGORY_SECTION.get(category)
+        if not _is_text(section):
+            out[category] = (_UV, _R_SOURCE_NONE.format(category=category), [])
+            continue
+        token = ctx.abst(section)
+        entries: List[Tuple[str, Sequence[Any]]] = [("witness", (section,))]
+        kind = CATEGORY_SOURCE_KINDS.get(section)
+        if token == AU or (token != _FAULT and ctx.unattributed):
+            out[category] = (AU, _R_SOURCE_AU.format(failed=ctx.unavailable_reason((section,)), section=section,
+                                                     category=category),
+                             entries + ctx.failure_entries((section,), True))
+        elif token == _FAULT:
+            out[category] = (_UV, ctx.fault((section,)), entries)
+        elif token == _NC:
+            out[category] = (_NC, _R_SOURCE_NC.format(section=section, category=category), entries)
+        elif kind is None:
+            out[category] = (_UV, _R_SOURCE_NO_KIND.format(section=section, category=category), entries)
+        elif not isinstance(ctx.s.get(section), kind):
+            out[category] = (_UV, _R_SOURCE_TYPE.format(section=section, category=category, kind=_KIND[kind]),
+                             entries)
+    return out
+
+
+def _severity_source_hold(sources: Mapping[str, _SourceHold]) -> Optional[_SourceHold]:
+    """One hold for every severity bucket while any category source is incomplete: a row of any category can carry
+    any severity. Its state is the strongest of the category holds (:data:`_SOURCE_HOLDS` order), its reason names
+    each held category and section state, and its refs are all of theirs."""
+    if not sources:
+        return None
+    states = {state for state, _why, _entries in sources.values()}
+    state, words = next((s, w) for s, w in _SOURCE_HOLDS if s in states)
+    named = dict(_SOURCE_HOLDS)
+    labels = []
+    for category, (held, _why, _entries) in sources.items():
+        section = PUNCH_CATEGORY_SECTION.get(category)
+        labels.append(f"{category} ({section} {named[held]})" if _is_text(section)
+                      else f"{category} (no source section)")
+    entries = [entry for _state, _why, held_entries in sources.values() for entry in held_entries]
+    return state, _R_SEVERITY_SOURCE_ZERO.format(words=words, detail="; ".join(labels)), entries
+
+
+def _facet_partition(ctx: _Ctx, facet: str, keys: Sequence[str], raw: Any,
+                     total: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[Dict[str, List[int]]]]:
+    """``(state, reason, buckets)`` for one owner facet over a published row list. The owner's buckets are
+    admitted only as an exact partition: every key in owner order, every stored row placed exactly once in the
+    bucket its own field names, and as many rows as the row list and its published total. A total that is not
+    published leaves nothing to reconcile with, so the facet is withheld rather than checked against the rows
+    alone. Anything else is unverified; a count is never repaired or recomputed here."""
+    folded = ctx.punch_facets
+    entry = folded.get(facet) if isinstance(folded, dict) else None
+    if not isinstance(entry, dict):
+        fault = ctx.faults.get("analyze.compute_punchlist_facets")
+        return _UV, fault or _R_FACET_REFUSED.format(facet=facet, problem="unreadable owner output"), None
+    problem, buckets = entry.get("problem"), entry.get("indices")
+    if problem is not None or not isinstance(buckets, dict):
+        why = problem if _is_text(problem) else "unreadable owner output"
+        return _UV, _R_FACET_REFUSED.format(facet=facet, problem=why), None
+    if total["state"] != _PUB:
+        return _UV, _R_FACET_TOTAL.format(state=total["state"], facet=facet), None
+    rows = raw if isinstance(raw, list) else []
+    n_rows = len(rows)
+    placed: List[Any] = []
+    agrees = list(buckets) == list(keys)
+    for key in keys if agrees else ():
+        members = buckets.get(key)
+        if not isinstance(members, list):
+            agrees = False
+            break
+        placed.extend(members)
+        agrees = all(type(index) is int and 0 <= index < n_rows and isinstance(rows[index], dict)
+                     and rows[index].get(facet) == key for index in members)
+        if not agrees:
+            break
+    stated = total["value"]
+    if (not agrees or folded.get("n_rows") != n_rows or stated != n_rows
+            or sorted(placed) != list(range(n_rows))):
+        tail = f" (the published row total is {stated})" if stated != n_rows else ""
+        return _UV, _R_FACET_UNRECONCILED.format(facet=facet, n=n_rows, total=tail), None
+    return _PUB, None, buckets
+
+
+def _device_facet(ctx: _Ctx, host: str) -> Dict[str, Any]:
+    """One inventory device's finding count: its per-device rollup (G09, :func:`_device_finding_rollup`) summed
+    over the closed severities. The rollup's state, reason and caveats are kept, so this count and the device's
+    inventory row cannot disagree. Its refs are the rollup's basis, custody and qualification refs; the per-row
+    witnesses (one per stored row naming the device) stay on the inventory row and the device page, so the facet
+    grows with the roster, not with rows times devices."""
+    counts = _device_finding_rollup(ctx, host)["by_severity"]
+    refs = [{"pointer": ref["pointer"], "role": ref["role"]} for ref in counts["refs"]
+            if not (ref["role"] == "witness" and ref["pointer"].startswith(json_pointer("punchlist") + "/"))]
+    if counts["state"] != _PUB:
+        return {"k": host, "n": _envelope(counts["state"], None, None, refs, _B_DEVICE_FACET, counts["reason"])}
+    ok, value = _count(sum(counts["value"].values()))
+    if not ok:
+        return {"k": host, "n": _envelope(_UV, None, None, refs, _B_DEVICE_FACET, _unverified_reason("count"))}
+    return {"k": host, "n": _envelope(_PUB, value, None, refs, _B_DEVICE_FACET, "",
+                                      caveats=counts.get("caveats", ()))}
+
+
+def _finding_facets(ctx: _Ctx, listing: Dict[str, Any], total: Dict[str, Any], raw: Any,
+                    qualify: Sequence[_Qualify]) -> Dict[str, Any]:
+    """G21: the punch-list row counts by severity, by category and by inventory device.
+
+    The severity and category buckets are the owner's partition (``analyze.compute_punchlist_facets``), one per
+    key of the owner's closed vocabulary, in its order. They follow the row list's final state: a missing punch
+    list is not_collected, an empty one collected_but_empty, a failed or unreadable one withheld with the list's
+    own reason. A published list is counted only through :func:`_facet_partition`.
+
+    Two rules keep a count from claiming more than its evidence. A category is folded from one engine section
+    (``analyze.PUNCH_CATEGORY_SECTION``, :func:`_category_sources`), which need not be a punch-list input: while that
+    section failed, could not be read or was not collected, the category's positive count is a lower bound carrying
+    ``finding_facet_source_incomplete`` with a ref to the section or its failure record, and its zero takes the
+    section's state, never a clean result. A row of any category can carry any severity, so while any category's
+    section is incomplete every severity bucket follows the same rule (:func:`_severity_source_hold`). Then, while a
+    fleet qualification applies (blind devices, devices without a captured running-config), a positive count is a
+    lower bound that carries the qualification's caveat and witnesses, and a zero is not_collected.
+
+    The device facet is :func:`_device_facet` per inventory host, never a second fold, in a list that takes the
+    roster's own state (:func:`_roster_list`): an absent or unreadable devices map is withheld, never an empty
+    published roster."""
+    state, reason = listing["state"], listing.get("reason")
+    refs = _facet_refs(ctx, listing)
+    caveats = tuple(cid for cid, _why, _wit in qualify) + _brief_caveats(ctx)
+    why = "; ".join(text.removeprefix("not collected: ") for _cid, text, _wit in qualify)
+    sources = _category_sources(ctx)
+    severity_hold = _severity_source_hold(sources)
+    holds: Dict[str, Dict[str, _SourceHold]] = {
+        "severity": {key: severity_hold for key in SEVERITIES} if severity_hold else {},
+        "category": {key: (held, _R_SOURCE_ZERO.format(why=held_why), entries)
+                     for key, (held, held_why, entries) in sources.items()},
+    }
+    out: Dict[str, Any] = {}
+    for facet, keys in _OWNER_FACETS:
+        basis = _B_FACET.format(facet=facet)
+        f_state, f_reason, buckets = state, reason, None
+        if state == _CBE:
+            f_reason = _R_FACET_EMPTY.format(facet=facet)
+        elif state == _PUB:
+            f_state, f_reason, buckets = _facet_partition(ctx, facet, keys, raw, total)
+        if f_state != _PUB and not f_reason:
+            f_reason = _state_reason(ctx, f_state, "count", ("punchlist",))
+        facet_rows = []
+        for key in keys:
+            hold = holds[facet].get(key)
+            if buckets is None:
+                fact = _envelope(f_state, None, None, _with_refs(ctx, refs, ()), basis, f_reason or "")
+            elif hold is not None:
+                held, held_reason, entries = hold
+                mine = _with_refs(ctx, refs, entries)
+                if buckets[key]:
+                    fact = _envelope(_PUB, len(buckets[key]), None, mine, basis, "",
+                                     caveats=caveats + ("finding_facet_source_incomplete",))
+                else:
+                    fact = _envelope(held, None, None, mine, basis, held_reason)
+            elif not buckets[key] and qualify:
+                fact = _envelope(_NC, None, None, _with_refs(ctx, refs, ()), basis,
+                                 _R_FACET_ZERO.format(facet=facet, why=why))
+            else:
+                fact = _envelope(_PUB, len(buckets[key]), None, _with_refs(ctx, refs, ()), basis, "",
+                                 caveats=caveats)
+            facet_rows.append({"k": key, "n": fact})
+        out[facet] = facet_rows
+    out["device"] = _roster_list(ctx, [_device_facet(ctx, host) for host in _inventory_universe(ctx)[0]],
+                                 _B_DEVICE_FACETS, ("device_findings_scope",))
+    return {facet: out[facet] for facet in FINDING_FACETS}
 
 
 def project_findings(snap: Any) -> Dict[str, Any]:
-    """The Findings screen: the engine's punch-list rows, with the remediation it links and nothing more."""
+    """The Findings screen: the engine's punch-list rows, with the remediation it links, their facet totals (G21: by
+    severity, category and inventory device) under the same evidence states, and the engine's stored cross-layer
+    correlation rows with the health deduction each one drives on each device it names (G24); nothing more."""
     return _findings(_Ctx(snap))
+
+
+# ---------------------------------------------------------------------------------------------------
+# findings: cross-layer correlations (G24) and the health deduction each one drives
+#
+# Selected from the stored rows, never recomputed: the rows are analyze.compute_cross_layer_correlations' own, in its
+# order. A host joins the devices map and its health_scores row by exact name. The deduction a row drives on a device
+# is the one reference that device's health row publishes to the row (analyze.compute_health_scores writes it beside
+# the line item, inside the same [:8] prefix), and the line item is the published deduction carrying the row's own
+# '<id> <severity>' label. An unjoinable or repeated host, a missing or repeated reference and a missing line item are
+# unverified with witnesses; a reference that may lie beyond the scorer's cut is not collected. Nothing is dropped.
+# ---------------------------------------------------------------------------------------------------
+#: The snapshot sections the cross-layer rules run over: the dependency map they read is built from the interface map
+#: (its all_interfaces parameter), physical_health and l3_forwarding. tests/test_ui_projection_cross_layer.py holds
+#: this table against the producer's signature.
+CROSS_LAYER_INPUTS: Tuple[str, ...] = ("interfaces", "physical_health", "l3_forwarding")
+_B_XL = "analyze.compute_cross_layer_correlations:cross_layer[]."
+_B_XL_DEVICE = "ui_projection:exact devices-map hostname join"
+_B_XL_REF = _B_HEALTH + "deduction_refs[] (the reference naming the cross-layer row)"
+_B_XL_LINE = _B_HEALTH + "deductions[] (the line item carrying the cross-layer row's label)"
+_R_XL_NO_HOSTS = ("unverified: analyze.compute_cross_layer_correlations names at least one device in every row, so a "
+                  "row naming none cannot be read")
+_R_XL_BLANK_HOST = "unverified: the host entry is blank, so it names no device"
+_R_XL_HOST_DUP = ("unverified: this row names this host {n} times, but analyze.compute_cross_layer_correlations writes "
+                  "each row's hosts once, so no single entry can be chosen")
+_R_XL_NO_DEVICE = ("unverified: the devices map has no record with this exact name, yet the cross-layer rules name "
+                   "only hosts of the collected interface model, so this host joins no collected device")
+_R_XL_NO_HEALTH = ("unverified: health_scores has no row with this exact switch name, yet analyze.compute_health_scores "
+                   "scores every named host of the interface model the cross-layer rules ran over, so the deduction "
+                   "this row drives cannot be found")
+_R_XL_REF_CAPPED = ("not collected: analyze.compute_health_scores cuts a device's deductions after {limit} and "
+                    "publishes no total, and none of this device's published references names this row, so the "
+                    "deduction it drives may lie beyond the cut")
+_R_XL_REF_MISSING = ("unverified: this device's published deductions stop short of the scorer's cut of {limit}, yet "
+                     "none of its references names this row; analyze.compute_health_scores writes one for every "
+                     "device a cross-layer row names")
+_R_XL_REF_AMBIG = ("unverified: {n} deduction references on this device name this row, but "
+                   "analyze.compute_health_scores writes one for each row and device, so none can be chosen")
+_R_XL_REF_FOREIGN = ("unverified: the deduction reference naming this row is not the scorer's analysis-row reference "
+                     "for this device (kind analysis_row, role derived_from, this host)")
+_R_XL_LINE_NONE = ("unverified: the deduction reference to this row lies inside the published deductions, yet no "
+                   "published deduction carries the row's label '{label}', so its line item cannot be read")
+_R_XL_LINE_DIFFER = ("unverified: {n} published deductions carry the row's label '{label}' with different points, so "
+                     "no single line item can be read")
+_R_XL_LINE_LABEL = "{word}: the row's {field} is withheld, so its deduction line item cannot be selected"
+#: The kind and role analyze.compute_health_scores gives the reference from a deduction to the cross-layer row behind
+#: it (its _evidence_ref("analysis_row", host, ("cross_layer", k), "derived_from", ...)).
+_XL_REF_KIND, _XL_REF_ROLE = "analysis_row", "derived_from"
+#: analyze.compute_health_scores' line item for a cross-layer row is f"{id} {severity}" then f" (-{points})": the
+#: label is the row's own id and severity, the tail the points. Pinned to the real producer by
+#: tests/test_ui_projection_cross_layer.py.
+_XL_LINE_TAIL = r" \(-[0-9]+\)"
+
+
+def _health_deductions(ctx: _Ctx, hrow: _Row) -> Tuple[str, Optional[str], Optional[Tuple[Any, ...]], Any, bool,
+                                                      Dict[str, Any], Any]:
+    """One health row's deduction prefix and its reference subsequence, read once by every surface that shows them
+    (the device page and the cross-layer rows): ``(state, reason, toks, deductions, capped, refs listing, refs)``.
+    The producer cuts both after its first eight deductions; reaching that cut is read from the deductions, never from
+    the shorter reference subsequence."""
+    dstate, dreason, dtoks, draw = _sub_list(
+        ctx, hrow, "deductions", pre_state=_not_scored(None, hrow),
+        empty=(_CBE, "collected but empty: the device was scored with no deduction (not a blind spot)"))
+    capped = (dstate in (_PUB, _CBE) and isinstance(draw, list)
+              and len(draw) >= ENGINE_LIST_CAPS["health_scores[].deductions"])
+    refs, refs_raw = _evidence_list(ctx, hrow, health=True, capped=capped)
+    return dstate, dreason, dtoks, draw, capped, refs, refs_raw
+
+
+def _merged_refs(*groups: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Resolved refs from several envelopes, de-duplicated in order, as new containers."""
+    out: List[Dict[str, str]] = []
+    for group in groups:
+        for ref in group:
+            if ref not in out:
+                out.append(dict(ref))
+    return out
+
+
+def _xl_device(ctx: _Ctx, host: str, host_toks: Tuple[Any, ...]) -> Dict[str, Any]:
+    """The collected device a cross-layer host names: the devices-map record of exactly that name (its pointer), or
+    why none can be joined. A blind spot is not collected; a name with no record is unverified, never dropped."""
+    joined = _resolve(ctx, ("devices",), ("devices",), key=host, host=host, absent=(_UV, _R_XL_NO_DEVICE))
+    entries: List[Tuple[str, Sequence[Any]]] = [("witness", host_toks)]
+    if joined.state is not None:
+        refs = ctx.refs(entries + ([("witness", joined.toks)] if joined.toks is not None else []) + joined.extra
+                        + ctx.failure_entries(joined.sections, joined.state == AU))
+        return _envelope(joined.state, None, None, refs, _B_XL_DEVICE, joined.reason or _R_NC)
+    return _envelope(_PUB, json_pointer(*joined.toks), None, ctx.refs(entries + [("witness", joined.toks)]),
+                     _B_XL_DEVICE, "")
+
+
+def _xl_deduction(ctx: _Ctx, k: int, host: str, host_toks: Tuple[Any, ...], cells: Mapping[str, Dict[str, Any]],
+                  cache: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(deduction_ref, deduction)``: the health-row reference to cross_layer[k] on `host`, and the line item it
+    sits beside. Selected, never derived: the reference by its exact pointer, the line item by the row's own label."""
+    if host not in cache:
+        hrow = _resolve(ctx, ("health_scores",), ("health_scores",), key=host, key_field="switch", host=host,
+                        absent=(_UV, _R_XL_NO_HEALTH))
+        cache[host] = (hrow, _health_deductions(ctx, hrow) if hrow.state is None else None)
+    hrow, read = cache[host]
+    secs = ("health_scores", "cross_layer")
+    witness: List[Tuple[str, Sequence[Any]]] = [("witness", host_toks)]
+
+    def withheld(state: str, reason: str, entries: Sequence[Tuple[str, Sequence[Any]]], basis: str,
+                 extra: Sequence[Dict[str, str]] = (), caveats: Sequence[str] = ()) -> Dict[str, Any]:
+        refs = _merged_refs(ctx.refs(witness + list(entries) + ctx.failure_entries(secs, state == AU)), extra)
+        return _envelope(state, None, None, refs, basis, reason, caveats=caveats)
+
+    def both(state: str, reason: str, entries: Sequence[Tuple[str, Sequence[Any]]],
+             extra: Sequence[Dict[str, str]] = (), caveats: Sequence[str] = ()) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        return (withheld(state, reason, entries, _B_XL_REF, extra, caveats),
+                withheld(state, reason, entries, _B_XL_LINE, extra, caveats))
+
+    if hrow.state is not None:
+        return both(hrow.state, hrow.reason or _R_NC,
+                    ([("witness", hrow.toks)] if hrow.toks is not None else []) + hrow.extra)
+    _dstate, _dreason, dtoks, draw, capped, listing, refs_raw = read
+    if listing["state"] not in (_PUB, _CBE):
+        return both(listing["state"], listing.get("reason") or _R_NC, [("witness", hrow.toks)], listing["refs"])
+    rtoks = hrow.toks + ("deduction_refs",)
+    target = json_pointer("cross_layer", k)
+    hits = [m for m, ref in enumerate(refs_raw if isinstance(refs_raw, list) else ())
+            if isinstance(ref, dict) and ref.get("ref") == target]
+    limit = ENGINE_LIST_CAPS["health_scores[].deductions"]
+    if len(hits) > 1:
+        return both(_UV, _R_XL_REF_AMBIG.format(n=len(hits)), [("witness", rtoks + (m,)) for m in hits])
+    if not hits:
+        if capped:
+            return both(_NC, _R_XL_REF_CAPPED.format(limit=limit), [("witness", dtoks)],
+                        caveats=("engine_list_capped",))
+        return both(_UV, _R_XL_REF_MISSING.format(limit=limit), [("witness", rtoks)])
+    m = hits[0]
+    ref = refs_raw[m]
+    if ref.get("host") != host or ref.get("kind") != _XL_REF_KIND or ref.get("role") != _XL_REF_ROLE:
+        return both(_UV, _R_XL_REF_FOREIGN, [("witness", rtoks + (m,))])
+    ref_fact = _cell(ctx, _Row(None, None, rtoks + (m,), ref, secs), None, "evidence_ref", _B_XL_REF,
+                     witness=witness)
+    if ref_fact["state"] != _PUB:
+        return ref_fact, withheld(ref_fact["state"], ref_fact["reason"], [], _B_XL_LINE, ref_fact["refs"])
+    on_ref: List[Tuple[str, Sequence[Any]]] = [("witness", rtoks + (m,))]
+    for field in ("id", "severity"):
+        cell = cells[field]
+        if cell["state"] != _PUB:
+            state = cell["state"] if cell["state"] in (AU, _NC) else _UV
+            word = impact_assessability.STATE_WORD[state]          # the owner's word per withheld state (W33)
+            return ref_fact, withheld(state, _R_XL_LINE_LABEL.format(word=word, field=field),
+                                      on_ref + [("witness", ("cross_layer", k, field))], _B_XL_LINE)
+    label = f"{cells['id']['value']} {cells['severity']['value']}"
+    pattern = re.compile(re.escape(label) + _XL_LINE_TAIL)
+    lines = [n for n, text in enumerate(draw if isinstance(draw, list) else ())
+             if _is_text(text) and pattern.fullmatch(text)]
+    if not lines:
+        return ref_fact, withheld(_UV, _R_XL_LINE_NONE.format(label=label), on_ref + [("witness", dtoks)],
+                                  _B_XL_LINE)
+    if len({draw[n] for n in lines}) > 1:
+        return ref_fact, withheld(_UV, _R_XL_LINE_DIFFER.format(n=len(lines), label=label),
+                                  on_ref + [("witness", dtoks + (n,)) for n in lines], _B_XL_LINE)
+    cav = ("row_selection_by_exact_key",)
+    if len(lines) == 1:
+        return ref_fact, _cell(ctx, _Row(None, None, dtoks + (lines[0],), draw[lines[0]], secs), None, "text",
+                               _B_XL_LINE, witness=on_ref, published_caveats=cav)
+    # Several rows of one rule and severity name this device: their line items are byte-identical, so the value is
+    # this row's, but which position is its own is not published -- one value, a witness to each, no subject.
+    refs = ctx.refs([("witness", dtoks + (n,)) for n in lines] + on_ref)
+    return ref_fact, _envelope(_PUB, draw[lines[0]], None, refs, _B_XL_LINE, "",
+                               caveats=cav + _one_hop(ctx, _PUB, secs))
+
+
+def _xl_host(ctx: _Ctx, k: int, j: int, raw: Any, positions: Mapping[str, List[int]],
+             hold: Optional[Tuple[str, Optional[str]]], cells: Mapping[str, Dict[str, Any]],
+             cache: Dict[str, Any]) -> Dict[str, Any]:
+    """One host a cross-layer row names, with the collected device it joins and the deduction the row drives there.
+    A host that cannot be read or is named twice withholds its joins with its own state, reason and witnesses.
+    `positions` maps each text host of the row to every index naming it."""
+    toks = ("cross_layer", k, "hosts", j)
+    same = positions.get(raw, []) if _is_text(raw) else []
+    doubt: Optional[_Withheld] = None
+    if len(same) > 1:
+        doubt = (_UV, _R_XL_HOST_DUP.format(n=len(same)), [("witness", ("cross_layer", k, "hosts", i)) for i in same])
+    row = _Row(hold[0] if hold else None, hold[1] if hold else None, toks, raw, ("cross_layer",))
+    fact = _cell(ctx, row, None, "text", _B_XL + "hosts[]",
+                 pre=(lambda _raw, _row: doubt) if doubt is not None else None, empty=(_UV, _R_XL_BLANK_HOST))
+    item: Dict[str, Any] = {"index": j, "pointer": json_pointer(*toks), "host": fact}
+    if fact["state"] == _PUB:
+        item["device"] = _xl_device(ctx, raw, toks)
+        item["deduction_ref"], item["deduction"] = _xl_deduction(ctx, k, raw, toks, cells, cache)
+        return item
+    for name, basis in (("device", _B_XL_DEVICE), ("deduction_ref", _B_XL_REF), ("deduction", _B_XL_LINE)):
+        item[name] = _envelope(fact["state"], None, None, _merged_refs(fact["refs"]), basis, fact["reason"])
+    return item
+
+
+def _cross_layer_row(ctx: _Ctx, k: int, rec: Any, cache: Dict[str, Any]) -> Dict[str, Any]:
+    toks = ("cross_layer", k)
+    row = _list_row(toks, rec, ("cross_layer",))
+    cells: Dict[str, Dict[str, Any]] = {
+        "id": _cell(ctx, row, "id", "text", _B_XL + "id"),
+        "severity": _cell(ctx, row, "severity", "enum", _B_XL + "severity", vocab=SEVERITIES),
+    }
+    for field in ("layers", "title", "detail", "recommendation"):
+        cells[field] = _cell(ctx, row, field, "text", _B_XL + field)
+    state, reason, htoks, hosts = _sub_list(ctx, row, "hosts", empty=(_UV, _R_XL_NO_HOSTS))
+    hold = (state, reason) if state not in (_PUB, _CBE) else None
+    named = hosts if isinstance(hosts, list) else []
+    positions: Dict[str, List[int]] = {}
+    for j, raw in enumerate(named):
+        if _is_text(raw):
+            positions.setdefault(raw, []).append(j)
+    items = [_xl_host(ctx, k, j, raw, positions, hold, cells, cache) for j, raw in enumerate(named)]
+    listing = _listing(ctx, state, reason, htoks, _B_XL + "hosts", items, sections=row.sections, extra=row.extra,
+                       caveats=("row_selection_by_exact_key",))
+    return {"index": k, "pointer": json_pointer(*toks), **cells, "hosts": listing}
+
+
+def _cross_layer(ctx: _Ctx) -> Dict[str, Any]:
+    """``findings.cross_layer``: every stored cross-layer row, in the producer's order, with its hosts joined. The rules
+    run over every collected device's evidence, so the fleet's blind spots qualify the list (an empty one under a blind
+    spot is not collected, never 'no correlation')."""
+    toks = ("cross_layer",)
+    base, reason, raw = _list_state(ctx, toks, toks)
+    cache: Dict[str, Any] = {}
+    items = [_cross_layer_row(ctx, k, rec, cache) for k, rec in enumerate(raw if isinstance(raw, list) else ())]
+    return _listing(ctx, base, reason, toks, "analyze.compute_cross_layer_correlations:cross_layer", items,
+                    sections=toks, rollup=CROSS_LAYER_INPUTS, qualify=_fleet_qualify(ctx))
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -4114,7 +6551,7 @@ def _roc_false(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
         if raw is False else None
 
 
-def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     ifr = _resolve(ctx, ("interfaces",), ("interfaces",), key=host, host=host, forced=forced,
                    absent=(_NC, "not collected: interfaces carries no parse result for this device"))
     rows: List[Dict[str, Any]] = []
@@ -4138,24 +6575,24 @@ def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -
                              bare=ifr.bare)}
 
 
-def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], block: str, toks: Tuple[str, ...],
+def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[_Forced], block: str, toks: Tuple[str, ...],
                     fields: Tuple[str, ...], basis: str, cbe: Union[str, Tuple[str, str]],
                     build: Callable[[int, Any], Dict[str, Any]], *,
                     multi: bool = False, base_state: Optional[Tuple[str, Optional[str], Any]] = None,
                     sections: Optional[Tuple[str, ...]] = None, config: bool = False,
-                    unique: bool = False, strict: bool = False,
-                    qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
+                    unique: bool = False, qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
     """The rows of one engine list that name this device (selection only; never a count). The device's own gaps
     (:func:`_device_gap` over the captures :data:`SELECTION_NEEDS` names for `block`) make it not_collected. With
     `unique` the producer writes at most one row per device, so two rows naming it are unverified (never picked
-    between). With `strict` a row the exact-key join cannot read (:func:`_unjoinable_rows`) could name this device,
-    so the selection is unverified with a witness to each such row (the fleet list withholds that row's key too).
-    Either doubt also carries the device's own gap and its witnesses. `qualify` (:func:`_fleet_qualify`) carries the
-    fleet's blind spots onto a selection whose rows other devices' evidence shapes; `cbe` is as in
-    :func:`_sel_state`."""
+    between). Every selection follows the one key-join rule of :func:`_resolve`: a row the exact-key join cannot read
+    (:func:`_unjoinable_rows`, with `multi` a key list holding anything but text too) could name this device, so the
+    selection is unverified with a witness to each such row (the fleet list withholds that row's key too), and so is
+    a selection whose device scope cannot say the device is not a blind spot (:meth:`_Ctx.device_scope`). Each doubt
+    also carries the device's own gap and its witnesses. `qualify` (:func:`_fleet_qualify`) carries the fleet's blind
+    spots onto a selection whose rows other devices' evidence shapes; `cbe` is as in :func:`_sel_state`."""
     secs = sections or (toks[0],)
     if forced is not None:
-        return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
+        return _listing(ctx, forced[0], forced[1], None, basis, [], extra=_forced_wit(forced), bare=True)
     base, reason, raw = base_state or _list_state(ctx, toks, (toks[0],))
     sel = ctx.index(toks, fields, multi).get(host, []) if isinstance(raw, list) and _is_text(host) else []
     items = [build(i, raw[i]) for i in sel]
@@ -4168,10 +6605,14 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
         if unique and len(sel) > 1:
             doubts.append(_R_AMBIG.format(n=len(sel), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in sel]
-        bad = _unjoinable_rows(raw, fields) if strict else []
+        bad = ctx.unjoinable(toks, fields, multi)            # raw is the list at toks here
         if bad:
             doubts.append(_R_UNJOINABLE.format(n=len(bad), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in bad]
+        scope = ctx.device_scope(toks[0], host)
+        if scope is not None and scope[0] == _UV:
+            doubts.append(scope[1])
+            wit += scope[2]
     if doubts:
         head = [reason] if base == _UV and reason else []
         state, reason = _UV, "; ".join(head + doubts) + (f"; the device also has a collection gap: {gap[0]}"
@@ -4183,11 +6624,16 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
                     caveats=("row_selection_by_exact_key",), qualify=qualify)
 
 
-def _unjoinable_rows(raw: Any, fields: Tuple[str, ...]) -> List[int]:
+def _unjoinable_rows(raw: Any, fields: Tuple[str, ...], multi: bool = False) -> List[int]:
     """The rows of a list an exact-key join over text `fields` cannot read: not an object, or a key field that is
-    missing or not text. :meth:`_Ctx.index` skips them, so any of them could name the device being joined."""
+    missing or not text (with `multi`, a field may also be a list of keys, as :meth:`_Ctx.index` reads it, and a list
+    holding anything but text cannot be read in full). :meth:`_Ctx.index` skips them, so any of them could name the
+    device being joined."""
+    def readable(value: Any) -> bool:
+        return _is_text(value) or (multi and isinstance(value, list) and all(_is_text(x) for x in value))
+
     return [i for i, row in enumerate(raw if isinstance(raw, list) else ())
-            if not (isinstance(row, dict) and all(_is_text(row.get(f)) for f in fields))]
+            if not (isinstance(row, dict) and all(readable(row.get(f)) for f in fields))]
 
 
 def _cable_row(ctx: _Ctx, i: int, rec: Any) -> Dict[str, Any]:
@@ -4202,7 +6648,7 @@ def _cable_row(ctx: _Ctx, i: int, rec: Any) -> Dict[str, Any]:
             "op_status": _cell(ctx, row, "op_status", "enum", basis + "op_status", vocab=OP_STATUSES)}
 
 
-def _routes_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _routes_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     rr = _resolve(ctx, ("routes",), ("routes",), key=host, host=host, want=list, forced=forced,
                   absent=(_NC, "not collected: routes carries no in-scope route for this device, or its routing "
                                "table was not parsed"))
@@ -4226,7 +6672,7 @@ def _routes_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Di
                     extra=rr.extra, caveats=("routes_in_scope_only",), bare=rr.bare)
 
 
-def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     rn = _resolve(ctx, ("routing_neighbors",), ("routing_neighbors",), key=host, host=host, forced=forced,
                   absent=(_NC, "not collected: routing_neighbors carries no row for this device"))
     group_basis = "build.build_routing_neighbors:routing_neighbors{}{}"
@@ -4249,7 +6695,8 @@ def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) ->
                 cells = {f: _cell(ctx, row, f, "text", basis + f,
                                   missing=f"not collected: the {proto} neighbour parser does not emit {f}")
                          for f in ("neighbor", "state", "address", "interface", "as")}
-                rows.append({"index": i, "pointer": json_pointer(*toks), **cells})
+                rows.append({"index": i, "pointer": json_pointer(*toks), **cells,
+                             "peer_host": _peer_host(ctx, host, proto, toks, cells)})
         groups.append({"protocol": proto, "pointer": json_pointer(*gtoks),
                        "neighbors": _listing(ctx, state, reason, gtoks, group_basis, rows,
                                              sections=("routing_neighbors",),
@@ -4261,7 +6708,7 @@ def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) ->
                     caveats=("routing_neighbors_empty_is_ambiguous",))
 
 
-def _security_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _security_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     sr = _resolve(ctx, ("security",), ("security",), key=host, host=host, forced=forced,
                   absent=(_NC, "not collected: security carries no row for this device (no captured running-config)"))
     state, reason, toks, raw = _sub_list(ctx, sr, "findings", empty=(_CBE, "collected but empty: the check list is "
@@ -4272,7 +6719,7 @@ def _security_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> 
     return {"summary": _cell(ctx, sr, "summary", "security_summary", _B_SEC + "summary"), "checks": checks}
 
 
-def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     plan = _resolve(ctx, ("remediation_plan",), ("remediation_plan",), forced=forced)
     rb = _resolve(ctx, ("remediation_plan", "by_device"), ("remediation_plan",), key=host, host=host, want=list,
                   forced=forced, absent=(_CBE, "collected but empty: the engine generated no remediation item for "
@@ -4310,25 +6757,27 @@ def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) 
                               caveats=(("move_group_label_absent",) if ctx.mg_legacy else ()))}
 
 
-def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[_Forced]) -> Dict[str, Any]:
     toks = ("nrfu_commands", "waves")
     basis = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases"
     if forced is not None:
-        return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
-    if ctx.device_blind("nrfu_commands", host):
-        return _listing(ctx, _NC, _R_DEVICE_NC, toks, basis, [], sections=("nrfu_commands",),
-                        extra=ctx.cc_witness(host))
+        return _listing(ctx, forced[0], forced[1], None, basis, [], extra=_forced_wit(forced), bare=True)
+    scope = ctx.device_scope("nrfu_commands", host)
+    if scope is not None and scope[0] == _NC:
+        return _listing(ctx, _NC, scope[1], toks, basis, [], sections=("nrfu_commands",), extra=scope[2])
     base, reason, raw = _list_state(ctx, toks, ("nrfu_commands",))
     items: List[Dict[str, Any]] = []
     malformed = False
+    lost: List[Tuple[Any, ...]] = []        # device entries the exact host join cannot read (_unjoinable_rows)
     for w, wave in enumerate(raw if isinstance(raw, list) else ()):
         devs = wave.get("devices") if isinstance(wave, dict) else None
         if not isinstance(devs, list):
             malformed = True
             continue
-        for d, dev in enumerate(devs):
-            if not isinstance(dev, dict) or dev.get("host") != host:
-                continue
+        wtoks = toks + (w, "devices")       # raw is the list at toks, so devs is the list at wtoks
+        lost += [wtoks + (d,) for d in ctx.unjoinable(wtoks, ("host",))]
+        for d in (ctx.index(wtoks, ("host",)).get(host, []) if _is_text(host) else []):
+            dev = devs[d]
             cases = dev.get("cases")
             if not isinstance(cases, list):
                 malformed = True
@@ -4345,13 +6794,22 @@ def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict
                 item["evidence_state"] = _cell(ctx, row, "evidence_state", "text", _B_NRFU + "evidence_state",
                                                missing="not collected: this case publishes no evidence state")
                 items.append(item)
+    extra: List[Tuple[str, Sequence[Any]]] = []
     if base in (_PUB, _CBE):
-        if malformed:
-            base, reason = _UV, "unverified: an NRFU wave or device entry is malformed, so its cases cannot be read"
+        doubts = (["unverified: an NRFU wave or device entry is malformed, so its cases cannot be read"]
+                  if malformed else [])
+        if lost:
+            doubts.append(_R_UNJOINABLE.format(n=len(lost), section="nrfu_commands.waves[].devices"))
+            extra += [("witness", t) for t in lost]
+        if scope is not None:
+            doubts.append(scope[1])
+            extra += scope[2]
+        if doubts:
+            base, reason = _UV, "; ".join(doubts)
         else:
             base, reason = (_PUB, None) if items else (_NC, "not collected: the NRFU pack generated no case for this "
                                                             "device")
-    return _listing(ctx, base, reason, toks, basis, items, sections=("nrfu_commands",))
+    return _listing(ctx, base, reason, toks, basis, items, sections=("nrfu_commands",), extra=extra)
 
 
 def _device_limitations_payload() -> List[Dict[str, Any]]:
@@ -4360,13 +6818,44 @@ def _device_limitations_payload() -> List[Dict[str, Any]]:
             for lim in _DEVICE_DOC_LIMITATIONS]
 
 
+#: The rosters a device page joins a text host to, with the type each is written as: the devices map, the blind-spot
+#: list (by its owner's device-scope rule) and the cable-map nodes.
+_ROSTERS: Tuple[Tuple[Tuple[str, ...], type], ...] = (
+    (("devices",), dict), (_CC_ROWS, list), (("cable_map", "nodes"), list))
+
+
+def _roster_join(ctx: _Ctx, host: str) -> Tuple[Dict[str, bool], Optional[Tuple[Any, ...]]]:
+    """Which rosters name the text `host`, and the forced state of a page no roster names. The rosters are key joins
+    too, held to the one rule (:func:`_resolve`): a roster row a join cannot read, or a roster the snapshot carries as
+    the wrong type, could name this host, so a host no readable roster names is then ``unverified``, with a witness to
+    each such row or roster (:func:`_forced_wit`), never the clean "no roster names this device". ``None``: a roster
+    names it, and the page is joined row by row."""
+    devices = ctx.s.get("devices")
+    rosters = {"devices": isinstance(devices, dict) and host in devices,
+               "collection_completeness": ctx.cc_row(host)[0] is not None,
+               "cable_map": host in ctx.index(("cable_map", "nodes"), ("host",))}
+    if any(rosters.values()):
+        return rosters, None
+    parts: List[str] = []
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    for toks, want in _ROSTERS:
+        where = _unreadable_container(ctx.s, toks, want)
+        if where is not None:
+            parts.append(_R_ROSTER_UNREADABLE.format(path=".".join(where[0]), kind=_KIND[where[1]]))
+            wit.append(("witness", where[0]))
+    lost = ([_CC_ROWS + (i,) for i in ctx.unjoinable(_CC_ROWS, ("host",))]
+            + [("cable_map", "nodes", i) for i in ctx.unjoinable(("cable_map", "nodes"), ("host",))])
+    if lost:
+        parts.append(_R_ROSTER_UNJOINABLE.format(n=len(lost)))
+        wit += [("witness", t) for t in lost]
+    if not parts:
+        return rosters, (_NC, _R_UNKNOWN_HOST)
+    return rosters, (_UV, _R_UNKNOWN_HOST_DOUBT.format(parts="; ".join(parts)), wit)
+
+
 def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     if _is_text(host):
-        devices = ctx.s.get("devices")
-        rosters = {"devices": isinstance(devices, dict) and host in devices,
-                   "collection_completeness": ctx.cc_row(host)[0] is not None,
-                   "cable_map": host in ctx.index(("cable_map", "nodes"), ("host",))}
-        forced = None if any(rosters.values()) else (_NC, _R_UNKNOWN_HOST)
+        rosters, forced = _roster_join(ctx, host)
     else:
         rosters = {"devices": False, "collection_completeness": False, "cable_map": False}
         forced = (_UV, _R_BAD_HOST)
@@ -4383,17 +6872,14 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     health = _health_cells(ctx, host, j)
     hrow = j["health"]
     ded_cap = ENGINE_LIST_CAPS["health_scores[].deductions"]
-    dstate, dreason, dtoks, draw = _sub_list(
-        ctx, hrow, "deductions", pre_state=_not_scored(None, hrow),
-        empty=(_CBE, "collected but empty: the device was scored with no deduction (not a blind spot)"))
+    # One reading of the deduction prefix and its references, shared with the cross-layer rows (_xl_deduction).
+    dstate, dreason, dtoks, draw, ded_capped, deduction_refs, _ = _health_deductions(ctx, hrow)
     ded_readable = dstate in (_PUB, _CBE)
-    ded_capped = ded_readable and isinstance(draw, list) and len(draw) >= ded_cap
     deductions = _listing(ctx, dstate, dreason, dtoks, _B_HEALTH + "deductions",
                           _items(ctx, dtoks, draw, "text", _B_HEALTH + "deductions[]", ("health_scores",),
                                  hold=(dstate, dreason) if dstate == _NA else None),
                           sections=("health_scores",), extra=hrow.extra, bare=hrow.bare,
                           caveats=("engine_list_capped",) if ded_capped else ())
-    deduction_refs, _ = _evidence_list(ctx, hrow, health=True, capped=ded_capped)
     # The cap bounds the deduction prefix BEFORE unaddressable refs are removed. Reaching it is
     # determined from deductions, never from the shorter reference subsequence.
     deduction_refs_cap = _cap(ded_cap, draw, "analyze.compute_health_scores",
@@ -4504,19 +6990,19 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         "failure_impact": _selection_rows(
             ctx, host, forced, "failure_impact", ("failure_impact",), ("host",),
             "analyze.compute_failure_impact:failure_impact", _ABSENT_IMPACT,
-            lambda i, rec: _topology_impact(ctx, i, rec), unique=True, strict=True,
-            qualify=_fleet_qualify(ctx)),
+            lambda i, rec: _topology_impact(ctx, i, rec), unique=True, qualify=_fleet_qualify(ctx)),
         "structural_links": _selection_rows(
             ctx, host, forced, "structural_links", ("link_centrality",), ("a_host", "b_host"),
             "analyze.compute_link_centrality:link_centrality", _ABSENT_STRUCTURAL,
-            lambda i, rec: _topology_structural(ctx, i, rec), strict=True, qualify=_fleet_qualify(ctx)),
+            lambda i, rec: _topology_structural(ctx, i, rec), qualify=_fleet_qualify(ctx)),
         "limitations": _device_limitations_payload(),
     }
 
 
 def project_device(snap: Any, host: Any) -> Dict[str, Any]:
     """One device page, as a standalone ``DeviceDocument``: identity, physical, blind-spot record, health,
-    lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks, native-VLAN
+    lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours (each with its ``peer_host``: the one
+    collected device the topology's address index places the neighbour's address on, G17), security checks, native-VLAN
     mismatches, remediation, NRFU cases, the punch-list rows and endpoints that name it, and the stored
     failure-impact row (``failure_impact``) and structural-link rows (``structural_links``, either end) that name it.
     Those two are the fleet topology rows selected by exact host, never re-simulated; an empty selection is
@@ -4592,7 +7078,10 @@ _Withheld = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
 
 def _topology_join(ctx: _Ctx, host: Any, withheld: Optional[_Withheld] = None) -> Dict[str, Any]:
     """The cable-map nodes with exactly this hostname. With `withheld` the endpoint is withheld with its cell (that
-    state, reason and those witnesses), so no node is joined for a value the row does not publish."""
+    state, reason and those witnesses), so no node is joined for a value the row does not publish. The join follows
+    the one key-join rule of :func:`_resolve`: a node row it cannot read (:func:`_unjoinable_rows`) could carry this
+    hostname, so beside one the join is unverified, with a witness to it and to each node that does carry the name:
+    never a single node picked, and never the clean absence "no node has this hostname"."""
     toks = ("cable_map", "nodes")
     state, reason, raw = _topology_source(ctx, toks)
     indices = []
@@ -4601,18 +7090,26 @@ def _topology_join(ctx: _Ctx, host: Any, withheld: Optional[_Withheld] = None) -
         if state in (_PUB, _CBE):
             state, reason, wit = withheld[0], withheld[1], list(withheld[2])
     else:
+        bad: List[int] = []
         if isinstance(raw, list) and _is_text(host) and host:
             indices = ctx.index(toks, ("host",)).get(host, [])
+            bad = ctx.unjoinable(toks, ("host",))
+        doubted = False
         if state in (_PUB, _CBE):
             if not _is_text(host) or not host:
                 state, reason = _UV, "unverified: the endpoint has no nonempty exact hostname"
+            elif bad:
+                doubted = True
+                state, reason = _UV, "; ".join(
+                    (["unverified: more than one node has this exact hostname"] if len(indices) > 1 else [])
+                    + [_R_UNJOINABLE.format(n=len(bad), section="cable_map.nodes")])
             elif len(indices) > 1:
                 state, reason = _UV, "unverified: more than one node has this exact hostname"
             elif not indices:
                 state, reason = _NC, "not collected: no cable-map node has this exact hostname"
             else:
                 state = _PUB
-        wit = [("witness", toks + (i,)) for i in indices]
+        wit = [("witness", toks + (i,)) for i in indices + (bad if doubted else [])]
     return _listing(ctx, state, reason, toks, "ui_projection:exact cable-map hostname join",
                     [{"index": i, "pointer": json_pointer(*toks, i)} for i in indices], sections=("cable_map",),
                     extra=wit, caveats=("topology_scanned_model",))
@@ -4691,15 +7188,22 @@ def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     out["a_nodes"], out["b_nodes"] = (_topology_join(ctx, ends.get(k), held) for k in _STRUCTURAL_HOSTS)
     toks = ("cable_map", "cables")
     state, reason, cables = _topology_source(ctx, toks)
-    pair = {ends.get("a_host"), ends.get("b_host")}
-    hits = [j for j, c in enumerate(cables or []) if isinstance(c, dict)
-            and _is_text(c.get("a")) and _is_text(c.get("b")) and {c["a"], c["b"]} == pair]
+    # the exact unordered host-pair join (ctx.pairs), held to the one key-join rule of _resolve: a cable row it
+    # cannot read could cable this pair, so beside one the candidates are unverified, never a clean "no cable"
+    pair = frozenset(ends.get(k) for k in _STRUCTURAL_HOSTS)
+    hits = list(ctx.pairs(toks, ("a", "b")).get(pair, [])) if isinstance(cables, list) else []
+    bad = ctx.unjoinable(toks, ("a", "b")) if isinstance(cables, list) else []
     if out["ends"]["state"] != _PUB:
         state, reason = out["ends"]["state"], out["ends"].get("reason")
+        bad = []
+    elif bad and state in (_PUB, _CBE):
+        state, reason = _UV, _R_PAIR_UNJOINABLE.format(n=len(bad))
+    else:
+        bad = []
     out["host_pair_cable_refs"] = _listing(
         ctx, state, reason, toks, "ui_projection:exact unordered host-pair candidates (not per-cable centrality)",
         [{"index": j, "pointer": json_pointer(*toks, j)} for j in hits], sections=("cable_map",),
-        extra=[("witness", toks + (j,)) for j in hits] + (held[2] if held is not None else []),
+        extra=[("witness", toks + (j,)) for j in hits + bad] + (held[2] if held is not None else []),
         caveats=("topology_scanned_model",))
     out["style"] = _topology_style([out["ends"], out["is_bridge"], out["a_nodes"], out["b_nodes"]],
                                     "structural_bridge" if out["is_bridge"]["value"] else "structural_link")
@@ -4712,6 +7216,16 @@ def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
 IMPACT_INDETERMINATE_PREFIX = impact_assessability.IMPACT_INDETERMINATE_PREFIX
 #: The failure-impact cells that measure the simulated blast radius; host, off_scan_gw_vlans and detail are not.
 _IMPACT_MEASURES = impact_assessability.IMPACT_MEASURES
+
+
+def _run_config_captured(ctx: _Ctx, host: Any) -> bool:
+    """Whether some interface of `host` carries ``run_config_observed: true``. build.py marks every interface its scoped
+    interface running-config capture ('show running-config interface' or '| section ^interface') parsed, and takes the
+    interface addresses (svi_ip, svi_ips) only from that capture. An absent marker reads as not captured: the snapshot
+    drops a false one (html.sparsify_interfaces), and older snapshots carry none. One rule for the failure-impact hold
+    and for the address index's coverage (:func:`_address_coverage`): this reads the failure-impact owner's scan
+    (impact_assessability.run_config_captured, memoised per host by :attr:`_Ctx.impact`), never a second copy."""
+    return _is_text(host) and ctx.impact.captured(host)[1]
 
 
 def _impact_cable_source(ctx: _Ctx) -> impact_assessability.CableSource:
@@ -4731,9 +7245,12 @@ def _impact_cable_source(ctx: _Ctx) -> impact_assessability.CableSource:
     ntoks = ("cable_map", "nodes")
     nstate, _nreason, nodes = _topology_source(ctx, ntoks)
     readable = nstate in (_PUB, _CBE) and isinstance(nodes, list)
+    # F6: a node row the host join cannot read could be a second node for any far end, so the owner fails every far end
+    # closed beside one (impact_assessability.neighbour_bound) and cites it; the join reads those rows here.
     return impact_assessability.readable_cables(
         cables, nodes if readable else None, by_end=ctx.index(toks, ("a", "b")),
-        unjoinable=ctx.unjoinable(toks, ("a", "b")), node_index=ctx.index(ntoks, ("host",)) if readable else {})
+        unjoinable=ctx.unjoinable(toks, ("a", "b")), node_index=ctx.index(ntoks, ("host",)) if readable else {},
+        node_unjoinable=ctx.unjoinable(ntoks, ("host",)) if readable else [])
 
 
 def _impact_pre(hold: Optional[impact_assessability.Hold], field: str,
@@ -4774,6 +7291,24 @@ def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
     return pre
 
 
+def _impact_witnessed(ctx: _Ctx, bound: impact_assessability.Bound) -> impact_assessability.Bound:
+    """`bound` with every witness citing a record that resolves (W51; the W48 re-verification's P2, superseding W35's
+    #626). A published lower bound is marked only by the witness refs its measures cite, and :meth:`_Ctx.refs` drops a
+    pointer that does not resolve, so a bound whose witness is absent (a snapshot with no cable map at all, whose
+    unreadable-list bound cites ``/cable_map``) would publish its High and positive counts as exact measurements while
+    the engine owner (the MOP, the runbook) reads them as floors. An absent record is witnessed instead by the nearest
+    record it is missing from, the longest prefix of its address that resolves (the cable map without its list, the
+    snapshot root ``""`` without a cable map), never dropped; a present record, and every other role (a failure
+    record), is cited as given."""
+    def present(toks: Sequence[Any]) -> Tuple[Any, ...]:
+        out = tuple(toks)
+        while out and _get(ctx.s, out) is _MISSING:
+            out = out[:-1]
+        return out
+    witnesses = [(role, present(toks) if role == "witness" else toks) for role, toks in bound.witnesses]
+    return bound._replace(witnesses=witnesses)
+
+
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     """One failure-impact row, shared by the fleet topology and the device page (one builder, one state). Which of its
     values are measurements is the engine owner's row-level rule (impact_assessability: the duplicate doubt, the
@@ -4784,7 +7319,9 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     out = {"index": i, "pointer": json_pointer(*row.toks)}
     dup, hold, bounds = ctx.impact.row(i, raw)
     # every measure of a bounded row cites what bounds it: the off-scan count, the blind-link count (or the row
-    # itself when it predates that count), each uncollected neighbour's cable
+    # itself when it predates that count), each uncollected neighbour's cable, or the cable list that cannot be read.
+    # Each witness resolves (_impact_witnessed), so no bound is published unmarked.
+    bounds = [_impact_witnessed(ctx, bound) for bound in bounds]
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):
@@ -4809,8 +7346,21 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     return out
 
 
-def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
-    """Select positive interface/local/FHRP observations by FIB's ownership rules; no subnet host invention."""
+#: One positive address observation: ``(host, interface, origin, address, source tokens, family)``.
+_Observation = Tuple[str, str, str, str, Tuple[Any, ...], int]
+#: The inputs the address index reads; topology.source_addresses rolls its list state up over them.
+_ADDRESS_SECTIONS: Tuple[str, ...] = ("interfaces", "routes")
+_R_ADDRESS_MALFORMED = "unverified: malformed address source records were not usable"
+_R_ADDRESS_BLIND = "not collected: this host is a recorded collection blind spot"
+
+
+def _address_sources(ctx: _Ctx) -> Tuple[Tuple[_Observation, ...], Tuple[Tuple[Any, ...], ...],
+                                         Mapping[str, Tuple[int, ...]]]:
+    """The one address index, read through :attr:`_Ctx.addresses`: ``(observations, malformed, by_address)``. The
+    positive interface/local/FHRP observations by FIB's ownership rules (fib._connected_index's exact owners: an
+    interface address, a local host route, an FHRP host route naming itself; never a connected subnet, which every
+    router on a shared segment contains), in the order topology.source_addresses publishes them; the source records
+    that could not be read; and the observation indices of each address."""
     from cisco_toolkit import fib
 
     observations, malformed = [], []
@@ -4877,17 +7427,36 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
                     port = row.get("out_intf") if _is_text(row.get("out_intf")) else ""
                     observations.append((host, port, "local_route" if local else "fhrp_host_route",
                                          str(network.network_address), ("routes", host, j, "prefix"), network.version))
+    ordered = tuple(sorted(observations, key=lambda x: x[:4] + (json_pointer(*x[4]),)))
+    by_address: Dict[str, List[int]] = {}
+    for k, observation in enumerate(ordered):
+        by_address.setdefault(observation[3], []).append(k)
+    return ordered, tuple(malformed), MappingProxyType({a: tuple(ks) for a, ks in by_address.items()})
+
+
+def _address_hold(ctx: _Ctx, section: str, host: str) -> Tuple[Optional[Tuple[str, str]],
+                                                               List[Tuple[str, Sequence[Any]]]]:
+    """Why one address observation is withheld, with its witnesses; ``(None, [])`` when it is published. Match
+    ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even when the section's fleet
+    analysis failed (the enclosing list still discloses that failure); otherwise a failed or faulted section; then
+    (F6) a device scope that cannot say the host is not a blind spot leaves it unverified. The scope is read only
+    through :meth:`_Ctx.device_scope`."""
+    scope = ctx.device_scope(section, host)
+    if scope is not None and scope[0] == _NC:
+        return (_NC, _R_ADDRESS_BLIND), scope[2]
+    hit = _secs_fail(ctx, (section,))
+    if hit is None and scope is not None:
+        return (scope[0], scope[1]), scope[2]
+    return hit, []
+
+
+def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
+    """Select positive interface/local/FHRP observations by FIB's ownership rules; no subnet host invention."""
+    observations, malformed, _by_address = ctx.addresses
     items = []
-    for i, (host, port, origin, address, toks, family) in enumerate(sorted(observations, key=lambda x: x[:4] + (json_pointer(*x[4]),))):
+    for i, (host, port, origin, address, toks, family) in enumerate(observations):
         section = toks[0]
-        witnesses = []
-        # Match ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even
-        # when the section's fleet analysis failed. The enclosing list still discloses that failure.
-        if ctx.device_blind(section, host):
-            hit = (_NC, "not collected: this host is a recorded collection blind spot")
-            witnesses = ctx.cc_witness(host)
-        else:
-            hit = _secs_fail(ctx, (section,))
+        hit, witnesses = _address_hold(ctx, section, host)
         state, reason = hit or (_PUB, "")
         refs = ctx.refs([("subject", toks)] + ctx.failure_entries((section,), state == AU) + witnesses)
         def fact(value):
@@ -4900,10 +7469,200 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
         if not port and state == _PUB:
             items[-1]["interface"] = _envelope(_NC, None, json_pointer(*toks), refs,
                                                 "fib._connected_index:address interface", "not collected: no interface")
-    state, reason = (_UV, "unverified: malformed address source records were not usable") if malformed else (_PUB, None)
+    state, reason = (_UV, _R_ADDRESS_MALFORMED) if malformed else (_PUB, None)
     return _listing(ctx, state, reason, None, "fib._connected_index:positive address observations", items,
-                    sections=("interfaces", "routes"), rollup=("interfaces", "routes"),
+                    sections=_ADDRESS_SECTIONS, rollup=_ADDRESS_SECTIONS,
                     extra=[("witness", t) for t in malformed], caveats=("path_route_model_only",))
+
+
+#: The sections whose host keys name a collected device to the address index's coverage check: the inventory (devices),
+#: and every per-host capture that only a reached device can carry.
+_ADDRESS_ROSTER: Tuple[str, ...] = ("devices", "interfaces", "routes", "routing_neighbors")
+#: The record that completes that roster: analyze.compute_collection_completeness lists every inventory device that was
+#: not fully collected (its 'devices' rows), including one the collection never reached, which no roster section names.
+_ADDRESS_ROSTER_RECORD = "collection_completeness"
+#: One coverage gap of the address index: the witness ref entries that show it (none may resolve: an absent record).
+_CoverageGap = Tuple[Tuple[str, Sequence[Any]], ...]
+
+
+def _address_coverage(ctx: _Ctx) -> Tuple[bool, Tuple[_CoverageGap, ...]]:
+    """Whether the address index can hold every collected device's interface addresses, read through
+    :attr:`_Ctx.address_coverage`: ``(complete, gaps)``. The roster is every device a host key of
+    :data:`_ADDRESS_ROSTER` names, completed by the :data:`_ADDRESS_ROSTER_RECORD` rows. Each roster device is a gap
+    when collection_completeness calls it not collected, or when no interface of it carries run_config_observed
+    (:func:`_run_config_captured`), the only capture its interface addresses come from. Every record row that does not
+    name a roster device (by the owner's name rule) is a gap, whatever its status: a device outside the roster, or a
+    row that names none (not an object, or a host that is not text). The roster itself is unknown, so completeness is
+    never claimed, when the devices map cannot be read, or when the record cannot be trusted, read through its one
+    coverage verdict (:meth:`_Ctx.cc_coverage`, W51): absent, failed (its failure records ride in the gap), faulted,
+    a list or section of the wrong type, or a summary that cannot be read or does not reconcile with its rows or with
+    the roster. The record's own row rule here (a row naming no roster device) stands in for its unread-rows gap."""
+    ifaces = ctx.s.get("interfaces")
+    gaps: List[_CoverageGap] = []
+    roster: Dict[str, str] = {}               # device -> the first roster section naming it (its witness otherwise)
+    for section in _ADDRESS_ROSTER:
+        keyed = ctx.s.get(section)
+        if isinstance(keyed, dict):
+            for name in keyed:
+                if _is_text(name):
+                    roster.setdefault(name, section)
+                elif section == "devices":
+                    gaps.append((("witness", ("devices",)),))
+        elif section == "devices":
+            gaps.append((("witness", ("devices",)),))
+    for name in sorted(roster):
+        # the owner's blind-spot answer is read only through the device scope's door (F6). A scope in doubt adds no
+        # gap of its own here: a record row naming no roster device, or a record that cannot be read, is a gap below,
+        # and for a device the record does name, its own interface capture (the only source of its addresses) is
+        # checked directly
+        scope = ctx.device_scope("interfaces", name)
+        if scope is not None and scope[0] == _NC:
+            gaps.append(tuple(scope[2]))
+        elif not _run_config_captured(ctx, name):
+            gaps.append((("witness", ("interfaces", name) if isinstance(ifaces, dict) and name in ifaces
+                          else (roster[name], name)),))
+    for cc_gap in ctx.cc_coverage().gaps:
+        if cc_gap.kind != _CC_UNREAD_ROWS:             # the row rule below reads every row that names no roster device
+            gaps.append(tuple(cc_gap.entries()))
+    rows = _get(ctx.s, (_ADDRESS_ROSTER_RECORD, "devices"))
+    if isinstance(rows, list):
+        named = {_norm(name) for name in roster}
+        for i, row in enumerate(rows):
+            listed = row.get("host") if isinstance(row, dict) else None
+            if not (_is_text(listed) and _norm(listed) in named):
+                gaps.append((("witness", (_ADDRESS_ROSTER_RECORD, "devices", i)),))
+    return not gaps, tuple(gaps)
+
+
+#: G17: the owner chain a peer_host fact cites. The address index is fib._connected_index's exact ownership (published
+#: as topology.source_addresses); more than one owning device is ambiguous by fib._hosts_owning_ip's rule.
+_B_PEER = ("fib._hosts_owning_ip(exact) over topology.source_addresses (fib._connected_index): the collected device "
+           "carrying build.build_routing_neighbors:routing_neighbors{}{}[].")
+_PEER_CAVEAT = "routing_peer_resolution_scope"
+#: The states an address observation can be withheld with (:func:`_address_hold`), in the module's precedence.
+_HOLD_ORDER: Tuple[str, ...] = (AU, _UV, _NC)
+_R_PEER_NO_FIELD = ("not collected: no neighbour-address field is registered for the routing protocol '{proto}' "
+                    "(NEIGHBOR_ADDRESS_FIELDS), so no address of this row is resolved")
+_R_PEER_EMPTY = "not collected: the neighbour row's {field} is empty, so there is no address to resolve"
+_R_PEER_NOT_IP = "unverified: the neighbour row's {field} is not an IP address, so it names no owner"
+_R_PEER_AMBIG = ("unverified: the address index (topology.source_addresses) places this address on {n} collected "
+                 "devices{among}, and more than one owner is ambiguous (fib._hosts_owning_ip), so no single peer can "
+                 "be chosen")
+_R_PEER_AMONG = " (this device among them)"
+_R_PEER_SELF = ("unverified: the address index (topology.source_addresses) places this address only on this device "
+                "itself, and a routing neighbour is another router, so the address cannot name the peer")
+_R_PEER_MALFORMED = ("unverified: {n} address source record(s) cannot be read (topology.source_addresses is "
+                     "unverified), and any of them could carry this address")
+_R_PEER_HELD = ("{why} (the one device the address index places this address on), so the address index "
+                "(topology.source_addresses) withholds that observation, and this peer with it")
+_R_PEER_FAMILY = ("not collected: the address index holds interface addresses only from the running-config 'ip "
+                  "address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), which are IPv4, so whether a "
+                  "collected device carries this IPv6 address was never observed")
+_R_PEER_FAMILY_OWNED = ("not collected: an IPv6 owner is observed (each observation is a witness), but the address "
+                        "index's IPv6 coverage is incomplete: the interface addresses it takes from the running-config "
+                        "are the IPv4 'ip address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), so "
+                        "another device carrying this IPv6 address was never ruled out and a sole owner cannot be "
+                        "claimed")
+#: A sole owner, like an absence, is claimed only over a complete index: a device the index cannot hold could be a
+#: second owner, and more than one owner is ambiguous (fib._hosts_owning_ip).
+_R_PEER_INCOMPLETE = ("not collected: the address index (topology.source_addresses) may be incomplete, because {why}, "
+                      "so {tail}")
+_R_PEER_WHY_INPUTS = "inputs it is built from were not collected ({sections})"
+_R_PEER_WHY_GAPS = ("it has {n} coverage gap(s): a collected device whose interface addresses it does not hold (a "
+                    "collection blind spot, or no interface carries run_config_observed: true, so no scoped interface "
+                    "running-config was parsed), a collection_completeness row that names no device of the roster, or "
+                    "a device roster (the devices map, or the collection_completeness record that completes it) that "
+                    "is absent, failed or unreadable{cited}")
+_R_PEER_CITED = "; the witnesses cite the first {k} of them"
+_R_PEER_CITED_FAILURES = ", and every failure record behind the rest"
+_R_PEER_TAIL_ABSENT = "an address it does not hold is not a clean result"
+_R_PEER_TAIL_OWNER = ("the one device it places this address on cannot be named the only owner: a second owner was "
+                      "never ruled out, and more than one owner is ambiguous (fib._hosts_owning_ip)")
+#: At most this many coverage gaps are cited as witnesses on one peer_host fact. The reason states the total, so a fleet
+#: whose interface addresses were mostly not captured does not repeat its roster on every neighbour row.
+_PEER_GAPS_CITED = 8
+_R_PEER_NOT_RESOLVED = ("collected but empty: not resolved. No record in the address index (topology.source_addresses) "
+                        "states this address: no collected device's configured IPv4 interface address (the 'ip "
+                        "address' and 'ipv4 address' lines of its captured interface running-config) and no in-scope "
+                        "local or FHRP host route. An address neither source states is not observed, such as a DHCP or "
+                        "negotiated interface address whose local route was not captured in scope, or a firewall's "
+                        "failover standby address, so this does not prove that the neighbour is not a collected device")
+
+
+def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
+               cells: Mapping[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """G17: the collected device a routing neighbour's address belongs to, or 'not resolved', read from the one address
+    index (:attr:`_Ctx.addresses`, published as topology.source_addresses): never a second index, never a subnet guess.
+    The address is the row's :data:`NEIGHBOR_ADDRESS_FIELDS` cell, whose withheld state withholds the resolution. Then,
+    first match wins, in the module's precedence (analysis unavailable, then unverified, then not collected): a failed
+    or faulted index input -> an address that is not an IP -> more than one owning device, or only this device ->
+    an unreadable source record that could also carry it -> an owning observation the index withholds -> an IPv6
+    address -> an index that may be incomplete (an uncollected input, or a coverage gap of :func:`_address_coverage`,
+    the first :data:`_PEER_GAPS_CITED` cited, and every failure record behind any of them): not collected, for a sole observed owner as for an absence, since an
+    unheld device could be a second owner -> over a complete index, one owner is published, citing every observation of
+    it, and no owner is 'not resolved', collected but empty."""
+    from cisco_toolkit import fib
+
+    field = NEIGHBOR_ADDRESS_FIELDS.get(proto)
+    if field is None:
+        return _envelope(_NC, None, None, ctx.refs([("subject", toks)]), _B_PEER.rstrip("."),
+                         _R_PEER_NO_FIELD.format(proto=proto))
+    basis = _B_PEER + field
+    cell = cells[field]
+    if cell["state"] != _PUB:
+        refs = [dict(ref) for ref in cell["refs"]]
+        if cell["state"] == _CBE:
+            return _envelope(_NC, None, None, refs, basis, _R_PEER_EMPTY.format(field=field))
+        return _envelope(cell["state"], None, None, refs, basis, cell["reason"])
+    base = [("subject", toks + (field,))] + [("basis", (s,)) for s in _ADDRESS_SECTIONS]
+    failed = _secs_fail(ctx, _ADDRESS_SECTIONS)
+    if failed is not None:
+        return _envelope(failed[0], None, None,
+                         ctx.refs(base + ctx.failure_entries(_ADDRESS_SECTIONS, failed[0] == AU)), basis, failed[1])
+    ip = fib._ip(cell["value"])
+    if ip is None:
+        return _envelope(_UV, None, None, ctx.refs(base), basis, _R_PEER_NOT_IP.format(field=field))
+    observations, malformed, by_address = ctx.addresses
+    hits = [observations[k] for k in by_address.get(str(ip), ())]
+    owners = sorted({hit[0] for hit in hits})
+    wit = [("witness", hit[4]) for hit in hits]
+    if len(owners) > 1:
+        return _envelope(_UV, None, None, ctx.refs(base + wit), basis,
+                         _R_PEER_AMBIG.format(n=len(owners), among=_R_PEER_AMONG if host in owners else ""))
+    if owners == [host]:
+        return _envelope(_UV, None, None, ctx.refs(base + wit), basis, _R_PEER_SELF)
+    owner = owners[0] if owners else None
+    # an unreadable record could carry the address: for an owner, any record that is not the owner's own
+    bad = [t for t in malformed if owner is None or len(t) < 2 or t[1] != owner]
+    if bad:
+        return _envelope(_UV, None, None, ctx.refs(base + wit + [("witness", t) for t in bad]), basis,
+                         _R_PEER_MALFORMED.format(n=len(bad)))
+    held = [hold for hold in (_address_hold(ctx, hit[4][0], hit[0]) for hit in hits) if hold[0] is not None]
+    if held:
+        (worst, why), _its_witnesses = min(held, key=lambda hold: _HOLD_ORDER.index(hold[0][0]))
+        return _envelope(worst, None, None, ctx.refs(base + wit + [w for hold in held for w in hold[1]]), basis,
+                         _R_PEER_HELD.format(why=why))
+    if ip.version != 4:
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_FAMILY_OWNED if hits else _R_PEER_FAMILY)
+    tail = _R_PEER_TAIL_ABSENT if owner is None else _R_PEER_TAIL_OWNER
+    uncollected = [s for s in _ADDRESS_SECTIONS if ctx.abst(s) == _NC]
+    if uncollected:
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_INCOMPLETE.format(
+            why=_R_PEER_WHY_INPUTS.format(sections=", ".join(uncollected)), tail=tail))
+    complete, gaps = ctx.address_coverage
+    if not complete:
+        cited = gaps[:_PEER_GAPS_CITED]
+        # a failure record is never dropped by the cap (W51): the failed phase is what explains the gap
+        failures = [entry for gap in gaps[_PEER_GAPS_CITED:] for entry in gap if entry[0] == "failure_record"]
+        why = _R_PEER_WHY_GAPS.format(
+            n=len(gaps), cited=(_R_PEER_CITED.format(k=len(cited)) + (_R_PEER_CITED_FAILURES if failures else ""))
+            if len(cited) < len(gaps) else "")
+        return _envelope(_NC, None, None,
+                         ctx.refs(base + wit + [entry for gap in cited for entry in gap] + failures), basis,
+                         _R_PEER_INCOMPLETE.format(why=why, tail=tail))
+    if owner is not None:
+        return _envelope(_PUB, owner, None, ctx.refs(base + wit), basis, "", caveats=(_PEER_CAVEAT,))
+    return _envelope(_CBE, None, None, ctx.refs(base), basis, _R_PEER_NOT_RESOLVED, caveats=(_PEER_CAVEAT,))
 
 
 def _topology_source(ctx: _Ctx, toks: Tuple[str, ...]) -> Tuple[str, Optional[str], Any]:
@@ -4954,6 +7713,14 @@ def _topology(ctx: _Ctx) -> Dict[str, Any]:
 def project_topology(snap: Any) -> Dict[str, Any]:
     """Stored topology, exact evidence joins and engine-owned presentation; no legacy recomputation."""
     return _topology(_Ctx(snap))
+
+
+def fleet_blind_spot_rows(snap: Any) -> List[int]:
+    """The ``collection_completeness.devices`` rows the fleet qualifier (``fleet_lists_exclude_blind_devices``) reads
+    as a partial or not-collected device, by index (:meth:`_Ctx.blind_rows`). Every other witness the qualifier cites
+    is a row it cannot read as one, or a list or section it cannot read at all, so a consumer telling the two apart
+    reads this one classifier and never re-reads the stored rows."""
+    return _Ctx(snap).blind_rows()
 
 
 def _fib_value(raw: Any) -> Optional[Dict[str, Any]]:
@@ -5035,7 +7802,8 @@ def _path_hop_evidence(ctx: _Ctx, i: int, hop: Dict[str, Any]) -> Dict[str, Any]
             state, reason = _NC, "not collected: no exact stored route row matches this computed hop"
     routes = _listing(ctx, state, reason, route_toks, "fib.trace_fib_path:exact route evidence join",
                       [{"index": j, "pointer": json_pointer(*route_toks, j)} for j in hits], sections=("routes",),
-                      extra=[("witness", route_toks + (j,)) for j in hits], caveats=("path_route_model_only",))
+                      extra=list(row.extra) + [("witness", route_toks + (j,)) for j in hits],
+                      caveats=("path_route_model_only",))
     iface_toks = ("interfaces", host, port)
     iface = _resolve(ctx, ("interfaces",), ("interfaces",), key=host, want=dict, host=host)
     state, reason = iface.state, iface.reason
@@ -5050,7 +7818,7 @@ def _path_hop_evidence(ctx: _Ctx, i: int, hop: Dict[str, Any]) -> Dict[str, Any]
         else:
             state, reason = _NC, "not collected: no exact interface record for this computed hop"
     interfaces = _listing(ctx, state, reason, None, "fib.trace_fib_path:exact egress-interface join", refs,
-                          sections=("interfaces",), extra=[("witness", iface_toks)],
+                          sections=("interfaces",), extra=list(iface.extra) + [("witness", iface_toks)],
                           caveats=("path_route_model_only",))
     return {"hop_index": i, "route_rows": routes, "interfaces": interfaces, "node_rows": _topology_join(ctx, host)}
 
@@ -5060,6 +7828,7 @@ def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
     from cisco_toolkit import fib
 
     ctx = _Ctx(snap)
+    engine = _engine(ctx)              # G41: the source identity is read before any owner below touches the snapshot
     sections = ("routes", "interfaces", "routing_neighbors", "l3_forwarding")
     hit = _secs_fail(ctx, sections)
     routes = ctx.s.get("routes", _MISSING)
@@ -5099,7 +7868,7 @@ def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
             "result": result, "hop_evidence": _listing(ctx, state, reason, None, "fib.trace_fib_path:hops evidence",
                                                        evidence, sections=sections, caveats=("path_route_model_only",)),
             "style": style, "legend": _topology_legend()}
-    return {"schema": SCHEMA, "engine": _engine(ctx), "path": path, "vocab": _vocab()}
+    return {"schema": SCHEMA, "engine": engine, "path": path, "vocab": _vocab()}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -5288,6 +8057,9 @@ _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
                                              "absence witness); the finding's severity carries its level"),
     ("evidence_ref_kind", PUNCH_EVIDENCE_REF_KINDS, "the kind of record an evidence pointer names"),
     ("evidence_ref_role", PUNCH_EVIDENCE_ROLES, "the role an evidence pointer plays for its finding"),
+    ("punch_category", FINDING_CATEGORIES, "analyze.PUNCH_CATEGORIES, the punch-list finding categories "
+                                           "(CategoryFacetRow.k): what a finding is about; its severity carries "
+                                           "its level"),
     ("stp_root_reason", STP_ROOT_REASONS, "why an STP root election reached its state; the state is ranked"),
     ("address_origin", ADDRESS_ORIGINS, "where a topology source address was observed"),
     ("fib_invalid_route_field", FIB_ROUTE_FIELDS, "the route fields a FIB hop reports as invalid"),
@@ -5442,6 +8214,8 @@ _VLAN_ROW_FACTS = {"vlan": "CountFact", "stp_root_default_election": "FlagFact",
                    "stp_root_claimants": "TextListFact", "stp_root_identities": "StpRootIdentitiesFact",
                    "gateway_svi_hosts": "TextListFact", "endpoint_count": "CountFact",
                    "dependencies": "TextListFact", "readiness": "ReadinessFact"}
+#: G16: one VLAN gateway row (:func:`_gateway_row`); risk is the sole-gateway risk, a boolean.
+_VLAN_GATEWAY_CELLS = (("host", _TEXT), ("svi_ip", _TEXT), ("role", _TEXT), ("tracking", _TEXT), ("risk", "FlagFact"))
 _ENDPOINT_ROW_CELLS = (("host", _TEXT), ("port", _TEXT), ("mac", _TEXT), ("vlan", _TEXT), ("ip", _TEXT),
                        ("mac_count", "CountFact"), ("vendor", _TEXT), ("endpoint_class", _TEXT),
                        ("confidence", "EndpointConfidenceFact"), ("evidence", _TEXT))
@@ -5451,6 +8225,12 @@ _FINDING_ROW_CELLS = (("priority", "CountFact"), ("rank", "CountFact"), ("severi
                       ("evidence_confidence", _TEXT), ("source_command", _TEXT),
                       ("evidence_basis", "EvidenceBasisFact"), ("evidence_refs", "EvidenceRefList"),
                       ("evidence_refs_total", "CountFact"), ("evidence_refs_cap", "EvidenceCap"))
+#: A cross-layer correlation row (G24): the producer's own fields, then the hosts it names.
+_CROSS_LAYER_ROW_CELLS = (("id", _TEXT), ("severity", "SeverityFact"), ("layers", _TEXT), ("title", _TEXT),
+                          ("detail", _TEXT), ("recommendation", _TEXT), ("hosts", "CrossLayerHostRowList"))
+#: One host a cross-layer row names: the collected device it joins and the health deduction the row drives there.
+_CROSS_LAYER_HOST_CELLS = (("host", _TEXT), ("device", "PointerFact"), ("deduction_ref", "EvidenceRefFact"),
+                           ("deduction", _TEXT))
 
 
 def _slice2_defs(defs: Dict[str, Any]) -> None:
@@ -5556,13 +8336,14 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                "findings": _ref("DeviceFindingsRollup"),
                                                "coverage": _ref("DeviceCoverageRollup")},
                                  _DEVICE_ROW_CELLS)
+    defs["VlanGatewayRow"] = _row_def("VlanGatewayRow", _indexed(), _VLAN_GATEWAY_CELLS)
     defs["StpRootObservation"] = _row_def("StpRootObservation", {"host": _str(), "pointer": _ref("Pointer")},
                                           (("is_root", "FlagFact"), ("root_address", "TextFact"),
                                            ("root_priority", "CountFact")))
     defs["StpRootObservationList"] = _list_def("StpRootObservationList", _ref("StpRootObservation"))
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
                                      {"stp_roots": _ref("StpRootObservationList"),
-                                      "gateways": _nullable(_ref("IndexList")),
+                                      "gateways": _ref("VlanGatewayRowList"),
                                       "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),
                                [(f, _VLAN_ROW_FACTS.get(f, _TEXT)) for f in VLAN_FIELD_BASIS],
@@ -5579,6 +8360,11 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                      ("move_groups", "TextListFact"), ("split_across_groups", "FlagFact")))
     defs["PeerRow"] = _row_def("PeerRow", _indexed(), (("host", _TEXT), ("kind", _TEXT)))
     defs["FindingRow"] = _row_def("FindingRow", _indexed(), _FINDING_ROW_CELLS)
+    defs["PointerFact"] = _fact_def("PointerFact", _ref("Pointer"))
+    defs["CrossLayerHostRow"] = _row_def("CrossLayerHostRow", _indexed(), _CROSS_LAYER_HOST_CELLS)
+    defs["CrossLayerHostRowList"] = _list_def("CrossLayerHostRowList", _ref("CrossLayerHostRow"))
+    defs["CrossLayerRow"] = _row_def("CrossLayerRow", _indexed(), _CROSS_LAYER_ROW_CELLS)
+    defs["CrossLayerRowList"] = _list_def("CrossLayerRowList", _ref("CrossLayerRow"))
     defs["InterfaceCells"] = _closed("InterfaceCells", IF_COLUMNS, {c: _ref(_TEXT) for c in IF_COLUMNS})
     defs["InterfaceRow"] = _closed("InterfaceRow", ("port", "pointer", "cells", "run_config_observed"),
                                    {"port": _str(), "pointer": _ref("Pointer"), "cells": _ref("InterfaceCells"),
@@ -5589,7 +8375,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                          ("out_intf", _TEXT), ("admin_distance", "CountFact")))
     defs["NeighborRow"] = _row_def("NeighborRow", _indexed(), tuple((f, _TEXT) for f in ("neighbor", "state",
                                                                                           "address", "interface",
-                                                                                          "as")))
+                                                                                          "as", "peer_host")))
     defs["NeighborGroup"] = _closed("NeighborGroup", ("protocol", "pointer", "neighbors"),
                                     {"protocol": _str(), "pointer": _ref("Pointer"),
                                      "neighbors": _ref("NeighborRowList")})
@@ -5601,7 +8387,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                    "case_index": _nonneg_int(), "pointer": _ref("Pointer")},
                                    (("id", _TEXT), ("scope", _TEXT), ("command", _TEXT), ("source_key", _TEXT),
                                     ("phase", "CountFact"), ("expected", _TEXT), ("evidence_state", _TEXT)))
-    for title, item in (("DeviceRowList", "DeviceRow"), ("VlanRowList", "VlanRow"), ("EndpointRowList", "EndpointRow"),
+    for title, item in (("DeviceRowList", "DeviceRow"), ("VlanRowList", "VlanRow"),
+                        ("VlanGatewayRowList", "VlanGatewayRow"), ("EndpointRowList", "EndpointRow"),
                         ("SharedIpList", "SharedIpItem"), ("DualHomedList", "DualHomedRow"), ("PeerList", "PeerRow"),
                         ("FindingRowList", "FindingRow"), ("TextItemList", "TextItem"),
                         ("ExposureList", "ExposureItem"), ("CompoundList", "CompoundItem"),
@@ -5630,9 +8417,26 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["Inventory"] = _closed("Inventory", ("devices", "vlans", "endpoints", "uncollected_peers"),
                                 {"devices": _ref("InventoryDevices"), "vlans": _ref("InventoryVlans"),
                                  "endpoints": _ref("InventoryEndpoints"), "uncollected_peers": _ref("PeerList")})
-    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows"),
+    # G21: one closed bucket per owner vocabulary key, in owner order; the device facet follows the inventory roster.
+    defs["SeverityFacetRow"] = _closed("SeverityFacetRow", ("k", "n"), {"k": _enum(SEVERITIES), "n": _ref("CountFact")})
+    defs["CategoryFacetRow"] = _closed("CategoryFacetRow", ("k", "n"),
+                                       {"k": _enum(FINDING_CATEGORIES), "n": _ref("CountFact")})
+    defs["DeviceFacetRow"] = _closed("DeviceFacetRow", ("k", "n"), {"k": _str(), "n": _ref("CountFact")})
+    # The device facet is a roster list with its own state (an absent roster is withheld, never an empty array), so
+    # the transport pages it like every other primary list.
+    defs["DeviceFacetList"] = _list_def("DeviceFacetList", _ref("DeviceFacetRow"))
+    n_severities, n_categories = len(SEVERITIES), len(FINDING_CATEGORIES)
+    defs["FindingFacets"] = _closed("FindingFacets", FINDING_FACETS, {
+        "severity": {"type": "array", "minItems": n_severities, "maxItems": n_severities,
+                     "items": _ref("SeverityFacetRow")},
+        "category": {"type": "array", "minItems": n_categories, "maxItems": n_categories,
+                     "items": _ref("CategoryFacetRow")},
+        "device": _ref("DeviceFacetList")})
+    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows", "facets",
+                                           "cross_layer"),
                                {"total": _ref("CountFact"), "headline_axis_index": _nullable(_nonneg_int()),
-                                "rows": _ref("FindingRowList")})
+                                "rows": _ref("FindingRowList"), "facets": _ref("FindingFacets"),
+                                "cross_layer": _ref("CrossLayerRowList")})
     identity = _closed("DeviceIdentity", IDENTITY_FIELDS, {f: _ref(_TEXT) for f in IDENTITY_FIELDS})
     physical_props = {**{f: _ref("CountFact") for f in DEVICE_PHYSICAL_ZERO_DEFAULTS + ("active_ports",)},
                       **{f: _ref(_TEXT) for f in PHYSICAL_TEXT_FIELDS}}
@@ -5840,9 +8644,11 @@ def _build_schema() -> Dict[str, Any]:
         "CanonCount": _canon_def("CanonCount", "CountFact"),
         "CanonScore": _canon_def("CanonScore", "ScoreFact"),
         "CanonBand": _canon_def("CanonBand", "BandFact"),
-        "AxisItem": _closed("AxisItem", ("index", "axis", "basis_sections", "fact"),
+        "AxisUnassessed": _closed("AxisUnassessed", ("n", "of"), {"n": _ref("CountFact"), "of": _ref("CountFact")}),
+        "AxisItem": _closed("AxisItem", ("index", "axis", "basis_sections", "fact", "unassessed"),
                             {"index": _nonneg_int(), "axis": _nullable(_str()),
-                             "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("AxisFact")}),
+                             "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("AxisFact"),
+                             "unassessed": _ref("AxisUnassessed")}),
         "AbsentAxis": _closed("AbsentAxis", ("axis", "basis_sections", "fact"),
                               {"axis": {"type": "string", "enum": list(AXIS_BASIS)},
                                "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("WithheldFact")}),
@@ -5875,12 +8681,15 @@ def _build_schema() -> Dict[str, Any]:
     defs["CensusRowList"] = _list_def("CensusRowList", _ref("CensusRow"))
     defs["FailureRecordList"] = _list_def("FailureRecordList", _ref("FailureRecordItem"))
     defs["ViolationList"] = _list_def("ViolationList", _str())
+    defs["Sha256Fact"] = _fact_def("Sha256Fact", {"type": "string", "pattern": SNAPSHOT_SHA256_PATTERN})
     defs["Engine"] = _closed(
         "Engine", ("snapshot_schema", "script_version", "generated_at", "collected_at", "snapshot_schema_supported",
-                   "code_schema_version"),
+                   "code_schema_version", "snapshot_sha256", "snapshot_bytes", "snapshot_digest_form"),
         {"snapshot_schema": _ref("TextFact"), "script_version": _ref("TextFact"), "generated_at": _ref("TextFact"),
          "collected_at": _ref("TextFact"), "snapshot_schema_supported": _nullable({"type": "boolean"}),
-         "code_schema_version": _str()})
+         "code_schema_version": _str(), "snapshot_sha256": _ref("Sha256Fact"),
+         "snapshot_bytes": _ref("PositiveCountFact"),
+         "snapshot_digest_form": {"type": "string", "const": SNAPSHOT_DIGEST_FORM}})
     defs["OverviewFacts"] = _closed(
         "OverviewFacts", tuple(ssot.CANONICAL_FACTS),
         {name: _ref("CanonBand" if name == "worst_band" else "CanonScore" if name == "avg_health" else "CanonCount")
@@ -5973,8 +8782,10 @@ def ui_projection_schema() -> Dict[str, Any]:
 
 
 __all__ = [
-    "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "BRIEF_INPUTS", "CC_STATUSES",
-    "CENSUS_KINDS", "COVERAGE_STATES", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
+    "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "AXIS_UNASSESSED",
+    "AXIS_UNASSESSED_ABSENT", "AXIS_UNASSESSED_LAYERS", "AXIS_UNASSESSED_LIVE", "AXIS_UNASSESSED_SPARSE",
+    "BRIEF_INPUTS", "CC_STATUSES",
+    "CENSUS_KINDS", "COVERAGE_STATES", "CROSS_LAYER_INPUTS", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
     "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
     "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",
     "EXPOSURE_STATES", "FLEET_HEALTH_STATES", "HEALTH_BANDS", "HEALTH_BAND_NOT_SCORED", "IDENTITY_FIELDS",
@@ -5988,8 +8799,12 @@ __all__ = [
     "UNKNOWN_EVIDENCE_STATES", "VLAN_FIELD_BASIS", "VLAN_READINESS", "WITHHELD_STATES", "json_pointer", "project",
     "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
+    "fleet_blind_spot_rows",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
-    "IMPACT_INDETERMINATE_PREFIX",
+    "IMPACT_INDETERMINATE_PREFIX", "L3_RISK_CLEAR", "L3_RISK_FLAGS", "L3_RISK_JOINER", "L3_RISK_TRACKING_NOT_ASSESSED",
+    "L3_NO_FHRP_FLAG", "L3_SOLE_GATEWAY_FLAG", "L3_TRACKED_DOWN_FLAG", "VLAN_SOLE_GATEWAY_FHRP",
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
-    "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES",
+    "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES", "NEIGHBOR_ADDRESS_FIELDS",
+    "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
+    "FINDING_CATEGORIES", "FINDING_FACETS", "CATEGORY_SOURCE_KINDS",
 ]

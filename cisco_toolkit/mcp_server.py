@@ -38,7 +38,7 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import failover, traffic_assurance, whatif
+from . import failover, impact_assessability, traffic_assurance, whatif
 from .attestation import loopback_only
 
 # The socket transports serve the ENTIRE snapshot unauthenticated, so the bind address is
@@ -189,10 +189,23 @@ def top_findings(snap: Dict[str, Any], limit: int = 20,
 
 
 def failure_impact(snap: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
-    """Per-device failure blast-radius: stranded endpoints, VLANs impacted, FHRP backup."""
-    rows = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
-    cols = ("host", "severity", "stranded", "vlans_impacted", "hard", "backup", "fhrp", "detail")
-    return [_pick(r, cols) for r in rows[: max(0, int(limit))]]
+    """Per-device failure blast-radius: stranded endpoints, VLANs impacted, FHRP backup.
+
+    W48: every row is read through the engine owner of row assessability (impact_assessability), never handed to
+    the assistant raw. Each measure is the owner's value: the stored value on a published row; on a lower-bound row
+    the worst band and each positive count as the lower bounds they are ('High (lower bound)', '≥ 45'); and
+    'not assessed' for a value the owner withholds (a held row's every measure, a bounded band below the worst, a
+    bounded zero) -- never the stored Info or 0. ``detail`` leads with the verdict on a row that is not a measurement,
+    and ``assessable`` / ``why`` carry the verdict, so an assistant cannot read a floor or a hold as exact."""
+    cols = ("severity", "stranded", "vlans_impacted", "hard", "backup", "fhrp")
+    out = []
+    for row, verdict in impact_assessability.rows_with_verdicts(snap)[: max(0, int(limit))]:
+        item = {"host": row.get("host")}            # the stored host names the row, as the workbook's sheet does
+        item.update({col: impact_assessability.table_value(verdict, col) for col in cols})
+        item.update({"detail": impact_assessability.table_detail(verdict),
+                     "assessable": verdict.assessable, "why": verdict.why})
+        out.append(item)
+    return out
 
 
 def chokepoints(snap: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:

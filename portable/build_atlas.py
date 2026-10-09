@@ -391,7 +391,7 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
     a nonce-bound smoke-only header emitted after native acceptance and all response guards;
     exact bodies alone cannot prove that the bundled native provider handled these requests.
     """
-    from webapp.backend.engine import ui_projection
+    from webapp.backend.engine import bind_ui_projection_snapshot, ui_projection
 
     def request(path: str, *, post: bool = False):
         req = urllib.request.Request(
@@ -425,7 +425,9 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
                 or headers.get("x-snapshot-digest-form") != "assesshub-store-blob"
                 or headers.get("cache-control") != "no-store"):
             raise ValueError("raw snapshot binding differs")
-        source = ui_projection(json.loads(raw))
+        # Bind the exact served bytes as the hub does: the owner's engine block then names them (G41), and the
+        # equality checks below refuse a served engine block that names any other byte string.
+        source = ui_projection(bind_ui_projection_snapshot(raw))
         context = {"schema": "ui_projection_transport/1", "projection_schema": source["schema"],
                    "identity": {"snapshot_id": sid, "sha256": "sha256:" + digest,
                                 "bytes": len(raw), "digest_form": "assesshub-store-blob"},

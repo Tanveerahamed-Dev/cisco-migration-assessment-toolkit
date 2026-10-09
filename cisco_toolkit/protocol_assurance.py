@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 
 SUPPORT_PROFILE_SCHEMA = "protocol_support_profile/1"
@@ -24,7 +25,22 @@ CHANGE_INTENT_SCHEMA = "cutover_change_intent/1"
 FAMILY_CHANGE_SET_SCHEMA = "protocol_family_change_set/1"
 SUBJECT_BINDING_SCHEMA = "protocol_subject_identity_set/1"
 ADMISSION_SCHEMA = "protocol_comparison_admission/1"
-CUTOVER_OPERATOR_EVIDENCE_SCHEMA = "cutover_operator_evidence/1"
+#: The operator-evidence contract. AssessHub persists it inside every execution comparison receipt and re-verifies
+#: that receipt by recomputing it from the bound snapshots on every read, so whatever it binds must be a pure function
+#: of those snapshot bytes and of FROZEN code (W50). It therefore binds EVIDENCE only: ``rehearsal.impacts`` is the
+#: stored failure_impact rows, copied raw (:func:`_rehearsal_impact_evidence_v1`). It never binds an interpretation of
+#: them. Whether a row is a measurement, a lower bound or not assessed is decided by the live engine owner
+#: (``impact_assessability``) at DISPLAY time, from the receipt's bound snapshot, and is never stored, hashed or
+#: verified (AssessHub ``impacts_view``; docs/w50-receipt-impacts-validation-2026-10-09.md). Binding an owner-valued
+#: row would make every stored receipt unreadable (409) whenever the owner's decisions changed.
+#: A stored receipt is re-verified under the contract it DECLARES, and a missing or unknown declaration is never
+#: verified (:func:`stored_operator_evidence_schema`). The dispatch :data:`_REHEARSAL_IMPACTS_BY_CONTRACT` is the one
+#: place a contract selects its evidence binder; /1 is its only entry.
+CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1 = "cutover_operator_evidence/1"
+#: The contract every new comparison carries.
+CUTOVER_OPERATOR_EVIDENCE_SCHEMA = CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1
+#: Every contract this engine can recompute, so a stored receipt that declares one can still be re-verified.
+CUTOVER_OPERATOR_EVIDENCE_SCHEMAS = (CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1,)
 PERSISTED_SOURCE = "persisted snapshots.snapshot_json blob"
 OFFLINE_FILE_SOURCE = "exact input snapshot file bytes"
 _COMPARISON_SOURCE_OWNERS = (PERSISTED_SOURCE, OFFLINE_FILE_SOURCE)
@@ -2176,11 +2192,56 @@ def current_baseline_blocker_export(snapshot: Any) -> dict:
     return payload
 
 
+def stored_operator_evidence_schema(comparison: Any) -> Optional[str]:
+    """The operator-evidence contract a stored comparison declares, when this engine can recompute it.
+
+    ``None`` for a comparison without an ``operator_evidence`` object, a missing or non-string ``schema``, or a
+    contract outside :data:`CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`. A verifier must read ``None`` as unverified (fail
+    closed); it never stands for the current contract, so a receipt cannot verify by omitting its version.
+    """
+    evidence = comparison.get("operator_evidence") if isinstance(comparison, dict) else None
+    declared = evidence.get("schema") if isinstance(evidence, dict) else None
+    if type(declared) is not str or declared not in CUTOVER_OPERATOR_EVIDENCE_SCHEMAS:
+        return None
+    return declared
+
+
+def _rehearsal_impact_evidence_v1(snap: Mapping[str, Any]) -> List[dict]:
+    """``rehearsal.impacts`` under ``cutover_operator_evidence/1``: the FROZEN evidence binder (W50).
+
+    It binds the stored ``failure_impact`` rows as EVIDENCE: every row that is an object, copied raw, in stored order.
+    It deliberately never consults the engine owner of row assessability (``impact_assessability``): a stored
+    receipt is re-verified by recomputing this from the bound snapshot on every read, so its output must depend only
+    on those snapshot bytes and on this frozen code. A row here is therefore NOT a presentation: a lower bound's count
+    is stored as the producer wrote it and a held zero as a zero. Every surface that presents these rows reads them
+    through the owner at display time instead (AssessHub ``impacts_view``), and the structural guard in
+    ``tests/test_impact_consumers.py`` admits this function as the one raw reader for exactly that reason.
+
+    Frozen: these are, byte for byte, the rows the pre-W50 engine wrote (its digests are pinned at ``e7c00e12`` by
+    ``tests/test_operator_evidence_contract.py``), so every receipt stored before W50 still verifies. Its one
+    reference is the /1 entry of :data:`_REHEARSAL_IMPACTS_BY_CONTRACT`.
+    """
+    raw_impacts = snap.get("failure_impact")
+    impacts = [dict(row) for row in raw_impacts
+               if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
+    return impacts
+
+
+#: The one place an operator-evidence contract selects its ``rehearsal.impacts`` evidence binder (W50): contract ->
+#: ``snapshot -> rows``. /1 is its only entry. A contract outside this table is never computed:
+#: :func:`cutover_operator_evidence` raises before reaching it. Its keys are :data:`CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`
+#: (pinned by a test). A future contract adds an entry here and freezes its binder the same way; it never re-points /1.
+_REHEARSAL_IMPACTS_BY_CONTRACT: Mapping[str, Callable[[Mapping[str, Any]], List[dict]]] = MappingProxyType({
+    CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1: _rehearsal_impact_evidence_v1,
+})
+
+
 def cutover_operator_evidence(
         snapshot: Any, *, observed_l2_failure_evidence: Any = None,
         expected_recovery_binding: Any = None, prior_snapshot: Any = None,
         expected_predecessor_collected_at: Any = None,
-        expected_predecessor_binding: Any = None) -> dict:
+        expected_predecessor_binding: Any = None,
+        schema: Optional[str] = None) -> dict:
     """Project existing simulation and rollback owners without inventing rehearsal success.
 
     ``failure_impact`` is an existing bounded simulation projection, not proof that an operator
@@ -2189,7 +2250,19 @@ def cutover_operator_evidence(
     owns rollback planning prose, not execution.  Keeping those distinctions explicit lets decision
     surfaces put the evidence in the right order while withholding a stronger field claim than the
     stored snapshot supports.
+
+    ``rehearsal.impacts`` binds the stored rows as evidence, raw (:func:`_rehearsal_impact_evidence_v1`); it is
+    never a presentation of them. A display reads each row's assessability from the live engine owner at render
+    time (W50).
+
+    ``schema`` selects the contract (W50). ``None`` is the current contract, which every new comparison carries; the
+    re-verification of a stored receipt passes the contract that receipt declares. Any value outside the explicit
+    dispatch (:data:`_REHEARSAL_IMPACTS_BY_CONTRACT`, whose only entry is ``cutover_operator_evidence/1``) raises
+    ``ValueError``, so an unknown contract is never computed as a known one.
     """
+    contract = CUTOVER_OPERATOR_EVIDENCE_SCHEMA if schema is None else schema
+    if type(contract) is not str or contract not in _REHEARSAL_IMPACTS_BY_CONTRACT:
+        raise ValueError(f"unsupported operator-evidence contract: {contract!r}")
     snap = _dict(snapshot)
     # Lazy import avoids a module cycle: the rehearsal composer reuses the native delta owners,
     # which in turn consume the shared contracts in this module.
@@ -2201,9 +2274,7 @@ def cutover_operator_evidence(
     l2_rehearsal = compute_l2_failure_rehearsal(
         snapshot, prior_snapshot=prior_snapshot
     )
-    raw_impacts = snap.get("failure_impact")
-    impacts = [dict(row) for row in raw_impacts
-               if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
+    impacts = _REHEARSAL_IMPACTS_BY_CONTRACT[contract](snap)
     l2_status = l2_rehearsal.get("status")
     l2_has_projection = l2_status in {"simulation_only", "projected_risk", "current_fault"}
     rehearsal = {
@@ -2297,7 +2368,7 @@ def cutover_operator_evidence(
         ),
     }
     return {
-        "schema": CUTOVER_OPERATOR_EVIDENCE_SCHEMA,
+        "schema": contract,
         "owner": "reference_only_projection",
         "owns_verdict": False,
         "current_baseline_blocker_export": current_baseline_blocker_export(snapshot),

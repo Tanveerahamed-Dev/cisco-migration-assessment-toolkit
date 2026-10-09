@@ -29,6 +29,7 @@ The defects pinned:
 import copy
 import json
 import os
+import re
 
 import pytest
 
@@ -199,7 +200,13 @@ def test_mop_observed_blast_radius_still_renders_the_quantified_trigger(tmp_path
     clause must both survive."""
     text = _mop_text(tmp_path, sample, "mop_blast_ok.docx")
     row = next(ln for ln in text.split("\n") if ln.startswith("Max blast radius"))
-    assert "[NOT OBSERVED]" not in row and row.rstrip().split("|")[-1].strip().isdigit(), row
+    # W48: the figure is read through the assessability owner, so a wave holding a lower-bound row (the regenerated
+    # sample's core1, bounded by its evidence-less inter-switch link) reads '≥ N (lower bound) — …'. Either way it
+    # is a number, never [NOT OBSERVED] or 'not assessed'. A lower bound must be POSITIVE: '≥ 0' is not a measurement
+    # (the owner reads it as not assessed, and the trigger below would otherwise fire at the start of every window);
+    # tests/test_impact_consumers.py pins that case and the fully published control.
+    cell = row.rstrip().split("|")[-1].strip()
+    assert "[NOT OBSERVED]" not in row and re.match(r"^(?:≥ [1-9]\d*|\d+)(?: |$)", cell), row
     trig = next(ln for ln in text.split("\n") if ln.startswith("Blast-radius / outage overrun"))
     assert "more endpoints than the" in trig, trig
 

@@ -1,9 +1,9 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
 import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
-  deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture } from "../test/projectionFixtures";
+  deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture, findingFacetsFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -118,11 +118,14 @@ describe("Core snapshot route", () => {
     const count = (value: number) => ({ ...published(value), ...evidence, subject: null, caveats: [scope.id] });
     const total = (value: number) => ({ ...published(value), subject: "/collection_completeness/summary/inventory", refs: [], basis: "synthetic.owner:inventory" });
     const held = (state: string, reason: string) => ({ ...evidence, state, value: null, reason, subject: null });
+    // ui_projection._listing keeps a list's caveats when it is published or collected but empty, or carries items: an
+    // empty, collected list is qualified too.
     const hostList = (state: string, items: object[], reason?: string) => ({ ...evidence, state, subject: null, items,
-      ...(reason ? { reason } : {}), ...(items.length ? { caveats: [scope.id] } : {}) });
-    function serveTrust(rows: Record<string, object>) {
+      ...(reason ? { reason } : {}),
+      ...(items.length || state === "published" || state === "collected_but_empty" ? { caveats: [scope.id] } : {}) });
+    function serveTrust(rows: Record<string, object>, limitations: object[] = [scope]) {
       const doc = trustFixture();
-      const document = { ...doc, limitations: [scope], payload: { ...doc.payload,
+      const document = { ...doc, limitations, payload: { ...doc.payload,
         inputs: doc.payload.inputs.map((row) => ({ ...row, ...rows[row.input] })) } };
       return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
         const url = String(input);
@@ -138,7 +141,9 @@ describe("Core snapshot route", () => {
     const inputRow = (input: string) => within(screen.getByRole("article", { name: `${input} analysis input` }));
     const factIn = (row: ReturnType<typeof within>, label: string) =>
       within(row.getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
-    const ratio = / of \d+ inventory devices could not be assessed/;
+    // Any ratio sentence at all, whatever its numbers: a sentence rendered over a withheld count or denominator
+    // ("3 of null …") must fail the tests below, so the pattern never requires a number.
+    const ratio = /inventory devices could not be assessed/;
 
     it("renders published input gaps with the supplied ratio, host order, custody labels and evidence pointers", async () => {
       const hosts = [
@@ -156,6 +161,10 @@ describe("Core snapshot route", () => {
       expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(trustFixture().payload.inputs.map(({ input }) => `${input} analysis input`));
       const eol = inputRow("Hardware EoL");
       expect(eol.getByText("3 of 5 inventory devices could not be assessed", { exact: true })).toBeInTheDocument();
+      // the sentence carries the count's qualifications beside it, not only on the count fact below
+      fireEvent.click(eol.getByRole("button", { name: "Qualifications for 3 of 5 inventory devices could not be assessed" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(scope.text);
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close evidence" }));
       expect(factIn(eol, "could not be assessed").getByText("3", { exact: true })).toBeInTheDocument();
       expect(factIn(eol, "inventory devices").getByText("5", { exact: true })).toBeInTheDocument();
       expect(eol.getByText("Input sections: lifecycle_risk", { exact: true })).toBeInTheDocument();
@@ -168,7 +177,9 @@ describe("Core snapshot route", () => {
       expect(new URL(blind.getByRole("link", { name: "edge/a~b ↗" }).getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
       expect(failed.getByText("Analysis unavailable", { exact: true })).toBeInTheDocument();
       expect(failed.getByText("Synthetic engine label: input phase failed", { exact: true })).toBeInTheDocument();
-      expect(assessedEmpty.getByText("Collected, empty", { exact: true })).toBeInTheDocument();
+      // a device the input could not assess is never labelled as an empty, clean collection
+      expect(assessedEmpty.getByText("Evidence collected, nothing assessable", { exact: true })).toHaveClass("state-collected_but_empty");
+      expect(assessedEmpty.queryByText("Collected, empty", { exact: true })).not.toBeInTheDocument();
       expect(assessedEmpty.getByText("Synthetic engine label: no authoritative lifecycle band", { exact: true })).toBeInTheDocument();
       expect(assessedEmpty.getByText("/device_dossiers/per_device/1/exposures/1", { exact: true })).toBeInTheDocument();
       expect(new URL(assessedEmpty.getByRole("link", { name: "synthetic-core ↗" }).getAttribute("href")!, "http://localhost").searchParams.get("view")).toBe("device");
@@ -187,6 +198,13 @@ describe("Core snapshot route", () => {
       expect(factIn(health, "could not be assessed").getByText("0", { exact: true })).toBeInTheDocument();
       expect(health.getByText("Collected, empty", { exact: true })).toBeInTheDocument();
       expect(health.getByText("Synthetic: every inventory device carries one readable exposure", { exact: true })).toBeInTheDocument();
+      // a measured 0 over an empty, collected list is qualified like any count: the count, its sentence and the list
+      // each carry the scope qualification, which the engine keeps on the empty list too
+      for (const label of ["could not be assessed", "0 of 5 inventory devices could not be assessed", "Devices not assessed by Health"]) {
+        fireEvent.click(health.getByRole("button", { name: `Qualifications for ${label}` }));
+        expect(screen.getByRole("dialog")).toHaveTextContent(scope.text);
+        fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close evidence" }));
+      }
       expect(health.queryByText("Devices and custody")).not.toBeInTheDocument();
       expect(health.queryByRole("link")).not.toBeInTheDocument();
       expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
@@ -235,6 +253,58 @@ describe("Core snapshot route", () => {
         expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
         expect(row.queryByRole("link")).not.toBeInTheDocument();
       }
+    });
+    it("carries the inventory denominator's own qualifications beside the ratio sentence, apart from the count's", async () => {
+      // ui_projection._inventory_total publishes the denominator with its own caveats (one_hop_failure_attribution
+      // when a phase failed), which the count does not inherit, so the sentence that states both carries both. Each
+      // control opens its own fact's caveats, never the other's.
+      const oneHop = { id: "one_hop_failure_attribution", owner: "synthetic.owner:one_hop", applies_to: ["/trust/inputs"],
+        text: "Synthetic: a failed phase is attributed to its direct consumers only" };
+      const qualifiedTotal = (value: number) => ({ ...total(value), caveats: [oneHop.id] });
+      serveTrust({
+        "Hardware EoL": { n: count(3), of: qualifiedTotal(5), hosts: hostList("published", [
+          { host: "edge/a~b", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/3" }]) },
+        Health: { n: { ...count(2), caveats: [] }, of: qualifiedTotal(5), hosts: hostList("published", [
+          { host: "synthetic-core", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/1" }]) },
+      }, [scope, oneHop]);
+      await openTrust();
+      const eol = inputRow("Hardware EoL");
+      const sentence = eol.getByText("3 of 5 inventory devices could not be assessed", { exact: true });
+      const countControl = eol.getByRole("button", { name: "Qualifications for 3 of 5 inventory devices could not be assessed" });
+      const denominatorControl = eol.getByRole("button",
+        { name: "Denominator qualifications for the inventory denominator of 3 of 5 inventory devices could not be assessed" });
+      expect(sentence).toContainElement(countControl);
+      expect(sentence).toContainElement(denominatorControl);
+      expect(denominatorControl).toHaveTextContent("Denominator qualifications (1)");
+      expect(countControl).toHaveTextContent("Qualifications (1)");
+      fireEvent.click(denominatorControl);
+      let drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(oneHop.text);
+      expect(drawer).toHaveTextContent("/collection_completeness/summary/inventory");
+      expect(drawer).not.toHaveTextContent(scope.text);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      fireEvent.click(countControl);
+      drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(scope.text);
+      expect(drawer).not.toHaveTextContent(oneHop.text);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      // a count with no caveat of its own: the sentence still carries the denominator's
+      const health = inputRow("Health");
+      const healthSentence = health.getByText("2 of 5 inventory devices could not be assessed", { exact: true });
+      expect(within(healthSentence).queryByRole("button", { name: /^Qualifications for/ })).toBeNull();
+      fireEvent.click(within(healthSentence).getByRole("button",
+        { name: "Denominator qualifications for the inventory denominator of 2 of 5 inventory devices could not be assessed" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(oneHop.text);
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close evidence" }));
+    });
+    it("carries no denominator control while the denominator publishes no caveat", async () => {
+      serveTrust({ "Hardware EoL": { n: count(3), of: total(5), hosts: hostList("published", [
+        { host: "edge/a~b", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/3" }]) } });
+      await openTrust();
+      const sentence = inputRow("Hardware EoL").getByText("3 of 5 inventory devices could not be assessed", { exact: true });
+      expect(within(sentence).getByRole("button", { name: "Qualifications for 3 of 5 inventory devices could not be assessed" }))
+        .toBeInTheDocument();
+      expect(within(sentence).queryByRole("button", { name: /^Denominator qualifications/ })).toBeNull();
     });
     it("shows no ratio while the inventory denominator is withheld", async () => {
       const denominator = "Synthetic: the owner's inventory count disagrees with the device rows";
@@ -592,12 +662,59 @@ describe("Core snapshot route", () => {
       expect(presentation.getByText("impact_high", { exact: true })).toBeInTheDocument();
       for (const label of MEASURES) expect(factIn(row, label).getByText("Published", { exact: true })).toBeInTheDocument();
       expect(within(row).queryByText(/^(Not collected|Unverified|Analysis unavailable)$/)).not.toBeInTheDocument();
+      // the negative control for the lower-bound mark: these published measures cite no witness, so 42 is a measurement
+      expect(row.querySelector('[data-impact="lower_bound"], [data-impact="lower_bound_reason"]')).toBeNull();
       // No page-side tone: the device document carries no legend, and the page invents no severity mapping.
       expect(region.querySelector('[class*="topology-tone-"]')).toBeNull();
       fireEvent.click(within(row).getByRole("button", { name: "Evidence for Severity" }));
       expect(screen.getByRole("dialog")).toHaveTextContent("High");
       expect(screen.getByRole("dialog")).toHaveTextContent(`sha256:${"a".repeat(64)}`);
       expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+    });
+    it("shows a measure the engine publishes only as a lower bound as ≥ N with its reason, as the topology rows do", async () => {
+      // The device row comes from ui_projection._topology_impact, the builder of the fleet topology's rows. This is
+      // its row for a switch simulated only in part (2 VLANs with an off-scan gateway): every measure cites the
+      // off_scan_gw_vlans cell as its witness, High and each positive count stay published as lower bounds, and each
+      // zero count is withheld with the bound's zero reason. The non-measures cite no witness.
+      const pointer = "/failure_impact/4", witness = { pointer: `${pointer}/off_scan_gw_vlans`, role: "witness" };
+      const ZERO = "not collected: this 0 is only a lower bound: 2 VLAN(s) on this switch have an off-scan gateway the "
+        + "simulation could not assess (off_scan_gw_vlans), so it is not a measurement of none";
+      const cell = (field: string, value: unknown, measure: boolean) => ({ state: "published", value, subject: `${pointer}/${field}`,
+        basis: `analyze.compute_failure_impact:failure_impact[].${field}`,
+        refs: [{ pointer: `${pointer}/${field}`, role: "subject" }, ...(measure ? [witness] : [])] });
+      const bounded = { ...deviceImpactRowFixture(), severity: cell("severity", "High", true), vlans_impacted: cell("vlans_impacted", 3, true),
+        stranded: cell("stranded", 42, true), hard: cell("hard", 3, true),
+        backup: { ...cell("backup", null, true), state: "not_collected", reason: ZERO },
+        fhrp: { ...cell("fhrp", null, true), state: "not_collected", reason: ZERO },
+        off_scan_gw_vlans: cell("off_scan_gw_vlans", 2, false), detail: cell("detail", "Synthetic VLAN 10: Hard partition (42 ep)", false) };
+      serve({ failure_impact: deviceSelectionPage("/failure_impact", [bounded]) });
+      show(path);
+      const region = await screen.findByRole("region", { name: "If this device fails" });
+      const row = within(region).getByRole("group", { name: "Failure impact source row 4" });
+      const stranded = factIn(row, "Stranded endpoints");
+      // the pre-fix device page printed a plain 42: a minimum read as an exact measurement
+      expect(stranded.queryByText("42", { exact: true })).not.toBeInTheDocument();
+      expect(stranded.getByText("≥ 42", { exact: true }).closest('[data-impact="lower_bound"]')).toHaveClass("impact-bound");
+      expect(stranded.getByText("Published", { exact: true })).toBeInTheDocument();
+      // its reason is a visible line naming the cited cell of this row, never hover-only
+      const reason = row.querySelectorAll('[data-impact="lower_bound_reason"]');
+      expect(reason).toHaveLength(4);
+      expect(stranded.getByText(/^At least 42: a lower bound, not an exact measurement\. Why: /))
+        .toHaveTextContent(`this row's off_scan_gw_vlans cell (${pointer}/off_scan_gw_vlans)`);
+      expect(factIn(row, "Severity").getByText("≥ High", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "VLANs impacted").getByText("≥ 3", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Hard-partition VLANs").getByText("≥ 3", { exact: true })).toBeInTheDocument();
+      // the held zeros keep their state and reason, never a 0
+      for (const label of ["Backup-covered VLANs", "FHRP-covered VLANs"]) {
+        expect(factIn(row, label).getByText("Not collected", { exact: true })).toBeInTheDocument();
+        expect(factIn(row, label).getByText(ZERO, { exact: true })).toBeInTheDocument();
+        expect(factIn(row, label).queryByText("0", { exact: true })).not.toBeInTheDocument();
+      }
+      // a non-measure is never a lower bound: the off-scan count is the engine's own count
+      const offScan = factIn(row, "Off-scan gateway VLANs");
+      expect(offScan.getByText("2", { exact: true })).toBeInTheDocument();
+      expect(offScan.queryByText(/^≥/)).not.toBeInTheDocument();
+      expect(row.querySelectorAll('[data-impact="lower_bound"]')).toHaveLength(4);
     });
     it.each([
       ["not_collected", "Not collected", "not_observed"],
@@ -705,26 +822,38 @@ describe("Core snapshot route", () => {
       expect(factIn(row, "Engine presentation").getByText("unverified", { exact: true })).toBeInTheDocument();
     });
     it("pages the structural selection with the exact device host and the owner's list pointer", async () => {
+      // Deterministic: the page response is held until the test releases it, so the request is observed in flight
+      // (busy, not reset or aborted by a late list effect) and the next page is asserted only after its response.
       const first = deviceStructuralRowFixture(2, true, 1), second = deviceStructuralRowFixture(5, false, 2);
       const initial = { ...deviceSelectionPage("/structural_links", [first]), page: { offset: 0, limit: 1, returned: 1, total: 2, has_more: true, items: [first] } };
       const { current, fetcher } = serve({ structural_links: initial });
       const next = { ...initial, page: { offset: 1, limit: 1, returned: 1, total: 2, has_more: false, items: [second] } };
       const { payload: _payload, ...envelope } = current;
+      let release!: (response: Response) => void;
       fetcher.mockImplementation(async (input) => {
         const url = String(input);
-        if (url.includes("/device/lists?")) return new Response(JSON.stringify({ ...envelope, list: next }));
+        if (url.includes("/device/lists?")) return new Promise<Response>((resolve) => { release = resolve; });
         if (url.includes("/ui-projection/device?")) return new Response(JSON.stringify(current));
         if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
         throw new Error(`Unexpected non-projection request: ${url}`);
       });
+      const listCalls = () => fetcher.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/device/lists?"));
       show(path);
-      const region = within(await screen.findByRole("region", { name: "Structural links" }));
+      const section = await screen.findByRole("region", { name: "Structural links" });
+      const region = within(section);
       expect(region.getByRole("group", { name: "Structural link source row 2" })).toBeInTheDocument();
       fireEvent.click(region.getByRole("button", { name: "Next Structural links page" }));
+      await waitFor(() => expect(listCalls()).toHaveLength(1));
+      expect(release).toBeDefined();
+      // the request is still the list's own: busy, Next disabled, no reset to the first page while it is in flight
+      expect(section).toHaveAttribute("aria-busy", "true");
+      expect(region.getByRole("button", { name: "Next Structural links page" })).toBeDisabled();
+      await act(async () => { release(new Response(JSON.stringify({ ...envelope, list: next }))); });
       expect(await region.findByRole("group", { name: "Structural link source row 5" })).toBeInTheDocument();
       expect(region.queryByRole("group", { name: "Structural link source row 2" })).not.toBeInTheDocument();
-      const requested = fetcher.mock.calls.map(([input]) => String(input)).find((url) => url.includes("/device/lists?"))!;
-      const query = new URL(requested, "http://localhost").searchParams;
+      expect(section).toHaveAttribute("aria-busy", "false");
+      expect(listCalls()).toHaveLength(1);
+      const query = new URL(listCalls()[0], "http://localhost").searchParams;
       expect(query.get("pointer")).toBe("/structural_links"); expect(query.get("offset")).toBe("1"); expect(query.get("host")).toBe("edge/a~b");
     });
   });
@@ -736,6 +865,51 @@ describe("Core snapshot route", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open");
     fireEvent.click(summary); expect(summary.closest("details")).toHaveAttribute("open");
     expect(screen.getByText("Synthetic owner remediation")).toBeInTheDocument();
+  });
+  it("renders the engine's finding facet totals with their own states (G21), never a withheld total as zero", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));
+    show("/snapshots/1?view=findings");
+    await screen.findByText("Synthetic finding");
+    expect(screen.queryByText(/facet totals are not published/)).not.toBeInTheDocument();
+    const facets = findingFacetsFixture();
+    const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
+    for (const row of facets.severity) {
+      expect(within(severity).getByRole("button", { name: `Evidence for ${row.k} findings` })).toBeInTheDocument();
+    }
+    // every severity total is withheld in the fixture: each shows its reason, and none reads as a measured zero
+    expect(within(severity).getAllByText("Synthetic input was not collected")).toHaveLength(facets.severity.length);
+    expect(within(severity).queryByText("0")).not.toBeInTheDocument();
+    const category = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
+    expect(within(category).getAllByText("Synthetic input was not collected")).toHaveLength(facets.category.length);
+    const device = screen.getByRole("region", { name: "Findings by inventory device" });
+    expect(within(device).getByRole("button", { name: "Evidence for Findings on edge/a~b" })).toBeInTheDocument();
+    expect(within(device).getByText("1")).toBeInTheDocument();
+  });
+  it("renders a facet count the engine publishes only as a minimum as ≥ N, never as a bare exact count (W51 round 4)", async () => {
+    // ui_projection._finding_facets: under a fleet qualification a positive severity or category count is a lower bound
+    // that carries the qualification's caveat; a one-hop attribution caveat alone does not make it one
+    const doc = findingsFixture();
+    const facetRows = (rows: readonly { k: string }[]) => rows as Array<{ k: string; n: unknown }>;
+    const [bounded, plain] = facetRows(doc.payload.facets.severity);
+    bounded.n = { ...published(3), caveats: ["fleet_lists_exclude_blind_devices"] };
+    plain.n = { ...published(2), caveats: ["one_hop_failure_attribution"] };
+    const [category] = facetRows(doc.payload.facets.category);
+    category.n = { ...published(4), caveats: ["finding_facet_source_incomplete"] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? doc : { available: false })));
+    show("/snapshots/1?view=findings");
+    await screen.findByText("Synthetic finding");
+    const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
+    const boundFact = within(severity).getByRole("button", { name: `Evidence for ${bounded.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(boundFact).getByText("≥ 3")).toBeInTheDocument();
+    expect(boundFact.querySelector('[data-impact="lower_bound_reason"]')).toHaveTextContent(
+      "At least 3: a lower bound, not an exact measurement. Why: the engine publishes this count only as a minimum while fleet_lists_exclude_blind_devices applies");
+    expect(within(boundFact).queryByText("3")).not.toBeInTheDocument();
+    const plainFact = within(severity).getByRole("button", { name: `Evidence for ${plain.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(plainFact).getByText("2")).toBeInTheDocument();
+    expect(plainFact.querySelector('[data-impact="lower_bound_reason"]')).toBeNull();
+    const categories = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
+    const categoryFact = within(categories).getByRole("button", { name: `Evidence for ${category.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(categoryFact).getByText("≥ 4")).toBeInTheDocument();
   });
   it("rejects a reference bound to another source without showing its rows", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));
