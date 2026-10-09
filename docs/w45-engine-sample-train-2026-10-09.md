@@ -9,6 +9,7 @@ Claude pull requests, merged with merge commits in this order, so the goldens an
 | 1 | #625 | W36 | `claude/sample-collected-at-utc` `44908e59` | `9c6e75a7` |
 | 2 | #624 | W33 | `claude/impact-assessability-owner` `c036b844` | `ee49e8cb` |
 | 3 | #623 | W32 | `claude/impact-blind-links` `0f4455fe` | `f7b890d5` |
+| 4 | main after #620 | (W27, merged) | `origin/main` `7d547890` | the main merge on top of `0883db45` |
 
 No local test, build, engine, pipeline or sample/golden writer ran (owner GitHub-only rule). The local checks
 were static: compilation, an AST shadow scan, the static helpers of `tests/test_protocol_assessability.py`, the
@@ -28,7 +29,8 @@ snapshots. The hosted gates decide.
    - the projection keeps W33's code exactly, plus W32's `LIMITATIONS` text and two comment lines;
    - W32's rule is expressed **in the owner**, so the projection, the Failure Impact and Executive Summary
      sheets, RES-4, the design document, the deck, the dossier and the explorer embed all read it from one place.
-   No webapp module consumes the owner directly (AssessHub reads the projection), so nothing else needed wiring.
+   No webapp module consumes the owner directly: AssessHub reads the projection. For W27's surfaces, see the main
+   merge below.
 3. **`docs/ssot.md`** (merged textually, then corrected). W32's registry row cited `ui_projection.py ::
    _impact_hold / _impact_blind / _impact_peers`, which no longer exist, and `tests/test_ssot_registry.py`
    requires every cited symbol to resolve. The row now cites the owner (`row_hold / off_scan_bound /
@@ -48,6 +50,43 @@ snapshots. The hosted gates decide.
 
 - W36 changed `_derive_collected_at`, W33 changed `main()` phase order, and W32 changed `compute_failure_impact`.
 - The merged golden equals W33's golden plus W32's three `blind_links: 0`, leaf for leaf.
+
+## Main after #620 (W27): the AssessHub failure-impact surfaces
+
+Main moved to `7d547890` (#620, W27) after the first push. At the coordinator's request it is merged into the train
+with a merge commit, and the regeneration is dispatched again on the final head. The first hosted run,
+`37879944000` on `0883db45`, succeeded but was **not imported**.
+
+- **`docs/NOW.md`:**
+  - every active row is kept: W33, W32, W36, W45 and main's W27;
+  - main's retirement of W26 (#618 merged) stands, and so does W31's (#622);
+  - #620 has merged as `7d547890`, so W27's row is ready for rule-8 retirement by the supervisor.
+- **Agreement with the owner.** W27's surfaces never read the stored rows. `summary.impact_view` reads
+  `engine.failure_impact_projection` (the projection's shared row builder, which reads W33's owner), and the keystones,
+  `cutover._worst_blast_radius`, the Failure impact tab and the /graph badge all read `impact_view`. Its one
+  lower-bound rule is structural: a published measure that cites a witness is "at least" its value. W32's bound
+  puts exactly such a witness on the published measures. So W27 already flags a blind-link bound and withholds what
+  it withholds, with no second rule. What changed:
+  - **Wording, `summary._impact_bounds`.** A blind-link witness was worded generically ("the engine cites … as a
+    bound on this row"). It is now worded by the owner's two witnesses, as the off-scan witness already was: the
+    row's `blind_links` count (`_R_BOUND_BLIND`), or the row itself (`_R_BOUND_BLIND_LEGACY`). Only `blind_bound`
+    cites the row itself on a published measure: holds are not cited, and a doubted row publishes no measure.
+  - **`summary.KEYSTONE_CONTRACT_VERSION` 4 → 5.** A dashboard summary cached before the blind-link bound existed
+    is recomputed on read (`app._summary_freshened`), so a stale keystone list cannot outlive the change.
+  - **`webapp/tests/test_impact_surfaces.py`**, two changes, neither weaker:
+    - **Removed projection names.** The file read names W33 removed from the projection (`ui._R_IMPACT_PEERS`,
+      `ui._R_IMPACT_PEERS_CLOSED`, `ui._impact_bound`, `ui._IMPACT_EDGE_KINDS`). It now reads the owner's
+      (`ia.R_PEERS`, `ia.R_PEERS_CLOSED`, `ia.make_bound`, `ia.IMPACT_EDGE_KINDS`), and it pins that `blind_bound`
+      cites exactly the two witnesses summary words.
+    - **Sample bounds are derived.** Its sample tests hard-coded "core2 is the sample's only bound", which W32's
+      per-row count ends: the regenerated sample also bounds core1 and dist1. Every expectation is now derived from
+      each stored row's own evidence (`_sample_bounds`: core2's router, a positive or absent `blind_links`). Each
+      test still pins core2 explicitly, and a bounded band below High or a bounded zero is required to be unranked
+      and disclosed.
+- **Not changed.** The AssessHub dossier recompute (`webapp/backend/app.py`) still does not pass
+  `failure_impact_assessability`. W27 kept it on the stored rows on purpose and pinned that, and W33's ratchet in
+  `tests/test_dossier_input_state.py` records the missing argument. Passing the owner's document there is the
+  one-line follow-up W33 named.
 
 ## The one structural rule (W32 inside the W33 owner)
 
@@ -146,7 +185,8 @@ one of these classes:
      - the order, the 14-device 30-39 tail, the verdict (advisory) and the 19-host evidence are unchanged.
    - **Unchanged:** every score, band, compound code and ordering.
 
-Any leaf outside these classes is a STOP: it is not imported.
+Any leaf outside these classes is a STOP: it is not imported. The main merge (#620, W27) touches only `webapp/` and
+the board. Neither regeneration command reads either, so the declaration is unchanged by it.
 
 ## Regeneration evidence
 

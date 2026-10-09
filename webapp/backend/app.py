@@ -3167,6 +3167,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             and isinstance(verification, dict)
             and verification.get("status") in {"verified", "partial", "unverified"}
             and verification.get("contract_version") == summary.VERIFICATION_CONTRACT_VERSION
+            # a summary ranked from the raw failure_impact rows (no keystone contract) is recomputed too
+            and summ.get("keystone_contract") == summary.KEYSTONE_CONTRACT_VERSION
         ):
             return meta
         snap = store.get_snapshot(snapshot_id)
@@ -3275,6 +3277,11 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if name not in snap:
             raise HTTPException(404, f"Section '{name}' not present in this snapshot")
         data = snap[name]
+        if name == "failure_impact":
+            # The tab renders the engine-owned projection rows: a cell it withholds (a switch it could not
+            # simulate, a row older than its marker, a partial simulation, an uncollected neighbour, a
+            # duplicated host) shows its reason, never the stored Info / 0 / clean-bill text as a measurement.
+            data = summary.failure_impact_table(snap)
         if name == "device_dossiers":
             # one-source-of-truth, like the sibling heavy sections (archreview/design/...): a pre-V3.23.174
             # snapshot bands the uncollected fleet 'Low / routine migration handling' instead of 'Unassessed'
@@ -3290,6 +3297,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             _summ = data.get("summary") if isinstance(data, dict) else None
             _bands = _summ.get("bands") if isinstance(_summ, dict) else None
             if _has_blind and isinstance(_bands, dict) and not _bands.get("Unassessed"):
+                # failure_impact stays the STORED producer list on purpose: it is the list the pipeline hands this
+                # engine function (main stores the same failure_impact its _device_dossiers adapter reads), and the
+                # engine owns its inputs. Whether the dossier's impact term should honour the projection's holds is
+                # an engine question, not one this route answers by feeding it different rows.
                 from cisco_toolkit.analyze import compute_device_dossiers
                 from cisco_toolkit.ssot import failed_sections
                 data = compute_device_dossiers(
@@ -3333,7 +3344,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
-        keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
+        # From the snapshot, not the cached summary: a summary cached before the keystone contract ranked raw
+        # failure_impact rows, and this badge must not mark a device whose blast radius the engine withholds.
+        keystones = [k.get("host") for k in summary._keystones(snap) if k.get("host")]
         return graph.build_graph(snap, keystones)
 
     @app.get("/api/snapshots/{snapshot_id}/cable_map")
