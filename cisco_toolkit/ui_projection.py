@@ -23,7 +23,8 @@ parsed names no file (``not_collected``), and the projection never hashes a re-s
 Slice 2 adds the row screens:
 
 * ``inventory`` -- device rows (the ``devices`` map joined with the ``collection_completeness`` blind spots,
-  so an unreached device is never dropped), VLAN cutover rows, endpoint rows with their shared-IP and
+  so an unreached device is never dropped), VLAN cutover rows with their stored L3 gateway rows (G16: switch, SVI
+  address, FHRP role, object tracking and the sole-gateway risk), endpoint rows with their shared-IP and
   dual-homed lists, and the cable-map peers nobody collected; every list in a stable order with a total
   from its owner, ready to be paged;
 * ``findings`` -- the engine's punch-list rows, with the severity vocabulary, the remediation the engine
@@ -560,6 +561,35 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "withhold READY rather than replacing it with another verdict.",
         ["/inventory/vlans/rows"]),
     _limitation(
+        "vlan_gateway_rows", "excel.write_l3_forwarding_sheet; cisco_toolkit.ui_projection",
+        "A VLAN row's selections.gateways lists the stored l3_forwarding rows that name its VLAN id: one per scanned "
+        "device SVI named VlanN with an address, an FHRP group or a connected route. The producer counts no other "
+        "interface (a routed port, subinterface, BDI, BVI or irb unit) as a VLAN's gateway. host, svi_ip and role are "
+        "that row's switch, SVI address and FHRP role as captured, a point-in-time state; an empty address or role is "
+        "withheld, never read as 'no FHRP'. tracking is the device's 'show track' summary, not bound to this SVI or its "
+        "FHRP group (the HSRP detail's per-group track list, fhrp_detail[].track, is not projected here); it states the "
+        "full object count, then the state of at most 6 objects. The producer's not-observed marker is withheld as not "
+        "collected, never 'no tracking', and a text that disagrees with the row's tracked-object-down flag is "
+        "unverified. An empty tracking text means a captured 'show track' with no tracked object only where the "
+        "snapshot proves its producer separates the two (a not-observed tracking or risk marker, or an interface "
+        "marked run_config_observed); otherwise it is withheld. risk is the sole-gateway risk alone: the producer's "
+        "single-gateway flag, never its no-FHRP or tracked-object-down flags. The producer counts gateways by VLAN id "
+        "across the scan, so false is published only where another switch's gateway row provably shares this "
+        "gateway's segment (the same primary subnet and SVI network, in the same VRF where both can be read); it says "
+        "the scan saw another gateway for the segment, not that the gateway is healthy. These verdicts are this "
+        "projection's: true is published only where the scan covers every gateway the producer's VlanN rule could "
+        "count and no stored record contradicts it. That needs no collection blind spot, no cable-map neighbour the "
+        "collection never reached that could route, every collected device's interface running-config captured, no "
+        "other collected interface holding an address in the gateway's subnet, and no stored FHRP evidence of another "
+        "router in its group (its own role, or the HSRP detail's standby router or state). The fleet-wide parts are "
+        "fleet-wide because VLAN carriage per cable is not stored. A gateway that neither the collection nor CDP/LLDP "
+        "discovered, and that no stored FHRP record names, is outside every scan. A flag that contradicts the stored "
+        "rows' gateway count is unverified. The row's fhrp text naming a sole gateway is published only where that "
+        "gateway's sole-gateway risk is published true. A published gateway list under a coverage gap may be "
+        "incomplete and cites the gap, at most 8 witnesses per gap with the full count in its reason; an empty one is "
+        "then not a clean result.",
+        ["/inventory/vlans/rows"]),
+    _limitation(
         "punch_rows_carry_no_evidence_pointers", "analyze.compute_migration_punchlist",
         "A legacy punch-list row has neither evidence_refs nor evidence_basis. That snapshot publishes no "
         "per-finding evidence pointers; a show command alone does not locate a supporting record.",
@@ -571,7 +601,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "case or surrounding space, ssot.abstention_reason). Two rows naming the same key are unverified, never "
         "picked between. The inventory is the union of the devices map and the collection_completeness blind spots. "
         "A selection is null when its source list could not be read (selection_sources says why), and [] when it "
-        "was read and names nothing.",
+        "was read and names nothing. A VLAN row's selections.gateways is a fact list instead: it carries its own "
+        "state and reason, and a row of its source the join cannot read makes it unverified.",
         ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans"]),
     _limitation(
         "fleet_lists_exclude_blind_devices", "analyze.compute_collection_completeness",
@@ -3649,6 +3680,765 @@ def _vlan_wave_pre(ctx: _Ctx) -> _Pre:
     return pre
 
 
+# ---------------------------------------------------------------------------------------------------
+# inventory: VLAN gateway rows (G16) -- the stored l3_forwarding rows naming a VLAN, selected, never recomputed
+# ---------------------------------------------------------------------------------------------------
+#: excel.write_l3_forwarding_sheet's L3 Risk flags, in the order it appends them (tracked-object-down first, then
+#: single-gateway or no-FHRP, never both); the key set of analyze.ScoringConfig.l3_weights. Pinned by tests.
+L3_RISK_FLAGS: Tuple[str, ...] = ("tracked-object-down", "single-gateway", "no-FHRP")
+#: The flag the producer raises first, exactly when its device's captured 'show track' lists a Down object.
+L3_TRACKED_DOWN_FLAG = "tracked-object-down"
+#: The flag the producer raises when its VLAN has at most one gateway in the scan (gw_count <= 1).
+L3_SOLE_GATEWAY_FLAG = "single-gateway"
+#: The flag the producer raises for two or more gateways with no FHRP; it is never raised beside single-gateway.
+L3_NO_FHRP_FLAG = "no-FHRP"
+#: The producer's joiner for several flags, its word for "no flag fired and object tracking was observed", and its
+#: whole-text marker for "no flag fired, but object tracking was NOT assessed" (no 'show track' capture; the
+#: not-observed split of 2026-07-28). The marker is the risk text only when no flag fired.
+L3_RISK_JOINER = "; "
+L3_RISK_CLEAR = "ok"
+L3_RISK_TRACKING_NOT_ASSESSED = NOT_OBSERVED_SENTINEL + " - no 'show track' evidence; object tracking NOT assessed"
+#: analyze.compute_vlan_cutover_matrix's fhrp text for a VLAN whose gateway evidence shows exactly one gateway in the
+#: scan and no FHRP (f"sole gateway on {host} (no FHRP)"): its opening and its closing. Pinned to the producer by tests.
+VLAN_SOLE_GATEWAY_FHRP: Tuple[str, str] = ("sole gateway on ", " (no FHRP)")
+#: excel._track_summary's text for a captured 'show track' that lists objects: '<N> obj', then ' (<D> DOWN)' when any
+#: object is Down, then ' - ' and at most 6 object states. Group 2 is the Down count. Pinned to the producer by tests.
+_TRACK_SUMMARY = re.compile(r"([0-9]+) obj(?: \(([0-9]+) DOWN\))?(?: - .*)?", re.DOTALL)
+#: The FHRP state words (parse._parse_fhrp's role, parse.parse_hsrp_detail's state; compared without case) in which a
+#: router forwards for its group and names no other router by itself: HSRP/GLBP Active and VRRP Master. Every other
+#: word says another router takes part (Standby, Listen, Backup) or that the group's election is unsettled (Init,
+#: Speak), so it is never read as a sole gateway.
+_FHRP_SOLE_STATES = frozenset({"active", "master"})
+#: The most witnesses one gap cites; its reason then states how many of how many it cites (the payload stays bounded
+#: by the number of gap kinds, not by fleet size, while every count stays in-band).
+_GW_GAP_WITNESS_CAP = 8
+_B_GW = "excel.write_l3_forwarding_sheet:l3_forwarding[]."
+_GW_CAVEAT = "vlan_gateway_rows"
+_R_GW_NO_HOST = "not collected: the engine row names no switch"
+_R_GW_NO_SVI_IP = ("not collected: no SVI address was recorded for this gateway. excel.write_l3_forwarding_sheet "
+                   "writes '' when the row comes from an FHRP group or a connected route alone, and build.py takes "
+                   "svi_ip only from the scoped interface running-config capture")
+_R_GW_NO_ROLE = ("not collected: no FHRP role was recorded for this gateway. excel.write_l3_forwarding_sheet writes '' "
+                 "when the device's FHRP brief names no group for this SVI or was not captured, and it does not tell "
+                 "these apart, so this is not 'no FHRP'")
+_R_GW_TRACK_NOT_OBSERVED = ("not collected: 'show track' was not captured on this device (the producer's own "
+                            "not-observed marker), so object tracking was not assessed; this is never 'no tracking'")
+_R_GW_TRACK_NONE = ("collected but empty: 'show track' was captured on this device and lists no tracked object "
+                    "(not a blind spot)")
+_R_GW_TRACK_LEGACY = ("not collected: an empty tracking text is ambiguous in this snapshot. Before 2026-07-28 "
+                      "excel.write_l3_forwarding_sheet wrote '' both when 'show track' listed no tracked object and "
+                      "when it was never captured, and this snapshot carries nothing that proves its producer "
+                      "separates the two (no not-observed tracking or risk marker, and no interface marked "
+                      "run_config_observed), so this is not 'no tracking'")
+_R_GW_TRACK_CONTRADICTED = ("unverified: the row's risk text is the producer's 'object tracking NOT assessed' marker, "
+                            "which contradicts this tracking text, so neither reading can be chosen")
+_R_GW_TRACK_FLAG_CONTRADICTED = ("unverified: this tracking text and the row's tracked-object-down flag disagree. The "
+                                 "producer raises that flag exactly when the device's captured 'show track' summary "
+                                 "reports a Down object ('<N> obj (<D> DOWN)'), so neither reading can be chosen")
+_R_GW_RISK_UNREAD = ("unverified: the stored risk text is not the producer's flag list (tracked-object-down, then "
+                     "single-gateway or no-FHRP, joined by '; ' in that order; 'ok'; or its tracking-not-assessed "
+                     "marker), so whether this gateway is its VLAN's sole gateway cannot be read")
+_R_GW_RISK_HOSTS_UNREAD = ("unverified: {k} gateway row(s) of this VLAN name no readable switch, so the producer's "
+                           "gateway count cannot be checked against the stored rows")
+_R_GW_RISK_SOLE_CONTRADICTED = ("unverified: the producer flags this gateway single-gateway (its VLAN's only gateway "
+                                "in the scan), yet {n} scanned devices carry a gateway row for this VLAN, so the flag "
+                                "contradicts the stored rows")
+_R_GW_RISK_PEER_CONTRADICTED = ("unverified: the producer raises no single-gateway flag here, which says this VLAN has "
+                                "another gateway in the scan, yet only one scanned device carries a gateway row for "
+                                "it, so the flags contradict the stored rows")
+_R_GW_RISK_SEGMENT = ("unverified: the producer raises no single-gateway flag here because it counts a VLAN's "
+                      "gateways by VLAN id across the scan, but no gateway row of this VLAN on another switch provably "
+                      "shares this gateway's segment (the same readable primary subnet and SVI network, and the same "
+                      "VRF where both SVIs' VRFs can be read). VLAN-id reuse at another site or in another VRF is not "
+                      "a second gateway, so whether this is its segment's only gateway cannot be read")
+_R_GW_RISK_UNPROVEN = ("{word}: the producer flags this gateway single-gateway, but the scan does not cover every "
+                       "possible gateway of this VLAN: {clauses}. One gateway in the scan is not proven to be the "
+                       "VLAN's only gateway")
+_R_GW_FHRP_RISK_WITHHELD = ("{word}: the engine names a sole gateway for this VLAN, but that gateway row's "
+                            "sole-gateway risk is withheld (its own reason and witnesses say why), so one gateway in "
+                            "the scan is not proven to be the VLAN's only gateway")
+_R_GW_FHRP_RISK_FALSE = ("unverified: the engine names a sole gateway for this VLAN, but that gateway row's "
+                         "sole-gateway risk is published false, so the two contradict")
+_R_GW_FHRP_NO_ROW = ("unverified: the engine names a sole gateway for this VLAN, but no gateway row of the VLAN names "
+                     "that switch, so the two contradict")
+_R_GW_FHRP_SOURCE = "{word}: the engine names a sole gateway for this VLAN, but its gateway rows cannot be read ({why})"
+_R_GW_UNJOINABLE = ("{k} row(s) in l3_forwarding cannot be joined by VLAN (not an object, or a vlan that is not a VLAN "
+                    "id), and any of them could be another gateway of this VLAN")
+_R_GW_NO_VLAN = "unverified: this VLAN row names no readable VLAN id, so no gateway row can be joined to it"
+_R_GW_NONE = ("collected but empty: no scanned device records a gateway for this VLAN "
+              "(excel.write_l3_forwarding_sheet writes a row for every SVI named VlanN with an address, an FHRP group "
+              "or a connected route), no other collected interface could be its gateway, and the scan covers every "
+              "device the collection discovered (not a blind spot)")
+_R_GW_NONE_UNPROVEN = ("{word}: no scanned device records a gateway for this VLAN, but the scan does not cover every "
+                       "possible gateway of the VLAN: {clauses}; an absent gateway row is not a clean result")
+_R_GW_CC_UNREAD = "collection_completeness cannot be read ({why}), so no collection blind spot can be ruled out"
+_R_GW_CC_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected, and any of them could "
+                  "carry another gateway")
+_R_GW_CC_ROWS = ("{k} collection_completeness row(s) name no readable status, so whether they are blind spots "
+                 "cannot be read")
+_R_GW_CC_SUMMARY = ("collection_completeness.summary counts {k} partial or not-collected device(s), but its devices "
+                    "list carries only {n} such row(s), and the producer writes one row per such device, so a blind "
+                    "spot may be missing from the list")
+_R_GW_CC_SUMMARY_UNREAD = ("collection_completeness.summary's partial or not_collected count cannot be read, so the "
+                           "blind-spot list cannot be checked against it")
+_R_GW_MAP_UNREAD = ("the stored cable map's {what} cannot be read ({why}), so no neighbour the collection never "
+                    "reached can be ruled out")
+_R_GW_PEERS = ("the stored cable map shows {n} neighbour(s) the collection never reached that could route (a "
+               "cable_map.nodes row not marked collected: true whose kind is not ap, phone or endpoint)")
+_R_GW_PEERS_LOOSE = ("{k} stored cable row(s) fail closed as such neighbours, because they cannot be read or an end "
+                     "does not join exactly one cable_map.nodes row")
+_R_GW_ROSTER_UNREAD = ("the {what} cannot be read ({why}), so whether every collected device's gateway SVIs were "
+                       "captured cannot be checked")
+_R_GW_NO_RUN_CONFIG = ("{n} collected device(s) carry no interface marked run_config_observed: true. build.py takes "
+                       "SVI addresses (svi_ip) only from the scoped interface running-config capture, so an SVI of "
+                       "theirs with no FHRP group and no connected route would be missing from the gateway rows")
+_R_GW_ROSTER_KEYS = "{k} device key(s) in the devices or interfaces map are not text, so they name no device"
+_R_GW_ADDR_UNCOUNTED_SVI = ("{n} collected SVI(s) named for this VLAN hold an address but carry no gateway row "
+                            "(excel.write_l3_forwarding_sheet reads only svi_ip, an FHRP group or a connected route), "
+                            "so the stored rows undercount this VLAN's gateways")
+_R_GW_ADDR_IN_SEGMENT = ("{n} other collected interface(s) hold an address in this VLAN's gateway subnet, in no VRF "
+                         "known to differ. excel.write_l3_forwarding_sheet counts only SVIs named VlanN for this VLAN, "
+                         "so a routed port, subinterface, BDI, BVI or irb unit, or another VLAN's SVI there is never "
+                         "counted, and any of them could be another gateway of this segment")
+_R_GW_ADDR_UNSCOPED = ("{n} collected interface(s) not named VlanN hold an address on a subnet that leaves a host "
+                       "address no collected interface holds. excel.write_l3_forwarding_sheet never counts them, the "
+                       "snapshot does not store which VLAN they serve, and this VLAN's subnet cannot be read from its "
+                       "gateway rows, so any of them could be its gateway")
+_R_GW_ADDR_UNREAD = ("{k} collected interface record(s) or address(es) cannot be read, so whether they could gateway "
+                     "this VLAN cannot be checked")
+_R_GW_FHRP_ROLE = ("the gateway's own FHRP role is neither Active nor Master, so another router takes part in its "
+                   "group or the group's election is unsettled")
+_R_GW_FHRP_ROLE_UNREAD = ("the gateway's FHRP role cannot be read, so whether another router takes part in its group "
+                          "cannot be checked")
+_R_GW_FHRP_STANDBY = ("the device's HSRP detail for this SVI names a standby router that no gateway row of this VLAN "
+                      "holds, a router outside the gateway rows")
+_R_GW_FHRP_STATE = ("the device's HSRP detail for this SVI records a state other than Active or Master, so another "
+                    "router takes part in the group or its election is unsettled")
+_R_GW_FHRP_ENTRY_UNREAD = ("{k} stored HSRP detail record(s) of this device cannot be read, and any of them could name "
+                           "a standby router for this SVI")
+_R_GW_FHRP_NO_DETAIL = ("the gateway runs FHRP as Active or Master, but {why}, so a standby router outside the scan "
+                        "cannot be ruled out")
+_R_GW_FHRP_DETAIL_UNREAD = ("the stored HSRP detail (fhrp_detail) cannot be read ({why}), so a standby router it names "
+                            "cannot be ruled out")
+#: A gap in the scan's coverage of a VLAN's possible gateways: ``(state, reason clause, witness ref entries)``.
+_GatewayGap = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
+def _l3_risk_flags(raw: Any) -> Optional[Tuple[str, ...]]:
+    """The producer's flags in one stored risk text (excel.write_l3_forwarding_sheet), or ``None`` when it is not its
+    flag list: its clean word and its tracking-not-assessed marker both mean no flag fired; anything else must be
+    distinct flags of :data:`L3_RISK_FLAGS` joined by :data:`L3_RISK_JOINER` in the producer's order (so
+    tracked-object-down first), never single-gateway beside no-FHRP."""
+    if not _is_text(raw):
+        return None
+    if raw in (L3_RISK_CLEAR, L3_RISK_TRACKING_NOT_ASSESSED):
+        return ()
+    flags = tuple(raw.split(L3_RISK_JOINER))
+    if flags != tuple(flag for flag in L3_RISK_FLAGS if flag in flags) or (
+            L3_SOLE_GATEWAY_FLAG in flags and L3_NO_FHRP_FLAG in flags):
+        return None
+    return flags
+
+
+def _gw_gap(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]]) -> _GatewayGap:
+    """One gap citing at most :data:`_GW_GAP_WITNESS_CAP` witnesses; the clause then says how many of how many."""
+    if len(wit) > _GW_GAP_WITNESS_CAP:
+        return state, f"{clause} ({_GW_GAP_WITNESS_CAP} of {len(wit)} cited)", wit[:_GW_GAP_WITNESS_CAP]
+    return state, clause, wit
+
+
+def _gap_unread(ctx: _Ctx, state: str, toks: Tuple[str, ...], section: str, clause: str) -> _GatewayGap:
+    """A coverage input that cannot be read: its own failed or malformed state, else not collected, citing it."""
+    st = state if state in (AU, _UV) else _NC
+    where = toks if _get(ctx.s, toks) is not _MISSING else (section,)
+    return st, clause, [("witness", where)] + ctx.failure_entries((section,), st == AU)
+
+
+def _gateway_coverage(ctx: _Ctx) -> List[_GatewayGap]:
+    """Why the scan may not cover every possible gateway of a VLAN (empty: it covers every device the collection
+    discovered). Fleet-wide and fail-closed, because VLAN carriage per cable is not stored (G14), so no gap can be
+    scoped to the VLANs it could reach: a collection blind spot (collection_completeness, its device list checked
+    against its own summary), a cable-map neighbour the collection never reached that could route (the
+    failure-impact owner's :data:`impact_assessability.IMPACT_EDGE_KINDS` names the only kinds that cannot), and a
+    collected device whose scoped interface running-config, the only source of its SVI addresses, was not captured (no
+    interface marked run_config_observed: true, read through :func:`_run_config_captured`, the owner's scan; absent is
+    never read as captured). Each input that cannot be read is a gap with its own state. The gateways
+    the producer's VlanN rule cannot count are per VLAN (:meth:`_GatewayScan.attribution`)."""
+    gaps: List[_GatewayGap] = []
+    toks = ("collection_completeness", "devices")
+    state, reason, rows = _list_state(ctx, toks, ("collection_completeness",))
+    if state not in (_PUB, _CBE):
+        gaps.append(_gap_unread(ctx, state, toks, "collection_completeness",
+                                _R_GW_CC_UNREAD.format(why=reason or _R_NC)))
+    else:
+        blind = ctx.blind_rows()
+        if blind:
+            gaps.append(_gw_gap(_NC, _R_GW_CC_BLIND.format(n=len(blind)), [("witness", toks + (i,)) for i in blind]))
+        bad = [i for i, row in enumerate(rows if isinstance(rows, list) else ())
+               if not (isinstance(row, dict) and _is_text(row.get("status")))]
+        if bad:
+            gaps.append(_gw_gap(_UV, _R_GW_CC_ROWS.format(k=len(bad)), [("witness", toks + (i,)) for i in bad]))
+        stoks = ("collection_completeness", "summary")
+        summary = _get(ctx.s, stoks)
+        # analyze.compute_collection_completeness counts each blind-spot status under that status's own summary key
+        # (its space written '_'), and lists one devices row per such device
+        keys = tuple(status.replace(" ", "_") for status in CC_STATUSES)
+        if isinstance(summary, dict) and any(key in summary for key in keys):
+            counts = [_count(summary.get(key, 0)) for key in keys]
+            if not all(ok for ok, _n in counts):
+                gaps.append((_UV, _R_GW_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+            elif sum(n for _ok, n in counts) > len(blind):
+                gaps.append((_UV, _R_GW_CC_SUMMARY.format(k=sum(n for _ok, n in counts), n=len(blind)),
+                             [("witness", stoks)]))
+        elif summary is not _MISSING and summary is not None and not isinstance(summary, dict):
+            gaps.append((_UV, _R_GW_CC_SUMMARY_UNREAD, [("witness", stoks)]))
+    ntoks, ctoks = ("cable_map", "nodes"), ("cable_map", "cables")
+    nstate, nreason, nodes = _topology_source(ctx, ntoks)
+    cstate, creason, cables = _topology_source(ctx, ctoks)
+    for got, why, where in ((nstate, nreason, ntoks), (cstate, creason, ctoks)):
+        if got not in (_PUB, _CBE):
+            gaps.append(_gap_unread(ctx, got, where, "cable_map",
+                                    _R_GW_MAP_UNREAD.format(what=where[1], why=why or _R_NC)))
+    if nstate in (_PUB, _CBE) and isinstance(nodes, list):
+        peers = []
+        for i, node in enumerate(nodes):
+            if isinstance(node, dict) and _is_text(node.get("host")):
+                kind = node.get("kind")
+                if node.get("collected") is True or (node.get("collected") is False and _is_text(kind)
+                                                     and kind in impact_assessability.IMPACT_EDGE_KINDS):
+                    continue
+            peers.append(i)
+        loose = []
+        if cstate in (_PUB, _CBE) and isinstance(cables, list):
+            joined = ctx.index(ntoks, ("host",))
+            for j, cable in enumerate(cables):
+                if not (isinstance(cable, dict) and _is_text(cable.get("a")) and _is_text(cable.get("b"))):
+                    loose.append(j)
+                elif len(joined.get(cable["a"], ())) != 1 or len(joined.get(cable["b"], ())) != 1:
+                    loose.append(j)
+        if peers:
+            gaps.append(_gw_gap(_NC, _R_GW_PEERS.format(n=len(peers)), [("witness", ntoks + (i,)) for i in peers]))
+        if loose:
+            gaps.append(_gw_gap(_NC, _R_GW_PEERS_LOOSE.format(k=len(loose)),
+                                [("witness", ctoks + (j,)) for j in loose]))
+    dstate, dreason, devices = _list_state(ctx, ("devices",), ("devices",), want=dict)
+    istate, ireason, ifaces = _list_state(ctx, ("interfaces",), ("interfaces",), want=dict)
+    for got, why, section in ((dstate, dreason, "devices"), (istate, ireason, "interfaces")):
+        if got not in (_PUB, _CBE):
+            gaps.append(_gap_unread(ctx, got, (section,), section,
+                                    _R_GW_ROSTER_UNREAD.format(what=section + " map", why=why or _R_NC)))
+    if dstate in (_PUB, _CBE) and istate in (_PUB, _CBE) and isinstance(devices, dict) and isinstance(ifaces, dict):
+        keys_seen = list(devices) + [k for k in ifaces if k not in devices]
+        odd = [k for k in keys_seen if not (_is_text(k) and k)]
+        uncaptured = []
+        for host in sorted(k for k in keys_seen if _is_text(k) and k):
+            if not _run_config_captured(ctx, host):           # the failure-impact owner's scan (one rule)
+                uncaptured.append(("witness", ("interfaces", host) if host in ifaces else ("devices", host)))
+        if uncaptured:
+            gaps.append(_gw_gap(_NC, _R_GW_NO_RUN_CONFIG.format(n=len(uncaptured)), uncaptured))
+        if odd:
+            gaps.append((_UV, _R_GW_ROSTER_KEYS.format(k=len(odd)), [("witness", ("devices",)),
+                                                                      ("witness", ("interfaces",))]))
+    return gaps
+
+
+def _tracking_split(ctx: _Ctx) -> bool:
+    """Whether this snapshot proves its producer writes an empty tracking text only for a captured 'show track' that
+    lists no tracked object: excel.write_l3_forwarding_sheet separates that from "never captured" since 2026-07-28
+    (its not-observed tracking text and risk marker), and build.py marks run_config_observed since 2026-08-10, so
+    either one in the snapshot proves the later producer. Before the split, '' meant both."""
+    rows = ctx.s.get("l3_forwarding")
+    for row in rows if isinstance(rows, list) else ():
+        if isinstance(row, dict) and (row.get("tracking") == NOT_OBSERVED_SENTINEL
+                                      or row.get("risk") == L3_RISK_TRACKING_NOT_ASSESSED):
+            return True
+    ifaces = ctx.s.get("interfaces")
+    for ports in ifaces.values() if isinstance(ifaces, dict) else ():
+        for port in ports.values() if isinstance(ports, dict) else ():
+            if isinstance(port, dict) and port.get("run_config_observed") is True:
+                return True
+    return False
+
+
+def _svi_address(raw: Any) -> Any:
+    """One stored interface address ('addr mask', 'addr/len' or a bare address) as an ``ipaddress`` interface, by
+    analyze.svi_subnet_leaves_no_host_address's spelling rule; ``None`` when it does not parse."""
+    if not _is_text(raw):
+        return None
+    text = raw.strip()
+    parts = text.split()
+    spelled = f"{parts[0]}/{parts[1]}" if len(parts) == 2 else text
+    try:
+        return ipaddress.ip_interface(spelled)
+    except ValueError:
+        return None
+
+
+def _row_segment(rec: Any) -> FrozenSet[Any]:
+    """The segment networks one stored l3_forwarding row names: the network of its SVI address and its primary subnet
+    (the SVI's connected route), each only when it parses as a network wider than one address."""
+    if not isinstance(rec, dict):
+        return frozenset()
+    nets = []
+    iface = _svi_address(rec.get("svi_ip"))
+    if iface is not None:
+        nets.append(iface.network)
+    sub = rec.get("primary_subnet")
+    if _is_text(sub) and sub.strip():
+        try:
+            nets.append(ipaddress.ip_network(sub.strip(), strict=False))
+        except ValueError:
+            pass
+    return frozenset(net for net in nets if net.prefixlen < net.max_prefixlen)
+
+
+def _port_vrf(rec: Any) -> Optional[str]:
+    """The VRF one interface record names ('' for the global table), or ``None`` when it cannot be read. build.py takes
+    vrf from the scoped interface running-config ('vrf forwarding', 'ip vrf forwarding', 'vrf member') or 'show vrf
+    interface', so a blank vrf is the global table only where that interface's running-config was captured."""
+    if not isinstance(rec, dict):
+        return None
+    vrf = rec.get("vrf")
+    if _is_text(vrf) and vrf.strip():
+        return vrf.strip()
+    if (vrf is None or _is_text(vrf)) and rec.get("run_config_observed") is True:
+        return ""
+    return None
+
+
+def _interface_addresses(rec: Mapping[str, Any], base: Tuple[Any, ...]) -> Tuple[List[Any], List[Tuple[Any, ...]]]:
+    """Every address one interface record holds (svi_ip, and the configured set svi_ips, ';'-joined text or a list),
+    parsed, and the tokens of every address value that cannot be read."""
+    found: List[Any] = []
+    bad: List[Tuple[Any, ...]] = []
+    values: List[Tuple[Any, Tuple[Any, ...]]] = [(rec["svi_ip"], base + ("svi_ip",))] if "svi_ip" in rec else []
+    many = rec.get("svi_ips")
+    if _is_text(many):
+        values += [(value, base + ("svi_ips",)) for value in many.split(";")]
+    elif isinstance(many, list):
+        values += [(value, base + ("svi_ips", k)) for k, value in enumerate(many)]
+    elif many is not None:
+        bad.append(base + ("svi_ips",))
+    for raw, toks in values:
+        if raw is None or (_is_text(raw) and not raw.strip()):
+            continue
+        iface = _svi_address(raw)
+        if iface is None:
+            bad.append(toks)
+        elif iface not in found:
+            found.append(iface)
+    return found, bad
+
+
+class _GatewayScan:
+    """What every VLAN's gateway rows read, once per projection (G16): the fleet-wide coverage gaps, the tracking-split
+    proof, the l3_forwarding join, and every collected interface address. excel.write_l3_forwarding_sheet counts only
+    interfaces named VlanN, so the addresses are what can show a gateway it never counted."""
+
+    def __init__(self, ctx: _Ctx) -> None:
+        self.ctx = ctx
+        rows = ctx.s.get("l3_forwarding")
+        self.by_vid = _vid_index(ctx, ("l3_forwarding",))
+        self.loose = [j for j, rec in enumerate(rows if isinstance(rows, list) else ())
+                      if not (isinstance(rec, dict) and _vid(rec.get("vlan")) is not None)]
+        self.cover = _gateway_coverage(ctx)
+        self.split = _tracking_split(ctx)
+        #: (host, port, address, the port's VLAN id or None) of every readable collected interface address
+        self.held: List[Tuple[str, str, Any, Optional[int]]] = []
+        #: (host, port, witness tokens, the port's VLAN id or None) of every record or address that cannot be read
+        self.bad: List[Tuple[str, str, Tuple[Any, ...], Optional[int]]] = []
+        #: (host, VLAN id) -> its ports named for that VLAN (compute_vlan_cutover_matrix's SVI rule)
+        self.svis: Dict[Tuple[str, int], List[str]] = {}
+        #: VLAN id -> (host, port) of every SVI named for it that holds an address
+        self.addressed: Dict[int, List[Tuple[str, str]]] = {}
+        self._by_len: Dict[Tuple[int, int], Dict[int, List[int]]] = {}
+        self._free: Dict[Any, bool] = {}
+        self._unscoped: Optional[List[Tuple[str, str]]] = None
+        ifaces = ctx.s.get("interfaces")
+        for host in [k for k in ifaces if _is_text(k) and k] if isinstance(ifaces, dict) else ():
+            ports = ifaces[host]
+            for port in [p for p in ports if _is_text(p)] if isinstance(ports, dict) else ():
+                match = _SVI.match(port)
+                vid = _vid(match.group(1)) if match else None
+                if vid is not None:
+                    self.svis.setdefault((host, vid), []).append(port)
+                base = ("interfaces", host, port)
+                rec = ports[port]
+                if not isinstance(rec, dict):
+                    self.bad.append((host, port, base, vid))
+                    continue
+                found, bad = _interface_addresses(rec, base)
+                self.bad += [(host, port, toks, vid) for toks in bad]
+                self.held += [(host, port, iface, vid) for iface in found]
+                if found and vid is not None:
+                    self.addressed.setdefault(vid, []).append((host, port))
+
+    def within(self, net: Any) -> List[int]:
+        """Indices into :attr:`held` of every address inside `net` (one index per prefix length, built on first use)."""
+        key = (net.version, net.prefixlen)
+        shift = net.max_prefixlen - net.prefixlen
+        if key not in self._by_len:
+            index: Dict[int, List[int]] = {}
+            for i, (_host, _port, iface, _vid_of) in enumerate(self.held):
+                if iface.version == net.version:
+                    index.setdefault(int(iface.ip) >> shift, []).append(i)
+            self._by_len[key] = index
+        return list(self._by_len[key].get(int(net.network_address) >> shift, ()))
+
+    def leaves_host(self, net: Any) -> bool:
+        """Whether `net` leaves a usable host address that no collected interface holds, over
+        analyze.svi_subnet_leaves_no_host_address's usable set (both addresses of a two-address network, every host of
+        one up to 256 addresses); a larger network always does."""
+        if net not in self._free:
+            if net.num_addresses > 256:
+                self._free[net] = True
+            else:
+                usable = ({net.network_address, net.broadcast_address} if net.num_addresses == 2
+                          else set(net.hosts()))
+                self._free[net] = bool(usable - {self.held[i][2].ip for i in self.within(net)})
+        return self._free[net]
+
+    def unscoped(self) -> List[Tuple[str, str]]:
+        """Every collected interface not named VlanN that holds an address on a subnet leaving a host address free: a
+        gateway the producer never counts, for a VLAN the snapshot does not store."""
+        if self._unscoped is None:
+            seen: Dict[Tuple[str, str], None] = {}
+            for host, port, iface, vid in self.held:
+                if vid is None and (host, port) not in seen and self.leaves_host(iface.network):
+                    seen[(host, port)] = None
+            self._unscoped = list(seen)
+        return list(self._unscoped)
+
+    def vrf(self, host: Any, vid: int) -> Optional[str]:
+        """The VRF of `host`'s one SVI for VLAN `vid` (:func:`_port_vrf`), or ``None`` when no single such port exists
+        or its VRF cannot be read."""
+        ports = self.svis.get((host, vid), []) if _is_text(host) else []
+        if len(ports) != 1:
+            return None
+        return _port_vrf(self.ctx.s["interfaces"][host][ports[0]])
+
+    def attribution(self, vid: int, hosts: FrozenSet[str], segments: Sequence[FrozenSet[Any]],
+                    vrfs: Sequence[Optional[str]]) -> List[_GatewayGap]:
+        """The gateways of VLAN `vid` the producer's VlanN rule could not count, from the collected interface
+        addresses: an addressed SVI named for the VLAN on a switch with no gateway row; any other interface holding an
+        address in a segment the VLAN's rows name (outside a VRF known to differ); where a row names no readable
+        segment (or the VLAN has no row), any interface not named VlanN on a subnet leaving a host address free; and
+        every record or address that cannot be read, except on the VLAN's own counted SVIs."""
+        gaps: List[_GatewayGap] = []
+        uncounted = [hp for hp in self.addressed.get(vid, ()) if hp[0] not in hosts]
+        if uncounted:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_UNCOUNTED_SVI.format(n=len(uncounted)),
+                                [("witness", ("interfaces",) + hp) for hp in uncounted]))
+        known = set(vrfs) if vrfs and all(v is not None for v in vrfs) else None
+        ifaces = self.ctx.s.get("interfaces")
+        hits: Dict[Tuple[str, str], None] = {}
+        for net in sorted({net for seg in segments for net in seg}, key=str):
+            for i in self.within(net):
+                host, port, _iface, pvid = self.held[i]
+                if pvid == vid or (host, port) in hits:
+                    continue
+                pvrf = _port_vrf(ifaces[host][port])
+                if known is not None and pvrf is not None and pvrf not in known:
+                    continue
+                hits[(host, port)] = None
+        if hits:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_IN_SEGMENT.format(n=len(hits)),
+                                [("witness", ("interfaces",) + hp) for hp in hits]))
+        if not segments or not all(segments):
+            rest = [hp for hp in self.unscoped() if hp not in hits]
+            if rest:
+                gaps.append(_gw_gap(_NC, _R_GW_ADDR_UNSCOPED.format(n=len(rest)),
+                                    [("witness", ("interfaces",) + hp) for hp in rest]))
+        bad = [toks for host, _port, toks, pvid in self.bad if not (pvid == vid and host in hosts)]
+        if bad:
+            gaps.append(_gw_gap(_UV, _R_GW_ADDR_UNREAD.format(k=len(bad)), [("witness", toks) for toks in bad]))
+        return gaps
+
+    def fhrp_gaps(self, j: int, rec: Mapping[str, Any], vid: int, owned: FrozenSet[Any]) -> List[_GatewayGap]:
+        """Stored FHRP evidence that another router takes part in this gateway's group, which a sole-gateway reading
+        would contradict: the row's own role (any word but Active or Master), and the device's HSRP detail
+        (parse.parse_hsrp_detail via build.build_fhrp_detail) for its SVI naming a standby router no gateway row of
+        the VLAN holds, or a state other than Active or Master. An Active or Master gateway whose detail is absent
+        cannot rule out a standby router outside the scan; a detail record or section that cannot be read could name
+        one."""
+        ctx = self.ctx
+        gaps: List[_GatewayGap] = []
+        host, role = rec.get("switch"), rec.get("role")
+        active = False
+        if role is not None and not _is_text(role):           # absent or '': no role recorded (the role cell says so)
+            gaps.append((_UV, _R_GW_FHRP_ROLE_UNREAD, [("witness", ("l3_forwarding", j, "role"))]))
+        elif _is_text(role) and role.strip():
+            if role.strip().lower() in _FHRP_SOLE_STATES:
+                active = True
+            else:
+                gaps.append((_UV, _R_GW_FHRP_ROLE, [("witness", ("l3_forwarding", j, "role"))]))
+        toks = ("fhrp_detail",)
+        state, reason, detail = _list_state(ctx, toks, toks, want=dict)
+        if state not in (_PUB, _CBE):
+            if active or state in (AU, _UV):
+                gaps.append(_gap_unread(ctx, state, toks, "fhrp_detail",
+                                        _R_GW_FHRP_DETAIL_UNREAD.format(why=reason or _R_NC)))
+            return gaps
+        records = detail.get(host, _MISSING) if _is_text(host) and isinstance(detail, dict) else _MISSING
+        if records is _MISSING:
+            if active:
+                gaps.append((_NC, _R_GW_FHRP_NO_DETAIL.format(why="no HSRP detail is stored for this device"),
+                             [("witness", toks)]))
+            return gaps
+        if not isinstance(records, list):
+            return gaps + [(_UV, _R_GW_FHRP_ENTRY_UNREAD.format(k=1), [("witness", toks + (host,))])]
+        mine = 0
+        unread: List[Tuple[str, Sequence[Any]]] = []
+        for i, entry in enumerate(records):
+            here = toks + (host, i)
+            name = entry.get("ifname") if isinstance(entry, dict) else None
+            match = _SVI.match(name) if _is_text(name) else None
+            if not _is_text(name):
+                unread.append(("witness", here))
+                continue
+            if not (match and _vid(match.group(1)) == vid):
+                continue
+            mine += 1
+            standby, group_state = entry.get("standby_ip"), entry.get("state")
+            if not ((standby is None or _is_text(standby)) and (group_state is None or _is_text(group_state))):
+                unread.append(("witness", here))
+                continue
+            if _is_text(standby) and standby.strip():
+                addr = _svi_address(standby)
+                if addr is None or addr.ip not in owned:
+                    gaps.append((_UV, _R_GW_FHRP_STANDBY, [("witness", here + ("standby_ip",))]))
+            if _is_text(group_state) and group_state.strip() and group_state.strip().lower() not in _FHRP_SOLE_STATES:
+                gaps.append((_UV, _R_GW_FHRP_STATE, [("witness", here + ("state",))]))
+        if unread:
+            gaps.append(_gw_gap(_UV, _R_GW_FHRP_ENTRY_UNREAD.format(k=len(unread)), unread))
+        if active and not mine:
+            gaps.append((_NC, _R_GW_FHRP_NO_DETAIL.format(why="no stored HSRP detail record of this device names "
+                                                              "its SVI"), [("witness", toks + (host,))]))
+        return gaps
+
+
+def _gateway_tracking_pre(split: bool) -> _Pre:
+    """The tracking cell: a text that disagrees with the row's own tracked-object-down flag (the producer raises it
+    exactly when its summary reports a Down object) is unverified; the producer's not-observed marker is never 'no
+    tracking'; a tracking text beside the row's own tracking-not-assessed risk marker contradicts it; and an empty
+    text is a captured 'show track' with no tracked object only where :func:`_tracking_split` proves the producer
+    separates the two."""
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        risk = row.raw.get("risk") if isinstance(row.raw, dict) else None
+        flags = _l3_risk_flags(risk)
+        wit = [("witness", row.toks + ("risk",))]
+        if _is_text(raw) and flags is not None:
+            shape = _TRACK_SUMMARY.fullmatch(raw)
+            down = bool(shape and shape.group(2) and int(shape.group(2)) > 0)
+            if down != (L3_TRACKED_DOWN_FLAG in flags):
+                return _UV, _R_GW_TRACK_FLAG_CONTRADICTED, wit
+        if raw == NOT_OBSERVED_SENTINEL:
+            return _NC, _R_GW_TRACK_NOT_OBSERVED
+        if _is_text(raw) and risk == L3_RISK_TRACKING_NOT_ASSESSED:
+            return _UV, _R_GW_TRACK_CONTRADICTED, wit
+        if raw == "":
+            return (_CBE, _R_GW_TRACK_NONE) if split else (_NC, _R_GW_TRACK_LEGACY)
+        return None
+    return pre
+
+
+def _gateway_segment_hold(scan: _GatewayScan, vid: int, j: int, sel: Sequence[int], recs: Mapping[int, Any],
+                          segs: Mapping[int, FrozenSet[Any]]) -> Optional[Tuple[Any, ...]]:
+    """``None`` when another switch's gateway row of the VLAN provably shares row `j`'s segment: the same readable
+    primary subnet and SVI network, and the same VRF where both SVIs' VRFs can be read. The producer counts gateways
+    by VLAN id across the scan, so without that proof a second row may be VLAN-id reuse, not a second gateway, and
+    the false it implies is unverified, citing every row of the VLAN and their SVIs (bounded by the gap cap)."""
+    host = recs[j]["switch"]
+    mine, my_vrf = segs[j], scan.vrf(host, vid)
+    for k in sel:
+        other = recs[k]["switch"]
+        if other != host and mine and segs[k] == mine:
+            theirs = scan.vrf(other, vid)
+            if my_vrf is None or theirs is None or my_vrf == theirs:
+                return None
+    order = [j] + [k for k in sel if k != j]
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    for k in order:
+        wit.append(("witness", ("l3_forwarding", k)))
+        wit += [("witness", ("interfaces", recs[k]["switch"], port))
+                for port in scan.svis.get((recs[k]["switch"], vid), ())]
+    state, reason, entries = _gw_gap(_UV, _R_GW_RISK_SEGMENT, wit)
+    return state, reason, entries
+
+
+def _gateway_risk_pre(scan: _GatewayScan, vid: int, sel: Sequence[int], recs: Mapping[int, Any], n_hosts: int,
+                      unnamed: Sequence[int], cover: Sequence[_GatewayGap],
+                      segs: Mapping[int, FrozenSet[Any]]) -> _Pre:
+    """The sole-gateway risk cell. The producer's single-gateway flag must agree with the stored rows: it says the
+    VLAN has exactly one scanned gateway, and its absence says it has two or more. Its absence is published as false
+    only where another switch's gateway row provably shares this row's segment (:func:`_gateway_segment_hold`), and
+    then whatever the coverage, because an unscanned device can only add gateways. The flag itself is published as
+    true only when the scan covers every possible gateway of the VLAN (``cover``: the fleet gaps of
+    :func:`_gateway_coverage` and the VLAN's :meth:`_GatewayScan.attribution`), no row l3_forwarding cannot join by
+    VLAN could be that other gateway, and no stored FHRP record shows another router in its group
+    (:meth:`_GatewayScan.fhrp_gaps`)."""
+    owned = frozenset(addr.ip for addr in (_svi_address(recs[k].get("svi_ip")) for k in sel) if addr is not None)
+
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        flags = _l3_risk_flags(raw)
+        if flags is None:
+            return _UV, _R_GW_RISK_UNREAD
+        if unnamed:
+            return (_UV, _R_GW_RISK_HOSTS_UNREAD.format(k=len(unnamed)),
+                    [("witness", ("l3_forwarding", k)) for k in unnamed])
+        j = row.toks[-1]
+        sole = L3_SOLE_GATEWAY_FLAG in flags
+        if sole and n_hosts != 1:
+            return (_UV, _R_GW_RISK_SOLE_CONTRADICTED.format(n=n_hosts),
+                    [("witness", ("l3_forwarding", k)) for k in sel])
+        loose_gap = [_gw_gap(_UV, _R_GW_UNJOINABLE.format(k=len(scan.loose)),
+                             [("witness", ("l3_forwarding", k)) for k in scan.loose])] if scan.loose else []
+        if not sole:
+            if n_hosts < 2:
+                if loose_gap:                    # the other gateway may be a row the join cannot read
+                    return _UV, "unverified: " + loose_gap[0][1], loose_gap[0][2]
+                return _UV, _R_GW_RISK_PEER_CONTRADICTED, [("witness", ("l3_forwarding", k)) for k in sel]
+            return _gateway_segment_hold(scan, vid, j, sel, recs, segs)
+        gaps = list(cover) + loose_gap + scan.fhrp_gaps(j, recs[j], vid, owned)
+        if gaps:
+            state = impact_assessability.bound_state(gaps)
+            return (state, _R_GW_RISK_UNPROVEN.format(word=impact_assessability.STATE_WORD[state],
+                                                      clauses="; ".join(gap[1] for gap in gaps)),
+                    [w for gap in gaps for w in gap[2]])
+        return None
+    return pre
+
+
+#: One gateway row's sole-gateway risk as the VLAN row's fhrp cell reads it: ``(risk fact, the ref entries its
+#: pre-check cited, the row's raw switch)``.
+_GatewayRisk = Tuple[Dict[str, Any], List[Tuple[str, Sequence[Any]]], Any]
+
+
+def _vlan_fhrp_pre(ctx: _Ctx, src_state: str, listing: Mapping[str, Any], risks: Mapping[int, _GatewayRisk]) -> _Pre:
+    """The VLAN row's fhrp cell: the engine's not-observed marker as before, and its "sole gateway on <host> (no FHRP)"
+    text only where the gateway row of that switch publishes its sole-gateway risk true, so one VLAN row never states
+    a sole gateway in one cell and withholds it in another, whatever withheld the risk. A withheld risk lends its
+    state and witnesses; a published false, or no gateway row naming the switch, contradicts the text. Its other
+    texts (two or more gateways without FHRP, a transit subnet) and its FHRP record pass through."""
+    opening, closing = VLAN_SOLE_GATEWAY_FHRP
+
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        early = _marker(raw, row)
+        if early is not None:
+            return early
+        if not (_is_text(raw) and len(raw) >= len(opening) + len(closing) and raw.startswith(opening)
+                and raw.endswith(closing)):
+            return None
+        host = raw[len(opening):len(raw) - len(closing)]
+        named = [(j, fact, held) for j, (fact, held, switch) in risks.items() if switch == host]
+        if any(fact["state"] == _PUB and fact.get("value") is True for _j, fact, _held in named):
+            return None
+        withheld = [(j, fact, held) for j, fact, held in named if fact["state"] != _PUB]
+        if withheld:
+            j, fact, held = withheld[0]
+            state = fact["state"] if fact["state"] in impact_assessability.STATE_WORD else _UV
+            return (state, _R_GW_FHRP_RISK_WITHHELD.format(word=impact_assessability.STATE_WORD[state]),
+                    [("witness", ("l3_forwarding", j, "risk")), ("witness", ("l3_forwarding", j))] + held
+                    + ctx.failure_entries(("l3_forwarding",), state == AU))
+        if named:
+            j = named[0][0]
+            return _UV, _R_GW_FHRP_RISK_FALSE, [("witness", ("l3_forwarding", j, "risk"))]
+        if src_state not in (_PUB, _CBE) or listing["state"] in (AU, _UV):
+            state = listing["state"] if listing["state"] in impact_assessability.STATE_WORD else _UV
+            return (state, _R_GW_FHRP_SOURCE.format(word=impact_assessability.STATE_WORD[state],
+                                                    why=listing.get("reason") or _R_NC),
+                    [("witness", ("l3_forwarding",))] + ctx.failure_entries(("l3_forwarding",), state == AU))
+        return _UV, _R_GW_FHRP_NO_ROW, [("witness", ("l3_forwarding",))]
+    return pre
+
+
+def _gateway_row(ctx: _Ctx, j: int, rec: Any, risk_pre: _Pre,
+                 tracking_pre: _Pre) -> Tuple[Dict[str, Any], List[Tuple[str, Sequence[Any]]]]:
+    """One stored l3_forwarding row as a gateway of its VLAN: its switch, SVI address, FHRP role and tracking as the
+    producer wrote them, and the sole-gateway risk read from its single-gateway flag (a boolean, never the producer's
+    other flags); with the ref entries the risk's pre-check cited when it withheld the risk."""
+    toks = ("l3_forwarding", j)
+    row = _list_row(toks, rec, ("l3_forwarding",))
+    held: List[Tuple[str, Sequence[Any]]] = []
+
+    def risk_hold(raw: Any, cell_row: _Row) -> Optional[Tuple[Any, ...]]:
+        out = risk_pre(raw, cell_row)
+        if out is not None and len(out) > 2:
+            held.extend(out[2])
+        return out
+
+    out: Dict[str, Any] = {"index": j, "pointer": json_pointer(*toks)}
+    out["host"] = _cell(ctx, row, "switch", "text", _B_GW + "switch", pre=_blank(_R_GW_NO_HOST))
+    out["svi_ip"] = _cell(ctx, row, "svi_ip", "text", _B_GW + "svi_ip", pre=_blank(_R_GW_NO_SVI_IP))
+    out["role"] = _cell(ctx, row, "role", "text", _B_GW + "role", pre=_blank(_R_GW_NO_ROLE),
+                        published_caveats=(_GW_CAVEAT,))
+    out["tracking"] = _cell(ctx, row, "tracking", "text", _B_GW + "tracking", pre=tracking_pre,
+                            published_caveats=(_GW_CAVEAT,))
+    risk = _cell(ctx, row, "risk", "text", _B_GW + "risk (its single-gateway flag: the sole-gateway risk)",
+                 pre=risk_hold, published_caveats=(_GW_CAVEAT,))
+    if risk["state"] == _PUB:
+        risk["value"] = L3_SOLE_GATEWAY_FLAG in (_l3_risk_flags(risk["value"]) or ())
+    out["risk"] = risk
+    return out, held
+
+
+def _vlan_gateways(ctx: _Ctx, src: Tuple[str, Optional[str], Any], ok: bool, vid: Any,
+                   scan: _GatewayScan) -> Tuple[Dict[str, Any], Dict[int, _GatewayRisk]]:
+    """``selections.gateways`` of one VLAN row: the stored l3_forwarding rows naming its VLAN id (the owners' key rule,
+    :func:`_vid`), each a :func:`_gateway_row`, and each row's risk as the fhrp cell reads it. Never a clean absence
+    by silence: a row the join cannot read makes the list unverified (it could name this VLAN), and an empty selection
+    is collected but empty only when the scan covers every possible gateway of the VLAN. A published list under a
+    coverage gap may be incomplete and cites the gap."""
+    toks = ("l3_forwarding",)
+    base, reason, raw = src
+    basis = "excel.write_l3_forwarding_sheet:l3_forwarding[] (the rows naming this VLAN)"
+    cav = ("row_selection_by_exact_key",)
+    # A failed, absent or unreadable source selects nothing (selection_sources says why, as before G16); a list the
+    # abstention core calls empty although it holds rows is still read, and stays unverified below.
+    if not (base in (_PUB, _CBE) or (base == _UV and isinstance(raw, list))):
+        return _listing(ctx, base, reason, toks, basis, [], sections=toks, caveats=cav), {}
+    sel = list(scan.by_vid.get(vid, ())) if ok else []
+    recs = {j: raw[j] for j in sel}                       # _vid_index selects objects only
+    unnamed = [j for j in sel if not (_is_text(recs[j].get("switch")) and recs[j]["switch"])]
+    hosts = frozenset(recs[j]["switch"] for j in sel if j not in unnamed)
+    segs = {j: _row_segment(recs[j]) for j in sel}
+    cover = list(scan.cover)
+    if ok:
+        cover += scan.attribution(vid, hosts, [segs[j] for j in sel],
+                                  [scan.vrf(recs[j]["switch"], vid) for j in sel if j not in unnamed])
+    risk_pre = _gateway_risk_pre(scan, vid, sel, recs, len(hosts), unnamed, cover, segs)
+    tracking_pre = _gateway_tracking_pre(scan.split)
+    items: List[Dict[str, Any]] = []
+    risks: Dict[int, _GatewayRisk] = {}
+    for j in sel:
+        item, held = _gateway_row(ctx, j, recs[j], risk_pre, tracking_pre)
+        items.append(item)
+        risks[j] = (item["risk"], held, recs[j].get("switch"))
+    doubts = [reason] if base == _UV and reason else []
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    if not ok:
+        doubts.append(_R_GW_NO_VLAN)
+    elif scan.loose:
+        _st, clause, cited = _gw_gap(_UV, _R_GW_UNJOINABLE.format(k=len(scan.loose)),
+                                     [("witness", toks + (j,)) for j in scan.loose])
+        doubts.append("unverified: " + clause)
+        wit += cited
+    if doubts or base == _UV:
+        return _listing(ctx, _UV, "; ".join(doubts) or _R_OWNER_EMPTY, toks, basis, items, sections=toks, extra=wit,
+                        caveats=cav), risks
+    gap_state = impact_assessability.bound_state(cover) if cover else _NC
+    unproven = _R_GW_NONE_UNPROVEN.format(word=impact_assessability.STATE_WORD[gap_state],
+                                          clauses="; ".join(gap[1] for gap in cover))
+    gap_wit = [w for gap in cover for w in gap[2]]
+    if not sel:
+        if cover:
+            return _listing(ctx, gap_state, unproven, toks, basis, [], sections=toks, extra=gap_wit,
+                            caveats=cav), risks
+        return _listing(ctx, _CBE, _R_GW_NONE, toks, basis, [], sections=toks, caveats=cav), risks
+    qualify = _fleet_qualify(ctx) + ([(_GW_CAVEAT, unproven, gap_wit)] if cover else [])
+    return _listing(ctx, _PUB, None, toks, basis, items, sections=toks, caveats=cav, qualify=qualify), risks
+
+
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
@@ -3661,12 +4451,14 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     if ok_roots and len(set(root_pointers)) != len(root_pointers):
         src_roots.update(state=_UV, reason="unverified: STP map keys collide when serialized as RFC 6901 pointers")
         ok_roots = False
-    src_gw, ok_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",),
-                            "excel.write_l3_forwarding_sheet:l3_forwarding[]")
+    src_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",), "excel.write_l3_forwarding_sheet:l3_forwarding[]")[0]
     src_ep, ok_ep = _source(ctx, ("endpoint_identity",), ("endpoint_identity",),
                             "analyze.compute_endpoint_identity:endpoint_identity[]")
-    roots, gateways, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("l3_forwarding",)), _vid_index(
-        ctx, ("endpoint_identity",))
+    roots, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("endpoint_identity",))
+    # G16: every VLAN row's gateway list reads one source state and one scan (the join census, the coverage verdict
+    # and the collected interface addresses), built on the first VLAN row.
+    gw_src = _list_state(ctx, ("l3_forwarding",), ("l3_forwarding",))
+    gw_scan: Optional[_GatewayScan] = None
     pres = {"dependencies": _vlan_deps_pre(ctx), "wave": _vlan_wave_pre(ctx)}
     capped = ENGINE_LIST_CAPS["vlan_cutover[].app_domain"]
     owner_rows: Dict[int, List[int]] = {}
@@ -3680,6 +4472,11 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
         item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks, i)}
         ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
         duplicates = owner_rows.get(vid, []) if ok else []
+        if gw_scan is None:
+            gw_scan = _GatewayScan(ctx)
+        # the gateway rows first: the fhrp cell states a sole gateway only where that gateway's own risk is true
+        gw_list, gw_risks = _vlan_gateways(ctx, gw_src, ok, vid, gw_scan)
+        row_pres = {**pres, "fhrp": _vlan_fhrp_pre(ctx, gw_src[0], gw_list, gw_risks)}
 
         def duplicate_owner_pre(_raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
             return (_UV, "unverified: multiple published VLAN rows name this VLAN; no single STP verdict is "
@@ -3692,12 +4489,12 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                     pub_cav = pub_cav + ("engine_list_capped",)
             ready = field == "readiness" and isinstance(rec, dict) and rec.get(field) == "READY"
             check = (duplicate_owner_pre if len(duplicates) > 1 and (field.startswith("stp_root") or ready)
-                     else pres.get(field, pre))
+                     else row_pres.get(field, pre))
             item[field] = _cell(ctx, row, field, slot, _B_VLAN + field, vocab=vocab,
                                 sections=toks + VLAN_FIELD_BASIS[field], pre=check, empty=empty,
                                 published_caveats=pub_cav)
         item["selections"] = {"stp_roots": (list(roots.get(vid, ())) if ok else []) if ok_roots else None,
-                              "gateways": (list(gateways.get(vid, ())) if ok else []) if ok_gw else None,
+                              "gateways": gw_list,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
     qualify = _fleet_qualify(ctx)
@@ -5665,6 +6462,8 @@ _VLAN_ROW_FACTS = {"vlan": "CountFact", "stp_root_default_election": "FlagFact",
                    "stp_root_claimants": "TextListFact", "stp_root_identities": "StpRootIdentitiesFact",
                    "gateway_svi_hosts": "TextListFact", "endpoint_count": "CountFact",
                    "dependencies": "TextListFact", "readiness": "ReadinessFact"}
+#: G16: one VLAN gateway row (:func:`_gateway_row`); risk is the sole-gateway risk, a boolean.
+_VLAN_GATEWAY_CELLS = (("host", _TEXT), ("svi_ip", _TEXT), ("role", _TEXT), ("tracking", _TEXT), ("risk", "FlagFact"))
 _ENDPOINT_ROW_CELLS = (("host", _TEXT), ("port", _TEXT), ("mac", _TEXT), ("vlan", _TEXT), ("ip", _TEXT),
                        ("mac_count", "CountFact"), ("vendor", _TEXT), ("endpoint_class", _TEXT),
                        ("confidence", "EndpointConfidenceFact"), ("evidence", _TEXT))
@@ -5779,9 +6578,10 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                "findings": _ref("DeviceFindingsRollup"),
                                                "coverage": _ref("DeviceCoverageRollup")},
                                  _DEVICE_ROW_CELLS)
+    defs["VlanGatewayRow"] = _row_def("VlanGatewayRow", _indexed(), _VLAN_GATEWAY_CELLS)
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
                                      {"stp_roots": _nullable({"type": "array", "items": _ref("Pointer")}),
-                                      "gateways": _nullable(_ref("IndexList")),
+                                      "gateways": _ref("VlanGatewayRowList"),
                                       "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),
                                [(f, _VLAN_ROW_FACTS.get(f, _TEXT)) for f in VLAN_FIELD_BASIS],
@@ -5820,7 +6620,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                    "case_index": _nonneg_int(), "pointer": _ref("Pointer")},
                                    (("id", _TEXT), ("scope", _TEXT), ("command", _TEXT), ("source_key", _TEXT),
                                     ("phase", "CountFact"), ("expected", _TEXT), ("evidence_state", _TEXT)))
-    for title, item in (("DeviceRowList", "DeviceRow"), ("VlanRowList", "VlanRow"), ("EndpointRowList", "EndpointRow"),
+    for title, item in (("DeviceRowList", "DeviceRow"), ("VlanRowList", "VlanRow"),
+                        ("VlanGatewayRowList", "VlanGatewayRow"), ("EndpointRowList", "EndpointRow"),
                         ("SharedIpList", "SharedIpItem"), ("DualHomedList", "DualHomedRow"), ("PeerList", "PeerRow"),
                         ("FindingRowList", "FindingRow"), ("TextItemList", "TextItem"),
                         ("ExposureList", "ExposureItem"), ("CompoundList", "CompoundItem"),
@@ -6211,7 +7012,8 @@ __all__ = [
     "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
-    "IMPACT_INDETERMINATE_PREFIX",
+    "IMPACT_INDETERMINATE_PREFIX", "L3_RISK_CLEAR", "L3_RISK_FLAGS", "L3_RISK_JOINER", "L3_RISK_TRACKING_NOT_ASSESSED",
+    "L3_NO_FHRP_FLAG", "L3_SOLE_GATEWAY_FLAG", "L3_TRACKED_DOWN_FLAG", "VLAN_SOLE_GATEWAY_FHRP",
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
     "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES", "NEIGHBOR_ADDRESS_FIELDS",
     "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
