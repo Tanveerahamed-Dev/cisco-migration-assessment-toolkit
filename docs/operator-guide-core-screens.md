@@ -34,11 +34,15 @@ Open **Campaigns**, create or open a campaign, and add a wave in one of three wa
 - **Upload a snapshot file** (`*.snapshot.json`) that an engine run produced.
 - **Ingest a raw collection** as a ZIP of `show`-command outputs (one folder per device).
 - **Ingest a local folder** on the machine running AssessHub. The folder must sit under an
-  allowed ingest root: by default the Atlas folder on the stick, or the repository checkout.
+  allowed ingest root: by default the Atlas folder on the stick, or the repository root when
+  AssessHub runs from a checkout. The `ASSESSHUB_INGEST_ROOTS` environment variable names other
+  roots.
 
 For both ingest routes AssessHub runs the real engine offline over the files (`--no-collect`).
-Nothing connects to a device. The raw files are staged in a temporary folder that is removed
-after the run, and AssessHub stores the resulting snapshot, not the raw captures.
+Nothing connects to a device. The raw files are staged in a folder under the system temporary
+directory, which AssessHub deletes when the run ends (a failed deletion is not reported). Your
+own collection folder is only read. AssessHub stores the resulting snapshot, not the raw
+captures.
 
 **Open a sample fleet** on the home page loads the bundled demo snapshot, so you can learn the
 screens without client data.
@@ -50,12 +54,12 @@ a state label with the engine's reason. **A dash is never zero and never healthy
 
 | Label | What it means |
 |---|---|
-| Published | The engine measured it. |
+| Published | The engine published a value. Read its qualifications: some published values are lower bounds (section 5). |
 | Collected, empty | The evidence was collected and holds nothing of this kind. It is not a blind spot. |
 | Not collected | A blind spot: the evidence was never collected, or that device was not collected. |
 | Not assessed | The engine could not judge it, for example a fleet health with no scored device. |
 | Analysis unavailable | That analysis step failed in this run, so an empty result is not evidence of absence. |
-| Unverified | A value exists but failed a check (type, reconciliation, a contradiction, a duplicate), so it is not shown as a measurement. |
+| Unverified | The value cannot be trusted: it failed a check (for example its type, a reconciliation, a contradiction with its producer's rule, a duplicate) or its owner failed, so it is not shown as a measurement. |
 
 Three things help you read a value:
 
@@ -64,18 +68,19 @@ Three things help you read a value:
   and the stored snapshot identity. Raw evidence text is not shown there.
 - **Qualifications (N)** appears when a limitation applies to the value. Read it before you
   quote the value.
-- **List paging.** Long lists read "Rows X–Y of N projected rows" with Previous and Next. N counts
-  every row in the list, not only the rows on this page.
+- **List paging.** Long lists read "Rows X–Y of N projected rows" with Previous and Next. N is
+  the number of projected rows in the whole list, not only the rows on this page.
 
-At the bottom of every view, **Snapshot and engine identity** shows the stored snapshot's SHA-256,
-its size, and the engine and schema versions that produced it.
+At the bottom of every view, the collapsible **Snapshot and engine identity** panel shows the
+stored snapshot's SHA-256 and size, the engine script version and snapshot schema recorded in
+it, when it was generated and collected, and the schema version of the running code.
 
 ## 4. The core screens
 
 A snapshot opens on its core screens. Five views run across the top: **Overview, Trust,
-Inventory, Findings, Topology & Paths**. A **Device** page opens from any device name. The page
-header also has **Open in Atlas Scope ↗** (when the installed build supports it) and **Tools and
-downloads**.
+Inventory, Findings, Topology & Paths**. A **Device** page opens from a linked device name. The
+page header also has **Open in Atlas Scope ↗** (when the installed build supports it) and **Tools
+and downloads**.
 
 ### Overview
 
@@ -98,8 +103,9 @@ see:
   Each row says how many inventory devices that input could not assess, lists them with their
   custody state, and links each one to its Device page. A withheld count keeps its state and
   reason; it is never shown as zero.
-- **Unknown evidence:** parser exceptions, suspicious zero yield and unsupported shapes, with
-  their sources.
+- **Unknown evidence:** the engine's count of evidence it could not classify (for example a
+  parser exception, or collected content that parsed to nothing), how many of those events are
+  unresolved, and the state of each evidence source it read.
 - **Single source of truth checks**, the **section census**, **recorded analysis failures** and
   the **limits and qualifications** that apply to this snapshot.
 
@@ -180,8 +186,9 @@ read-only.
 
 It is an integrated **preview**, not an accepted product. Its acceptance report
 (`atlas-scope/docs/acceptance-report.md`, graded 2026-10-02/03) records 24 of 39 acceptance
-criteria failing and 3 unproven. Use it to look around, and confirm any finding on the core
-screens before you act on it. A quiet or empty 3-D view is not a clean bill of health.
+criteria failing and 3 unproven. Atlas Scope has changed since that grade, and no later grade is
+recorded. Use it to look around, and confirm any finding on the core screens before you act on
+it. A quiet or empty 3-D view is not a clean bill of health.
 
 ## 7. The Tools and downloads page
 
@@ -235,19 +242,23 @@ screens before you act on it. A quiet or empty 3-D view is not a clean bill of h
 
 `--db <file>` or the `ASSESSHUB_DB` environment variable selects another file.
 
-At every start AssessHub checks the database's integrity. When the database has changed, it keeps
-a timestamped copy in a `backups` folder beside it, and it keeps the **newest 3** of its own
-copies. Backups are taken at start, not continuously. The restore procedure is in
-`portable/README-FIELD.txt`, under CORRUPTION.
+At every start through `assesshub` or `Atlas.exe`, AssessHub checks the database's integrity and
+refuses to serve a damaged one. If the check cannot run (usually because another copy of Atlas
+already has the database open), it warns and starts without this protection. When the database
+has changed since the last copy and holds at least one campaign, it keeps a timestamped copy in
+a `backups` folder beside it, and it keeps the **newest 3** of its own copies. Backups are taken
+at start, not continuously. The restore procedure is in `portable/README-FIELD.txt`, under
+CORRUPTION.
 
 ## 11. Redaction is a command-line step
 
-AssessHub's downloads are **not redacted**: they carry the client's addresses, serials and
-hostnames. To make a share-safe set, use the command line:
+AssessHub applies **no redaction** to the documents it serves for download: they carry whatever
+the stored snapshot holds, which for an ingested collection is the client's addresses, serials
+and hostnames. To make a share-safe set, use the command line:
 
 - on the stick, `Atlas.exe --redact-folder <collection> --out <empty folder>`, adding
-  `--redact-collection` to scrub secrets from the raw captures in place, and `--reuse-out` only
-  to re-render the same job into its own folder;
+  `--redact-collection` to scrub cleartext secrets from the raw captures in place, and
+  `--reuse-out` only to re-render the same job into its own folder;
 - or the engine's `--redact` on a full run.
 
 Redaction keeps hostnames and descriptions on purpose. Read `portable/README-FIELD.txt`,
@@ -256,11 +267,21 @@ REDACTION, before anything leaves the site.
 ## 12. Collection safety
 
 - AssessHub's upload and ingest routes never connect to a device.
-- A live SSH collection is an explicit engine run. Apart from the session's own paging settings
-  (`terminal length 0`, `terminal width 511`), the collector types only `show` commands that
-  pass a whole-string read-only check: no command chaining, no redirection, and only output
-  filters after a pipe. Authentication failures are never retried, to avoid locking the
-  account.
+- A live SSH collection is an explicit engine run (one without `--no-collect`). Authentication
+  failures are never retried, to avoid locking the account.
+- **What the engine sends.** The collector sends two session settings of its own,
+  `terminal length 0` and `terminal width 511`. Every other string it sends is a command-registry
+  entry that passes its whole-string read-only check: a `show` command with no command chaining
+  or redirection, and only output filters after a pipe. An entry that fails the check is
+  withheld from the session and logged. The engine calls no enable-mode or configuration-mode
+  function.
+- **What the SSH library sends.** netmiko also writes to the session for itself: on connect, its
+  own paging and width settings and Enter keystrokes to find the prompt; on disconnect, `exit`.
+- **Platform autodetection.** When a device's `platform` is `auto` (the default when the devices
+  file names none), netmiko's autodetection first opens a separate session and sends its own
+  identification commands. The engine's check does not cover them, and they can include other
+  vendors' commands, such as `display version` or `get system status`. Set `platform` to `ios`
+  or `nxos` in the devices file to skip this step.
 - Controller REST collection is opt-in. Apart from the login, it sends only GET requests. On a
   controller the read-only guarantee comes from the account's read-only role, not from the
   protocol, so use a dedicated read-only account.
@@ -278,8 +299,9 @@ to these screens. If it merges as proposed, two of them change what you see:
 Until #630 merges, this guide describes `main`. Update this section when it does.
 
 <!--
-Owners behind each statement (verified on origin/main 6390b66c, 2026-10-09). This block is for
-maintainers; correct the prose above when an owner changes.
+Owners behind each statement (verified on origin/main 6390b66c, 2026-10-09; section 12 and the
+corrections from the W56 review re-verified the same day). This block is for maintainers; correct
+the prose above when an owner changes.
 - One door, --run-engine, loopback-only frozen bind: webapp/backend/serve.py (ENGINE_SENTINEL,
   _run_engine, main: numeric-loopback refusal when frozen); ingest._engine_argv; pyproject.toml
   [project.scripts] assesshub, cisco-assess.
@@ -287,9 +309,12 @@ maintainers; correct the prose above when an owner changes.
   /snapshots/:id/tools -> Snapshot); webapp/frontend/src/pages/CoreSnapshot.tsx (titles, Overview,
   Trust, InputGap, Inventory, Findings, Device, FailureImpactRow, StructuralLinkRow, ScopeLink,
   identity panel); webapp/frontend/src/pages/core/TopologyPaths.tsx, TopologyScope.tsx,
-  ProjectionList.tsx, ProjectionEvidence.tsx (STATE_LABEL, FactView, drawer).
+  ProjectionList.tsx ("Rows X-Y of N projected rows", page.total), ProjectionEvidence.tsx
+  (STATE_LABEL, FactView, Qualifications, drawer); CoreSnapshot.tsx identity <details> (sha256,
+  bytes, script_version, snapshot_schema, generated_at, collected_at, code_schema_version).
 - State meanings: cisco_toolkit/ssot.py abstention_reason and _CENSUS_NOTE;
-  cisco_toolkit/ui_projection.py STATES, DOMAIN_STATE_OWNERS, REF_ROLES.
+  cisco_toolkit/ui_projection.py STATES, DOMAIN_STATE_OWNERS, REF_ROLES. Unknown evidence:
+  ui_projection._unknown_evidence; cisco_toolkit/unknown_evidence.py _KIND_META, _SOURCE_ORDER.
 - Lower bounds: cisco_toolkit/impact_assessability.py; ui_projection._topology_impact and the
   impact_scanned_scope limitation; webapp/backend/summary.py IMPACT_BOUND_MARK,
   impact_bound_cell, impact_entry, _keystones, IMPACT_NOT_ASSESSED; webapp/backend/cutover.py
@@ -297,9 +322,12 @@ maintainers; correct the prose above when an owner changes.
 - Trust inputs: ui_projection.TRUST_INPUTS from analyze.DOSSIER_AXIS_INPUTS.
 - Lifecycle band names: ui_projection.LIFECYCLE_BAND_ORDER.
 - Atlas Scope: webapp/backend/app.py _SCOPE_MOUNT, get_snapshot_scope_view;
-  atlas-scope/docs/acceptance-report.md (Verdict section).
-- Ingest: webapp/backend/ingest.py run_collection_zip, run_collection_folder (temp workdir removed
-  in finally), _allowed_ingest_roots (ASSESSHUB_INGEST_ROOTS).
+  atlas-scope/docs/acceptance-report.md (Verdict section; graded at 2dd95d74, unchanged since
+  c95de5cc while atlas-scope/ changed in later merges such as #599, #601, #606 and #618).
+- Ingest: webapp/backend/ingest.py run_collection_zip, run_collection_folder (temp workdir under
+  _engine_temp_parent, removed by shutil.rmtree(ignore_errors=True) in finally; the folder route
+  stages a private copy), _allowed_ingest_roots (frozen: the exe folder; else the repository root;
+  ASSESSHUB_INGEST_ROOTS overrides); app.py ingest_collection_folder (contain=True).
 - Comparison and receipts: webapp/backend/app.py compare, compare_execution;
   webapp/frontend/src/pages/Campaign.tsx (Compare two waves, TrendCanonicalReceipts);
   webapp/frontend/src/pages/Execution.tsx (Bind post-change evidence, PASS rule, legacy runs);
@@ -309,11 +337,18 @@ maintainers; correct the prose above when an owner changes.
   webapp/backend/storage.py delete_*_if_unreceipted. Purge not implemented: no purge or retention
   route in webapp/backend; decision in docs/decisions/0007-one-application-direction.md D10.
 - Data locations and backups: webapp/backend/app.py _platform_default_db, _default_db_path;
-  webapp/backend/serve.py _resolve_db; webapp/backend/storage.py _BACKUP_DIR, _BACKUP_KEEP.
+  webapp/backend/serve.py _resolve_db, main (boot_hardening=True); webapp/backend/storage.py
+  Store._boot_hardening (quick_check refusal, OperationalError warn-and-continue, no copy of a
+  campaign-free store, mtime test), _BACKUP_DIR, _BACKUP_KEEP.
 - Redaction: webapp/backend/serve.py --redact-folder/--out/--redact-collection/--reuse-out; no
   redaction route in webapp/backend/app.py (_send_file serves unredacted deliverables).
 - Collection safety: COLLECT_PARSE_V3_23_0.py TERMINAL_SETUP_CMDS, is_ssh_wire_command,
-  ssh_wire_commands; webapp/backend/ingest.py (both engine invocations pass --no-collect);
+  ssh_wire_commands, collect (withheld entries logged), connect_device, autodetect_platform
+  (netmiko SSHDetect for platform auto/blank), load_devices plat_map (default "auto"),
+  NETMIKO_TYPE; no enable()/config-mode call in the engine. netmiko's own writes (read in the
+  installed 4.7.0; pin netmiko>=4.1,<5): CiscoIosBase / CiscoNxosBase session_preparation,
+  CiscoBaseConnection.cleanup ("exit"), ssh_autodetect.SSH_MAPPER_DICT probe commands;
+  webapp/backend/ingest.py (both engine invocations pass --no-collect);
   cisco_toolkit/attestation.py is_read_only_command; cisco_toolkit/rest_collect.py module
   docstring; portable/README-FIELD.txt OFFLINE / LIVE NETWORK BOUNDARY.
 - Next release: PR #630 (W41 G21 punch-list facets; W47 F8 distinct lower-bound, NOT ASSESSED and

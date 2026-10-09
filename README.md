@@ -26,16 +26,17 @@ This repository is **one application**, and **AssessHub** is its door:
 - **Atlas Scope** ([`atlas-scope/`](atlas-scope/README.md)) is a 3-D investigation view
   that AssessHub serves at `/scope`. It is an integrated **preview**, not an accepted
   product: its [acceptance report](atlas-scope/docs/acceptance-report.md) (graded
-  2026-10-02/03) records 24 of 39 acceptance criteria failing.
+  2026-10-02/03) records 24 of 39 acceptance criteria failing. Atlas Scope has changed
+  since that grade, and no later grade is recorded.
 
 How to read the core screens, including how they show missing evidence, is in the
 [operator guide](docs/operator-guide-core-screens.md).
 
 ## What an assessment run produces
 
-Every assessment run writes a self-contained, **offline / air-gapped** deliverable set
-(listed under [Inputs & outputs](#inputs--outputs)) — no live network is needed to read
-it. The two to open first:
+An assessment run writes a self-contained, **offline / air-gapped** deliverable set
+(listed under [Inputs & outputs](#inputs--outputs); flags such as `--no-html` turn single
+documents off) — no live network is needed to read it. The two to open first:
 
 - a **multi-sheet Excel workbook** (30+ tabs) that opens on a one-page
   **Executive Summary**: fleet posture, the punch-list breakdown, the
@@ -68,7 +69,7 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 | [`COLLECT_PARSE_V3_23_0.py`](COLLECT_PARSE_V3_23_0.py) | The toolkit — collects over SSH (netmiko), parses, scores health, computes migration readiness, and writes the workbook + explorer. |
 | [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) | Documentation for the current version (health scoring, the 10-check readiness checklist, the HTML Health mode) plus the change log. |
 | [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus 14 analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causal Flow, Waves, Apps, Review, Design, Cable Map, 3D). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
-| [`cisco_toolkit/`](cisco_toolkit/) | The engine package: parsers, analysis, the coverage-honest projection the screens read (`ui_projection.py`), and every deliverable writer. |
+| [`cisco_toolkit/`](cisco_toolkit/) | The engine package: parsers, analysis, the coverage-honest projection the screens read (`ui_projection.py`), and the engine's deliverable writers. AssessHub's own Cutover Plan, NRFU / Acceptance Test Plan and Post-Implementation Review writers live in `webapp/backend/`. |
 | [`webapp/`](webapp/README.md) | AssessHub, the one door: the FastAPI backend and the React app, with a prebuilt copy of the app and a synthetic demo snapshot. |
 | [`portable/`](portable/README-FIELD.txt) | Atlas, the portable Windows build, and `README-FIELD.txt`, the field guide that ships on the stick. |
 | [`atlas-scope/`](atlas-scope/README.md) | Atlas Scope, the 3-D investigation view AssessHub serves at `/scope` (preview). |
@@ -272,13 +273,26 @@ Passwords resolve in this order:
 Authentication failures are **never** retried (this avoids account lockout);
 transient connection/timeout failures are retried with backoff.
 
-**Collection is read-only.** Only a live collection that you start connects to a device. Apart
-from the session's own paging settings (`terminal length 0`, `terminal width 511`), the SSH
-collector types only `show` commands that pass a whole-string read-only check — no command
-chaining, no redirection, and only output filters after a pipe. The opt-in controller REST
-collectors send only GET requests apart from the login; on a controller the read-only guarantee
-comes from the account's read-only role, so use a dedicated read-only account. Offline analysis
-(`--no-collect`) and every AssessHub upload or ingest never connect to a device.
+**Collection is read-only by design.** Only a live collection that you start connects to network
+equipment: an engine run without `--no-collect`, or the opt-in controller REST collector. Offline
+analysis (`--no-collect`) and every AssessHub upload or ingest read files only.
+
+- **What the engine sends over SSH.** The collector in `COLLECT_PARSE_V3_23_0.py` sends two session
+  settings of its own, `terminal length 0` and `terminal width 511` (`TERMINAL_SETUP_CMDS`). Every
+  other string it sends is an entry from its command registries that passes `is_ssh_wire_command`:
+  a `show` command with no command chaining or redirection, and only output filters after a pipe.
+  An entry that fails the check is withheld from the session and logged. The engine calls no
+  enable-mode or configuration-mode function.
+- **What the SSH library sends for itself.** netmiko also writes to the session: on connect, its
+  own paging and width settings and Enter keystrokes to find the prompt; on disconnect, `exit`.
+- **Platform autodetection.** When a device's `platform` is `auto` (the default when
+  `devices.json` names none), netmiko's autodetection first opens a separate session and sends
+  its own identification commands. The engine's check does not cover them, and they can include
+  other vendors' commands, such as `display version` or `get system status`. Set `platform` to
+  `ios` or `nxos` to skip this step.
+- **Controller REST.** The opt-in collectors (`cisco_toolkit/rest_collect.py`) send only GET
+  requests apart from the login. On a controller the read-only guarantee comes from the account's
+  read-only role, so use a dedicated read-only account.
 
 ### Secrets at rest — the raw collection directory
 
@@ -358,23 +372,25 @@ assesshub --selftest # checks the assets that would otherwise degrade silently
 ```
 
 From a checkout, `python -m webapp.backend.serve` is the same entry. With no token configured,
-AssessHub answers loopback clients only; any other access needs `ASSESSHUB_TOKEN` and TLS (see
-*Access model* in [`webapp/README.md`](webapp/README.md)). Click **Open a sample fleet** for the
-bundled synthetic demo — no network needed.
+AssessHub's API answers loopback clients only; any other access needs `ASSESSHUB_TOKEN` and TLS
+(see *Access model* in [`webapp/README.md`](webapp/README.md)). Click **Open a sample fleet** for
+the bundled synthetic demo — no network needed.
 
 **Getting evidence in.** On a campaign page, add a wave by uploading a finished
 `*.snapshot.json`, a **ZIP of raw `show`-command outputs**, or a collection folder on the
 AssessHub machine. For a ZIP or folder, AssessHub runs the real engine offline over the files
-(`--no-collect`); it never connects to a device. The raw files are staged in a temporary folder
-that is removed after the run, and AssessHub stores the resulting snapshot, not the raw captures.
+(`--no-collect`); it never connects to a device. The raw files are staged in a folder under the
+system temporary directory, which AssessHub deletes when the run ends (a failed deletion is not
+reported). AssessHub stores the resulting snapshot, not the raw captures.
 
 **The core screens.** A snapshot opens on five views — **Overview, Trust, Inventory, Findings,
 Topology & Paths** — plus a **Device** page for any device, which includes **If this device
 fails** (its stored failure-impact rows) and **Structural links**. Every value on these screens
-carries its evidence state: a value the engine withheld reads *Not collected*, *Not assessed*, *Analysis
-unavailable* or *Unverified* with the engine's reason, never zero or healthy. **Trust** says what
-the analysis could not see. The [operator guide](docs/operator-guide-core-screens.md) walks
-through each screen, including how a lower bound reads.
+carries its evidence state. A value the engine did not publish shows a dash, its state
+(*Collected, empty*, *Not collected*, *Not assessed*, *Analysis unavailable* or *Unverified*) and
+the engine's reason, never zero or healthy. **Trust** says what the analysis could not see. The
+[operator guide](docs/operator-guide-core-screens.md) walks through each screen, including how a
+lower bound reads.
 
 **Tools and downloads** keeps the earlier snapshot page: the Device Risk Register, the keystone
 devices, **Ask the engineer** (the architecture review), the design blueprint, the causal flow,
@@ -389,8 +405,9 @@ from an execution run.
 - **Compare two waves** on a campaign page shows the engine's cutover gate for that pair; it is
   not stored. The campaign trajectory shows the server's decision for each adjacent pair.
 - An **execution run** (the war room) starts from the cutover plan. **Bind post-change
-  evidence** checks a newer snapshot against the run and appends an **immutable comparison
-  receipt**; a new run can be successful only when its latest receipt is PASS.
+  evidence** checks a newer snapshot against the run and, when the checks pass, appends an
+  **immutable comparison receipt**; a new run can be successful only when its latest receipt is
+  PASS.
 - The **gate board** records per-wave sign-offs (commit → checkpoint → readiness review →
   go / no-go → window → hypercare exit).
 
@@ -402,18 +419,21 @@ scrubbed raw evidence, and neither exists today.
 
 **Where the data lives.** `Atlas.exe` keeps its database in `Atlas\data\assesshub.db`; a
 checkout uses `webapp/data/assesshub.db`; an installed `assesshub` uses the user's
-application-data folder. `--db` or `ASSESSHUB_DB` selects another file. At every start the store
-is integrity-checked and, when it changed, copied to a `backups` folder beside it; the newest 3
-copies are kept.
+application-data folder. `--db` or `ASSESSHUB_DB` selects another file. At every start through
+`assesshub` or `Atlas.exe`, the store is integrity-checked (a damaged store is not served) and,
+when it has changed since the last copy and holds at least one campaign, copied to a `backups`
+folder beside it; the newest 3 of AssessHub's own copies are kept.
 
-**Redaction is command-line only.** AssessHub downloads are not redacted. For a share-safe set
-use the engine's `--redact`, or on the stick `Atlas.exe --redact-folder` (next section).
+**Redaction is command-line only.** AssessHub applies no redaction to the documents it serves
+for download. For a share-safe set use the engine's `--redact`, or on the stick
+`Atlas.exe --redact-folder` (next section).
 
 **Atlas Scope (preview).** On a snapshot's page, **Open in Atlas Scope** opens the same stored
 snapshot at `/scope/snapshots/<id>/`, and **Topology & Paths** can embed it as a 3-D view. It is
-read-only and an integrated preview; its acceptance report records 24 of 39 criteria failing,
-so confirm what it shows on the core screens. In a checkout the link appears only when Atlas
-Scope's hub build exists ([`atlas-scope/README.md`](atlas-scope/README.md)).
+read-only and an integrated preview; its acceptance report records 24 of 39 criteria failing
+(graded 2026-10-02/03, with no later grade recorded), so confirm what it shows on the core
+screens. In a checkout the link appears only when Atlas Scope's hub build exists
+([`atlas-scope/README.md`](atlas-scope/README.md)).
 
 ## Atlas — the portable field app
 
@@ -425,7 +445,7 @@ folder that runs from a USB stick without an installed Python. `Atlas.exe` is th
 - `Atlas.exe --run-engine <engine arguments>` runs the engine command line in the same program.
 - `Atlas.exe --selftest` checks the stick before an engagement (expect `SELFTEST: PASS`).
 - `Atlas.exe --redact-folder <collection> --out <empty folder>` renders a redacted deliverable
-  set; `--redact-collection` also scrubs secrets from the raw captures in place, and
+  set; `--redact-collection` also scrubs cleartext secrets from the raw captures in place, and
   `--reuse-out` re-renders into a folder that already holds a set.
 - `Atlas.exe --verify-manifest <run_manifest.json>` re-checks a delivered set.
 
@@ -437,25 +457,39 @@ redaction limits, update and rollback) is in
 
 <!--
 Owners behind "The one application", "AssessHub — the one door", "Atlas — the portable field app"
-and "Collection is read-only" (verified on origin/main 6390b66c, 2026-10-09). Each statement is a
-cache of these owners; correct the prose when one changes. Per-statement detail is in the owner
-block at the end of docs/operator-guide-core-screens.md.
+and "Collection is read-only by design" (verified on origin/main 6390b66c, 2026-10-09; the
+collection paragraph and the corrections of the W56 review re-verified the same day). Each
+statement is a cache of these owners; correct the prose when one changes. Per-statement detail is
+in the owner block at the end of docs/operator-guide-core-screens.md.
 - One door and --run-engine: webapp/backend/serve.py (module docstring, ENGINE_SENTINEL, _run_engine,
   _resolve_db, loopback-only frozen bind in main, argparse flags); pyproject.toml [project.scripts].
 - Core screens and Tools page: webapp/frontend/src/App.tsx, pages/CoreSnapshot.tsx,
   pages/core/*.tsx, pages/Snapshot.tsx; state labels in pages/core/ProjectionEvidence.tsx.
-- Ingest: webapp/backend/ingest.py run_collection_zip / run_collection_folder (--no-collect, temp
-  workdir removed).
+- Ingest: webapp/backend/ingest.py run_collection_zip / run_collection_folder (--no-collect; the
+  temp workdir under _engine_temp_parent is removed by shutil.rmtree(ignore_errors=True) in
+  finally).
 - Receipts and deletion refusals: webapp/backend/app.py compare, compare_execution, delete_* (409);
   webapp/backend/storage.py delete_*_if_unreceipted; pages/Execution.tsx (PASS rule).
 - Purge not implemented: no purge/retention route in webapp/backend; ADR 0007 D10.
-- Data and backups: webapp/backend/app.py _platform_default_db; storage.py _BACKUP_DIR,
-  _BACKUP_KEEP.
+- Data and backups: webapp/backend/app.py _platform_default_db; serve.py main
+  (boot_hardening=True); storage.py Store._boot_hardening (quick_check, no copy of a
+  campaign-free store, mtime test), _BACKUP_DIR, _BACKUP_KEEP.
+- cisco_toolkit row: cisco_toolkit/docmeta.py ARTIFACT_SPECS writer_module (cutover, nrfu and pir
+  writers are webapp.backend.*).
 - Redaction: no redaction route in webapp/backend/app.py; serve.py --redact-folder family.
-- Atlas Scope preview count: atlas-scope/docs/acceptance-report.md, Verdict.
+- Atlas Scope preview count: atlas-scope/docs/acceptance-report.md, Verdict (graded at 2dd95d74;
+  the report is unchanged since c95de5cc while atlas-scope/ changed in later merges, e.g. #599,
+  #601, #606, #618).
 - Gate board steps: cisco_toolkit/engagement.py GATE_SEQUENCE. Cutover gates: webapp/backend/cutover.py.
-- Collection safety: COLLECT_PARSE_V3_23_0.py TERMINAL_SETUP_CMDS, is_ssh_wire_command;
-  cisco_toolkit/rest_collect.py docstring; webapp/backend/ingest.py (--no-collect only).
+- Collection safety: COLLECT_PARSE_V3_23_0.py TERMINAL_SETUP_CMDS, is_ssh_wire_command,
+  ssh_wire_commands, collect (withheld entries logged), connect_device, autodetect_platform
+  (netmiko SSHDetect when platform is auto/blank), load_devices plat_map (default
+  "auto"), NETMIKO_TYPE (cisco_ios / cisco_nxos only); no enable()/config-mode call in the engine.
+  netmiko's own writes (read in the installed 4.7.0; pin netmiko>=4.1,<5): CiscoIosBase and
+  CiscoNxosBase session_preparation (terminal width 511, terminal length 0, prompt RETURNs),
+  CiscoBaseConnection.cleanup ("exit"), ssh_autodetect.SSH_MAPPER_DICT (probe commands such as
+  "display version", "get system status", "uname -a"). cisco_toolkit/rest_collect.py docstring
+  and _post (the three logins); webapp/backend/ingest.py (--no-collect only).
 -->
 
 ## Health score & migration readiness

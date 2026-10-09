@@ -31,8 +31,8 @@ Open a campaign, then a snapshot. Five views run across the top:
   Topology & Paths  the map, the 3-D view (see ATLAS SCOPE), and an
                     IP path question answered from the stored route
                     model - nothing is sent on the network.
-Click any device name for its Device page. Two of its panels come
-straight from the engine's stored rows, in the engine's order:
+Click a linked device name for its Device page. Two of its panels
+come straight from the engine's stored rows, in the engine's order:
   "If this device fails"  the severity, VLANs impacted and stranded
                           endpoints the engine found for its loss.
   "Structural links"      its links, whether each is a bridge, and
@@ -47,7 +47,7 @@ healthy - read the label and the reason under it:
   Collected, empty      captured, and nothing of that kind was there.
   Not assessed          the engine had nothing it could judge.
   Analysis unavailable  that analysis step failed in this run.
-  Unverified            a value exists but failed a check.
+  Unverified            the value failed a check.
 The Evidence button beside a value opens its source records and the
 limits that apply to it.
 
@@ -128,14 +128,15 @@ WHAT ATLAS KEEPS, AND WHAT IT WILL NOT DELETE
 ---------------------------------------------
 Atlas keeps snapshots, not raw captures. A ZIP or folder you ingest is
 copied to this computer's temporary folder for the engine run, and
-that copy is removed afterwards; your collection folder is only read.
+Atlas deletes that copy when the run ends (a failed deletion is not
+reported); your collection folder is only read.
 The ingest never connects to a device.
 An execution run that binds its post-change snapshot makes a
 comparison receipt: a permanent decision record. Atlas refuses to
 delete a snapshot a receipt names, an execution run that holds one,
 or a campaign that contains one. There is NO per-campaign purge yet,
 so that data stays in data\assesshub.db and in data\backups\.
-Documents downloaded from the app are NOT redacted (see REDACTION).
+The app does NOT redact documents you download (see REDACTION).
 
 EJECT DISCIPLINE
 ----------------
@@ -153,8 +154,8 @@ REDACTION - BEFORE ANYTHING LEAVES THE SITE
 -------------------------------------------
 Deliverables carry client IPs/MACs/serials. --redact pseudonymizes them
 across the whole output set (snapshot, workbook, explorer).
-Redaction exists ONLY as a command. Documents you download from the
-app's pages are NOT redacted.
+Redaction exists ONLY as a command: the app does NOT redact the
+documents you download from its pages.
 
 Run this as ONE line (nothing else needs to be on the stick):
   Atlas.exe --redact-folder <collection folder> --out <D:\share>
