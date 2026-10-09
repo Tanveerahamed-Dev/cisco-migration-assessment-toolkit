@@ -27,6 +27,63 @@ acceptable; leaking a secret is not. So round 1 keeps the grammar (fixed, and ne
 any corpus line) and adds a RESIDUAL SWEEP whose failure direction is inverted: a word it does not know
 is REDACTED. The verifier checks exactly what the sweep guarantees, from the same closed lists.
 
+## Round 2: the guarantee restated, and what the round-1 review found outside it
+
+The round-1 review reported 232 more leaking lines (every one is now a must-redact corpus row). They
+showed that "a word the sweep does not know is redacted" held only AFTER A LISTED KEYWORD: a secret with
+no listed keyword before it, on a later line than its key, or in a column or argument position, was a
+deny-list miss again, and round 1 had also lost origin/main's terminal-wrap behaviour. Round 2 states
+the guarantee exactly -- **fail safe after a listed credential keyword or credential field name, and
+inside a closed list of positional forms; everything else is the grammar and the entropy rule** -- and
+widens each list:
+
+- **Keyword families (P1).** Keywords are found inside camelCase and numbered compounds
+  (`authPassword`, `md5Key`, `snmpV2Community`, `password2`, `passwordHash`), and the families the review
+  named are anchored (Junos `plain-text-password-value`, FortiGate `password2`/`passwd`,
+  `radius-common-pw`, PIM `hello-authentication`, `ldap-server ... manager`, LTE `chap`, `authkey`,
+  net-snmp sink lines, tac_plus `login = cleartext`, NTP key files, `ephone ... pin`). The exact
+  lists are `_REDACT_SWEEP_KEYWORDS`, `_REDACT_SECRET_ANCHORS` and the corpus.
+- **Credential field names (P2).** One vocabulary for snapshot keys and raw text: the snapshot owner
+  `_REDACT_SECRET_KEYS` / `_REDACT_SECRET_TOKENS`, plus the raw-text extras (`_REDACT_RAW_TOKEN_EXTRAS`,
+  and for a quoted key or XML name `_REDACT_RAW_QUOTED_EXACT`), applied by `_redact_credential_name` to
+  JSON/YAML/INI keys, XML elements and attributes, form bodies and percent-encoded payloads. Registered
+  in `docs/ssot.md`; the verifier's copy is pinned equal.
+- **Shell arguments (P2):** `curl -u user:X`, `sshpass -p X`, `mysql -pX`, net-snmp `-c`/`-A`/`-X`.
+- **Multi-line credential blocks (P2):** a JSON key, XML element or YAML key naming a credential that
+  opens a block (RESTCONF, NETCONF, vManage templates, YAML block scalars and lists, a JSON value on the
+  next line): every line inside is swept. Private-key blocks now also cover SSH2 / RFC 4716 armor and
+  PuTTY `Private-Lines: N` bodies (P3).
+- **Positional forms (P3):** the closed show-table list, CSV/TSV/`;`/`|` files whose header names a
+  credential column (a region ends at the first line that is not row-shaped), pppd chap-secrets, crypt(3)
+  hashes and shadow fields anywhere.
+- **Terminal wraps (P2, the round-1 regressions).** origin/main's cross-line `\s+` caught a value a
+  terminal wrap moved to the next line. Round 2 restores that as an explicit model: a line DANGLES when
+  its last value-required keyword is followed only by qualifiers (`snmp-server community`,
+  `enable secret 0`, `set password ENC` -- the FortiGate refusal, P3), and the first non-qualifier token
+  of the next non-blank line is redacted; the grammar is re-read across the join for exactly the families
+  main crossed (`_REDACT_SECRET_CROSS`); a split `snmp-server` / `host` and a split keyword are joined; a
+  lone token after a value is the value's tail. A wrap takes ONE token, as main's `\s+` did, never a
+  token that starts a clause of its own (a key ID before `key-string`, `edit`/`next`, `snmp-server`), and
+  a type digit that ends the text is the value. A wrap continues into a credential-block line too, and,
+  fail safe and producer-only, is also read from the previous line AS IT WAS when the scrub replaced the
+  keyword it hangs on.
+- **Free text (P3).** Description/remark/comment lines and banner bodies add the informal anchors people
+  type (`pw X`, `pwd: X`, `creds admin/X`, `account ops / X`); show-output prose (`Authentication MD5,
+  key-string`) is not a clause.
+- **Qualifier collisions (P3):** void words are checked per keyword (`key chain`, `password encryption`),
+  numbers stay ordered, and a lone qualifier-shaped word after a keyword is the value
+  (`enable secret level`, `snmp-server community RO`), except a hash or encoding word, which dangles.
+- **Verifier independence (P3).** Besides restating the producer's lists, the verifier parses every
+  embedded JSON document and checks each credential-named field with the snapshot rule
+  (`_is_secret_key`), and applies a credential-named-field rule and a dangle-aware FortiGate rule of its
+  own. A layout the line rules cannot follow (key, colon and value on three lines) is refused although
+  the producer sees nothing there.
+
+Every multi-line state (blocks, banners, CSV, chap-secrets, tables, wraps) is advanced from the SCRUBBED
+lines on both sides, so the verifier reaches the producer's plan from the output alone; armor, PuTTY
+headers and table headers are plan lines the scrub never alters. Each line is a fixpoint of its own
+sweep, and the scrub is idempotent.
+
 ## The defect (unchanged history)
 
 The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced
@@ -124,8 +181,9 @@ verifier; `tests/test_redaction_grammar_corpus.py` pins each pair equal.
    bindings and join keys and redacting them breaks every receipt that cites them (a credential-named
    key is redacted whole before this pass). A path (`/interfaces/core1/Vlan30`) and a camelCase
    identifier (the ACI class in `topology/HDfabricOverallHealth5min-0`) are not random.
-8. **Terminal wrap**: a line whose last swept token is a cipher/hash/encoding word, or a cipher name
-   plus a number that is not a key size (`priv aes 1`), sweeps the next line whole.
+8. **Terminal wraps** (replaced in round 2, see above): round 1 swept the next line whole after a
+   cipher/hash/encoding word; round 2 takes the one wrapped value of a dangling clause instead, and also
+   restores the cross-line grammar origin/main had.
 9. **One lexical model**: lines end only at CR/LF; VT, FF, FS..US, NEL, NBSP and every Unicode space,
    U+2028/2029, a BOM and a non-UTF-8 byte (U+DC80..U+DCFF) separate tokens -- in the grammar, the sweep
    and the verifier alike. A non-UTF-8 byte run beside a placeholder is folded into it.
@@ -160,56 +218,79 @@ evidence-retention branch (W58r2) digests it at import time.
 
 ## Corpus and pins
 
-`tests/fixtures/redaction_grammar_corpus.json`:
+`tests/fixtures/redaction_grammar_corpus.json` (round 2):
 
-- **408 must-redact** lines: the W60 builder's 183, every line of the W60 review (131) and of the W58r2
-  review corpus (94), across IOS/IOS-XE, NX-OS, ASA, AireOS/C9800, IOS-XR, EOS, Junos, FortiGate,
-  Huawei, PAN-OS, net-snmp, REST/API logs, PEM, URLs, show tables, CSV, and odd encodings. Each carries
-  its exact output and fake secrets; 17 carry `notail` (the first placeholder is not keyword-governed:
-  URL userinfo, a whole high-entropy token, a user name before the keyword).
-- **113 must-keep** lines, byte-identical and certified.
-- **30 over-redacted** lines: must-keep candidates (17 of the builder's 102, 13 of the review's 42) that
-  the fail-safe sweep rewrites; each is pinned to its result with a note. Examples:
-  `Key: U - Unicast, ...` (show storm-control legend), BGP `Community: 65000:100 no-export`, Junos
-  policy `community CNAME members ...`, `tunnel key 12345`, `key 01`, EOS `ssh-key ssh-rsa <public key>`,
-  `snmp-server host X use-vrf management`, prose such as `Do not share your password with anyone.`
+- **842 must-redact** rows: the W60 builder's 183, every line of the W60 round-0 review (131), the
+  W58r2 review corpus (94), the round-1 review (232: config lines, controller/REST payloads, YAML, PEM,
+  CSV, shell, multi-line show captures) and 202 terminal-wrap rows (a corpus clause cut at a space where
+  origin/main removed the secret across the line end and only the wrap rules remove it). Platforms: IOS 220,
+  wrap 202, Huawei 45, NX-OS 37, Junos 35, ASA 32, FortiGate 30, AireOS 27, REST 26, IOS-XR 24, EOS 23,
+  show 21, PAN-OS 19, odd encodings 17, PEM 10, and 46 rows across URL/API/C9800/net-snmp/YAML/CSV/
+  banner/token/shadow/shell/PPP/tac_plus/NTP/RADIUS forms. Each carries its exact output and fake secrets.
+- **145 must-keep** rows, byte-identical and certified.
+- **31 over-redacted** rows: must-keep candidates the fail-safe rules rewrite, each pinned to its result
+  with a note. Round 1's 30 examples stand (`Key: U - Unicast, ...`, BGP `Community: 65000:100`, Junos
+  policy communities, `tunnel key 12345`, `key 01`, EOS `ssh-key ssh-rsa <public key>`, prose such as
+  `Do not share your password with anyone.`); round 2 adds multi-line show captures (`show key chain`,
+  `show logging` after `cipher`, `show authentication sessions` session IDs, labelled image hashes in a
+  table, a running-config's `snmp-server host ... priv <user>`).
 - **`main_6390b66c`** on every row: origin/main's own `_redact_config_values` output, captured by
   running git-archived 6390b66c (not a frozen copy of its code).
 
 **Measured on the corpus** (real `redact_collection_dir` + `verify_collection_secret_scrub` on scratch
-trees): 0 secrets survive; 408/408 raw lines refused; 408/408 scrubbed lines certified; the tail probe
-refused on 391/391 keyword-governed rows; 113/113 must-keep and 30/30 over-redacted lines certified;
-idempotent on every row. **Main parity: of the 146 corpus secrets main 6390b66c removed, the new scrub
-removes 146**; main left a secret in 268 of the 408 must-redact rows, all now removed.
+trees, pure calls): 0 secrets survive; 842/842 raw rows refused; 842/842 scrubbed rows certified;
+145/145 must-keep and 31/31 over-redacted rows certified; idempotent on every row; the whole corpus as
+one capture is a certified fixpoint. **Main parity: of the 464 corpus secrets main 6390b66c removed, the
+new scrub removes 464**; main left a secret in 400 must-redact rows, all now removed. The round-1
+review corpus re-run (232 rows, 28 show captures, 5 dangle captures): 0 certified leaks, 0 regressions
+against main, every scrubbed capture certified. A wrap probe (2,013 cases: each must-redact clause cut
+at every token boundary) finds 0 secrets main removed that the new scrub leaves, and the verifier
+refuses none of the producer's own outputs. A randomized battery (multi-line mixes of every corpus,
+show and dangle segment with CR, LF and CRLF separators) checks idempotence, certification and secret
+removal: 82,500 cases on the final code, 0 failures. An earlier 60,000-case battery found 5 cases (a
+wrap inside a credential block, a keyword the block sweep itself replaced); they are fixed and pinned
+by `test_a_wrap_survives_the_scrub_of_its_own_line`.
 
 ## What changed downstream
 
 - **Golden and sample: byte-identical by construction.** Neither runs with `--redact` or
   `--redact-collection`; no module or import was added.
-- **Over-redaction on the golden and sample `--redact` outputs** (`redact_snapshot`, pure calls): the
-  golden snapshot differs from main's redacted output in 45 of 8,974 string leaves (46 strings carry a
-  placeholder, 33 on main), the sample in 208 of 49,488 (178 vs 135); all are engine-authored prose
-  (remediation text, detector titles, design doctrine). Every token main removed from those leaves is
-  still removed except non-secret words main had wrongly taken (`encryption`, `in`, `is`, `strings`,
-  `for`, `or`, `mismatch`). No key or list shape changes; both results certify.
-- **The engine's synthetic collection** (the golden input, 1,052 lines): main changes 4 lines; round 1
+- **Over-redaction on the golden and sample `--redact` outputs** (`redact_snapshot`, pure calls, round
+  2): the golden snapshot differs from main's redacted output in 48 of its 21,615 key and string leaves
+  (50 strings carry a placeholder, 33 on main, 46 in round 1), the sample in 195 of 111,523 (184 vs 135;
+  round 1 178); all are engine-authored prose (remediation text, detector titles, design doctrine). Every
+  token main removed from those leaves is still removed except non-secret words main had wrongly taken
+  (`encryption`, `in`, `is`, `strings`, `for`, `or`, `mismatch`). No key or list shape changes; both
+  results certify.
+- **The engine's synthetic collection** (the golden input, 1,052 lines): main changes 4 lines; round 2
   changes 5 (adds the `show storm-control` legend line), and the new verifier certifies all 96 captures.
-- **Performance** (pure calls, this workstation, noisy): a 210,000-line keyword-dense synthetic capture
-  scrubs in 5.9 s (W60 first cut 2.9 s) and verifies in 5.9 s (4.0 s); `redact_snapshot` of the sample
-  takes 2.5 s (main 3.0 s).
+- **Performance** (pure calls, this workstation, linear in lines): on a keyword-dense synthetic capture
+  the scrub costs about 53 us per line (main 6, round 1 16) and the verifier about 42 us per line
+  (round 1 17), so a million-line collection scrubs in about a minute and verifies in under one;
+  `redact_snapshot` of the sample takes about 3 s (main 1.7 s). A 20,000-character single line stays at
+  0.02 s.
 
 ## Residual limits (documented, not closed)
 
-1. **A credential spelled exactly like an allowlisted word** in a tail (`RO`, `1`, `the`, `cipher`, ...)
-   or like a void word right after its keyword survives; so does a slot's integer or name operand.
-2. **Kw-less positional values** outside the closed table/CSV/forms list (an unknown vendor table, a
-   free-form "admin / Fake99" note) are caught only if high-entropy.
+1. **A credential spelled exactly like an allowlisted word** in a tail (`1`, `the`, `cipher`, ...) or
+   like a void word right after its keyword survives, as does a WRAPPED value spelled like a
+   value-required keyword or a command word (`key-string`, `snmp-server`, `edit`); so does a slot's
+   integer or name operand, and a punctuation-only secret.
+2. **Kw-less positional values** outside the closed table/CSV/chap/forms list (an unknown vendor table, a
+   free-form "admin / Fake99" note without a prose anchor) are caught only if high-entropy.
 3. **High entropy is a heuristic**: a 24-31 character random token split by `/` into short segments, a
    low-entropy pasted secret, or a hex secret under a digest/identifier-named snapshot key is missed.
 4. **Over-redaction is real** (see above): engine prose in `--redact` deliverables, show-output legends,
-   BGP/Junos policy communities, keychain IDs above 15, public keys, `rmon`/EEM text. The engine's
+   BGP/Junos policy communities, keychain IDs above 15, public keys, `rmon`/EEM text, session IDs and
+   labelled hashes in show tables, the first word of a line after a dangling clause. The engine's
    `--no-collect` re-analysis of a scrubbed folder loses those values.
-5. **Terminal wraps** are recognised only after a cipher/hash/encoding word or a truncated key size.
+5. **Terminal wraps** take ONE token, as main's `\s+` did: a value wrapped across more than one line
+   break, or a lower-case remainder after an ambiguous key ID (`ntp server X key 1` / `fakesecret`) or a
+   lone command word, is not taken. Wraps on AireOS `config ...` lines are not modelled. A JSON key,
+   colon and value on three lines is not followed by the producer (the verifier refuses it, see above).
+   Where the producer reads a wrap from a line as it was before its own scrub (a keyword replaced inside
+   a credential block or a table cell), the verifier cannot see that keyword on the output and does not
+   demand the placeholder: there the guarantee is the producer's alone.
 6. **Shareable artifacts** keep their line-start, value-only scan plus PEM; the sweep closes residue
    there, the verifier does not re-detect it.
 7. **Captures scrubbed by an older build** cannot be repaired: the scrub cannot reconstruct an
@@ -221,9 +302,10 @@ removes 146**; main left a secret in 268 of the 408 must-redact rows, all now re
 
 ## Not verified
 
-- No pytest, no engine run, no build. The test module was AST-checked and linted, and every assertion
-  in it was re-computed with the production functions in a scratch folder; it has never executed as a
-  test.
+- No pytest, no engine run, no build (owner GITHUB-ONLY rule). The test module was AST-checked and
+  linted, and every assertion in it was re-computed with the production functions in a scratch folder;
+  it has never executed as a test. The same holds for the pre-existing redaction test files, whose
+  redaction assertions were re-computed the same way.
 - The full `--redact` pipeline (HTML/XLSX/DOCX certification) was not run; only `redact_snapshot`, the
   snapshot verifier and the raw-capture path were exercised by pure calls.
 - Real client captures: every input here is synthetic.
