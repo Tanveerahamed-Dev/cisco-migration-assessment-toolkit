@@ -124,11 +124,91 @@ compiler output.
 The tests were written and statically checked, but not run locally (owner rule). The hosted
 Master reference job runs them.
 
-## Unverified until the hosted run
+## Measured on the first hosted run
 
-- Every measured number. The PR's hosted job summary and `capacity.json` are the first real
-  values, including the first measurement of the projection walls.
-- That the field census reconciles byte for byte on the real 1.37 million records, and the guard
-  step's wall time.
-- That a `main` push uploads the record and the next run reads it. This can only be observed after
-  merge; a PR run reports "no baseline" until then.
+Hosted Master reference run `37996600752`, job `114044161386`, on PR #635's tested merge of head
+`54149d65` (W63 plus W64-0 on main `ddac90e3`). Every step passed. The guard measured all 45 walls
+(0 unmeasured) and reported **WARN**: 3 walls from 85 % to below 95 %, none at 95 % or above. The
+field census reconciled byte for byte on every chunk. The guard step took 62 s, and the trend
+reported "no baseline", as expected before the first `main` record exists. The 71 new test items
+ran in the hosted pytest step: 802 items against W63's 731.
+
+| Wall | Value | Limit | Use |
+|---|---:|---:|---:|
+| `release.census_bytes` | 2,155,006,513 B | 2,415,919,104 B | **89.20 % WARN** |
+| `chunk_bytes.symbols` (`chunks/symbols/00000.json`) | 28,907,964 B | 33,554,432 B | **86.15 % WARN** |
+| `compiler.json_string_bytes` (`chunks/source_text/00130.json`) | 7,130,756 B | 8,388,608 B | **85.00 % WARN** |
+| `projection.expanded_bytes` (16,798 modules) | 1,587,685,725 B | 2,147,483,648 B | 73.93 % |
+| `peak_rss.cli_build` (wall time 22:43) | 12,063,688 KiB | 16,373,448 KiB | 73.67 % |
+| `chunk_bytes.source_text` | 20,823,697 B | 33,554,432 B | 62.05 % |
+| `projection.compressed_bytes` | 295,391,981 B | 536,870,912 B | 55.02 % |
+| `chunk_bytes.components` | 15,460,202 B | 33,554,432 B | 46.07 % |
+| `disk.runner_temp` (also the workspace) | 70,704,746,496 B | 154,877,411,328 B | 45.65 % |
+| `projection.module_max_expanded_bytes` (`index.mjs`) | 3,275,387 B | 8,388,608 B | 39.04 % |
+| `compiler.json_values` (`chunks/symbols/00000.json`) | 727,648 | 2,000,000 | 36.38 % |
+| `peak_rss.projection` (5:49) | 4,417,980 KiB | 16,373,448 KiB | 26.98 % |
+| `peak_rss.compiler` (3:41) | 3,730,840 KiB | 16,373,448 KiB | 22.78 % |
+| `receipt.compression.bytes` | 5,863,752 B | 33,554,432 B | 17.47 % |
+| `receipt.projection.bytes` | 5,209,006 B | 33,554,432 B | 15.52 % |
+| `peak_rss.npm_test` (2:14) | 1,091,100 KiB | 16,373,448 KiB | 6.66 % |
+
+The other 29 walls are below 10 % (the `graph_nodes` and `graph_edges` groups are empty on the
+hosted runner, which has no Graphify output). The job summary and the log list all 45 walls.
+
+### What the numbers change
+
+- **The projection is not the nearest wall.** It is at 73.9 % expanded and 55.0 % compressed,
+  not the estimated 91 %. W63's scaling from the 2026-10-01 ratio overstated it. The design's
+  caveat (ship W64b's projection-only part first if the projection is at 90 % or more) does not
+  apply.
+- **A wall nobody printed is at 85.00 %.** `build/projection/build.mjs` refuses any compiler
+  string token over 8 MiB, and `cisco_toolkit/data/atlas-r1-source-bundle.json` is one
+  7,130,074-byte line. Its `source_text` token is 7,130,756 B, about 1.26 MB below refusal. Growth
+  of that one file, or any new single-line file over about 8 MB, refuses the projection build.
+- **The symbols per-chunk wall is nearer than reported.** The largest `symbols` chunk is 28.9 MB
+  (86.15 %); W63's 23.5 MB was the average.
+- **The census is at 89.20 %.** It is 2,155,006,513 B, about 8.5 MB above W63's measurement on
+  this stacked tree, with about 261 MB of headroom.
+- **Memory.** `cli build` peaked at 11.50 GiB (73.67 % of `MemTotal`), about 0.5 % above W63's
+  measurement. Wall times on this runner were about 1.8 times W63's for every step (compiler 3:41
+  against 2:03, `cli build` 22:43 against 11:50), so they vary by runner. `free -b` shows 3 GiB of
+  swap.
+
+### Per-field census (input for W64b)
+
+`lines`: 760,427 records, 1,449.0 B per record. The largest fields are:
+
+| Field | Bytes per record |
+|---|---:|
+| `inputs_and_outputs` | 162.0 |
+| `security_and_privacy_effect` | 91.0 |
+| `unresolved_reasons` | 90.3 |
+| `line_digest` | 80.0 |
+| `text_digest` | 80.0 |
+| `text_preview` | 67.9 |
+| `semantic_entity` | 65.7 |
+| `source_commit` | 58.0 |
+| `file_id` | 51.0 |
+| `owner` | 49.0 |
+| `test_coverage_state` | 46.8 |
+
+Record structure adds 32.0 B per record.
+
+`symbols`: 40,484 records, 12,304.0 B per record. **`tests` alone is 39.45 % of symbol bytes
+(4,854.2 B per record)**, followed by:
+
+| Field | Share of symbol bytes |
+|---|---:|
+| `known_impact_if_changed` | 18.51 % |
+| `callers` | 13.38 % |
+| `callees` | 5.08 % |
+| `data_dependencies` | 4.78 % |
+
+The W64b design's symbol list did not include `tests`. That field is the largest single lever.
+
+## Still unverified
+
+- That a `main` push uploads the record and the next run reads it, with a delta and days-to
+  figures. This can only be observed after merge; a PR run reports "no baseline" until then.
+- The days-to figures need at least two `main` records six hours apart.
+- One run is one data point; runner speed varied about 1.8 times between this run and W63's.
