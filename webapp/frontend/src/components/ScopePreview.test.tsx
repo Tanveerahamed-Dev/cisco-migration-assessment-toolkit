@@ -49,10 +49,22 @@ function expectQualified(entry: HTMLElement, where: string) {
   expect(tag!.getAttribute("title"), `${where}: the tooltip`).toBe(SCOPE_PREVIEW_DETAIL);
   expect(tag!.textContent, `${where}: the screen-reader sentence`).toContain("acceptance is not complete");
   expect(document.querySelectorAll("[data-scope-preview]"), `${where}: one qualifier per entry`).toHaveLength(1);
+  // D6: the entry names the qualifier as its accessible description, so a screen reader hears "Preview" and its
+  // reason with the entry itself, not only by reading on to the next element.
+  const describedBy = entry.getAttribute("aria-describedby");
+  expect(describedBy, `${where}: the entry carries no aria-describedby`).toBeTruthy();
+  expect(document.getElementById(describedBy!), `${where}: aria-describedby does not name the qualifier`).toBe(tag);
+  expect(entry, `${where}: the accessible description`).toHaveAccessibleDescription(/Preview.*acceptance is not complete/);
 }
 
 describe("the Atlas Scope preview qualifier", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("a description that names no qualifier fails the check (negative control for the aria-describedby tie)", () => {
+    render(<div><a href="/scope/snapshots/1/" aria-describedby="nothing-here">Open in Atlas Scope</a><ScopePreviewTag /></div>);
+    const link = screen.getByRole("link", { name: "Open in Atlas Scope" });
+    expect(() => expectQualified(link, "untied link")).toThrow();
+  });
 
   it("is a visible word with its reason, and no control", () => {
     render(<ScopePreviewTag />);

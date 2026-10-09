@@ -413,12 +413,15 @@ from an execution run.
   go / no-go → window → hypercare exit).
 
 **Records that cannot be deleted.** AssessHub refuses (HTTP 409) to delete a snapshot a receipt
-names, an execution run that holds a receipt, or a campaign that contains one. **There is no
-purge in AssessHub, by decision**: on 2026-10-09 the owner decided to keep everything, with
-receipts immutable and no in-app purge, so the per-campaign purge planned in
-[ADR 0007](docs/decisions/0007-one-application-direction.md) (D10) is not built. Disposing of a
-client's data is a documented manual step outside the application: see the
-[operator guide](docs/operator-guide-core-screens.md) (section 10) and
+names, an execution run that holds a receipt, or a campaign that contains one. Records without a
+receipt can be deleted, but **an in-app delete is not disposal**: a deleted row can stay readable
+in the database file and its start-time backups. **There is no purge in AssessHub, by
+decision**: on 2026-10-09 the owner decided to keep everything, with receipts immutable and no
+in-app purge, so the per-campaign purge planned in
+[ADR 0007](docs/decisions/0007-one-application-direction.md) (D10) is superseded by its
+Amendment 1 and is not built (the decision is recorded in [`docs/NOW.md`](docs/NOW.md), *Owner
+decisions*, 2026-10-09). Disposing of a client's data is a documented manual step outside the
+application: see the [operator guide](docs/operator-guide-core-screens.md) (section 10) and
 [`portable/README-FIELD.txt`](portable/README-FIELD.txt) (DISPOSING OF CLIENT DATA).
 
 **Where the data lives.** `Atlas.exe` keeps its database in `Atlas\data\assesshub.db`; a
@@ -475,7 +478,9 @@ in the owner block at the end of docs/operator-guide-core-screens.md.
 - Receipts and deletion refusals: webapp/backend/app.py compare, compare_execution, delete_* (409);
   webapp/backend/storage.py delete_*_if_unreceipted; pages/Execution.tsx (PASS rule).
 - No purge, by decision: no purge/retention route in webapp/backend; the owner's 2026-10-09
-  keep-everything decision (docs/NOW.md, W62 handoff) leaves ADR 0007 D10's purge unbuilt.
+  keep-everything decision (docs/NOW.md, Owner decisions, 2026-10-09 entry; ADR 0007 Amendment 1)
+  supersedes D10's purge. In-app delete is not disposal: storage.py issues neither PRAGMA
+  secure_delete nor VACUUM.
 - Preview labels: atlas-scope/src/app/PreviewLabel.tsx (rendered by StatusBar.tsx);
   webapp/frontend/src/components/ScopePreview.tsx (CoreSnapshot.tsx ScopeLink, Snapshot.tsx
   AtlasScopeLink, core/TopologyScope.tsx).

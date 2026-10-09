@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { EMBED_PROTOCOL, PROJECTION_SCHEMA, TOPOLOGY_STYLE_SCHEMA, parseEmbedMessage, projectionContextDigest,
   projectionEmbedUrl, sameProjectionIdentity, sameSelection, type EmbedMessage, type EmbedRefusalCode } from "../../projectionEmbed";
@@ -31,6 +31,7 @@ export function TopologyScope({ document, rows, selected, desired, onSelect, onC
   onSelect: (target: TopologyTarget | null) => void; onClear: () => void; onReturnTo2D: () => void;
 }) {
   const [attempt, setAttempt] = useState(0);
+  const previewQualifier = useId();
   const [session, setSession] = useState<{ document: TopologyDocument; nonce: string; href: string; digest: string } | null>(null);
   const [error, setError] = useState("");
   const [bound, setBound] = useState(false);
@@ -149,12 +150,13 @@ export function TopologyScope({ document, rows, selected, desired, onSelect, onC
 
   const currentVisible = bound && applied === desired.request_id;
   return <section className="panel topology-scope" aria-label="Embedded Atlas Scope">
-    {/* The embedded view is Atlas Scope's contract mode, which has no Scope status bar, so its Preview label is here. */}
-    <div className="topology-scope-toolbar"><WithScopePreview><h2>3-D investigation</h2></WithScopePreview><button className="btn" onClick={onReturnTo2D}>Return to 2-D</button></div>
+    {/* The embedded view is Atlas Scope's contract mode, which has no Scope status bar, so its Preview label is here.
+        The heading and the embedded frame both name the qualifier as their accessible description. */}
+    <div className="topology-scope-toolbar"><WithScopePreview qualifierId={previewQualifier}><h2 aria-describedby={previewQualifier}>3-D investigation</h2></WithScopePreview><button className="btn" onClick={onReturnTo2D}>Return to 2-D</button></div>
     {error ? <><p role="alert" className="projection-disclosure">{error}</p><button className="btn" onClick={() => { onClear(); setAttempt((value) => value + 1); }}>Retry current 3-D capability</button></>
       : <p role="status">{currentVisible ? "Scope is bound to this snapshot and current query." : bound ? "Clearing or updating the current 3-D overlay…" : "Verifying the current same-hub Scope view…"}</p>}
     {activeSession && <iframe key={activeSession.nonce} ref={iframe} src={activeSession.href} title="Atlas Scope engine topology"
-      sandbox="allow-scripts allow-same-origin" allowFullScreen style={{ visibility: currentVisible ? "visible" : "hidden" }}
+      aria-describedby={previewQualifier} sandbox="allow-scripts allow-same-origin" allowFullScreen style={{ visibility: currentVisible ? "visible" : "hidden" }}
       onLoad={() => { if (loaded.current) refuse("The embedded document changed. Start a fresh 3-D session."); else loaded.current = true; }} />}
     <p className="dim">2-D and the evidence lists stay available below. A connected 3-D session does not certify complete network evidence.</p>
   </section>;

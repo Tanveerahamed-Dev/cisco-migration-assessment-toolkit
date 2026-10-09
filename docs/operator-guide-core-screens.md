@@ -201,7 +201,8 @@ recorded. The label is on screen wherever you meet it:
 - Atlas Scope's status bar carries a **Preview** label on every view and at every window width.
 - AssessHub shows **Preview** beside **Open in Atlas Scope ↗** (on the snapshot header and on
   Tools and downloads) and beside the embedded **3-D investigation** heading, whose view has no
-  status bar of its own.
+  status bar of its own. Each of those entries names the label as its accessible description,
+  so a screen reader announces the preview status with the link or heading itself.
 
 Use it to look around, and confirm any finding on the core screens before you act on it. A quiet
 or empty 3-D view is not a clean bill of health.
@@ -238,8 +239,10 @@ or empty 3-D view is not a clean bill of health.
   rehearsal evidence), the execution run and **Adjacent canonical cutover receipts** show them
   only as the engine reads them live from the bound after snapshot. A lower bound, a value that
   was not assessed and an unreadable row each stay distinct from a measurement and from 0. That
-  reading is for display: it is not part of the receipt, and the JSON export holds only the bound
-  evidence. **Compare two waves** does not supply this reading.
+  reading is for display only: it is not part of the receipt, and neither JSON export carries it.
+  **Export complete JSON** writes the comparison itself, exactly as it is bound. **Export Trend
+  JSON** writes the campaign trend and, for each adjacent pair, only the pair's identity and its
+  complete comparison. **Compare two waves** does not supply this reading.
 
 ## 9. Records you cannot delete, and why there is no purge
 
@@ -248,12 +251,18 @@ or empty 3-D view is not a clean bill of health.
   - a snapshot that a receipt names (before, after, or a failure-trial source);
   - an execution run that holds a receipt;
   - a campaign that contains one.
-- A campaign without receipts can be deleted from its page.
+- A campaign, snapshot or execution run without a receipt can be deleted (HTTP 204); a
+  campaign from its own page.
+- **In-app delete is not disposal.** A deleted row leaves AssessHub's lists, but its bytes can
+  stay readable inside the database file: AssessHub does not make SQLite overwrite or compact the
+  space it frees. The start-time copies in `backups` (up to three) can still hold the row too.
 - **There is no purge in AssessHub, by decision.** The owner decided on 2026-10-09 to keep
   everything: receipts stay immutable, and AssessHub has no in-app purge. The per-campaign purge
   and retention indicator that `docs/decisions/0007-one-application-direction.md` (D10) had
-  planned are not built under this decision. Removing a client's data at the end of an engagement
-  is a documented manual step outside the application (section 10, *Disposing of client data*).
+  planned are not built under this decision (the ADR's dated amendment and the board's 2026-10-09
+  owner-decisions entry record it). Disposing of a client's data at the end of an engagement means
+  removing the whole data folder and every other copy, outside the application (section 10,
+  *Disposing of client data*).
 
 ## 10. Where the data lives, and backups
 
@@ -275,9 +284,9 @@ CORRUPTION.
 
 ### Disposing of client data (manual, outside AssessHub)
 
-AssessHub keeps everything and has no purge (section 9). Disposal is a deliberate step you take
-with the operating system, at the end of an engagement and only when the client agreement allows
-it. It is not a repair: for a damaged database, follow CORRUPTION in `portable/README-FIELD.txt`.
+AssessHub keeps everything and has no purge, and an in-app delete is not disposal (section 9).
+Disposal is a deliberate step you take with the operating system, at the end of an engagement and
+only when the client agreement allows it. It is not a repair: for a damaged database, follow CORRUPTION in `portable/README-FIELD.txt`.
 Never edit the database or try to remove single records: receipts are immutable by design. On the
 stick the same procedure is in `portable/README-FIELD.txt`, DISPOSING OF CLIENT DATA.
 
@@ -293,20 +302,37 @@ stick the same procedure is in `portable/README-FIELD.txt`, DISPOSING OF CLIENT 
      rollbacks).
    - **Engine logs** (`cisco_migration_autofill_v<version>.log`, which name devices and hosts):
      in `Atlas\data` for an engine run started inside the Atlas folder on the stick, otherwise
-     in the folder the run was started from.
-   - **Beside `Atlas\` on the stick:** `Atlas.data-handoff`, if an update was interrupted. It
-     holds the whole data folder.
-   - **Folders you chose:** raw collection folders, every `--out` folder and engine output
-     folders.
+     in the folder the run was started from. Only the log is moved: see the raw captures below.
+   - **Beside `Atlas\` on the stick, after any update or rollback, finished or interrupted:**
+     every folder whose name starts with `Atlas.` or `.Atlas.` can hold client data.
+     `Atlas.data-handoff` holds the whole data folder; `Atlas.incoming\data`,
+     `Atlas.previous\data` and the `Atlas.failed-*` folders can hold it; and
+     `.Atlas.database-preflight` holds a copy of `assesshub.db` if the updater could not remove it.
+   - **Folders you chose:** the raw captures of a live collection, in the `--collection-dir`
+     folder. Without that option the engine creates a `migration_collection_<date>` folder in the
+     folder the run was started from, even inside `Atlas\`, so always pass `--collection-dir`
+     (and `--output`) to a folder outside `Atlas\`. Also every `--output` folder with the
+     documents written beside it (without `--output`, the folder the run was started from), and
+     every `--out` folder.
    - **The computer that ran AssessHub:** documents downloaded from it (usually the browser's
      Downloads folder), and anything named `assesshub_*` or `atlas_redact_*` in the system
      temporary folder. AssessHub removes those after each run or download, but a failed removal
      is not reported.
+   - **The browser on that computer:** its cache and site data can keep pages and data AssessHub
+     served (only a few responses are marked not to be stored). Use a browser profile kept only
+     for AssessHub and delete that profile, or clear the browser's cache and site data for the
+     AssessHub address.
 4. Delete them with the operating system, not through AssessHub. Remove the database together
-   with `backups` and `release-backups`, so that no older copy survives. The empty folder that
-   held them can stay.
-5. Deleting a file does not make it unrecoverable on a stick or a disk. Where the agreement
-   requires that, follow your organisation's media-sanitisation procedure.
+   with `backups` and `release-backups`, and the client data inside the `Atlas.*` and `.Atlas.*`
+   folders, so that no older copy survives. The empty folder that held them can stay.
+5. Deleting a file does not make it unrecoverable. On a USB stick or an SSD, overwriting it does
+   not either: wear levelling writes to other memory cells, so old copies can survive an
+   overwrite tool as well as a delete. BitLocker To Go turned on after client data was written,
+   with *Encrypt used disk space only*, leaves the space that was free at that moment
+   unencrypted, so data deleted earlier can stay readable. The honest options are to encrypt the
+   stick from its first use and, at disposal, reformat it and destroy every saved copy of its
+   recovery key, or to destroy the stick physically. Where the agreement requires it, follow
+   your organisation's media-sanitisation procedure for the stick and the computer.
 
 The next start creates a new, empty database.
 
@@ -389,15 +415,29 @@ correct the prose above when an owner changes.
 - Deletion refusals: webapp/backend/app.py delete_campaign, delete_snapshot, delete_execution (409);
   webapp/backend/storage.py delete_*_if_unreceipted. No purge, by decision: no purge or retention
   route in webapp/backend; the owner's 2026-10-09 keep-everything decision (receipts immutable, no
-  in-app purge, manual disposal outside the app) is recorded in docs/NOW.md (W62 handoff); ADR 0007
-  D10's planned purge is not built.
+  in-app purge, manual disposal outside the app) is recorded in docs/NOW.md (Owner decisions,
+  2026-10-09 entry) and in ADR 0007 Amendment 1, which supersedes D10's planned purge.
 - Preview labels (owner decision 2026-10-09, Scope ships as a labelled preview):
   atlas-scope/src/app/PreviewLabel.tsx (ACCEPTANCE_GRADE cache, reconciled to the report by
   PreviewLabel.test.tsx) rendered by StatusBar.tsx; webapp/frontend/src/components/ScopePreview.tsx
-  beside CoreSnapshot.tsx ScopeLink, Snapshot.tsx AtlasScopeLink and core/TopologyScope.tsx's
-  heading (contract mode, atlas-scope/src/contract-mode/, renders no status bar).
+  ScopeEntryLink (CoreSnapshot.tsx ScopeLink, Snapshot.tsx AtlasScopeLink; aria-describedby on the
+  link) and WithScopePreview (core/TopologyScope.tsx's heading and frame, aria-describedby; contract
+  mode, atlas-scope/src/contract-mode/, renders no status bar); src/scopeEntries.test.ts derives
+  every Scope entry from source and requires one of the two.
+- In-app delete is not disposal: app.py delete_campaign, delete_snapshot, delete_execution
+  (204 when unreceipted; Campaign.tsx's Delete button); storage.py sets journal_mode DELETE and
+  issues neither PRAGMA secure_delete nor VACUUM; _BACKUP_KEEP = 3.
+- Receipt exports: webapp/frontend/src/receiptExport.ts (comparisonExportDocument,
+  trendReceiptsExportDocument and their allowlists), used by ComparisonDecision.tsx
+  downloadCompleteJson and Campaign.tsx downloadTrendJson; engine.py attaches impacts_view beside
+  each trend pair; src/receiptExport.test.tsx reads both written files.
 - Disposal locations: storage.py _BACKUP_DIR; portable/make_stick.ps1 release-backups,
-  Atlas.data-handoff; cisco_toolkit/__init__.py engine_log_path; ingest.py mkdtemp prefixes
+  Atlas.data-handoff, Atlas.incoming/Atlas.previous data moves (Recover-Update), the
+  Atlas.failed-* quarantine names, and .Atlas.database-preflight (Invoke-DatabasePreflight; the
+  final cleanup swallows a removal error); COLLECT_PARSE_V3_23_0.py COLLECTION_DIR
+  ("migration_collection_{}", relative to the working directory unless --collection-dir);
+  cisco_toolkit/__init__.py engine_log_path (moves only the log into Atlas/data); app.py sends
+  Cache-Control no-store on only a few responses; ingest.py mkdtemp prefixes
   assesshub_ingest_ and atlas_redact_ under _engine_temp_parent; app.py/deliverables.py/engine.py
   mkstemp prefixes assesshub_*, removed by _send_file or their own finally blocks with errors
   suppressed; storage.py

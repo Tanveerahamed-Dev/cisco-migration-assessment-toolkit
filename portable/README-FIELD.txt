@@ -138,10 +138,15 @@ The ingest never connects to a device.
 An execution run that binds its post-change snapshot makes a
 comparison receipt: a permanent decision record. Atlas refuses to
 delete a snapshot a receipt names, an execution run that holds one,
-or a campaign that contains one. There is NO purge in the app, by
-decision: Atlas keeps everything, so that data stays in
-data\assesshub.db and in data\backups\. Removing client data is a
-manual step outside Atlas (see DISPOSING OF CLIENT DATA).
+or a campaign that contains one. A campaign, snapshot or execution
+run WITHOUT a receipt can be deleted (a campaign from its own page).
+IN-APP DELETE IS NOT DISPOSAL: a deleted row leaves the app's lists,
+but its bytes can stay readable inside data\assesshub.db (Atlas does
+not make the database overwrite or compact freed space), and the
+start-time copies in data\backups\ (up to three) can still hold it.
+There is NO purge in the app, by decision. Disposing of client data
+means removing the whole data\ folder and every other copy listed
+below, outside Atlas (see DISPOSING OF CLIENT DATA).
 The app does NOT redact documents you download (see REDACTION).
 
 DISPOSING OF CLIENT DATA (MANUAL, OUTSIDE ATLAS)
@@ -163,22 +168,43 @@ single records - receipts are permanent by design.
        release-backups\  database copies and hash receipts kept by
                          updates and rollbacks
        *.log             engine logs (they name devices and hosts)
-     Beside Atlas\ on the stick: Atlas.data-handoff, if an update
-     was interrupted - it holds the whole data folder.
-     Folders you chose: collection folders (raw captures), every
-     --out folder, and engine output folders.
+     Beside Atlas\ on the stick, after any update or rollback,
+     finished or interrupted: every folder whose name starts with
+     Atlas. or .Atlas. can hold client data - Atlas.data-handoff (the
+     whole data folder), Atlas.incoming\data, Atlas.previous\data,
+     the Atlas.failed-* folders, and .Atlas.database-preflight (a copy
+     of assesshub.db, left behind if the updater cannot remove it).
+     Folders you chose: the raw captures of a live collection (the
+     --collection-dir folder; without that option the engine makes a
+     migration_collection_<date> folder in the folder the run was
+     started from, even inside Atlas\), every --output folder and the
+     documents beside it, and every --out folder.
      On the laptop: documents downloaded from the app (usually the
      Downloads folder), engine logs in the folder an engine run was
      started from, and anything named assesshub_* or atlas_redact_*
      in the temporary folder (%TEMP%). Atlas removes those after each
      run, but a removal that failed is not reported.
-  4. Delete them with Windows Explorer, not through the app. Empty
+     The browser on the laptop: its cache and site data can keep
+     pages and data Atlas served. Use a browser profile kept only for
+     Atlas and delete that profile, or clear that browser's cache and
+     site data for the Atlas address.
+  4. Delete them with Windows Explorer, not through the app. Remove
      Atlas\data\ as a whole - the database together with backups\
-     and release-backups\ - so no older copy is left behind. The
-     empty data folder itself can stay.
-  5. Deleting a file does not make it unrecoverable on a stick or a
-     disk. If the agreement requires that, follow your organisation's
-     media-sanitisation procedure for the stick and the laptop.
+     and release-backups\ - and the client data inside the Atlas.*
+     and .Atlas.* folders, so no older copy is left behind. The empty
+     data folder itself can stay.
+  5. Deleting a file does not make it unrecoverable. On a USB stick
+     or an SSD, neither does overwriting it: wear levelling writes to
+     other memory cells, so old copies can survive an overwrite tool
+     as well as a delete. BitLocker To Go turned on AFTER client data
+     was written, with "Encrypt used disk space only", leaves the
+     space that was free at that moment unencrypted, so data deleted
+     earlier can stay readable. The honest options: encrypt the stick
+     from its first use (LOSS OF STICK) and, at disposal, reformat it
+     and destroy every saved copy of its recovery key; or physically
+     destroy the stick. Where the agreement requires it, follow your
+     organisation's media-sanitisation procedure for the stick and
+     the laptop.
 The next start begins with a new, empty database.
 
 EJECT DISCIPLINE
@@ -363,7 +389,11 @@ loopback (127.0.0.1 or ::1). This is defense in depth, not an OS firewall:
 the disconnected-NIC field test is the hard no-internet check. For an
 explicitly authorized read-only SSH collection, use the engine door with the
 engagement's reviewed devices file and workbook template, for example:
-  Atlas.exe --allow-live-network --run-engine --devices-file D:\job\devices.json --template D:\job\template.xlsx --output D:\job\Assessment.xlsx
+  Atlas.exe --allow-live-network --run-engine --devices-file D:\job\devices.json --template D:\job\template.xlsx --output D:\job\Assessment.xlsx --collection-dir D:\job\collection
+Always pass --collection-dir and --output, each to a folder outside
+Atlas\: without --collection-dir the raw captures land in a new
+migration_collection_<date> folder in whatever folder the command was
+started from, and only the engine log is moved into Atlas\data.
 The browser ingest routes remain offline; the bare `--allow-live-network`
 server form changes reachability but does not itself start a collection.
 This enables network reachability only. It does NOT authorize a collection,

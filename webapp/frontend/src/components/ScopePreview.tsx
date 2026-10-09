@@ -1,32 +1,54 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 // Atlas Scope ships as a LABELLED PREVIEW (owner decision, 2026-10-09). Atlas Scope's own chrome carries
 // the label on every view (atlas-scope/src/app/PreviewLabel.tsx); this is AssessHub's matching qualifier,
 // placed beside every entry to Scope so the reader is told before following it, not only after. The
 // acceptance grade it refers to is owned by atlas-scope/docs/acceptance-report.md and is deliberately not
 // restated here: the words say only that acceptance is not complete.
+//
+// Every AssessHub entry to Scope goes through this module: a link through ScopeEntryLink, any other entry
+// (the embedded view's heading) through WithScopePreview. src/scopeEntries.test.ts reads the source and fails
+// when a component that consumes the Scope capability (api.scopeView, projectionEmbedUrl) or names a "/scope"
+// target renders an entry any other way.
 export const SCOPE_PREVIEW_WORD = "Preview";
 export const SCOPE_PREVIEW_DETAIL =
   "Atlas Scope is a preview: its acceptance is not complete (see atlas-scope/docs/acceptance-report.md).";
 
 // The qualifier itself: the existing tag chip, a visible word, the full sentence as the tooltip and as
-// screen-reader text. Not a control, so it adds no tab stop.
-export function ScopePreviewTag() {
+// screen-reader text. Not a control, so it adds no tab stop. `id` lets the entry it qualifies name it as its
+// accessible description (aria-describedby), so a screen reader hears the qualifier with the entry itself.
+export function ScopePreviewTag({ id }: { id?: string }) {
   return (
-    <span className="chip tag" data-scope-preview="" title={SCOPE_PREVIEW_DETAIL}>
+    <span className="chip tag" data-scope-preview="" id={id} title={SCOPE_PREVIEW_DETAIL}>
       {SCOPE_PREVIEW_WORD}
       <span className="sr-only">{`: ${SCOPE_PREVIEW_DETAIL}`}</span>
     </span>
   );
 }
 
-// An entry to Scope (a link, or the embedded view's heading) with the qualifier directly beside it. A div,
-// so it may hold a heading as well as a link; inline-flex, so it sits in a header row as one item.
-export function WithScopePreview({ children }: { children: ReactNode }) {
+const ENTRY_STYLE = { display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" } as const;
+
+// An entry to Scope that is not a link (the embedded view's heading) with the qualifier directly beside it. A
+// div, so it may hold a heading; inline-flex, so it sits in a header row as one item. A caller that ties the
+// qualifier to its entry passes the same `qualifierId` to the entry's aria-describedby.
+export function WithScopePreview({ children, qualifierId }: { children: ReactNode; qualifierId?: string }) {
   return (
-    <div className="scope-entry" style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+    <div className="scope-entry" style={ENTRY_STYLE}>
       {children}
-      <ScopePreviewTag />
+      <ScopePreviewTag id={qualifierId} />
+    </div>
+  );
+}
+
+// The one link to Atlas Scope: the anchor and its qualifier, side by side, with the qualifier as the link's
+// accessible description. `href` is the caller's already-validated same-hub Scope target (the scope-view
+// capability's href); this component does not choose or rewrite it.
+export function ScopeEntryLink({ href, title, children }: { href: string; title?: string; children: ReactNode }) {
+  const qualifier = useId();
+  return (
+    <div className="scope-entry" style={ENTRY_STYLE}>
+      <a className="btn" href={href} title={title} aria-describedby={qualifier}>{children}</a>
+      <ScopePreviewTag id={qualifier} />
     </div>
   );
 }
