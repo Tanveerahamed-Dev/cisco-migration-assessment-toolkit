@@ -75,6 +75,8 @@ failure_impact_fleet_blind = _impact_assessability.fleet_blind
 IMPACT_FLEET_BLIND_CAVEAT = _impact_assessability.FLEET_BLIND_CAVEAT
 IMPACT_R_FLEET_BLIND = _impact_assessability.R_WAVE_FLEET_BLIND
 IMPACT_R_FLEET_BLIND_UNREAD = _impact_assessability.R_WAVE_FLEET_BLIND_UNREAD
+IMPACT_R_WAVE_ZERO = _impact_assessability.R_WAVE_ZERO
+IMPACT_R_WAVE_NONE = _impact_assessability.R_WAVE_NONE
 
 
 # ---------------------------------------------------------------------------------------------------------------

@@ -6,8 +6,10 @@ floors; a band below the worst and a zero are not measurements), ``not_assessed`
 is a measurement) or ``ambiguous``. W33 moved the projection and the workbook, design, deck, RES-4, dossier and
 explorer onto it. W48 moves the rest of the class: the MOP's per-wave blast radius and rollback trigger, the
 runbook's §10 Risk Register, the operations handbook's §2.1 keystones, the MCP ``failure_impact`` tool and the
-AssessHub dossier recompute. After its independent review it also owns the WAVE rule (``wave_blast``): the MOP and
-AssessHub's cutover plan read the same rule, so they cannot disagree on whether a wave's figure is exact.
+AssessHub dossier recompute. After its independent review it also owns the WAVE rule (``wave_blast``): the MOP
+applies it to the owner's verdicts and AssessHub's cutover plan to the projection's rows (built from those verdicts),
+so the two classify a wave by one rule. They remain two readings of the rows, so their agreement is pinned per variant
+(``webapp/tests/test_impact_surfaces.py``), not guaranteed by construction.
 
 Three things are pinned here:
 
@@ -19,9 +21,11 @@ Three things are pinned here:
    name as a call argument (``snap.get``, ``getattr``, ``pop``, a path tuple that starts with it), uses it as a
    subscript or mapping-pattern key, loads ``.failure_impact`` or matches a ``failure_impact=`` class pattern, loads
    a ``failure_impact`` name that is no project unit (a parameter or local), or compares a key that iterates data
-   (``for k, v in snap.items()``) against it. The section name is folded through module-level, imported and
-   once-assigned local key constants, ``+``, f-strings of foldable parts and ``sep.join([...])``, and a loop name
-   iterating a literal table that holds it. A unit also reads when it is a nested function loading a name its
+   (``for k, v in snap.items()``) against it. The section name is folded only through a literal, a plain name or an
+   imported module's attribute bound to a module-level, explicitly imported or once-assigned (single-name) local key
+   constant, ``+``, f-strings of unconverted foldable parts, ``sep.join([...])`` of a literal list, and a loop name
+   iterating a MODULE-LEVEL literal table that holds it; every other way of computing the key is a known limit
+   (below). A unit also reads when it is a nested function loading a name its
    enclosing function assigned from a read, or a helper that reads a row field (``r['stranded']``,
    ``r.get('severity')``) after another unit handed it the rows, as the callee or as a function passed beside them
    (a phase runner).
@@ -53,8 +57,13 @@ Three things are pinned here:
      attribute, a container or a return value and consumed elsewhere, and rows a helper passes on to a second helper
      are not followed; a helper handed the rows counts as a reader only when it reads a row field by a literal or
      foldable key;
-   * keys built with ``%`` or ``str.format``, read from data or a dict-literal value, or held in a class attribute
-     are not folded (a literal section name in an unlisted position fails the line check instead);
+   * the key folding has holes. Not folded: ``%`` or ``str.format``; a tuple-unpacked or re-assigned local; a local
+     literal table; a method call, slice, ``or``, conditional expression or ``!s``/``!r`` conversion over a key
+     constant (``KEY.strip()``, ``KEY[:]``, ``KEY or ''``, ``KEY if x else ''``, ``f'{KEY!s}'``); ``globals()['KEY']``;
+     a star import; ``importlib``; ``b'...'.decode()``; and a key read from data, a dict-literal value or a class
+     attribute. Each is pinned in ``_KNOWN_LIMITS``. The line check does NOT close these: each places the literal
+     section name in a closed position (a key constant's definition, a literal table) or not at all (bytes), so such
+     a read passes both checks. The line check catches only a literal section name in an unlisted position;
    * calls through an instance (``ctx.impact.row()``), ``getattr(module, name)()``, ``importlib``, registries filled
      at run time and decorators that replace a function are not resolved. A reference to a project unit counts as a
      route, so a unit that only names a routed helper, without calling it, is admitted;
@@ -1127,8 +1136,8 @@ def test_each_known_evasion_of_the_guard_is_flagged(tmp_path, case):
 
 
 #: What the guard does NOT see, pinned so the docstring's known limits stay true: each module reads the stored rows
-#: raw and passes. When the guard learns to see one, its test fails: move the case to _EVASIONS and update the
-#: docstring.
+#: raw and passes (the key-folding holes pass the line check too). When the guard learns to see one, its test fails:
+#: move the case to _EVASIONS and update the docstring.
 _KNOWN_LIMITS = {
     # dataflow is followed one assignment from a read: a copy of a copy reaches the helper unseen
     "two_hop": ("from cisco_toolkit import impact_assessability as ia\n"
@@ -1145,6 +1154,25 @@ _KNOWN_LIMITS = {
     "same_unit": ("from cisco_toolkit import impact_assessability as ia\n"
                   "def render(snap):\n    ia.rows_with_verdicts(snap)\n"
                   "    return [r['stranded'] for r in snap.get('failure_impact')]\n"),
+    # W51 (the W48 re-verification's P3): the key folding's holes. Folding reads a literal, a module-level, imported
+    # or once-assigned local key constant through a plain name, ``+``, an f-string of unconverted parts,
+    # ``sep.join([...])`` and a loop over a module-level literal table; every other way of computing the key is
+    # unfolded, so the read is not seen
+    "key_tuple_unpack": ("def render(snap):\n    key, other = 'failure_impact', 'devices'\n"
+                         "    return snap.get(key), other\n"),
+    "key_reassigned": ("def render(snap):\n    key = 'devices'\n    key = 'failure_impact'\n    return snap.get(key)\n"),
+    "key_local_table": ("def render(snap):\n    keys = ('devices', 'failure_impact')\n    for key in keys:\n"
+                        "        yield snap.get(key)\n"),
+    "key_method": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(KEY.strip())\n"),
+    "key_slice": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(KEY[:])\n"),
+    "key_boolop": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(KEY or '')\n"),
+    "key_ifexp": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(KEY if snap else '')\n"),
+    "key_globals": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(globals()['KEY'])\n"),
+    "key_fstring_conversion": ("KEY = 'failure_impact'\ndef render(snap):\n    return snap.get(f'{KEY!s}')\n"),
+    "key_star_import": ("from cisco_toolkit.keys import *\ndef render(snap):\n    return snap.get(SECTION_KEY)\n"),
+    "key_importlib": ("import importlib\ndef render(snap):\n"
+                      "    return snap.get(importlib.import_module('cisco_toolkit.keys').SECTION_KEY)\n"),
+    "key_bytes_decode": ("def render(snap):\n    return snap.get(b'failure_impact'.decode())\n"),
 }
 
 
@@ -1152,6 +1180,7 @@ _KNOWN_LIMITS = {
 def test_each_documented_known_limit_is_still_a_limit(tmp_path, case):
     _write(tmp_path, "cisco_toolkit/__init__.py", "")
     _write(tmp_path, "cisco_toolkit/impact_assessability.py", _OWNER_STUB)
+    _write(tmp_path, "cisco_toolkit/keys.py", "SECTION_KEY = 'failure' + '_impact'\n")     # as the evasions have it
     _write(tmp_path, f"cisco_toolkit/{case}.py", _KNOWN_LIMITS[case])
     assert not _raw(str(tmp_path)), _raw(str(tmp_path))
 
@@ -1309,7 +1338,7 @@ def test_mop_never_sizes_a_wave_or_its_trigger_on_a_zero_lower_bound(tmp_path, s
     floorless = [row["host"] for row, v in pairs if v.assessable == ia.LOWER_BOUND and ia.ranking_floor(v) is None]
     assert zero and floorless, (zero, floorless)         # precondition from the owner (the sample's dist2 and dist1)
     _with_waves(snap, [zero[0], floorless[0]])
-    wave = ia.wave_blast([zero[0], floorless[0]], ia.wave_rows(snap))
+    wave = ia.wave_blast([zero[0], floorless[0]], ia.wave_rows(snap), **_FLEET_CLEAR)
     assert wave.assessable == ia.NOT_ASSESSED and wave.zero_bound and wave.value == 0, wave
     lines = _mop_lines(tmp_path, snap, "mop_zero.docx")
     cell, trigger = _mop_wave(lines, floorless[0])
@@ -1469,27 +1498,29 @@ def test_mcp_failure_impact_hands_the_assistant_a_held_core1_as_not_assessed(hel
 # part 3: the owner's wave rule (impact_assessability.wave_blast), which the MOP and the cutover plan both read
 # ---------------------------------------------------------------------------------------------------------------
 _NO_SUCH = "no-such-switch"
+#: The wave rule's fleet counts for a collection that reached every device (wave_blast has no default for them).
+_FLEET_CLEAR = {"blind": 0, "blind_unread": 0}
 
 
 def test_the_wave_rule_publishes_only_a_wave_whose_every_device_is_a_measurement(sample):
     snap = _published(copy.deepcopy(sample))
     rows = ia.wave_rows(snap)
     by_host = {r.key: r for r in rows}
-    exact = ia.wave_blast(["core1", "access1"], rows)
+    exact = ia.wave_blast(["core1", "access1"], rows, **_FLEET_CLEAR)
     assert exact.assessable == ia.PUBLISHED and exact.complete and exact.n_not_ranked == 0, exact
     assert exact.value == max(by_host["core1"].stranded, by_host["access1"].stranded) and ia.wave_why(exact) == ""
     # a device with no row: the largest count is only a floor
-    floor = ia.wave_blast(["core1", _NO_SUCH], rows)
+    floor = ia.wave_blast(["core1", _NO_SUCH], rows, **_FLEET_CLEAR)
     assert floor.assessable == ia.LOWER_BOUND and floor.value == by_host["core1"].stranded and not floor.complete
     assert ia.wave_why(floor) == ia.R_WAVE_NO_ROW.format(n=1, names=_NO_SUCH)
     # beside only published zeros that floor is 0: not assessed, never a threshold of zero
     zeros = [r.key for r in rows if r.ranked and r.stranded == 0]
     assert zeros, "precondition: the sample has switches that strand nobody"
-    zero = ia.wave_blast([zeros[0], _NO_SUCH], rows)
+    zero = ia.wave_blast([zeros[0], _NO_SUCH], rows, **_FLEET_CLEAR)
     assert zero.assessable == ia.NOT_ASSESSED and zero.zero_bound and zero.value == 0 and zero.observed, zero
     # an exact zero stays a measurement; a wave none of whose devices has a row is not observed at all
-    assert ia.wave_blast(zeros, rows)[:2] == (ia.PUBLISHED, 0)
-    none = ia.wave_blast([_NO_SUCH], rows)
+    assert ia.wave_blast(zeros, rows, **_FLEET_CLEAR)[:2] == (ia.PUBLISHED, 0)
+    none = ia.wave_blast([_NO_SUCH], rows, **_FLEET_CLEAR)
     assert none.assessable == ia.NOT_ASSESSED and none.value is None and not none.observed and not none.zero_bound
 
 
@@ -1499,7 +1530,7 @@ def test_the_wave_rule_never_lets_a_withheld_zero_or_a_held_row_size_a_wave(samp
     pairs = ia.rows_with_verdicts(snap)
     floorless = [row["host"] for row, v in pairs if v.assessable == ia.LOWER_BOUND and ia.ranking_floor(v) is None]
     assert floorless, "precondition: a lower-bound row whose zero the owner withholds"
-    alone = ia.wave_blast(floorless[:1], rows)
+    alone = ia.wave_blast(floorless[:1], rows, **_FLEET_CLEAR)
     assert alone.assessable == ia.NOT_ASSESSED and alone.value is None and alone.observed and not alone.ranked
     assert ia.wave_why(alone).startswith(f"{floorless[0]} (lower bound — "), ia.wave_why(alone)
 
@@ -1508,14 +1539,14 @@ def test_the_wave_rule_bounds_every_wave_by_a_row_naming_no_host_and_by_the_flee
     snap = _published(copy.deepcopy(sample))
     snap["failure_impact"].append(dict(snap["failure_impact"][0], host=None))
     rows = ia.wave_rows(snap)
-    wave = ia.wave_blast(["core1"], rows)
+    wave = ia.wave_blast(["core1"], rows, **_FLEET_CLEAR)
     assert wave.assessable == ia.LOWER_BOUND and len(wave.hostless) == 1 and wave.n_not_ranked == 1, wave
     assert f"/failure_impact/{len(rows) - 1} (" in ia.wave_why(wave), ia.wave_why(wave)
     clean = ia.wave_rows(_published(copy.deepcopy(sample)))
-    assert ia.wave_blast(["core1"], clean, blind=0).assessable == ia.PUBLISHED
+    assert ia.wave_blast(["core1"], clean, **_FLEET_CLEAR).assessable == ia.PUBLISHED
     for blind, said in ((2, ia.R_WAVE_FLEET_BLIND.format(n=2)), (None, ia.R_WAVE_FLEET_UNREAD),
                         (True, ia.R_WAVE_FLEET_UNREAD), (-1, ia.R_WAVE_FLEET_UNREAD)):
-        bounded = ia.wave_blast(["core1"], clean, blind=blind)
+        bounded = ia.wave_blast(["core1"], clean, blind=blind, blind_unread=0)
         assert bounded.assessable == ia.LOWER_BOUND and not bounded.complete, (blind, bounded)
         assert ia.wave_why(bounded) == said, (blind, ia.wave_why(bounded))
     # W51: a collection record the projection cannot read as a blind device bounds the wave too, worded as what it
@@ -1527,6 +1558,30 @@ def test_the_wave_rule_bounds_every_wave_by_a_row_naming_no_host_and_by_the_flee
     both = ia.wave_blast(["core1"], clean, blind=2, blind_unread=1)
     assert ia.wave_why(both) == "; ".join([ia.R_WAVE_FLEET_BLIND.format(n=2),
                                            ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=1)]), ia.wave_why(both)
+
+
+def test_the_wave_rule_takes_no_default_fleet_and_never_reads_a_hostless_row_as_unobserved(sample):
+    """W51 (the W48 re-verification's P3s): ``wave_blast`` has no default for either fleet count, so a caller that
+    forgets the fleet fails loudly instead of reading as exact, and ``None`` is unknown, never exact. A row that names
+    no readable host could describe any device of a wave, so a wave none of whose devices has a row of its own is
+    still observed (not assessed, with that row named), never [NOT OBSERVED] in the MOP while the cutover plan names
+    it."""
+    from cisco_toolkit import mop
+    snap = _published(copy.deepcopy(sample))
+    rows = ia.wave_rows(snap)
+    for kwargs in ({}, {"blind": 0}, {"blind_unread": 0}):
+        with pytest.raises(TypeError):
+            ia.wave_blast(["core1"], rows, **kwargs)
+    unknown = ia.wave_blast(["core1"], rows, blind=None, blind_unread=None)
+    assert unknown.assessable == ia.LOWER_BOUND and not unknown.complete, unknown
+    assert ia.wave_why(unknown) == ia.R_WAVE_FLEET_UNREAD
+    assert mop._blast_for([_NO_SUCH], rows, (0, 0)) is None          # control: no row could describe the wave
+    snap["failure_impact"].append(dict(snap["failure_impact"][0], host=None))
+    rows = ia.wave_rows(snap)
+    lone = ia.wave_blast([_NO_SUCH], rows, **_FLEET_CLEAR)
+    assert lone.observed and lone.assessable == ia.NOT_ASSESSED and lone.value is None and len(lone.hostless) == 1
+    assert "name no readable switch" in ia.wave_why(lone), ia.wave_why(lone)
+    assert mop._blast_for([_NO_SUCH], rows, (0, 0)) == lone
 
 
 def test_fleet_blind_reads_the_projections_fleet_qualifier(sample):

@@ -289,10 +289,25 @@ function Finding({ row, sid }: { row: Schemas["UiProjection1_FindingRow"]; sid: 
       {row.evidence_refs_cap && <Cap label="Finding references" cap={row.evidence_refs_cap} />}
       <Pointer pointer={row.pointer} /></details></article>;
 }
+// G21 (W41) publishes the punch-list facet totals (findings.facets): one count per severity and per category, in the
+// engine's vocabulary order, and a paged per-inventory-device list. Each is the engine's own count with its own state,
+// so a withheld total shows its state and reason, never a zero; this page neither counts the rows nor fills a gap.
+function FindingFacets({ document }: { document: ViewDocument<"findings"> }) {
+  const facets = document.payload.facets;
+  return <>
+    <Panel title="Findings by severity"><div className="projection-fact-grid">{facets.severity.map((row) =>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact />)}</div></Panel>
+    <Panel title="Findings by category"><div className="projection-fact-grid">{facets.category.map((row) =>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact />)}</div></Panel>
+    <ProjectionList title="Findings by inventory device" document={document} initial={facets.device} renderRow={(row) =>
+      <FactView label={`Findings on ${row.k}`} fact={row.n} compact />} />
+  </>;
+}
 function Findings({ document }: { document: ViewDocument<"findings"> }) {
   const reference = useReference();
   return <><Panel title="Prioritised findings"><FactView label="Engine finding total" fact={document.payload.total} />
-    <Disclosure>Rows retain the engine's order. Severity and category facet totals are not published by this contract.</Disclosure></Panel>
+    <Disclosure>Rows retain the engine's order. The facet totals below are the engine's own counts (G21), each with its own state: a withheld total is not a zero.</Disclosure></Panel>
+    <FindingFacets document={document} />
     <ProjectionList title="Findings" reference={reference} document={document} initial={document.payload.rows} renderRow={(row) => <Finding row={row} sid={document.identity.snapshot_id} />} /></>;
 }
 

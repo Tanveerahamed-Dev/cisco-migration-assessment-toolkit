@@ -253,3 +253,18 @@ constants.
   `impact_view`, and `webapp/backend/cutover.py` reads `summary.impact_view`. This train carries them onto the owner's
   blind-link rule, and `webapp/tests/test_impact_surfaces.py` pins that.
 - **W32's F2–F4 producer follow-ups.**
+
+## Correction carried by the W51 absorb (2026-10-09)
+
+#629's head `40ca4d96` adds a "Dist handoff evidence" record, plus a W45 board line, saying that webapp-ci run
+`37897012004` (pull_request, on `31d9b5b9`) succeeded. Its six jobs, the frontend job `113710626305` among them, did
+pass. The run itself concluded `cancelled`, by concurrency, so it is not a succeeded run.
+
+The handoff evidence that holds is artifact `11600639221`
+(`frontend-dist-handoff-40ca4d969b42cccf5d7bb35f7a1c1037e0ac9c05-37897790220-1`, 562,008 bytes). It comes from run
+`37897790220` on `40ca4d96`, which concluded `success` with all six jobs passing. `40ca4d96` differs from
+`31d9b5b9` only in two docs, so the bound frontend inputs are the same.
+
+When #629's head is merged into the contract train, its record and board line should cite that run and artifact and
+say "cancelled" for `37897012004`. The run states were read from the GitHub API; the artifact was not downloaded or
+re-verified here. (`docs/w51-absorb-validation-2026-10-09.md`, finding (e).)

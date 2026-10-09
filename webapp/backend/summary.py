@@ -175,9 +175,12 @@ _IMPACT_BLIND_CAVEAT = engine.IMPACT_FLEET_BLIND_CAVEAT
 #: engine owner impact_assessability.blind_bound) is flagged and worded by its witness: the row's blind_links count,
 #: or the row itself when it predates that count. 6: the blind-spot note counts only the rows the projection reads as
 #: partial or not collected as such, and words every other record its qualifier cites as one that cannot be read
-#: (W43; W45 and W43 each moved the contract to 5 independently, so the combined contract is 6). A cached summary from
-#: an older contract is recomputed on read (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 6
+#: (W43; W45 and W43 each moved the contract to 5 independently, so the combined contract is 6). 7: a bound whose own
+#: witness is absent (no cable map at all) cites the nearest record that exists, the snapshot root, so its row reads as
+#: a lower bound here as the engine owner and the MOP read it, never as exact, and the root witness is worded (W51,
+#: the W48 re-verification's P2). A cached summary from an older contract is recomputed on read
+#: (app._summary_freshened).
+KEYSTONE_CONTRACT_VERSION = 7
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -207,6 +210,12 @@ _R_BOUND_PEERS_EITHER = ("the stored cable map has {k} cable row(s) that cable t
                          "on scanned switches")
 _R_BOUND_CABLE_MAP = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored cable "
                       "map cannot be read, and the simulation counts only endpoints on scanned switches")
+#: The snapshot root (""): the projection cites it for a bound whose own witness record is absent, as the nearest
+#: record that exists (ui_projection._impact_witnessed). The only such bound is the neighbour bound of a snapshot that
+#: carries no cable map at all.
+_R_BOUND_ROOT = ("the engine cites the snapshot as a whole, because the record this bound needs is not carried (no "
+                 "cable map), so whether this switch faces an uncollected neighbour cannot be checked, and the "
+                 "simulation counts only endpoints on scanned switches")
 #: The two blind-link bounds of impact_assessability.blind_bound, by their witness: the row's own blind_links count
 #: (a positive count) or the row itself (a row stored before the producer wrote that count).
 _R_BOUND_BLIND = ("this switch has inter-switch links with no trunk/STP evidence on either end (blind_links), and "
@@ -320,7 +329,8 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
     lower bound and never an exact measurement; ``pointers``: every witness those cells cite, de-duplicated in the
     order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, its
     blind_links count or the row itself when it predates that count, a cable row worded by what the projection's own
-    reason says of it, an unreadable cable list or map, anything else by its pointer)."""
+    reason says of it, an unreadable cable list or map, the snapshot root that stands for an absent cable map,
+    anything else by its pointer)."""
     fields: List[str] = []
     pointers: List[str] = []
     for field in IMPACT_MEASURES:
@@ -356,6 +366,8 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
             why = cables_why.format(k=n_cables)
         elif cite in _IMPACT_CABLE_LIST_WITNESSES:
             why = _R_BOUND_CABLE_MAP
+        elif cite == "":
+            why = _R_BOUND_ROOT
         else:
             why = _R_BOUND_CITED.format(pointer=cite)
         if why not in reasons:

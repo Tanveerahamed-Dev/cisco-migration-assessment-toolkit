@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
 import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
-  deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture } from "../test/projectionFixtures";
+  deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture, findingFacetsFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -865,6 +865,25 @@ describe("Core snapshot route", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open");
     fireEvent.click(summary); expect(summary.closest("details")).toHaveAttribute("open");
     expect(screen.getByText("Synthetic owner remediation")).toBeInTheDocument();
+  });
+  it("renders the engine's finding facet totals with their own states (G21), never a withheld total as zero", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));
+    show("/snapshots/1?view=findings");
+    await screen.findByText("Synthetic finding");
+    expect(screen.queryByText(/facet totals are not published/)).not.toBeInTheDocument();
+    const facets = findingFacetsFixture();
+    const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
+    for (const row of facets.severity) {
+      expect(within(severity).getByRole("button", { name: `Evidence for ${row.k} findings` })).toBeInTheDocument();
+    }
+    // every severity total is withheld in the fixture: each shows its reason, and none reads as a measured zero
+    expect(within(severity).getAllByText("Synthetic input was not collected")).toHaveLength(facets.severity.length);
+    expect(within(severity).queryByText("0")).not.toBeInTheDocument();
+    const category = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
+    expect(within(category).getAllByText("Synthetic input was not collected")).toHaveLength(facets.category.length);
+    const device = screen.getByRole("region", { name: "Findings by inventory device" });
+    expect(within(device).getByRole("button", { name: "Evidence for Findings on edge/a~b" })).toBeInTheDocument();
+    expect(within(device).getByText("1")).toBeInTheDocument();
   });
   it("rejects a reference bound to another source without showing its rows", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));

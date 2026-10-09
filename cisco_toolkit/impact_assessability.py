@@ -24,9 +24,14 @@ publishes it as "Info / 0 stranded".
 
 It also owns the WAVE rule (:func:`wave_blast`): how a migration wave's rows add up to one worst-case figure. The
 figure is exact only when every device of the wave has a row that is a measurement, no stored row names no readable
-host, and the projection's fleet qualifier lists no partial or never-collected device. Otherwise it is a lower bound,
-and a lower bound of 0 is not assessed. The MOP (``mop._blast_for``) and the AssessHub cutover plan
-(``cutover._worst_blast_radius``) both read it, so the two cannot disagree on whether a wave's figure is exact.
+host, and the projection carries no fleet qualifier (no partial or never-collected device, and no collection record
+it cannot read as one). Otherwise it is a lower bound, and a lower bound of 0 is not assessed. The MOP
+(``mop._blast_for``) applies it to this module's own verdicts and the AssessHub cutover plan
+(``cutover._worst_blast_radius``) to the projection's rows, which the projection builds from those verdicts and whose
+every bound cites a witness that resolves (``ui_projection._impact_witnessed``). So both classify a wave by one rule;
+they are still two readings of the rows, not one computation, and their agreement is pinned per variant (a fully
+published fleet, a row naming no host, a blind spot, an unreadable collection record, no cable map, a zero lower
+bound: ``webapp/tests/test_impact_surfaces.py``), not guaranteed for an input those pins do not cover.
 
 Per stored row the verdict is one of :data:`VERDICTS`:
 
@@ -1184,8 +1189,11 @@ class WaveBlast(NamedTuple):
 
     @property
     def observed(self) -> bool:
-        """Whether any device of the wave has a failure-impact row at all."""
-        return bool(self.ranked) or any(row is not None for _device, row in self.unranked)
+        """Whether any failure-impact row could describe a device of the wave: a row naming one of them, or a row that
+        names no readable host and so could describe any of them (W51, the W48 re-verification: such a wave is not
+        assessed, with the row named, never unobserved)."""
+        return (bool(self.ranked) or bool(self.hostless)
+                or any(row is not None for _device, row in self.unranked))
 
     @property
     def zero_bound(self) -> bool:
@@ -1241,13 +1249,15 @@ def fleet_blind(listing: Any, blind_rows: Any) -> Optional[Tuple[int, int]]:
     return (blind, unread) if blind or unread else (0, 1)
 
 
-def wave_blast(switches: Any, rows: Sequence[WaveRow], *, blind: Any = 0, blind_unread: Any = 0) -> WaveBlast:
+def wave_blast(switches: Any, rows: Sequence[WaveRow], *, blind: Any, blind_unread: Any) -> WaveBlast:
     """One wave's blast radius over `rows` (every stored row, as :func:`wave_rows` or a reader's own reading gives
     them). A device of the wave (each non-empty text in `switches`) is covered by a ranked row naming it exactly.
     The figure is exact only when every device is covered by a row that is not a lower bound, no stored row names
     no readable host (such a row could describe any device here), and both fleet counts (:func:`fleet_blind`: `blind`
-    devices, `blind_unread` records) are readable zeros. Otherwise the largest count or floor is a lower bound, and a
-    lower bound of 0, or no count at all, is not assessed. Pure; never re-simulates."""
+    devices, `blind_unread` records) are readable zeros. Neither count has a default (W51, the W48 re-verification):
+    a caller states the fleet, and ``None`` or any other unreadable value means unknown, which is never exact.
+    Otherwise the largest count or floor is a lower bound, and a lower bound of 0, or no count at all, is not
+    assessed. Pure; never re-simulates."""
     members = {s for s in (switches if isinstance(switches, (list, tuple, set, frozenset)) else ())
                if isinstance(s, str) and s}
     rows = [r for r in rows if isinstance(r, WaveRow)]

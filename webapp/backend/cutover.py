@@ -206,7 +206,8 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     bounds and whether the figure is ``complete`` are the engine owner's wave rule (``engine.wave_blast``, which the
     MOP reads too), applied to the projected rows and the projection's fleet qualifier counts (blind devices and
     records it cannot read as one); this function picks the worst ranked row and words the disclosure from the
-    projection's own reasons."""
+    projection's own reasons. A wave whose largest count is a zero that is only a lower bound (the owner's
+    ``zero_bound``) is ``NOT ASSESSED`` with no counts, as the MOP prints it, never "0 endpoint(s) stranded"."""
     if not switches:
         return None
     # stored order, as before, so a tie keeps the row the plan showed before; the key is the stored host text
@@ -230,15 +231,19 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     blind_note = summary.impact_blind_note(view)   # "" unless the fleet qualifier is carried (blind or unread)
     if blind_note:
         notes.append(blind_note)
-    if ranked:
+    if ranked and wave.value is not None and not wave.zero_bound:
         out = summary.impact_entry(min(ranked, key=summary.impact_rank_key))
         if notes:
             out["detail"] = (f"{out['detail']} — LOWER BOUND, the worst case may be larger: "
                              + ". ".join(notes) + ".")
     else:
+        # W51 (the W48 re-verification): the owner's wave rule reads a largest count that is a zero lower bound (or
+        # ranked rows with no readable count) as not assessed, as the MOP prints it, so the plan never shows
+        # "0 endpoint(s) stranded" for such a wave; the owner's own words lead the disclosure
+        lead = [engine.IMPACT_R_WAVE_ZERO if wave.zero_bound else engine.IMPACT_R_WAVE_NONE] if ranked else []
         out = {"host": "", "severity": IMPACT_NOT_ASSESSED, "stranded": None, "vlans_impacted": None,
-               "detail": "NOT ASSESSED: " + ". ".join(notes) + "."}
-    out["complete"] = wave.complete
+               "detail": "NOT ASSESSED: " + ". ".join(lead + notes) + "."}
+    out["complete"] = wave.complete and wave.value is not None
     out["n_not_ranked"] = wave.n_not_ranked
     return out
 

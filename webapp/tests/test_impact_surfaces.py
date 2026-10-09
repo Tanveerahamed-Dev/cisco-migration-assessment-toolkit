@@ -741,6 +741,7 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
     unranked = set(_sample_unranked(sample))
     with_core2 = [wave for wave in plan["waves"] if "core2" in wave["switches"]]
     assert with_core2 and len(with_core2) < len(plan["waves"])
+    zero_waves = 0
     for wave in plan["waves"]:
         switches = set(wave["switches"])
         assert switches <= set(_by_host(sample)), wave["group"]          # every sample wave switch has its row
@@ -758,6 +759,16 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
         if not not_ranked and not bounded_in:
             assert br == {**_exact(want), "complete": True, "n_not_ranked": 0}, wave["group"]
             continue
+        if max(row["stranded"] for row in ranked_rows if row["host"] in switches) == 0:
+            # W51 (the W48 re-verification): the largest count is a zero beside a switch that is not ranked, a lower
+            # bound of 0, which the owner's wave rule and the MOP read as not assessed; the plan does too (the sample's
+            # dist wave: dist1's zero is withheld, the others publish 0)
+            assert br["severity"] == cutover.IMPACT_NOT_ASSESSED and br["stranded"] is None, (wave["group"], br)
+            assert br["detail"].startswith("NOT ASSESSED: " + ia.R_WAVE_ZERO + ". "), br["detail"]
+            assert br["complete"] is False and br["n_not_ranked"] == len(not_ranked), br
+            assert all(host in br["detail"] for host in not_ranked), (wave["group"], br["detail"])
+            zero_waves += 1
+            continue
         assert {k: v for k, v in br.items() if k != "detail"} == {
             **{k: v for k, v in entry(want).items() if k != "detail"}, "complete": False,
             "n_not_ranked": len(not_ranked)}, wave["group"]
@@ -765,6 +776,7 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
         assert all(host in br["detail"] for host in not_ranked + bounded_in), (wave["group"], br["detail"])
         if "core2" in switches:
             assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in br["detail"], br["detail"]
+    assert zero_waves, "precondition: the sample has a wave whose largest count is a zero lower bound"
     snap, why = _held_core1(sample, "duplicate")
     wave = next(w for w in cutover.build_plan(snap)["waves"] if "core1" in w["switches"])
     br = wave["blast_radius"]
@@ -1140,14 +1152,20 @@ def _published_sample(sample):
     return snap
 
 
-@pytest.mark.parametrize("variant", ["published", "hostless", "fleet_caveat", "fleet_unread"])
+@pytest.mark.parametrize("variant", ["published", "hostless", "fleet_caveat", "fleet_unread", "no_cable_map"])
 def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
     """Refutation P2-2: the cutover plan bounded a wave by a row naming no readable host and by the projection's fleet
     qualifier (collection_completeness lists a partial or never-collected device) while the MOP printed the same wave
     as exact. Both now read the engine owner's wave rule: on a fully published fleet both are exact, and a host-less
     row or a blind spot makes both a lower bound, each saying why in the same words. W51: a collection record the
     projection cannot read as a blind device (here, one the snapshot does not carry) bounds both too, and both word it
-    as that record, never as a listed device."""
+    as that record, never as a listed device.
+
+    W51 (the W48 re-verification's P2, three times): with NO cable map, the owner bounds every row (whether a switch
+    faces an uncollected neighbour cannot be checked) and the MOP printed '≥ N', but the projection's bound cited
+    ``/cable_map``, which does not resolve, so the witness was dropped and the plan read the same wave as exact. The
+    bound now cites the nearest record that exists (the snapshot root), so both read every wave as not exact. And a
+    largest count that is a zero lower bound is not assessed on both, never '0 endpoint(s) stranded' on the plan."""
     from cisco_toolkit import mop
 
     snap = _published_sample(sample)
@@ -1158,12 +1176,17 @@ def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
         snap["collection_completeness"]["summary"]["inventory"] += 1        # ghost1 is outside the devices map
     elif variant == "fleet_unread":
         del snap["collection_completeness"]
+    elif variant == "no_cable_map":
+        del snap["cable_map"]
+        # precondition from the owner: no row whose host is text is a measurement without the cable map
+        assert ia.PUBLISHED not in {v.assessable for v in ia.assess_failure_impact(snap)}
     view = summary.impact_view(copy.deepcopy(snap))
     rows, blind = ia.wave_rows(snap), mop._fleet_blind(snap)
     assert blind == (view["blind"], view["blind_unread"]) == {"fleet_caveat": (len(BLIND), 0),
                                                               "fleet_unread": (0, 1)}.get(variant, (0, 0)), blind
     waves = cutover.build_plan(copy.deepcopy(snap))["waves"]
     assert waves
+    bounded = 0
     for wave in waves:
         br = wave["blast_radius"]
         mine = mop._blast_for(wave["switches"], rows, blind)
@@ -1172,8 +1195,17 @@ def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
         if variant == "published":
             assert ia.wave_why(mine) == "" and "LOWER BOUND" not in br["detail"], br
             continue
-        assert "LOWER BOUND, the worst case may be larger" in br["detail"], br["detail"]
+        if mine.assessable == ia.LOWER_BOUND:
+            bounded += 1
+            assert "LOWER BOUND, the worst case may be larger" in br["detail"], br["detail"]
+            assert br["severity"] != summary.IMPACT_NOT_ASSESSED, br
+        else:
+            assert mine.assessable == ia.NOT_ASSESSED, mine
+            assert br["severity"] == summary.IMPACT_NOT_ASSESSED and br["stranded"] is None, br
+            assert (ia.R_WAVE_ZERO in br["detail"]) is mine.zero_bound, (br, mine)
         why = ia.wave_why(mine)
+        if variant == "no_cable_map":
+            continue
         if variant == "hostless":
             assert "names no readable host" in br["detail"] and "name no readable switch" in why, (br, why)
         else:
@@ -1182,3 +1214,53 @@ def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
             assert summary.impact_blind_note(view) == said and said in br["detail"] and said in why, (br, why)
             if variant == "fleet_unread":
                 assert "as partial or not collected:" not in why + br["detail"], (br, why)
+    if variant != "published":
+        assert bounded, "precondition: at least one wave is a positive lower bound on both"
+    if variant == "no_cable_map":
+        # the plan's bound names the root witness in its own words, never as an empty pointer
+        cored = [w["blast_radius"] for w in waves if w["blast_radius"]["severity"] != summary.IMPACT_NOT_ASSESSED]
+        assert cored and all(summary._R_BOUND_ROOT in br["detail"] for br in cored), cored
+        assert all("the engine cites  as" not in w["blast_radius"]["detail"] for w in waves)
+
+
+def test_the_cutover_plan_reads_a_zero_lower_bound_as_not_assessed(sample):
+    """W51 (the W48 re-verification's P3): a wave whose largest published count is 0 beside a device with no row is a
+    lower bound of 0, which the owner's wave rule (``zero_bound``) and the MOP read as not assessed. The plan now does
+    too: NOT ASSESSED with no counts and the owner's own reason first, never '0 endpoint(s) stranded'. An exact zero
+    (every device published) stays a measured 0."""
+    snap = _published_sample(sample)
+    zeros = [r.key for r in ia.wave_rows(snap) if r.ranked and r.stranded == 0]
+    assert zeros, "precondition: the sample has switches that strand nobody"
+    view = summary.impact_view(copy.deepcopy(snap))
+    br = cutover._worst_blast_radius({zeros[0], "no-such-switch"}, view)
+    assert br["severity"] == summary.IMPACT_NOT_ASSESSED and br["stranded"] is None and br["vlans_impacted"] is None
+    assert br["detail"].startswith("NOT ASSESSED: " + ia.R_WAVE_ZERO + ". "), br["detail"]
+    assert br["complete"] is False and br["n_not_ranked"] == 1, br
+    exact = cutover._worst_blast_radius({zeros[0]}, view)
+    assert exact["complete"] is True and exact["stranded"] == 0, exact
+    assert exact["severity"] != summary.IMPACT_NOT_ASSESSED, exact
+
+
+def test_a_bound_whose_witness_is_absent_cites_the_nearest_record_that_exists(sample):
+    """W51 (the W48 re-verification's P2): every published lower bound cites a witness that resolves. With no cable
+    map the neighbour bound's own witness (``/cable_map``) is absent, so the projection cites the snapshot root ``""``
+    (the nearest record the cable map is missing from) on every bounded measure; with a cable map but no cable list it
+    cites ``/cable_map``; with the list present it cites the list. The summary reads each as a lower bound and words
+    the root witness, so no row the engine owner bounds reads as exact on an AssessHub surface."""
+    for mode, want in (("absent", ""), ("no_list", "/cable_map"), ("not_a_list", "/cable_map/cables")):
+        snap = _published_sample(sample)
+        if mode == "absent":
+            del snap["cable_map"]
+        elif mode == "no_list":
+            del snap["cable_map"]["cables"]
+        else:
+            snap["cable_map"]["cables"] = {"not": "a list"}
+        listing = ui.project_topology(copy.deepcopy(snap))["failure_impact"]
+        core1 = next(item for item in listing["items"] if item["host"].get("value") == "core1")
+        cited = {ref["pointer"] for field in ia.IMPACT_MEASURES for ref in core1[field]["refs"]
+                 if core1[field]["state"] == "published" and ref["role"] == "witness"}
+        assert cited == {want}, (mode, cited)
+        row = next(r for r in summary.impact_view(copy.deepcopy(snap))["rows"] if r["key"] == "core1")
+        assert row["lower_bound"] and row["bound_pointers"] == [want], (mode, row)
+        if mode == "absent":
+            assert row["bound_reasons"] == [summary._R_BOUND_ROOT], row
