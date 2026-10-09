@@ -118,7 +118,7 @@ def test_hosted_frontend_jobs_pin_node_and_guard_before_installing():
     workflows = {
         ".github/workflows/ci.yml": ("dependency-audit", "package"),
         ".github/workflows/release.yml": ("release",),
-        ".github/workflows/webapp-ci.yml": ("frontend", "e2e", "visual"),
+        ".github/workflows/webapp-ci.yml": ("frontend", "e2e", "real-backend-e2e", "visual"),
     }
     for relative_path, jobs in workflows.items():
         path = ROOT / relative_path

@@ -78,6 +78,8 @@ _RUNNER_JOBS = {
         "backend": ("Backend e2e tests", _LINUX_IMAGE),
         "frontend": ("Frontend test + type-check + build", _LINUX_IMAGE),
         "e2e": ("Frontend E2E", _LINUX_IMAGE),
+        # Non-required by design: outside the gate's needs and outside every protected context.
+        "real-backend-e2e": ("Real-backend browser E2E (non-required)", _LINUX_IMAGE),
         "visual": ("Design visual regression · Windows 2025 x64 Chromium", "windows-2025"),
         "gate": ("Webapp CI gate", _LINUX_IMAGE),
     },
@@ -172,7 +174,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 18
+    assert linux_selectors == 19
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [

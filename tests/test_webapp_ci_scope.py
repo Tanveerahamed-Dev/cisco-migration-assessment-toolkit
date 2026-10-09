@@ -475,3 +475,90 @@ def test_manual_cli_only_validates_env_data_and_does_not_classify_or_write_outpu
     monkeypatch.setattr(SCOPE.subprocess, "run", forbidden)
     assert SCOPE.main(["--event-name", "workflow_dispatch", "--validate-manual-operations"]) == 0
     assert not output.exists()
+
+
+FRONTEND = ROOT / "webapp" / "frontend"
+REAL_BACKEND_JOB = "real-backend-e2e"
+REAL_BACKEND_CONFIG = FRONTEND / "playwright.real.config.ts"
+REAL_BACKEND_DIR = FRONTEND / "e2e-real"
+REAL_BACKEND_LAUNCHER = REAL_BACKEND_DIR / "serve_real_backend.py"
+
+
+def _real_backend_launcher():
+    spec = importlib.util.spec_from_file_location("_real_backend_e2e_launcher", REAL_BACKEND_LAUNCHER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)   # import is side-effect free; main() is never called here
+    return module
+
+
+def test_every_input_of_the_real_backend_tier_engages_webapp_ci():
+    """The real-backend browser tier is defined by its config, its e2e-real/ directory and the synthetic
+    collection its launcher loads by path from tests/. A change to any of them changes what that job does,
+    so each must engage webapp CI. The tier's files are enumerated from the tree, and the fixture path is
+    read from the launcher's own constant, not restated here."""
+    tier = sorted(path.relative_to(ROOT).as_posix() for path in REAL_BACKEND_DIR.rglob("*") if path.is_file()
+                  and "__pycache__" not in path.parts)
+    assert {"webapp/frontend/e2e-real/serve_real_backend.py", "webapp/frontend/e2e-real/paths.ts"} <= set(tier)
+    fixture = _real_backend_launcher().FIXTURE_MODULE
+    assert (ROOT / fixture).is_file(), fixture
+    inputs = [REAL_BACKEND_CONFIG.relative_to(ROOT).as_posix(), *tier, fixture]
+    assert sorted(path for path in inputs if not SCOPE.path_is_relevant(path)) == []
+
+
+def test_real_backend_tier_is_separate_from_the_mocked_tier_and_mocks_nothing():
+    """Two Playwright tiers, two directories: the mocked tier (playwright.config.ts, ./e2e) stays exactly
+    as it was, and nothing in the real tier may route /api to a stub, or it would silently become a
+    second mocked tier."""
+    mocked = (FRONTEND / "playwright.config.ts").read_text(encoding="utf-8")
+    real = REAL_BACKEND_CONFIG.read_text(encoding="utf-8")
+    assert 'testDir: "./e2e",' in mocked and 'testMatch: "**/*.spec.ts",' in mocked
+    assert 'testDir: "./e2e-real",' in real and 'testMatch: "**/*.real.spec.ts",' in real
+    assert "reuseExistingServer: false," in real and "retries: 0," in real
+    assert "e2e-real/serve_real_backend.py" in real and "--outDir" in real
+    specs = sorted(REAL_BACKEND_DIR.glob("*.spec.ts"))
+    assert specs and all(path.name.endswith(".real.spec.ts") for path in specs), specs
+    assert not list((FRONTEND / "e2e").rglob("*.real.spec.ts"))
+    for path in [REAL_BACKEND_CONFIG, *REAL_BACKEND_DIR.glob("*.ts")]:
+        text = path.read_text(encoding="utf-8")
+        assert ".route(" not in text and "routeFromHAR" not in text, path.name
+
+
+def test_real_backend_job_is_scoped_hosted_evidence_preserving_and_never_required():
+    import yaml
+
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))["jobs"]
+    job = jobs[REAL_BACKEND_JOB]
+    assert job["needs"] == "scope"
+    assert job["if"] == (
+        "${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}"
+    )
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["steps"][0] == {
+        "name": "Fail closed when scope classification did not succeed",
+        "if": "${{ needs.scope.result != 'success' }}",
+        "run": "exit 1",
+    }
+    # Non-required by construction: outside the aggregate gate and outside every protected context.
+    assert REAL_BACKEND_JOB not in jobs["gate"]["needs"]
+    required = json.loads((ROOT / ".github" / "portable-required-main-checks.json").read_text(encoding="utf-8"))
+    assert job["name"] not in required["contexts"]
+    assert "(non-required)" in job["name"]
+
+    steps = job["steps"]
+    runs = [step for step in steps if step.get("run") == "npx playwright test --config playwright.real.config.ts"]
+    assert len(runs) == 1, "the real-backend tier must run exactly once, through its own config"
+    walk = runs[0]
+    assert walk["env"] == {"E2E_REAL_ROOT": "${{ runner.temp }}/assesshub-real-e2e"}
+    assert "continue-on-error" not in walk
+    upload = steps[steps.index(walk) + 1]
+    assert upload["if"] == "${{ always() }}"
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["path"] == "webapp/frontend/test-results/real-backend"
+    assert upload["with"]["if-no-files-found"] == "error"
+    install = [step for step in steps if step.get("run") == 'python -m pip install -e ".[dev]"']
+    assert len(install) == 1 and install[0]["working-directory"] == "."
+    assert steps.index(install[0]) < steps.index(walk)
+    # The mocked tier's job keeps running only its own config.
+    assert [step.get("run") for step in jobs["e2e"]["steps"] if "playwright test" in str(step.get("run"))] == []
+    assert any(step.get("run") == "npm run test:e2e" for step in jobs["e2e"]["steps"])
