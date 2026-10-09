@@ -441,7 +441,9 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "axis check, and the unverified state for a failed type check, an integer above 2^53-1, a reconcile "
         "violation or an owner fault. On the row screens: the device total's row-count check, the punch-list "
         "priority and rank checks against the producer's rule, a cap's reached flag, the incomplete state of a list "
-        "whose input a blind spot, a missing essential capture or a missing security row withheld, the empty "
+        "whose input a blind spot, a missing essential capture or a missing security row withheld, the unverified "
+        "state of a key join or device scope that a row it cannot read, or a second row naming the key, leaves "
+        "open, the empty "
         "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, and the "
         "completeness claim of the uncollected-peer list.",
         ["/trust/census/embedded/matches_live", "/trust/ssot/stamp_matches_live",
@@ -541,7 +543,14 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "Rows are joined to a device, VLAN or endpoint by exact key equality, with the owner's own key rule; a "
         "collection_completeness blind-spot row is joined by the rule of its owner's device scope (the name without "
         "case or surrounding space, ssot.abstention_reason). Two rows naming the same key are unverified, never "
-        "picked between. The inventory is the union of the devices map and the collection_completeness blind spots. "
+        "picked between. A row the join cannot read (not an object, or a key that is missing or not text) could "
+        "name any key, so while a list holds one, every row joined or selected from it by device is unverified, "
+        "with a witness to each such row: a row neither attaches to a device silently nor vanishes from it. The "
+        "device scope is held to the same rule: while collection_completeness holds a row it cannot join, a second "
+        "row naming a device, or a row whose status its owner's vocabulary does not name, a value about a device "
+        "the scope does not call not collected is unverified, with a witness to each such row. The inventory is the "
+        "union of the devices map and the collection_completeness blind spots; a blind-spot row it cannot join by "
+        "host makes the inventory rows and their reconciled count unverified, with a witness to that row. "
         "A selection is null when its source list could not be read (selection_sources says why), and [] when it "
         "was read and names nothing.",
         ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans"]),
@@ -552,7 +561,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "or structural-link row is computed over the scanned model without it, so even a 'no impact' row or a small "
         "pairs-cut count was never checked against that evidence. While any blind spot is listed, a published list "
         "carries this caveat, with a witness ref to each blind-spot row, and an empty one is not_collected, never "
-        "'nothing found'.",
+        "'nothing found'. The owner lists only blind spots, so a row that cannot be read as one (not an object, or a "
+        "status outside its vocabulary) qualifies the list the same way, with a witness ref to that row.",
         ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total", "/topology/structural_links",
          "/topology/failure_impact"]),
     _limitation(
@@ -714,6 +724,23 @@ _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
 _R_UNJOINABLE = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key field "
                  "that is missing or not text), and any of them could name this device")
+#: The blind-spot list the owner's device scope reads (ssot._device_not_collected).
+_CC_ROWS: Tuple[str, str] = ("collection_completeness", "devices")
+#: Why the owner's device scope cannot be trusted to say a device is NOT a blind spot (:meth:`_Ctx.scope_doubt`).
+_R_SCOPE = ("unverified: whether collection_completeness lists this device as partial or not collected cannot be "
+            "read: {parts}")
+_R_SCOPE_UNJOINABLE = ("{n} collection_completeness row(s) cannot be joined by host (not an object, or a host that is "
+                       "missing or not text), and any of them could be this device's")
+_R_SCOPE_AMBIG = ("{n} collection_completeness rows name this device (without case or surrounding space), but the "
+                  "owner's device scope (ssot.abstention_reason) reads only the first of them")
+_R_SCOPE_STATUS = ("the collection_completeness row naming this device states no status its owner's vocabulary names "
+                   "({statuses}), and the owner's device scope reads any other status as collected")
+_R_INVENTORY_UNJOINABLE = ("unverified: {n} collection_completeness row(s) cannot be joined by host (not an object, or "
+                           "a host that is missing or not text), so a blind-spot device they list may be missing from "
+                           "these rows")
+_R_UNKNOWN_HOST_DOUBT = ("unverified: no readable roster in this snapshot names this device (devices, "
+                         "collection_completeness, cable_map), but {n} roster row(s) cannot be joined by host (not an "
+                         "object, or a host that is missing or not text), and any of them could name it")
 _R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
                  "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
@@ -743,6 +770,9 @@ _R_FLEET_BLIND = ("not collected: collection_completeness lists {n} device(s) as
 _R_FLEET_NO_CONFIG = ("not collected: {n} device(s) in the devices map have no security row (no captured "
                       "running-config), so their configuration-derived rows could not be generated; an empty list is "
                       "not a clean result")
+_R_FLEET_UNREAD = ("not collected: collection_completeness carries {n} row(s) that cannot be read as a partial or "
+                   "not-collected device (not an object, or a status outside its owner's vocabulary); the owner lists "
+                   "only blind spots, so each could be one, and an empty list is not a clean result")
 
 
 def _is_text(value: Any) -> bool:
@@ -836,6 +866,7 @@ class _Ctx:
         self._census_counts: Optional[Dict[str, Any]] = None
         self._mg: Optional[bool] = None
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
+        self._scope_doubt: Dict[str, Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]] = {}
         self._blind_rows: Optional[List[int]] = None
         self._no_config: Optional[List[str]] = None
         self._device_findings: Any = _UNSET
@@ -993,9 +1024,62 @@ class _Ctx:
 
     def device_blind(self, section: str, host: Any) -> bool:
         """The owner's device scope says ``not_collected`` where its section-level answer does not: the device
-        is a collection blind spot (``collection_completeness`` lists it as not collected)."""
+        is a collection blind spot (``collection_completeness`` lists it as not collected). Read it only through
+        :meth:`device_scope`, which also says when its negative answer cannot be trusted."""
         return (_is_text(host) and bool(host) and self.abst_dev(section, host) == _NC
                 and self.abst(section) != _NC)
+
+    def device_scope(self, section: str, host: Any) -> Optional[Tuple[str, str, List[Tuple[str, Sequence[Any]]]]]:
+        """The owner's device scope for `host`, as ``(state, reason, witness ref entries)``: ``not_collected`` when it
+        calls the device a blind spot (:meth:`device_blind`); ``unverified`` when it does not, but cannot be trusted
+        to say so (:meth:`scope_doubt`); ``None`` when it neither withholds nor doubts the device. Every reader of
+        the device scope reads it here, so no reader can take the owner's "not a blind spot" without its doubt."""
+        if self.device_blind(section, host):
+            return _NC, _R_DEVICE_NC, self.cc_witness(host)
+        doubt = self.scope_doubt(host)
+        return None if doubt is None else (_UV, doubt[0], doubt[1])
+
+    def scope_doubt(self, host: Any) -> Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
+        """Why the owner's device scope cannot be trusted to say `host` is NOT a blind spot, with a witness to each row
+        that says so, or ``None``. ``ssot._device_not_collected`` is a key join over collection_completeness.devices
+        (the name without case or surrounding space, first match wins) that passes over every row it cannot read, so
+        it is held to the rule of every key join here (:func:`_resolve`): a row it cannot join could be this device's;
+        a second row naming the device is never read; and a row whose status the owner's vocabulary does not name
+        reads as collected. A list the snapshot does not carry, or carries as something other than a list, is the
+        collection row's own state (:func:`_joins`), not a doubt about one device (cached per host)."""
+        if not (_is_text(host) and host):
+            return None
+        if host not in self._scope_doubt:
+            parts: List[str] = []
+            wit: List[Tuple[str, Sequence[Any]]] = []
+            named = self.index(_CC_ROWS, ("host",), norm=True).get(_norm(host), [])
+            if len(named) > 1:
+                parts.append(_R_SCOPE_AMBIG.format(n=len(named)))
+                wit += [("witness", _CC_ROWS + (i,)) for i in named]
+            elif named:
+                row = _get(self.s, _CC_ROWS + (named[0],))
+                status = row.get("status") if isinstance(row, dict) else None
+                if not (_is_text(status) and _norm(status) in CC_STATUSES):
+                    parts.append(_R_SCOPE_STATUS.format(statuses=", ".join(CC_STATUSES)))
+                    status_tok = ("status",) if isinstance(row, dict) and "status" in row else ()
+                    wit.append(("witness", _CC_ROWS + (named[0],) + status_tok))
+            lost = self.unjoinable(_CC_ROWS, ("host",))
+            if lost:
+                parts.append(_R_SCOPE_UNJOINABLE.format(n=len(lost)))
+                wit += [("witness", _CC_ROWS + (i,)) for i in lost]
+            self._scope_doubt[host] = (_R_SCOPE.format(parts="; ".join(parts)), wit) if parts else None
+        found = self._scope_doubt[host]
+        return None if found is None else (found[0], list(found[1]))
+
+    def partial_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """The one blind-spot row the owner's device scope reads for `host` when it lists the device as partial, or
+        ``(None, None)``. A doubted scope (:meth:`scope_doubt`) names no partial row: its first match may not be the
+        device's own."""
+        if self.scope_doubt(host) is not None:
+            return None, None
+        i, row = self.cc_row(host)
+        status = row.get("status") if isinstance(row, dict) else None
+        return (i, row) if i is not None and _is_text(status) and _norm(status) == "partial" else (None, None)
 
     def cc_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
         """The blind-spot row the owner's device scope reads for `host` (ssot._device_not_collected: the name
@@ -1037,11 +1121,11 @@ class _Ctx:
             self._indexes[key] = out
         return self._indexes[key]
 
-    def unjoinable(self, toks: Tuple[Any, ...], fields: Tuple[str, ...]) -> List[int]:
+    def unjoinable(self, toks: Tuple[Any, ...], fields: Tuple[str, ...], multi: bool = False) -> List[int]:
         """:func:`_unjoinable_rows` of the list at `toks` (one pass, cached): the rows :meth:`index` cannot read."""
-        key = (toks, fields)
+        key = (toks, fields, multi)
         if key not in self._unjoinable:
-            self._unjoinable[key] = _unjoinable_rows(_get(self.s, toks), fields)
+            self._unjoinable[key] = _unjoinable_rows(_get(self.s, toks), fields, multi)
         return list(self._unjoinable[key])
 
     def pairs(self, toks: Tuple[Any, ...], fields: Tuple[str, str]) -> Dict[FrozenSet[str], List[int]]:
@@ -1065,6 +1149,14 @@ class _Ctx:
                                 if isinstance(row, dict) and _is_text(row.get("status"))
                                 and _norm(row["status"]) in CC_STATUSES]
         return list(self._blind_rows)
+
+    def unread_blind_rows(self) -> List[int]:
+        """Every collection_completeness row :meth:`blind_rows` cannot read as a partial or not-collected device (not
+        an object, or a status outside its owner's vocabulary). The owner lists only blind spots, so each could be
+        one; none of them is passed over silently."""
+        rows = _get(self.s, _CC_ROWS)
+        blind = set(self.blind_rows())
+        return [i for i in range(len(rows)) if i not in blind] if isinstance(rows, list) else []
 
     def no_config_hosts(self) -> List[str]:
         """The devices-map hosts the security map carries no row for (no captured running-config)."""
@@ -2247,13 +2339,21 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
     map keyed by it; with `key_field` it is a list whose rows name the key in that field (with `norm`, compared
     without case or surrounding space); with neither the container itself is the row. First match wins: forced
     (an unknown device) -> the device's blind spot (owner order) -> a failed or faulted section -> an uncollected
-    section -> a wrong container -> the join (absent / ambiguous) -> a row of the wrong type."""
+    section -> a wrong container -> a device scope that cannot say the device is not a blind spot -> the join
+    (unreadable / absent / ambiguous) -> a row of the wrong type.
+
+    Every list join (`key_field`) is held to one rule: it reads one unique row or none from a list it can read in
+    full. A row it cannot read (:func:`_unjoinable_rows`: not an object, or the key field missing or not text) could
+    name this key, so with any such row in the list the join is unverified, with a witness to each such row and to
+    each row that does name the key, whether one, several or none do: a row neither attaches silently nor vanishes.
+    The device scope (`host`) is read only through :meth:`_Ctx.device_scope`, under the same rule."""
     keyed = key is not _MISSING and key_field is None
     cand: Optional[Tuple[Any, ...]] = (path_toks + (key,)) if keyed else (path_toks if key is _MISSING else None)
     if forced is not None:
         return _Row(forced[0], forced[1], None, None, sections, basis_refs=False, bare=True)
-    if host is not None and ctx.device_blind(sections[0], host):
-        return _Row(_NC, _R_DEVICE_NC, cand, None, sections, ctx.cc_witness(host), basis_refs=False)
+    scope = ctx.device_scope(sections[0], host) if host is not None else None
+    if scope is not None and scope[0] == _NC:
+        return _Row(_NC, scope[1], cand, None, sections, scope[2], basis_refs=False)
     path = ".".join(path_toks)
     hit = _secs_fail(ctx, (path,) + tuple(sections))
     if hit:
@@ -2264,10 +2364,14 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
     if key is _MISSING:
         if not isinstance(container, want):
             return _Row(_UV, f"unverified: {path} is not {_KIND[want]}", cand, None, sections)
+        if scope is not None:
+            return _Row(scope[0], scope[1], cand, None, sections, scope[2], basis_refs=False)
         return _Row(None, None, path_toks, container, sections)
     need = dict if keyed else list
     if not isinstance(container, need):
         return _Row(_UV, f"unverified: {path} is not {_KIND[need]}, so no row can be read", cand, None, sections)
+    if scope is not None:
+        return _Row(scope[0], scope[1], cand, None, sections, scope[2], basis_refs=False)
     miss = absent or (_NC, _R_NO_ROW.format(section=path))
     if keyed:
         if not _is_text(key) or key not in container:
@@ -2276,6 +2380,12 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
     else:
         idx = (ctx.index(path_toks, (key_field,), norm=norm).get(_norm(key) if norm else key, [])
                if _is_text(key) else [])
+        lost = ctx.unjoinable(path_toks, (key_field,))
+        if lost:
+            doubts = ([_R_AMBIG.format(n=len(idx), section=path)] if len(idx) > 1 else []) + [
+                _R_UNJOINABLE.format(n=len(lost), section=path)]
+            return _Row(_UV, "; ".join(doubts), None, None, sections,
+                        [("witness", path_toks + (i,)) for i in idx + lost])
         if not idx:
             return _Row(miss[0], miss[1], None, None, sections)
         if len(idx) > 1:
@@ -2496,13 +2606,15 @@ def _device_gap(ctx: _Ctx, host: Any, section: str, needs: Sequence[str],
                 config: bool = False) -> Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
     """Why rows naming `host` may be missing from a list derived from `needs` (essential captures), first match
     wins: the owner's device scope calls it not collected -> its blind-spot row names a needed capture as
-    missing -> it has no interface parse -> (with `config`) it has no security row. ``None``: nothing withheld."""
+    missing -> it has no interface parse -> (with `config`) it has no security row. ``None``: nothing withheld.
+    A device scope in doubt names no partial row here (:meth:`_Ctx.partial_row`); the caller carries that doubt."""
     if not _is_text(host):
         return None
-    if ctx.device_blind(section, host):
-        return _R_DEVICE_BLIND, ctx.cc_witness(host)
-    i, row = ctx.cc_row(host)
-    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+    scope = ctx.device_scope(section, host)
+    if scope is not None and scope[0] == _NC:
+        return _R_DEVICE_BLIND, scope[2]
+    i, row = ctx.partial_row(host)
+    if i is not None and isinstance(row, dict):
         missing = row.get("missing")
         if isinstance(missing, list):
             hit = [m for m in missing if _is_text(m) and m in needs]
@@ -2590,13 +2702,18 @@ def _total(ctx: _Ctx, section: str, listing: Dict[str, Any], *, sections: Sequen
 
 
 def _fleet_qualify(ctx: _Ctx, config: bool = False) -> List[_Qualify]:
-    """The fleet-list qualifications (see :data:`_Qualify`): blind devices, and, for the punch-list, devices whose
-    running-config was not captured."""
+    """The fleet-list qualifications (see :data:`_Qualify`): blind devices, the blind-spot rows that cannot be read as
+    one (:meth:`_Ctx.unread_blind_rows`, never passed over), and, for the punch-list, devices whose running-config was
+    not captured."""
     out: List[_Qualify] = []
     blind = ctx.blind_rows()
     if blind:
         out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(blind)),
                     [("witness", ("collection_completeness", "devices", i)) for i in blind]))
+    unread = ctx.unread_blind_rows()
+    if unread:
+        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_UNREAD.format(n=len(unread)),
+                    [("witness", _CC_ROWS + (i,)) for i in unread]))
     if config:
         lacking = ctx.no_config_hosts()
         if lacking:
@@ -2773,7 +2890,8 @@ def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Di
     """The rows one device joins: its record, health, lifecycle, dossier and blind-spot rows. The blind-spot
     row itself is evidence of non-collection, so the device scope does not withhold it; it is joined by the rule
     of its owner's device scope (no case, no surrounding space). Its absence means "not a blind spot" only for a
-    device the devices map carries."""
+    device the devices map carries, and only while every row of that list can be joined: each list join here follows
+    the one rule of :func:`_resolve` (a row it cannot read, or a second row naming the device, makes it unverified)."""
     devices = ctx.s.get("devices")
     in_devices = _is_text(host) and isinstance(devices, dict) and host in devices
     return {
@@ -2810,8 +2928,8 @@ def _health_caveat(ctx: _Ctx, host: Any,
             if isinstance(exp, dict) and exp.get("axis") == "Security posture" and exp.get("state") == "na":
                 witness.append(("witness", dossier.toks + ("exposures", j)))
                 break
-    i, row = ctx.cc_row(host)
-    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+    i = ctx.partial_row(host)[0]
+    if i is not None:
         cav.append("health_scored_over_partial_collection")
         witness.append(("witness", ("collection_completeness", "devices", i, "missing")))
     return tuple(cav), witness
@@ -2884,8 +3002,13 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     elif not _is_text(host) or not host.strip():
         state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
     elif state in (_PUB, _CBE):
+        scope = ctx.device_scope("punchlist", host)
         gap = _device_gap(ctx, host, "punchlist", SELECTION_NEEDS["findings"], config=True)
-        if gap is not None:
+        if scope is not None and scope[0] == _UV:
+            # unverified wins over a capture gap (as in _selection_rows); the gap is carried beside it
+            state, reason = _UV, scope[1] + (f"; the device also has a collection gap: {gap[0]}" if gap else "")
+            witness += scope[2] + (gap[1] if gap else [])
+        elif gap is not None:
             why, extra = gap
             state, reason = _NC, f"not collected: finding counts may be incomplete: {why}"
             witness += extra
@@ -3048,14 +3171,22 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
         base = _PUB if items else _CBE
+    # A blind-spot row the host join cannot read names a device this universe cannot list: disclosed, never dropped
+    lost = ctx.unjoinable(_CC_ROWS, ("host",))
+    lost_wit: List[Tuple[str, Sequence[Any]]] = [("witness", _CC_ROWS + (i,)) for i in lost]
+    if lost and base in (_PUB, _CBE):
+        base, reason = _UV, _R_INVENTORY_UNJOINABLE.format(n=len(lost))
     rows = _listing(ctx, base, reason, ("devices",),
                     "html.snapshot_state:devices + analyze.compute_collection_completeness:"
                     "collection_completeness.devices", items, sections=("devices",),
-                    rollup=("collection_completeness",),
+                    rollup=("collection_completeness",), extra=lost_wit,
                     caveats=("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
     n_rows = len(items)
 
     def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
+        if lost:
+            return (_UV, f"unverified: {len(lost)} collection_completeness row(s) cannot be joined by host, so the "
+                         f"inventory rows cannot be reconciled with the owner's inventory count", list(lost_wit))
         if typed == n_rows:
             return None
         return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
@@ -3817,16 +3948,16 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
                     build: Callable[[int, Any], Dict[str, Any]], *,
                     multi: bool = False, base_state: Optional[Tuple[str, Optional[str], Any]] = None,
                     sections: Optional[Tuple[str, ...]] = None, config: bool = False,
-                    unique: bool = False, strict: bool = False,
-                    qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
+                    unique: bool = False, qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
     """The rows of one engine list that name this device (selection only; never a count). The device's own gaps
     (:func:`_device_gap` over the captures :data:`SELECTION_NEEDS` names for `block`) make it not_collected. With
     `unique` the producer writes at most one row per device, so two rows naming it are unverified (never picked
-    between). With `strict` a row the exact-key join cannot read (:func:`_unjoinable_rows`) could name this device,
-    so the selection is unverified with a witness to each such row (the fleet list withholds that row's key too).
-    Either doubt also carries the device's own gap and its witnesses. `qualify` (:func:`_fleet_qualify`) carries the
-    fleet's blind spots onto a selection whose rows other devices' evidence shapes; `cbe` is as in
-    :func:`_sel_state`."""
+    between). Every selection follows the one key-join rule of :func:`_resolve`: a row the exact-key join cannot read
+    (:func:`_unjoinable_rows`, with `multi` a key list holding anything but text too) could name this device, so the
+    selection is unverified with a witness to each such row (the fleet list withholds that row's key too), and so is
+    a selection whose device scope cannot say the device is not a blind spot (:meth:`_Ctx.device_scope`). Each doubt
+    also carries the device's own gap and its witnesses. `qualify` (:func:`_fleet_qualify`) carries the fleet's blind
+    spots onto a selection whose rows other devices' evidence shapes; `cbe` is as in :func:`_sel_state`."""
     secs = sections or (toks[0],)
     if forced is not None:
         return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
@@ -3842,10 +3973,14 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
         if unique and len(sel) > 1:
             doubts.append(_R_AMBIG.format(n=len(sel), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in sel]
-        bad = _unjoinable_rows(raw, fields) if strict else []
+        bad = _unjoinable_rows(raw, fields, multi)
         if bad:
             doubts.append(_R_UNJOINABLE.format(n=len(bad), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in bad]
+        scope = ctx.device_scope(toks[0], host)
+        if scope is not None and scope[0] == _UV:
+            doubts.append(scope[1])
+            wit += scope[2]
     if doubts:
         head = [reason] if base == _UV and reason else []
         state, reason = _UV, "; ".join(head + doubts) + (f"; the device also has a collection gap: {gap[0]}"
@@ -3857,11 +3992,16 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
                     caveats=("row_selection_by_exact_key",), qualify=qualify)
 
 
-def _unjoinable_rows(raw: Any, fields: Tuple[str, ...]) -> List[int]:
+def _unjoinable_rows(raw: Any, fields: Tuple[str, ...], multi: bool = False) -> List[int]:
     """The rows of a list an exact-key join over text `fields` cannot read: not an object, or a key field that is
-    missing or not text. :meth:`_Ctx.index` skips them, so any of them could name the device being joined."""
+    missing or not text (with `multi`, a field may also be a list of keys, as :meth:`_Ctx.index` reads it, and a list
+    holding anything but text cannot be read in full). :meth:`_Ctx.index` skips them, so any of them could name the
+    device being joined."""
+    def readable(value: Any) -> bool:
+        return _is_text(value) or (multi and isinstance(value, list) and all(_is_text(x) for x in value))
+
     return [i for i, row in enumerate(raw if isinstance(raw, list) else ())
-            if not (isinstance(row, dict) and all(_is_text(row.get(f)) for f in fields))]
+            if not (isinstance(row, dict) and all(readable(row.get(f)) for f in fields))]
 
 
 def _cable_row(ctx: _Ctx, i: int, rec: Any) -> Dict[str, Any]:
@@ -3989,17 +4129,19 @@ def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict
     basis = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases"
     if forced is not None:
         return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
-    if ctx.device_blind("nrfu_commands", host):
-        return _listing(ctx, _NC, _R_DEVICE_NC, toks, basis, [], sections=("nrfu_commands",),
-                        extra=ctx.cc_witness(host))
+    scope = ctx.device_scope("nrfu_commands", host)
+    if scope is not None and scope[0] == _NC:
+        return _listing(ctx, _NC, scope[1], toks, basis, [], sections=("nrfu_commands",), extra=scope[2])
     base, reason, raw = _list_state(ctx, toks, ("nrfu_commands",))
     items: List[Dict[str, Any]] = []
     malformed = False
+    lost: List[Tuple[Any, ...]] = []        # device entries the exact host join cannot read (_unjoinable_rows)
     for w, wave in enumerate(raw if isinstance(raw, list) else ()):
         devs = wave.get("devices") if isinstance(wave, dict) else None
         if not isinstance(devs, list):
             malformed = True
             continue
+        lost += [toks + (w, "devices", d) for d in _unjoinable_rows(devs, ("host",))]
         for d, dev in enumerate(devs):
             if not isinstance(dev, dict) or dev.get("host") != host:
                 continue
@@ -4019,13 +4161,22 @@ def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict
                 item["evidence_state"] = _cell(ctx, row, "evidence_state", "text", _B_NRFU + "evidence_state",
                                                missing="not collected: this case publishes no evidence state")
                 items.append(item)
+    extra: List[Tuple[str, Sequence[Any]]] = []
     if base in (_PUB, _CBE):
-        if malformed:
-            base, reason = _UV, "unverified: an NRFU wave or device entry is malformed, so its cases cannot be read"
+        doubts = (["unverified: an NRFU wave or device entry is malformed, so its cases cannot be read"]
+                  if malformed else [])
+        if lost:
+            doubts.append(_R_UNJOINABLE.format(n=len(lost), section="nrfu_commands.waves[].devices"))
+            extra += [("witness", t) for t in lost]
+        if scope is not None:
+            doubts.append(scope[1])
+            extra += scope[2]
+        if doubts:
+            base, reason = _UV, "; ".join(doubts)
         else:
             base, reason = (_PUB, None) if items else (_NC, "not collected: the NRFU pack generated no case for this "
                                                             "device")
-    return _listing(ctx, base, reason, toks, basis, items, sections=("nrfu_commands",))
+    return _listing(ctx, base, reason, toks, basis, items, sections=("nrfu_commands",), extra=extra)
 
 
 def _device_limitations_payload() -> List[Dict[str, Any]]:
@@ -4040,7 +4191,10 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         rosters = {"devices": isinstance(devices, dict) and host in devices,
                    "collection_completeness": ctx.cc_row(host)[0] is not None,
                    "cable_map": host in ctx.index(("cable_map", "nodes"), ("host",))}
-        forced = None if any(rosters.values()) else (_NC, _R_UNKNOWN_HOST)
+        # the two roster lists are key joins too: a row they cannot read could name this host
+        lost = len(ctx.unjoinable(_CC_ROWS, ("host",))) + len(ctx.unjoinable(("cable_map", "nodes"), ("host",)))
+        forced = None if any(rosters.values()) else (
+            (_UV, _R_UNKNOWN_HOST_DOUBT.format(n=lost)) if lost else (_NC, _R_UNKNOWN_HOST))
     else:
         rosters = {"devices": False, "collection_completeness": False, "cable_map": False}
         forced = (_UV, _R_BAD_HOST)
@@ -4178,12 +4332,11 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         "failure_impact": _selection_rows(
             ctx, host, forced, "failure_impact", ("failure_impact",), ("host",),
             "analyze.compute_failure_impact:failure_impact", _ABSENT_IMPACT,
-            lambda i, rec: _topology_impact(ctx, i, rec), unique=True, strict=True,
-            qualify=_fleet_qualify(ctx)),
+            lambda i, rec: _topology_impact(ctx, i, rec), unique=True, qualify=_fleet_qualify(ctx)),
         "structural_links": _selection_rows(
             ctx, host, forced, "structural_links", ("link_centrality",), ("a_host", "b_host"),
             "analyze.compute_link_centrality:link_centrality", _ABSENT_STRUCTURAL,
-            lambda i, rec: _topology_structural(ctx, i, rec), strict=True, qualify=_fleet_qualify(ctx)),
+            lambda i, rec: _topology_structural(ctx, i, rec), qualify=_fleet_qualify(ctx)),
         "limitations": _device_limitations_payload(),
     }
 
@@ -4754,11 +4907,15 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
         witnesses = []
         # Match ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even
         # when the section's fleet analysis failed. The enclosing list still discloses that failure.
-        if ctx.device_blind(section, host):
+        # A device scope that cannot say the host is not a blind spot leaves it unverified (after a failure).
+        scope = ctx.device_scope(section, host)
+        if scope is not None and scope[0] == _NC:
             hit = (_NC, "not collected: this host is a recorded collection blind spot")
-            witnesses = ctx.cc_witness(host)
+            witnesses = scope[2]
         else:
             hit = _secs_fail(ctx, (section,))
+            if hit is None and scope is not None:
+                hit, witnesses = (scope[0], scope[1]), scope[2]
         state, reason = hit or (_PUB, "")
         refs = ctx.refs([("subject", toks)] + ctx.failure_entries((section,), state == AU) + witnesses)
         def fact(value):
@@ -4906,7 +5063,8 @@ def _path_hop_evidence(ctx: _Ctx, i: int, hop: Dict[str, Any]) -> Dict[str, Any]
             state, reason = _NC, "not collected: no exact stored route row matches this computed hop"
     routes = _listing(ctx, state, reason, route_toks, "fib.trace_fib_path:exact route evidence join",
                       [{"index": j, "pointer": json_pointer(*route_toks, j)} for j in hits], sections=("routes",),
-                      extra=[("witness", route_toks + (j,)) for j in hits], caveats=("path_route_model_only",))
+                      extra=list(row.extra) + [("witness", route_toks + (j,)) for j in hits],
+                      caveats=("path_route_model_only",))
     iface_toks = ("interfaces", host, port)
     iface = _resolve(ctx, ("interfaces",), ("interfaces",), key=host, want=dict, host=host)
     state, reason = iface.state, iface.reason
@@ -4921,7 +5079,7 @@ def _path_hop_evidence(ctx: _Ctx, i: int, hop: Dict[str, Any]) -> Dict[str, Any]
         else:
             state, reason = _NC, "not collected: no exact interface record for this computed hop"
     interfaces = _listing(ctx, state, reason, None, "fib.trace_fib_path:exact egress-interface join", refs,
-                          sections=("interfaces",), extra=[("witness", iface_toks)],
+                          sections=("interfaces",), extra=list(iface.extra) + [("witness", iface_toks)],
                           caveats=("path_route_model_only",))
     return {"hop_index": i, "route_rows": routes, "interfaces": interfaces, "node_rows": _topology_join(ctx, host)}
 
