@@ -2537,13 +2537,14 @@ def test_impacts_view_counts_and_shows_unreadable_rows_and_never_reads_absence_a
     snapshot["failure_impact"].append("not an object")
     view = engine.rehearsal_impacts_view(snapshot, source_sha256="sha256:" + "1" * 64)
     assert view["n_rows_total"] == stored + 1 == len(view["rows"])
-    assert view["n_rows_unreadable"] == 1
+    assert view["n_rows_unreadable"] == 1 and view["unreadable"] == [stored]
     assert sum(view["counts"].values()) == stored + 1
     [unreadable] = [item for item in view["rows"] if item["index"] == stored]
     assert unreadable["host"] is None and unreadable["assessable"] == "not_assessed"
     assert unreadable["state"] == "unverified" and unreadable["ranked"] is False
     assert unreadable["reasons"] == [{"code": "row_unreadable", "n": 0}]
     assert {cell["kind"] for cell in unreadable["cells"].values()} == {"withheld"}
+    assert stored in [item["index"] for item in view["unranked"]]
     ranked = [item["ranked"] for item in view["rows"]]
     assert ranked == sorted(ranked, reverse=True)          # every ranked row precedes every unranked one
 
@@ -2551,6 +2552,7 @@ def test_impacts_view_counts_and_shows_unreadable_rows_and_never_reads_absence_a
     absent.pop("failure_impact")
     view = engine.rehearsal_impacts_view(absent, source_sha256="sha256:" + "1" * 64)
     assert view["section_state"] == "not_collected" and view["rows"] == [] and view["n_rows_total"] == 0
+    assert view["unreadable"] == [] and view["unranked"] == []
     malformed = {**snapshot, "failure_impact": {"core1": {}}}
     assert engine.rehearsal_impacts_view(malformed, source_sha256="x")["section_state"] == "unverified"
     failed = {**snapshot, "assessment_integrity": {"failed_phases": ["Failure Impact"]}}
@@ -2558,6 +2560,88 @@ def test_impacts_view_counts_and_shows_unreadable_rows_and_never_reads_absence_a
     assert view["section_state"] == "analysis_unavailable"
     assert {item["state"] for item in view["rows"]} == {"analysis_unavailable"}
     assert {item["assessable"] for item in view["rows"]} == {"not_assessed"}
+    # W50 round 4 (P3-2): under a failed section the non-object row is worded section_unavailable, not
+    # row_unreadable, yet the census and the list follow the owner's ONE rule (RowVerdict.readable) and agree
+    [failed_unreadable] = [item for item in view["rows"] if item["index"] == stored]
+    assert failed_unreadable["reasons"] == [{"code": "section_unavailable", "n": 0}]
+    assert view["n_rows_unreadable"] == 1 and view["unreadable"] == [stored]
+    # every row of a failed section is unranked, and the disclosure names each of them
+    assert [item["index"] for item in view["unranked"]] == list(range(stored + 1))
+
+
+_SAMPLE = _REPO / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+#: The SPA's render cap for impacts_view rows (ComparisonDecision.tsx ROW_CAP).
+_SPA_ROW_CAP = 8
+
+
+def test_impacts_view_names_every_unranked_row_and_only_lays_out_the_owners_decisions():
+    """W50 round 4. P2-B: rows the owner does not rank sort after every ranked row, so a display that caps ``rows``
+    would drop them unnamed; ``unranked`` names each of them, in stored order, whatever the cap. P3-3: every
+    decision in the view is the owner's (``ranking_order``, ``ranks``, ``unranked``, ``cell_reading``,
+    ``RowVerdict.readable``); the view only lays it out."""
+    from cisco_toolkit import impact_assessability as ia
+
+    snapshot = json.loads(_SAMPLE.read_bytes())
+    objects = [row for row in snapshot["failure_impact"] if isinstance(row, dict)]
+    for row in objects[-3:]:             # three rows older than the off-scan marker: held, never ranked
+        row.pop("off_scan_gw_vlans", None)
+    verdicts = ia.assess_failure_impact(snapshot)
+    held = [verdict.index for verdict in verdicts if verdict.assessable == ia.NOT_ASSESSED]
+    assert len(held) >= 3, held
+    assert sum(1 for verdict in verdicts if ia.ranks(verdict)) > _SPA_ROW_CAP     # more ranked rows than the cap
+
+    view = engine.rehearsal_impacts_view(snapshot, source_sha256="sha256:" + "2" * 64)
+    order = [item["index"] for item in view["rows"]]
+    assert order == [verdict.index for verdict in sorted(verdicts, key=ia.ranking_order)]
+    capped = view["rows"][:_SPA_ROW_CAP]
+    assert all(item["ranked"] is True for item in capped)
+    assert not set(held) & {item["index"] for item in capped}        # the cap alone would drop every held row ...
+    disclosed = [item["index"] for item in view["unranked"]]
+    assert disclosed == [verdict.index for verdict in ia.unranked(verdicts)]
+    assert set(held) <= set(disclosed)                                # ... and the disclosure names each of them
+    by_index = {verdict.index: verdict for verdict in verdicts}
+    for item in view["unranked"]:
+        verdict = by_index[item["index"]]
+        assert item == {
+            "index": verdict.index, "host": None if verdict.withholds("host") else verdict.host,
+            "assessable": verdict.assessable, "state": verdict.state,
+            "reasons": [{"code": code, "n": n} for code, n in verdict.code_counts],
+        }, item
+    for item in view["rows"]:
+        verdict = by_index[item["index"]]
+        assert item["ranked"] is ia.ranks(verdict)
+        assert item["cells"] == {field: ia.cell_reading(verdict, field)._asdict()
+                                 for field in ia.CELL_FIELDS}, item["index"]
+    assert view["unreadable"] == [verdict.index for verdict in verdicts if not verdict.readable] == []
+
+
+def test_a_run_mutation_builds_its_impacts_views_after_releasing_the_mutation_lock(client, monkeypatch):
+    """W50 round 4 (P3-7): a war-room mutation (step, check, closeout, event, finish) holds execution.MUTATION_LOCK
+    only for its read-modify-write. Its response's impacts views, which load each receipt's bound after snapshot
+    and run the engine owner, are built after the lock is released, from the same saved record, so the stored run
+    and the response are unchanged."""
+    _before_id, _after_id, run, _row = _bind_receipt(client)
+    baseline = client.get(f"/api/executions/{run['id']}").json()
+    original = engine.receipt_impacts_view
+    held = []
+
+    def watching(comparison, load_bound_snapshot):
+        held.append(execution.MUTATION_LOCK.locked())
+        return original(comparison, load_bound_snapshot)
+
+    monkeypatch.setattr(engine, "receipt_impacts_view", watching)
+    response = client.post(
+        f"/api/executions/{run['id']}/event", json={"kind": "note", "text": "lock scope probe"},
+    )
+    assert response.status_code == 200, response.text
+    assert held == [False], held
+    updated = response.json()
+    assert updated["comparison_receipts"] == baseline["comparison_receipts"]
+    assert updated["events"][-1]["text"] == "lock scope probe"
+    stored = client.app.state.store.get_execution(run["id"])
+    assert stored["state"]["events"][-1]["text"] == "lock scope probe"
+    assert "impacts_view" not in json.dumps(stored["state"]) and all(
+        "impacts_view" not in row for row in stored["comparisons"])
 
 
 def test_trend_pairs_carry_the_view_beside_an_unchanged_comparison(client):

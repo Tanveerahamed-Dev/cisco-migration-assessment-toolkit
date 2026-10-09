@@ -2,8 +2,9 @@
 
 Branch `claude/w50-receipt-impacts`, cut from the local branch `claude/w48-impact-consumers` at `e7c00e12`. The
 stack is main ← #629 (W45, which adds the owner `cisco_toolkit/impact_assessability.py`) ← W48 ← W50. It is
-committed locally and not pushed. This is round 3, a design pivot decided by the supervisor after the independent
-re-verification of round 2 (`e04bb4a1`).
+committed locally and not pushed. Round 3 was a design pivot decided by the supervisor after the independent
+re-verification of round 2 (`e04bb4a1`); round 4 answers the three-lens review of round 3 (`096b2fd5`) and is
+recorded in its own section below ("Round 4").
 
 No local test, build, engine, pipeline, npm or vitest run happened (owner GitHub-only rule). The local checks were
 static: `py_compile`, AST scans, and pure library functions called on the committed golden and sample JSON (see
@@ -158,25 +159,111 @@ the evidence line).
 ## Frozen `/1` digests
 
 Canonical encoding `protocol_assurance.canonical_json_bytes` (sorted keys, ASCII, compact), SHA-256, over
-`cutover_operator_evidence(snap, prior_snapshot=snap)` and over `compare_bound_pair(snap, snap, ...)` with the fixed
-persisted-source bindings of `_binding` (snapshot ids 1 and 2, campaign 1, engagement `E`, the file's own SHA-256 and
-length), `snap` being `bind_snapshot_json_bytes` of the committed file bytes. Measured at `e7c00e12`; constants, never
-recomputed from current code.
+`cutover_operator_evidence(after, prior_snapshot=before)` and over `compare_bound_pair(before, after, ...)` with fixed
+persisted-source bindings (snapshot ids 1 and 2, campaign 1, engagement `E`, the file's own SHA-256 and length),
+each snapshot being `bind_snapshot_json_bytes` of the committed file bytes. Constants, never recomputed from current
+code. Round 4 split them in two kinds (the review's P2-A: round 3 pinned only the LIVE corpus, which is regenerated,
+so a routine regeneration would have moved a "never re-pin" digest with the binder untouched).
 
-| Snapshot | operator evidence | full comparison |
+**Frozen corpus** (`tests/fixtures/operator_evidence_v1/`, LF-only, pinned LF by `.gitattributes`, each file's own
+SHA-256 asserted before use). Bindings carry `script_version`, as AssessHub's stored binding does, so every pair is
+admitted and the whole composer runs. Measured with the pure functions at the round-4 head, with the deployed
+`main` code `f797444e` and with the pre-W50 code `e7c00e12` (each a `git archive` of `cisco_toolkit/` imported by
+path, `__file__` asserted): identical.
+
+| Fixture | SHA-256 |
+| --- | --- |
+| `before.json` | `0ec258031986450de951ccd9b5b7db5954036ca5a0886b7f124704e0bb7273a2` |
+| `after-rows.json` | `08d520724aad77a78cb570837f5a168b586340572d560956dc24651ddb4d4d90` |
+| `after-missing.json` | `d2853c90ec19519f2674d440e2ffa9cb387c8e4cd815e44b0dcc0eec50ab9876` |
+| `after-non-list.json` | `f8e9c8eeccac3b7164edfdd9bcf47401632a37b4e154f82b7d5467782b347932` |
+
+| Pair (before → after) | operator evidence | full comparison |
 | --- | --- | --- |
-| golden | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2` |
-| sample | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744` |
+| rows (`before` → `after-rows`) | `8914d60065a45a2ea78f160363c828d4c540d90b9c4a9a151e0bbaa5d746a600` | `8f998baaf7f79fa29f431c9f4d8d7319cc3bb363dc640ef7532e9dc4bbda4823` |
+| missing (`before` → `after-missing`) | `5c7939b2b6aab6dc97724ffed99a122b05bd4cf55d0d63fa69302a6bff1190e7` | `4b05de8cb3a2f1e16f305b5bddfa57ab54e5712f18ab5dbb5398341d6c85a403` |
+| non_list (`before` → `after-non-list`) | `5c7939b2b6aab6dc97724ffed99a122b05bd4cf55d0d63fa69302a6bff1190e7` | `bb2de4a7a65a2d0918d65253a9eb13bd41c3e9e20342547a3aed83999dcbe17d` |
+| rows_self (`after-rows` → `after-rows`) | `8914d60065a45a2ea78f160363c828d4c540d90b9c4a9a151e0bbaa5d746a600` | `34ecb7e30cd4d77f425b34acc0858b636403021ca32602d5b435eae70fcb6cf1` |
 
-If one moves, never re-pin: a payload change needs a new contract with its own frozen binder added beside `/1`; a
-comparison-only change breaks every stored receipt alike and needs its own receipt-versioning decision.
+`missing` and `non_list` share their operator-evidence digest by design: both bind no row and nothing else in the
+evidence differs. `after-rows` holds 11 rows: six objects (a lower bound with a blind link, a legacy row, a row with
+odd-typed values and extra keys including an integer past 2**53, an empty key and non-ASCII text, a second row for one
+host, an empty object, a row with an empty host and a float count) and five non-objects (a string, an integer, null,
+a list, a boolean). The binder binds exactly the six objects, raw.
+
+**Live corpus** (the committed golden and sample, measured at `e7c00e12`), each an explicit pair:
+
+| Snapshot | corpus SHA-256 | operator evidence | full comparison |
+| --- | --- | --- | --- |
+| golden | `c4f6a549299bd6494b9b0377a7a5be773d2322b3ace3b785701d2a57e7cc4643` | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2` |
+| sample | `dbc229cfdcd676bb07e99bdace7e26ea429de087715ebf1727064b4e373a26c1` | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744` |
+
+The `f797444e` and `e7c00e12` code reproduce both live pairs on these corpus bytes too.
+
+The rule (`tests/test_operator_evidence_contract.py` docstring): a frozen-corpus digest never moves, so if one does,
+never re-pin: a payload change needs a new contract with its own frozen binder added beside `/1`, and a
+comparison-only change breaks every stored receipt alike and needs its own receipt-versioning decision. A live pair
+moves only AS A PAIR: a regeneration re-measures the corpus SHA-256 and its digests together, in its own commit, and
+only while every frozen-corpus pin still holds; a moved digest with an unchanged corpus SHA-256 is a code change and
+fails like a frozen one. Corpus bytes are read as committed: the golden has no `.gitattributes` EOL rule, so a
+`core.autocrlf=true` checkout (Git for Windows' usual default; whether the hosted Windows image sets it was not
+checked here) carries CRLF, which round 3's raw read would have hashed into the comparison's binding and so into the
+pinned comparison digest; the reader undoes exactly CRLF → LF (lossless for JSON) and refuses any other CR.
+
+## Round 4 (answers the three-lens review of `096b2fd5`)
+
+- **P2-A, frozen digests measured corpus + code.** Fixed: the frozen corpus and the live pairs above
+  (`tests/test_operator_evidence_contract.py`: `_FROZEN_FIXTURES`, `_V1_FROZEN_CORPUS`, `_V1_LIVE`,
+  `_committed_bytes`; `.gitattributes` pins the fixtures LF). The sabotage test runs on both kinds. The new fixtures
+  are outside every Atlas R1/R2 LF policy domain, so the byte-custody receipts in
+  `tests/fixtures/atlas-r2-byte-custody-policy.v1.json` do not move (recomputed with the module's pure helpers on the
+  committed tree, see "Static checks").
+- **P2-B, unranked rows fell off the capped list.** Fixed: the view publishes `unranked` (every row the owner does not
+  rank, in stored order, from the new owner accessor `unranked`), and `RehearsalImpacts` names each of them in its own
+  block, whatever the cap (`comparison-rehearsal-impact-unranked`). Tests: the vitest case with ten ranked rows and
+  three held ones; the Python case on the sample with three held rows past the cap.
+- **P3-1, CapDisclosure wording.** Fixed: `CapDisclosure` takes an `exportNote`; the failure-impact block says the
+  complete JSON export holds only the bound evidence (each stored row that is an object, raw and uninterpreted), never
+  this interpretation nor a non-object row. Every other section keeps the original sentence.
+- **P3-2, unreadable list vs census.** Fixed: one owner rule, `RowVerdict.readable` (the stored row is an object).
+  The view publishes `unreadable` (stored positions) beside `n_rows_unreadable`, both from it; the SPA lists
+  `view.unreadable`, never a reason code. Under a failed section a non-object row is worded `section_unavailable`, and
+  the census and the list still agree (pinned in Python and vitest).
+- **P3-3, second classifier.** Fixed: `_impacts_view_cell` and `_impacts_view_order` are gone from the engine. The
+  owner publishes `cell_reading(verdict, field)` (`CellReading(kind, text, state)` with `CELL_KINDS` /
+  `CELL_FIELDS`), `ranking_order(verdict)` and `unranked(verdicts)`; the engine only lays them out. On the golden, the
+  sample and seven adversarial snapshots every pre-existing view field is byte-identical to round 3's output; the
+  one reading change, by construction and checked on a published sample row, is that a detail holding a lone
+  surrogate is now unreadable (the owner's `_is_text` slot rule) instead of a string the API could not encode.
+- **P3-4, schema handling.** Fixed: `RehearsalImpacts` renders a view whose `schema` is not `IMPACTS_VIEW_SCHEMA` as
+  unrecognised with no value, and a cell kind outside `IMPACT_CELL_KINDS` as `unrecognised value kind (…)`. Both SPA
+  constants are held equal to `engine.REHEARSAL_IMPACTS_VIEW_SCHEMA` and `impact_assessability.CELL_KINDS`.
+- **P3-5, no Python guard on presenting the bound rows.** Fixed: `webapp/tests/test_impacts_view_constants.py` now
+  also scans every engine, AssessHub, Atlas and pipeline Python source for a read of the `impacts` key (subscript,
+  call argument, attribute, `match` mapping key); the only admitted units are the frozen binder and the two storage
+  verifiers, and the allowlist must name live units. Today no production code reads the key at all.
+- **P3-6, the owner check covered `protocol_assurance.py` only.** Fixed: a static call-graph closure from
+  `comparison.compare_bound_pair`, `engine.compare_bound_pair` and the two storage verifiers (resolved calls and
+  references, `module.function`, `self.method`, dispatch tables, and every method of each project class a unit
+  names) reaches no unit that is, imports or names the owner. It spans 891 units in 29 modules, including
+  `html.compute_snapshot_delta`, `html.compute_cutover_gate`, `precert.compute_precert`, the protocol and L2 owners and
+  52 analyze helpers; the display builder `engine.rehearsal_impacts_view` is outside it. A synthetic tree pins that a
+  deep helper, a class method, an unaliased dotted import and a dispatch table are each seen. The graph is the W48
+  guard's resolver, refactored into `_graph` with the W48 scan's result unchanged (readers and routed units identical
+  on this tree).
+- **P3-7, lock scope.** Fixed: `_mutate_execution` runs the read-modify-write under `MUTATION_LOCK`
+  (`_mutate_execution_locked`) and builds the response view from the saved record after the lock is released;
+  nothing stored or returned changes. Pinned by a test that observes the lock from inside `receipt_impacts_view`.
 
 ## Owner additions (`cisco_toolkit/impact_assessability.py`, additive)
 
 `RowVerdict.state` and `RowVerdict.withheld_state(field)` expose the owner's existing withheld states (from the hold,
 doubt, bounds or section it already computes), `section_state(snap)` reads the section as a whole, and
 `count_value(raw)` exposes its count rule. `code_counts` stays (round 2) with a display-only docstring. No decision,
-reason or wording changed, and the comment that tied `SCHEMA` to a receipt is removed.
+reason or wording changed, and the comment that tied `SCHEMA` to a receipt is removed. Round 4 adds the display
+readings `cell_reading` / `CellReading` / `CELL_KINDS` / `CELL_FIELDS`, `ranking_order`, `unranked` and
+`RowVerdict.readable` (which `rows_with_verdicts` now reads, with identical output); none of them is reachable from a
+receipt recomputation.
 
 ## Tests (written, not run)
 
@@ -200,6 +287,16 @@ reason or wording changed, and the comment that tied `SCHEMA` to a receipt is re
   mismatch, absent and empty sections, and the cap.
 - `tests/test_protocol_assurance_contracts.py` and `webapp/tests/test_backend.py` are back to their pre-W50 `/1`
   expectations.
+- Round 4 additions (written, not run): in `tests/test_operator_evidence_contract.py` the frozen-corpus integrity
+  test, the frozen-corpus digests by default and declared, the sabotage test on every frozen pair, the live pairs,
+  the frozen binder over every row shape, the receipt-recompute closure check and its synthetic non-vacuity tree; in
+  `tests/test_impact_consumers.py` the owner's display accessors against its own rules (sample, held row, frozen odd
+  rows) and the display cells equal to `cell_reading`; in `webapp/tests/test_compare_execution_receipts.py` the
+  unranked disclosure past the cap with every cell equal to the owner's reading, `unreadable` under a failed section,
+  and the lock-scope probe; in `webapp/tests/test_impacts_view_constants.py` the schema and cell-kind constants and
+  the Python presenter scan with its non-vacuity case; in `ComparisonDecision.impacts.test.tsx` the unranked block
+  past the cap, the unreadable list from the view's own list under a failed section, an unknown schema, an unknown
+  cell kind, and the export wording.
 
 ## Static checks (this round)
 
@@ -217,6 +314,25 @@ reason or wording changed, and the comment that tied `SCHEMA` to a receipt is re
 - The display-boundary AST scan, the TS table parser, the SPA raw-read scan and the protocol hand-list scanner,
   replicated in scratch scripts from the test modules' helpers (no test function executed), pass on this tree;
   the pre-W50 component is flagged by the raw-read scan.
+
+Round 4 (same rule: py_compile, AST scans, pure functions and the test modules' helpers; no test function run):
+
+- The frozen-corpus and live digests above, at this head, at `f797444e` and at `e7c00e12` (module `__file__`
+  asserted under each archive root): identical.
+- The view before and after the owner-accessor refactor on the golden, the sample and seven adversarial snapshots:
+  every round-3 field identical; the new `unreadable` and `unranked` fields as specified (a failed section with a
+  non-object row: `unreadable` `[3]`, every row unranked).
+- The refactored `_scan` against the round-3 copy on this tree: readers and routed units identical (17 readers, 218
+  routed; the raw readers are still exactly the two ratchet entries). The receipt-recompute closure: 891 units, 0
+  owner hits. The synthetic closure tree reports exactly the four expected owner-reaching units.
+- The Python presenter scan: no read of the `impacts` key anywhere in production Python; the admitted units exist;
+  the non-vacuity source yields its six reads. The SPA scan still finds no raw read. The TS schema and cell-kind
+  constants equal their owners; the phrase tables still equal theirs.
+- The new owner-accessor assertions, mirrored with library calls on the sample, the held sample and the frozen odd
+  rows: no failure. The unranked-past-the-cap premise on the sample (19 ranked rows, three held rows outside the
+  first eight): holds.
+- The byte-custody receipts recomputed with the pure helpers of `tests/test_transition_schema_assets.py` on the
+  committed head: unchanged.
 
 ## Residuals
 
@@ -245,3 +361,7 @@ reason or wording changed, and the comment that tied `SCHEMA` to a receipt is re
 - Whether an AssessHub database with real stored receipts exists anywhere; the read path is exercised only through
   the tests' own writers.
 - The hosted SPA dist is not rebuilt.
+- Round 4: none of the new or changed tests ran (pytest, vitest); the TSX was checked by hand (strict, ES2021 lib,
+  `noUnusedLocals`), not by `tsc`. The closure check is static: a call through a local variable, a callback
+  parameter or an attribute of an object the graph cannot type is not followed (the sabotage tests are the runtime
+  half). That the hosted Windows checkout of the golden is CRLF was not checked; the reader is correct either way.

@@ -759,6 +759,14 @@ class RowVerdict:
         return self.assessable == PUBLISHED
 
     @property
+    def readable(self) -> bool:
+        """Whether the stored row is an object, so its fields can be read at all. The one rule for an UNREADABLE
+        row: it holds whatever the verdict or reason codes say (a failed section words a non-object row as
+        ``section_unavailable``, not ``row_unreadable``), so a census of unreadable rows and a list of them read
+        this, never a reason code (W50)."""
+        return isinstance(self.raw, dict)
+
+    @property
     def code_counts(self) -> List[Tuple[str, int]]:
         """``(code, n)`` per reason, in :attr:`codes` order: each stable reason identifier (a key of
         :data:`CODE_PHRASES`) with the count its phrase quotes (0 where it quotes none). A display that words the
@@ -905,7 +913,7 @@ def count_value(raw: Any) -> Optional[int]:
 def rows_with_verdicts(snap: Any) -> List[Tuple[Dict[str, Any], RowVerdict]]:
     """``(row, verdict)`` for every stored row that is an object, in stored order: the pairs a deliverable renders
     or ranks from."""
-    return [(v.raw, v) for v in assess_failure_impact(snap) if isinstance(v.raw, dict)]
+    return [(v.raw, v) for v in assess_failure_impact(snap) if v.readable]
 
 
 def assessment_document(snap: Any) -> Dict[str, Any]:
@@ -944,6 +952,54 @@ def table_value(verdict: RowVerdict, field: str) -> Any:
     return raw
 
 
+#: How a display may read one cell of a row (:func:`cell_reading`): the stored value is a measurement (or the
+#: producer's detail the owner still publishes), the owner's lower bound, withheld, or not a readable value of its kind.
+CELL_PUBLISHED = "published"
+CELL_FLOOR = "floor"
+CELL_WITHHELD = "withheld"
+CELL_UNREADABLE = "unreadable"
+CELL_KINDS: Tuple[str, ...] = (CELL_PUBLISHED, CELL_FLOOR, CELL_WITHHELD, CELL_UNREADABLE)
+#: The cells :func:`cell_reading` reads: every blast-radius measure, then the producer's detail.
+CELL_FIELDS: Tuple[str, ...] = IMPACT_MEASURES + ("detail",)
+
+
+class CellReading(NamedTuple):
+    """One cell as the owner publishes it to a display that words it itself. ``kind`` is one of :data:`CELL_KINDS`;
+    ``text`` is the display text for a published value or a floor (the owner's own :func:`table_value` wording,
+    ``"≥ 45"`` / ``"High (lower bound)"``) and ``None`` otherwise; ``state`` is the state of a withholding
+    (:meth:`RowVerdict.withheld_state`) and ``None`` otherwise."""
+    kind: str
+    text: Optional[str]
+    state: Optional[str]
+
+
+def cell_reading(verdict: RowVerdict, field: str) -> CellReading:
+    """How a display reads `field` (one of :data:`CELL_FIELDS`) of the verdict's row (W50). The owner decides, the
+    display only words it: a cell the owner withholds is :data:`CELL_WITHHELD` with its state; on a lower-bound row a
+    published measure is :data:`CELL_FLOOR` with :func:`table_value`'s text; a published value that is not readable as
+    its kind (a band outside :data:`IMPACT_SEVERITIES`, a count :func:`count_value` cannot read, a detail that is not
+    non-blank text) is :data:`CELL_UNREADABLE`, never a zero; anything else is :data:`CELL_PUBLISHED` with its text."""
+    if field not in CELL_FIELDS:
+        raise ValueError(f"not a failure-impact display cell: {field!r}")
+    if verdict.withholds(field):
+        return CellReading(CELL_WITHHELD, None, verdict.withheld_state(field))
+    raw = verdict.raw.get(field) if isinstance(verdict.raw, dict) else None
+    floor = verdict.assessable == LOWER_BOUND and field in IMPACT_MEASURES
+    text: Any
+    if field == "detail":
+        readable, text = _is_text(raw) and bool(raw.strip()), raw
+    elif field == "severity":
+        readable = isinstance(raw, str) and raw in IMPACT_SEVERITIES
+        text = table_value(verdict, field) if floor else raw
+    else:
+        ok, n = _count(raw)
+        readable = ok
+        text = table_value(verdict, field) if floor else str(n)
+    if not readable or not isinstance(text, str):
+        return CellReading(CELL_UNREADABLE, None, None)
+    return CellReading(CELL_FLOOR if floor else CELL_PUBLISHED, text, None)
+
+
 def table_detail(verdict: RowVerdict) -> Any:
     """The detail a deliverable table writes: the producer's detail on a published row; otherwise the verdict and why,
     followed by the producer's detail where the owner still publishes it (its INDETERMINATE disclosure, or a partial
@@ -978,6 +1034,28 @@ def ranks(verdict: RowVerdict) -> bool:
     return verdict.published or ranking_floor(verdict) is not None
 
 
+def ranking_order(verdict: RowVerdict) -> Tuple[int, int, int]:
+    """The sort key of a display that lists EVERY row in ranking order (W50): each row :func:`ranks` places, by its
+    stranded floor (:func:`ranking_floor`) or its measured count, largest first; then a ranked row with no readable
+    count; then every row it does not rank (each of those is also in :func:`unranked`, which a capped display names in
+    full). Stored order breaks every tie."""
+    if not ranks(verdict):
+        return 2, 0, verdict.index
+    floor = ranking_floor(verdict)
+    if floor is not None:
+        return 0, -floor, verdict.index
+    ok, n = _count(verdict.raw.get("stranded")) if isinstance(verdict.raw, dict) else (False, None)
+    return (0, -n, verdict.index) if ok else (1, 0, verdict.index)
+
+
+def unranked(verdicts: Sequence[RowVerdict]) -> List[RowVerdict]:
+    """The rows a ranking must DISCLOSE rather than place, in stored order: every row :func:`ranks` refuses (held,
+    ambiguous, a lower bound whose stranded floor is withheld or zero, an unreadable row, a failed section). These are
+    the rows :func:`disclose` names; a display that caps its ranked list names every one of them regardless of the
+    cap, because they sort after every ranked row (:func:`ranking_order`)."""
+    return [v for v in verdicts if not ranks(v)]
+
+
 def ranked_value(verdict: RowVerdict, field: str) -> Any:
     """What a ranking table writes for `field` of a row it ranks: the stored value on a published row; on a
     lower-bound row the owner's :func:`table_value` marked as a floor (``"≥ 300 (lower bound)"``, ``"High (lower
@@ -1009,16 +1087,18 @@ def disclose(verdicts: Sequence[RowVerdict], limit: int = 5) -> str:
 
 
 __all__ = [
-    "AMBIGUOUS", "ANALYSIS_UNAVAILABLE", "Bound", "CODE_PHRASES", "CableSource", "DELIVERABLE_WITNESS_CAP", "Doubt",
-    "Hold", "IMPACT_EDGE_KINDS",
+    "AMBIGUOUS", "ANALYSIS_UNAVAILABLE", "Bound", "CELL_FIELDS", "CELL_FLOOR", "CELL_KINDS", "CELL_PUBLISHED",
+    "CELL_UNREADABLE", "CELL_WITHHELD", "CODE_PHRASES", "CableSource", "CellReading", "DELIVERABLE_WITNESS_CAP",
+    "Doubt", "Hold", "IMPACT_EDGE_KINDS",
     "IMPACT_FIELDS", "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST",
     "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL",
     "NOT_COLLECTED", "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS",
-    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "count_value",
-    "detail_withheld", "disclose",
+    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "cell_reading",
+    "count_value", "detail_withheld", "disclose",
     "duplicate_doubt", "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound",
-    "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranks", "read_cable_source",
+    "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranking_order", "ranks", "read_cable_source",
     "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "section_state", "table_detail",
     "table_value",
-    "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unreadable_cables",
+    "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unranked",
+    "unreadable_cables",
 ]

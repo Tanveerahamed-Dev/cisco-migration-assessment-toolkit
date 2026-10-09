@@ -835,10 +835,11 @@ export interface CampaignAdjacentComparison {
 }
 
 /**
- * W50: one cell of a `RehearsalImpactsView` row, as the engine owner publishes it. `published`: a measurement (or
- * the producer's detail the owner still publishes); `floor`: a lower bound, `text` is the owner's own wording
- * ("≥ 45", "High (lower bound)"); `withheld`: not a measurement, `state` is the owner's state of that withholding;
- * `unreadable`: the owner publishes the cell but the stored value is not readable (never a zero).
+ * W50: one cell of a `RehearsalImpactsView` row, as the engine owner publishes it (impact_assessability.cell_reading;
+ * its kinds are CELL_KINDS). `published`: a measurement (or the producer's detail the owner still publishes); `floor`:
+ * a lower bound, `text` is the owner's own wording ("≥ 45", "High (lower bound)"); `withheld`: not a measurement,
+ * `state` is the owner's state of that withholding; `unreadable`: the owner publishes the cell but the stored value is
+ * not readable (never a zero). Any other kind is rendered as unrecognised, never guessed at.
  */
 export interface ImpactsViewCell {
   kind: "published" | "floor" | "withheld" | "unreadable" | string;
@@ -846,8 +847,8 @@ export interface ImpactsViewCell {
   state: string | null;
 }
 
-/** W50: one stored failure-impact row, interpreted by the engine owner (cisco_toolkit/impact_assessability.py). */
-export interface ImpactsViewRow {
+/** W50: how a `RehearsalImpactsView` names one stored failure-impact row wherever it discloses it. */
+export interface ImpactsViewDisclosedRow {
   /** The stored row's position. */
   index: number;
   /** null when the owner withholds the host (an unreadable row, a failed section). */
@@ -858,9 +859,13 @@ export interface ImpactsViewRow {
   state: string | null;
   /** Each reason code (a key of the owner's CODE_PHRASES) with the count its phrase quotes. */
   reasons: Array<{ code: string; n: number }>;
+}
+
+/** W50: one stored failure-impact row, interpreted by the engine owner (cisco_toolkit/impact_assessability.py). */
+export interface ImpactsViewRow extends ImpactsViewDisclosedRow {
   /** Whether the owner ranks the row (by its measurement or its stranded floor). */
   ranked: boolean;
-  /** severity, vlans_impacted, stranded, hard, backup, fhrp and detail. */
+  /** severity, vlans_impacted, stranded, hard, backup, fhrp and detail, each the owner's cell_reading. */
   cells: Record<string, ImpactsViewCell>;
 }
 
@@ -884,9 +889,15 @@ export type RehearsalImpactsView =
     /** null when the section is a list; otherwise why it cannot be read (never "no impact"). */
     section_state: string | null;
     n_rows_total: number;
+    /** How many stored rows are not objects: the owner's one rule (RowVerdict.readable), the same as `unreadable`. */
     n_rows_unreadable: number;
+    /** The stored position of every row that is not an object, in stored order (never selected by reason code). */
+    unreadable: number[];
     counts: Record<string, number>;
+    /** Every stored row, in the owner's ranking order (a display may cap these). */
     rows: ImpactsViewRow[];
+    /** Every row the owner does not rank, in stored order: a capped display names each of these regardless. */
+    unranked: ImpactsViewDisclosedRow[];
   }
   | {
     schema: "rehearsal_impacts_view/1";

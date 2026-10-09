@@ -3699,7 +3699,17 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return view
 
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
-        """Atomic read-modify-write on one run's state; returns the updated derived state."""
+        """Atomic read-modify-write on one run's state; returns the updated derived state.
+
+        Only the read-modify-write holds ``execution.MUTATION_LOCK``. The response view is built AFTER the lock is
+        released (W50): it loads each receipt's bound after snapshot and runs the engine owner over it
+        (``_receipts_with_impacts_views``), which must never serialize the war room. It is built from the record this
+        call just read and saved, exactly as before, so neither what is stored nor what is returned changes."""
+        saved_rec = _mutate_execution_locked(execution_id, fn)
+        return _execution_view(saved_rec, saved_rec["state"])
+
+    def _mutate_execution_locked(execution_id: int, fn) -> Dict[str, Any]:
+        """The locked half of :func:`_mutate_execution`: read, apply `fn`, save; returns the saved record."""
         with execution.MUTATION_LOCK:
             rec = store.get_execution(execution_id)
             if not rec:
@@ -3735,7 +3745,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "Execution comparison authority could not be revalidated from its persisted "
                     "receipt and exact source rows; the mutation was refused.",
                 )
-            return _execution_view(rec, rec["state"])
+            return rec
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
     def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:

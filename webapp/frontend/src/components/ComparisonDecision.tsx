@@ -148,11 +148,19 @@ function downloadCompleteJson(value: CompareResponse, filename: string) {
   URL.revokeObjectURL(href);
 }
 
-function CapDisclosure({ rendered, total }: { rendered: number; total: number }) {
+const COMPLETE_EXPORT_NOTE = "Complete JSON export includes all received rows.";
+
+/** `exportNote` says what the complete JSON export holds of these rows; the default is true only where the rows
+ * rendered are the comparison's own rows (the export is the comparison, `downloadCompleteJson`). */
+function CapDisclosure({ rendered, total, exportNote = COMPLETE_EXPORT_NOTE }: {
+  rendered: number;
+  total: number;
+  exportNote?: string;
+}) {
   const omitted = Math.max(0, total - rendered);
   return (
     <div className="faint" data-testid="comparison-cap-disclosure" style={{ fontSize: 10.5, marginTop: 7 }}>
-      Rendered: {rendered} · Total: {total} · Omitted: {omitted}. Complete JSON export includes all received rows.
+      Rendered: {rendered} · Total: {total} · Omitted: {omitted}. {exportNote}
     </div>
   );
 }
@@ -423,6 +431,15 @@ const IMPACT_VERDICT_LABELS: Readonly<Record<string, string>> = {
   "ambiguous": "ambiguous",
 };
 
+/** The one view schema this page reads (engine.REHEARSAL_IMPACTS_VIEW_SCHEMA); any other is shown as unrecognised. */
+const IMPACTS_VIEW_SCHEMA = "rehearsal_impacts_view/1";
+/** The cell kinds the owner publishes (impact_assessability.CELL_KINDS, held equal by test_impacts_view_constants). */
+const IMPACT_CELL_KINDS: ReadonlyArray<string> = ["published", "floor", "withheld", "unreadable"];
+/** What the complete JSON export holds of the failure-impact rows: the export is the comparison, whose
+ * rehearsal.impacts binds the frozen evidence (each stored row that is an object, raw), never this interpretation. */
+const IMPACTS_EXPORT_NOTE = "The complete JSON export holds only the bound evidence (each stored row that is an"
+  + " object, raw and uninterpreted): neither this interpretation nor any stored row that is not an object.";
+
 const IMPACT_VERDICT_COLOR: Readonly<Record<string, string>> = {
   published: "var(--accent)",
   lower_bound: "var(--watch)",
@@ -471,10 +488,19 @@ function impactReason(entry: unknown): string {
   return phrase.replaceAll("{n}", n);
 }
 
+/** A cell kind the owner did not publish, named instead of guessed at; `null` for a known kind or no cell at all. */
+function unrecognisedCellKind(record: Record<string, unknown>): string | null {
+  if (record.kind === undefined || IMPACT_CELL_KINDS.includes(record.kind as string)) return null;
+  return `unrecognised value kind (${typeof record.kind === "string" ? record.kind : "unreadable"})`;
+}
+
 /** One cell in words: a measurement or the owner's floor text ("≥ 45", "High (lower bound)"); a withheld value as
- * NOT ASSESSED with the owner's state; an unreadable value as unavailable, which is never a zero. */
+ * NOT ASSESSED with the owner's state; an unreadable value as unavailable, which is never a zero; a kind the owner
+ * does not publish as unrecognised. */
 function impactCellText(cell: unknown, words: StateWords): string {
   const record = asRecord(cell);
+  const unknownKind = unrecognisedCellKind(record);
+  if (unknownKind) return unknownKind;
   if (record.kind === "published" || record.kind === "floor") {
     return typeof record.text === "string" && record.text ? record.text : "unavailable";
   }
@@ -488,6 +514,8 @@ function impactCellText(cell: unknown, words: StateWords): string {
 
 function impactDetailText(cell: unknown, words: StateWords): string {
   const record = asRecord(cell);
+  const unknownKind = unrecognisedCellKind(record);
+  if (unknownKind) return `Producer detail: ${unknownKind}.`;
   if (record.kind === "published" && typeof record.text === "string" && record.text) {
     return `Producer detail: ${record.text}`;
   }
@@ -498,18 +526,24 @@ function impactDetailText(cell: unknown, words: StateWords): string {
   return "No readable producer detail.";
 }
 
+/** How a row is named wherever the view discloses it: the host the owner publishes, else its stored position. */
+function impactRowName(row: { index: unknown; host: unknown }): string {
+  return typeof row.host === "string" && row.host
+    ? row.host
+    : `stored row ${String(row.index)} (switch not named by the engine owner)`;
+}
+
 function ImpactsViewRowItem({ row, words }: { row: ImpactsViewRow; words: StateWords }) {
   const label = ownEntry(IMPACT_VERDICT_LABELS, row.assessable);
   const color = ownEntry(IMPACT_VERDICT_COLOR, row.assessable) || "var(--text-faint)";
   const state = impactStateWord(row.state, words);
   const reasons = Array.isArray(row.reasons) ? row.reasons.map(impactReason) : [];
   const cells = asRecord(row.cells);
-  const host = typeof row.host === "string" && row.host ? row.host : null;
   return (
     <div data-testid="comparison-rehearsal-row" data-assessable={label ? row.assessable : "unrecognised"}
       style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
       <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
-        <b className="mono">{host ?? `stored row ${String(row.index)} (switch not named by the engine owner)`}</b>
+        <b className="mono">{impactRowName(row)}</b>
         <span className="chip" data-testid="comparison-rehearsal-row-verdict" style={{ color, borderColor: color }}>
           {label ? label.toUpperCase() : `UNRECOGNISED VERDICT (${String(row.assessable)})`}
         </span>
@@ -552,6 +586,20 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
       this comparison or of any receipt. The {evidenceRows} bound row(s) are in the complete JSON export as raw evidence.
     </div>
   );
+  // A view under a schema this page does not read is unrecognised: none of its values is shown, whatever it holds.
+  const schema = view ? (view as { schema?: unknown }).schema : undefined;
+  if (view && schema !== IMPACTS_VIEW_SCHEMA) {
+    return (
+      <>
+        {live}
+        <div data-testid="comparison-rehearsal-impacts-unrecognised" style={{ color: "var(--watch)", fontSize: 11, marginTop: 6 }}>
+          Failure-impact interpretation unrecognised: this page does not read view
+          schema {typeof schema === "string" ? `"${schema}"` : "(none)"}. No row value is shown.
+        </div>
+        <CapDisclosure rendered={0} total={evidenceRows} exportNote={IMPACTS_EXPORT_NOTE} />
+      </>
+    );
+  }
   let unavailable: string | null = null;
   if (!view) {
     unavailable = "this surface does not supply the engine owner's interpretation of the bound rows; the after"
@@ -568,7 +616,7 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
         <div data-testid="comparison-rehearsal-impacts-unavailable" style={{ color: "var(--watch)", fontSize: 11, marginTop: 6 }}>
           Failure-impact interpretation unavailable: {unavailable ?? "no reason was published"}. No row value is shown.
         </div>
-        <CapDisclosure rendered={0} total={evidenceRows} />
+        <CapDisclosure rendered={0} total={evidenceRows} exportNote={IMPACTS_EXPORT_NOTE} />
       </>
     );
   }
@@ -580,9 +628,12 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
   const words: StateWords = Object.fromEntries(Object.entries(asRecord(view.state_words))
     .filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   const sectionState = impactStateWord(view.section_state, words);
-  // Every stored row the owner could not read at all, listed by position however far down the ranking it falls.
-  const unreadableRows = rows.filter((row) => Array.isArray(row.reasons)
-    && row.reasons.some((reason) => asRecord(reason).code === "row_unreadable"));
+  // Every stored row that is not an object, by position, from the owner's own list: the same rule as the census count
+  // above (never selected by a reason code, which a failed section words differently), however far down it ranks.
+  const unreadableIndexes = Array.isArray(view.unreadable) ? view.unreadable : null;
+  // Every row the owner does not rank (held, ambiguous, a withheld or zero floor, unreadable). They sort after every
+  // ranked row, so the cap below would drop them without a name; each is named here whatever the cap.
+  const unranked = Array.isArray(view.unranked) ? view.unranked : null;
   return (
     <>
       {live}
@@ -604,9 +655,11 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
             `${typeof counts[token] === "number" ? counts[token] : "unavailable"} ${word}`).join(" · ")}
         </div>
       )}
-      {unreadableRows.length > 0 && (
+      {unreadable > 0 && (
         <div data-testid="comparison-rehearsal-impact-unreadable" style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 4 }}>
-          Unreadable stored rows (counted above, never dropped): {unreadableRows.map((row) => `#${String(row.index)}`).join(", ")}
+          Unreadable stored rows (counted above, never dropped): {unreadableIndexes && unreadableIndexes.length > 0
+            ? unreadableIndexes.map((index) => `#${String(index)}`).join(", ")
+            : "their positions are not published by this view"}
         </div>
       )}
       {total > 0 && (
@@ -614,10 +667,35 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
           Ranked by the engine owner's stranded-endpoint floor or measurement; rows it does not rank follow in stored order.
         </div>
       )}
+      {unranked !== null && unranked.length > 0 && (
+        <div data-testid="comparison-rehearsal-impact-unranked" style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 4 }}>
+          Not ranked by the engine owner ({unranked.length}; each named here whether or not it is rendered below):
+          <ul style={{ margin: "2px 0 0", paddingLeft: 16 }}>
+            {unranked.map((row, index) => {
+              const label = ownEntry(IMPACT_VERDICT_LABELS, row.assessable);
+              const state = impactStateWord(row.state, words);
+              const reasons = Array.isArray(row.reasons) ? row.reasons.map(impactReason) : [];
+              return (
+                <li key={`${String(row.index)}|${index}`} data-testid="comparison-rehearsal-impact-unranked-row">
+                  <span className="mono">{impactRowName(row)}</span>
+                  {" — "}{label ?? `unrecognised verdict (${String(row.assessable)})`}
+                  {state ? ` (${state})` : ""}
+                  {reasons.length > 0 ? `: ${reasons.join("; ")}` : ""}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {total > 0 && unranked === null && (
+        <div data-testid="comparison-rehearsal-impact-unranked-unavailable" style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 4 }}>
+          The rows the engine owner does not rank are not listed by this view; any beyond the cap below are unnamed.
+        </div>
+      )}
       {rendered.map((row, index) => (
         <ImpactsViewRowItem key={`${String(row.index)}|${index}`} row={row} words={words} />
       ))}
-      <CapDisclosure rendered={rendered.length} total={total} />
+      <CapDisclosure rendered={rendered.length} total={total} exportNote={IMPACTS_EXPORT_NOTE} />
     </>
   );
 }

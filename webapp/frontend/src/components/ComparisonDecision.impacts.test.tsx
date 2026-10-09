@@ -126,13 +126,19 @@ const STATE_WORDS = {
   analysis_unavailable: "analysis unavailable", unverified: "unverified", not_collected: "not collected",
 };
 
+// `unranked` follows the engine's rule (every row the owner does not rank, in stored order); `unreadable` (the stored
+// positions of rows that are not objects) cannot be derived from the rows, so a test that needs it passes it.
 function viewOf(rows: ImpactsViewRow[], extra: Partial<Record<string, unknown>> = {}): RehearsalImpactsView {
+  const unranked = rows.filter((row) => row.ranked !== true)
+    .sort((a, b) => a.index - b.index)
+    .map(({ index, host, assessable, state, reasons }) => ({ index, host, assessable, state, reasons }));
   return {
     schema: "rehearsal_impacts_view/1", display_only: true, available: true,
     owner: "failure_impact_assessability/1", source_sha256: AFTER_SHA, state_words: STATE_WORDS, section_state: null,
-    n_rows_total: rows.length, n_rows_unreadable: 0,
+    n_rows_total: rows.length, n_rows_unreadable: 0, unreadable: [],
     counts: { published: 0, lower_bound: 0, not_assessed: 0, ambiguous: 0 },
     rows,
+    unranked,
     ...extra,
   } as RehearsalImpactsView;
 }
@@ -212,7 +218,8 @@ describe("ComparisonDecision failure-impact rows through the engine owner's live
 
   it("counts and shows an unreadable stored row instead of dropping it", () => {
     render(<ComparisonDecision value={compareWith()} impactsView={viewOf([BOUNDED_CORE1, UNREADABLE_ROW], {
-      n_rows_total: 2, n_rows_unreadable: 1, counts: { published: 0, lower_bound: 1, not_assessed: 1, ambiguous: 0 },
+      n_rows_total: 2, n_rows_unreadable: 1, unreadable: [23],
+      counts: { published: 0, lower_bound: 1, not_assessed: 1, ambiguous: 0 },
     })} />);
     expect(screen.getByTestId("comparison-rehearsal-impact-census")).toHaveTextContent(
       "Engine-owner verdicts over all 2 stored rows (1 unreadable): 0 published · 1 lower bound · 1 not assessed · 0 ambiguous",
@@ -317,5 +324,82 @@ describe("ComparisonDecision failure-impact rows through the engine owner's live
     expect(rendered[0]).toHaveTextContent("access0");
     expect(rendered[7]).toHaveTextContent("access7");
     expect(impactCap()).toHaveTextContent("Rendered: 8 · Total: 10 · Omitted: 2.");
+    expect(screen.queryByTestId("comparison-rehearsal-impact-unranked")).not.toBeInTheDocument();
+  });
+
+  it("names every row the owner does not rank even when more than the cap are ranked", () => {
+    // 10 ranked rows fill the cap; three held rows sort after them and are never rendered as rows, so the owner's
+    // unranked disclosure must name each one (W50 round 4, P2-B).
+    const ranked = Array.from({ length: 10 }, (_unused, index): ImpactsViewRow => ({
+      ...MEASURED_ACCESS1, index, host: `access${index}`,
+    }));
+    const held = ["held-a", "held-b", "held-c"].map((host, offset): ImpactsViewRow => ({
+      ...HELD_CORE1, index: 10 + offset, host,
+    }));
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([...ranked, ...held], {
+      counts: { published: 10, lower_bound: 0, not_assessed: 3, ambiguous: 0 },
+    })} />);
+    const rendered = within(rehearsal()).getAllByTestId("comparison-rehearsal-row");
+    expect(rendered).toHaveLength(8);
+    for (const row of rendered) expect(row.textContent).not.toMatch(/held-/);
+    const disclosure = screen.getByTestId("comparison-rehearsal-impact-unranked");
+    expect(disclosure).toHaveTextContent("Not ranked by the engine owner (3;");
+    const named = within(disclosure).getAllByTestId("comparison-rehearsal-impact-unranked-row");
+    expect(named.map((item) => item.textContent)).toEqual(["held-a", "held-b", "held-c"].map((host) =>
+      `${host} — not assessed (not collected): the row predates the engine's assessability marker`));
+    for (const item of named) expect(item.textContent).not.toMatch(/\d+ ep|: 45\b/);
+    expect(impactCap()).toHaveTextContent("Rendered: 8 · Total: 13 · Omitted: 5.");
+  });
+
+  it("lists unreadable rows from the view's own list, the census's rule, even under a failed section", () => {
+    // Under a failed section a non-object row carries section_unavailable, not row_unreadable: the list must follow
+    // the owner's census rule (the view's `unreadable`), never a reason code (P3-2).
+    const failedRow = (index: number): ImpactsViewRow => ({
+      ...UNREADABLE_ROW, index, state: "analysis_unavailable", reasons: [{ code: "section_unavailable", n: 0 }],
+    });
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([failedRow(0), failedRow(3)], {
+      section_state: "analysis_unavailable", n_rows_unreadable: 1, unreadable: [3],
+      counts: { published: 0, lower_bound: 0, not_assessed: 2, ambiguous: 0 },
+    })} />);
+    expect(screen.getByTestId("comparison-rehearsal-impact-census")).toHaveTextContent("(1 unreadable)");
+    expect(screen.getByTestId("comparison-rehearsal-impact-unreadable")).toHaveTextContent(
+      "Unreadable stored rows (counted above, never dropped): #3");
+    expect(screen.getByTestId("comparison-rehearsal-impact-unreadable")).not.toHaveTextContent("#0");
+  });
+
+  it("shows a view under an unknown schema as unrecognised, with no row value", () => {
+    render(<ComparisonDecision value={compareWith()}
+      impactsView={{ ...viewOf([BOUNDED_CORE1]), schema: "rehearsal_impacts_view/9" } as unknown as RehearsalImpactsView} />);
+    expect(screen.getByTestId("comparison-rehearsal-impacts-unrecognised")).toHaveTextContent(
+      'this page does not read view schema "rehearsal_impacts_view/9". No row value is shown.');
+    expect(within(rehearsal()).queryAllByTestId("comparison-rehearsal-row")).toHaveLength(0);
+    expect(rehearsal()).not.toHaveTextContent("≥ 45");
+    expect(rehearsal()).not.toHaveTextContent("Hard partition (34 ep)");
+    expect(impactCap()).toHaveTextContent("Rendered: 0 · Total: 1 · Omitted: 1.");
+  });
+
+  it("names an unknown cell kind instead of calling it unavailable", () => {
+    const odd: ImpactsViewRow = {
+      ...MEASURED_ACCESS1, host: "edge5",
+      cells: {
+        ...MEASURED_ACCESS1.cells,
+        stranded: { kind: "estimate", text: "about 40", state: null },
+        detail: { kind: "summary", text: "text", state: null },
+      },
+    };
+    render(<ComparisonDecision value={compareWith()} impactsView={viewOf([odd])} />);
+    const values = within(rowFor("edge5")).getByTestId("comparison-rehearsal-row-values");
+    expect(values).toHaveTextContent("stranded endpoints: unrecognised value kind (estimate)");
+    expect(values).not.toHaveTextContent("about 40");
+    expect(within(rowFor("edge5")).getByTestId("comparison-rehearsal-row-detail")).toHaveTextContent(
+      "Producer detail: unrecognised value kind (summary).");
+  });
+
+  it("says the export holds only the bound evidence rows, never the interpretation", () => {
+    render(<ComparisonDecision value={compareWith()} impactsView={SAMPLE_VIEW} />);
+    expect(impactCap()).toHaveTextContent(
+      "The complete JSON export holds only the bound evidence (each stored row that is an object, raw and "
+      + "uninterpreted): neither this interpretation nor any stored row that is not an object.");
+    expect(impactCap()).not.toHaveTextContent("includes all received rows");
   });
 });

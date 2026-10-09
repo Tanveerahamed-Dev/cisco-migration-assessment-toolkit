@@ -71,8 +71,8 @@ def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:
 #: (webapp/tests/test_compare_execution_receipts.py, tests/test_operator_evidence_contract.py). Because it is
 #: computed live, a later owner change reinterprets every stored receipt's evidence without touching the receipt.
 REHEARSAL_IMPACTS_VIEW_SCHEMA = "rehearsal_impacts_view/1"
-#: The cells of an impacts_view row: every blast-radius measure, then the producer's detail.
-IMPACTS_VIEW_CELLS: Tuple[str, ...] = tuple(_impact_assessability.IMPACT_MEASURES) + ("detail",)
+#: The cells of an impacts_view row: the owner's display cells (every blast-radius measure, then the detail).
+IMPACTS_VIEW_CELLS: Tuple[str, ...] = tuple(_impact_assessability.CELL_FIELDS)
 #: Why an impacts_view is unavailable, by code (closed). An unavailable view never falls back to the raw rows.
 IMPACTS_VIEW_UNAVAILABLE: Dict[str, str] = {
     "binding_unreadable": (
@@ -100,42 +100,16 @@ def rehearsal_impacts_view_unavailable(code: str) -> Dict[str, Any]:
     }
 
 
-def _impacts_view_cell(verdict: Any, field: str) -> Dict[str, Any]:
-    """One cell as the owner publishes it: ``kind`` is ``published`` (the stored value is a measurement, or the
-    producer's detail the owner still publishes), ``floor`` (a lower bound: the owner's own ``table_value`` text,
-    ``"≥ 45"`` / ``"High (lower bound)"``), ``withheld`` (not a measurement; ``state`` is the owner's state of that
-    withholding) or ``unreadable`` (the owner publishes the cell but the stored value is not a readable value of
-    its kind: never a zero). ``text`` is the display text, ``None`` unless published or a floor."""
-    ia = _impact_assessability
-    if verdict.withholds(field):
-        return {"kind": "withheld", "text": None, "state": verdict.withheld_state(field)}
-    raw = verdict.raw.get(field) if isinstance(verdict.raw, dict) else None
-    floor = verdict.assessable == ia.LOWER_BOUND and field in ia.IMPACT_MEASURES
-    if field == "detail":
-        readable, text = isinstance(raw, str) and bool(raw.strip()), raw
-    elif field == "severity":
-        readable = isinstance(raw, str) and raw in ia.IMPACT_SEVERITIES
-        text = ia.table_value(verdict, field) if floor else raw
-    else:
-        count = ia.count_value(raw)
-        readable = count is not None
-        text = ia.table_value(verdict, field) if floor else str(count)
-    if not readable or not isinstance(text, str):
-        return {"kind": "unreadable", "text": None, "state": None}
-    return {"kind": "floor" if floor else "published", "text": text, "state": None}
-
-
-def _impacts_view_order(verdict: Any) -> Tuple[int, int, int]:
-    """The owner's ranking: every row it ranks (``ranks``) by its stranded floor (``ranking_floor``) or measured
-    count, largest first; a ranked row with no readable count after them; then every row it does not rank. Stored
-    order breaks every tie, so a capped view shows the largest floors first, never producer order."""
-    ia = _impact_assessability
-    if not ia.ranks(verdict):
-        return 2, 0, verdict.index
-    floor = ia.ranking_floor(verdict)
-    count = floor if floor is not None else (
-        ia.count_value(verdict.raw.get("stranded")) if isinstance(verdict.raw, dict) else None)
-    return (0, -count, verdict.index) if count is not None else (1, 0, verdict.index)
+def _impacts_view_disclosed(verdict: Any) -> Dict[str, Any]:
+    """How one row is NAMED wherever the view discloses it: its stored position, the host the owner publishes
+    (``None`` when it withholds it), the verdict, the owner's state and the reason codes with the count each quotes."""
+    return {
+        "index": verdict.index,
+        "host": None if verdict.withholds("host") else verdict.host,
+        "assessable": verdict.assessable,
+        "state": verdict.state,
+        "reasons": [{"code": code, "n": n} for code, n in verdict.code_counts],
+    }
 
 
 def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, Any]:
@@ -143,23 +117,26 @@ def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, An
 
     `snapshot` must be the comparison's bound after snapshot and `source_sha256` the SHA-256 that comparison binds
     for it; the caller establishes that binding (:func:`receipt_impacts_view`) and a display shows the view only
-    when the two agree. Every stored row is interpreted, an unreadable one included (the owner holds it): ``rows``
-    carries each in the owner's ranking order with its verdict, the owner's state, its reason codes with the count
-    each quotes, whether the owner ranks it, and one cell per :data:`IMPACTS_VIEW_CELLS`. ``n_rows_total``,
-    ``n_rows_unreadable`` and ``counts`` (per verdict) census every stored row; ``section_state`` says whether the
-    section itself could be read, so an absent or failed section never reads as no impact; ``state_words`` is the
-    owner's word for each state token (``STATE_WORD``)."""
+    when the two agree. Every stored row is interpreted, an unreadable one included (the owner holds it). Every
+    decision is the owner's (``cisco_toolkit/impact_assessability.py``); this function only lays it out:
+
+    * ``rows``: each row in the owner's ranking order (``ranking_order``) with its verdict, state and reason codes,
+      whether the owner ranks it (``ranks``) and one cell per :data:`IMPACTS_VIEW_CELLS`, each its ``cell_reading``;
+    * ``unranked``: every row the owner does not rank (``unranked``: held, ambiguous, a withheld or zero floor, an
+      unreadable row), in stored order, so a display that caps ``rows`` still names each of them;
+    * ``unreadable``: the stored position of every row that is not an object (``RowVerdict.readable``), the same rule
+      as ``n_rows_unreadable``, so the census and the list never diverge (a failed section included);
+    * ``n_rows_total`` and ``counts`` (per verdict) census every stored row; ``section_state`` says whether the section
+      itself could be read, so an absent or failed section never reads as no impact; ``state_words`` is the owner's
+      word for each state token (``STATE_WORD``)."""
     ia = _impact_assessability
     verdicts = ia.assess_failure_impact(snapshot)
     rows = [{
-        "index": verdict.index,
-        "host": None if verdict.withholds("host") else verdict.host,
-        "assessable": verdict.assessable,
-        "state": verdict.state,
-        "reasons": [{"code": code, "n": n} for code, n in verdict.code_counts],
+        **_impacts_view_disclosed(verdict),
         "ranked": ia.ranks(verdict),
-        "cells": {field: _impacts_view_cell(verdict, field) for field in IMPACTS_VIEW_CELLS},
-    } for verdict in sorted(verdicts, key=_impacts_view_order)]
+        "cells": {field: ia.cell_reading(verdict, field)._asdict() for field in IMPACTS_VIEW_CELLS},
+    } for verdict in sorted(verdicts, key=ia.ranking_order)]
+    unreadable = [verdict.index for verdict in verdicts if not verdict.readable]
     return {
         "schema": REHEARSAL_IMPACTS_VIEW_SCHEMA,
         "display_only": True,
@@ -172,9 +149,11 @@ def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, An
         "state_words": dict(ia.STATE_WORD),
         "section_state": ia.section_state(snapshot),
         "n_rows_total": len(verdicts),
-        "n_rows_unreadable": sum(1 for verdict in verdicts if not isinstance(verdict.raw, dict)),
+        "n_rows_unreadable": len(unreadable),
+        "unreadable": unreadable,
         "counts": {k: sum(1 for verdict in verdicts if verdict.assessable == k) for k in ia.VERDICTS},
         "rows": rows,
+        "unranked": [_impacts_view_disclosed(verdict) for verdict in ia.unranked(verdicts)],
     }
 
 

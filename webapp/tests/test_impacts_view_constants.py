@@ -15,6 +15,7 @@ Written for the hosted runners (owner GitHub-only rule); not run locally.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -82,6 +83,19 @@ def test_every_token_the_view_carries_has_the_owners_word():
     assert "IMPACT_STATE_WORDS" not in source and "state_words" in source
 
 
+def test_the_spa_reads_exactly_the_owners_view_schema_and_cell_kinds():
+    """W50 round 4 (P3-4): the SPA renders a view only under the schema the engine publishes, and words only the cell
+    kinds the owner publishes (``impact_assessability.CELL_KINDS``); any other schema or kind is shown as
+    unrecognised, never guessed at. Both SPA constants are held equal to their owners here."""
+    source = COMPARISON_DECISION_TSX.read_text(encoding="utf-8")
+    assert json.loads(_ts_const(source, "IMPACTS_VIEW_SCHEMA")) == engine.REHEARSAL_IMPACTS_VIEW_SCHEMA
+    assert json.loads(_ts_const(source, "IMPACT_CELL_KINDS")) == list(ia.CELL_KINDS)
+    view = engine.rehearsal_impacts_view({"failure_impact": [{"host": "x"}]}, source_sha256="sha256:" + "0" * 64)
+    assert view["schema"] == engine.REHEARSAL_IMPACTS_VIEW_SCHEMA
+    assert {cell["kind"] for row in view["rows"] for cell in row["cells"].values()} <= set(ia.CELL_KINDS)
+    assert {"unranked", "unreadable"} <= set(view)
+
+
 def test_the_spa_table_reader_is_not_vacuous():
     """The reader must see a drift, a spread, a reference and a duplicate, or its equality proves nothing."""
     drifted = 'const IMPACT_VERDICT_LABELS: Readonly<Record<string, string>> = {\n  "published": "measured",\n};\n'
@@ -124,3 +138,107 @@ def test_no_spa_source_presents_the_receipts_raw_failure_impact_rows():
     assert _RAW_ROWS_READ.search(_code('const rows = rehearsal["impacts"];'))
     assert not _RAW_ROWS_READ.search(_code("// operator_evidence.rehearsal.impacts is evidence"))
     assert not _RAW_ROWS_READ.search(_code("impactsView={latestStored?.impacts_view}"))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The same rule for Python (W50 round 4, P3-5): no engine, AssessHub or Atlas code reads the bound raw rows to present
+# them. ``impacts`` is the key ``cutover_operator_evidence/1`` binds them under (``rehearsal.impacts``); today no
+# production code outside the frozen binder's payload names it at all, so the guard is a closed allowlist.
+# ---------------------------------------------------------------------------------------------------------------
+_RAW_ROWS_KEY = "impacts"
+_PY_ROOTS = ("cisco_toolkit", "webapp/backend", "portable")
+_PIPELINE = "COLLECT_PARSE_V3_23_0.py"
+#: The only units that may read the bound raw rows by their key: the frozen evidence binder's module unit that WRITES
+#: them, and the two storage verifiers, which recompute and compare a stored or incoming receipt whole and never
+#: present a row. Keyed by (repository path, unit) where a unit is a top-level function or ``Class.method``.
+_RAW_ROWS_ADMITTED = frozenset({
+    ("cisco_toolkit/protocol_assurance.py", "_rehearsal_impact_evidence_v1"),
+    ("webapp/backend/storage.py", "Store._execution_receipt_authority_locked"),
+    ("webapp/backend/storage.py", "Store.append_execution_comparison_if_unchanged"),
+})
+
+
+def _python_units(tree):
+    """node -> its unit: the top-level function or ``Class.method`` that holds it (``<module>`` otherwise). A nested
+    function belongs to the unit that defines it."""
+    owner = {}
+
+    def visit(node, unit):
+        for child in ast.iter_child_nodes(node):
+            inner = unit
+            if unit == "<module>" and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner = child.name
+            elif unit == "<module>" and isinstance(child, ast.ClassDef):
+                inner = f"{child.name}."
+            elif unit.endswith(".") and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner = unit + child.name
+            owner[child] = inner
+            visit(child, inner)
+    visit(tree, "<module>")
+    return owner
+
+
+def _raw_rows_reads(tree):
+    """``(line, unit)`` of every READ of the ``impacts`` key: a subscript load (``x["impacts"]``), the key as a call
+    argument (``x.get("impacts")``, ``getattr(x, "impacts")``, ``operator.itemgetter("impacts")``,
+    ``x.pop("impacts")``), an attribute load (``x.impacts``) or a ``match`` mapping-pattern key. Building
+    ``{"impacts": rows}`` and every other key that merely contains the word (``n_impacts_total``) are not reads."""
+    owner = _python_units(tree)
+    found = []
+    for node in ast.walk(tree):
+        hit = False
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
+            hit = isinstance(node.slice, ast.Constant) and node.slice.value == _RAW_ROWS_KEY
+        elif isinstance(node, ast.Call):
+            hit = any(isinstance(arg, ast.Constant) and arg.value == _RAW_ROWS_KEY
+                      for arg in list(node.args) + [keyword.value for keyword in node.keywords])
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            hit = node.attr == _RAW_ROWS_KEY
+        elif isinstance(node, ast.MatchMapping):
+            hit = any(isinstance(key, ast.Constant) and key.value == _RAW_ROWS_KEY for key in node.keys)
+        if hit:
+            found.append((node.lineno, owner.get(node, "<module>")))
+    return found
+
+
+def _python_sources():
+    for base in _PY_ROOTS:
+        for path in sorted((_REPO / base).rglob("*.py")):
+            if "__pycache__" not in path.parts:
+                yield path.relative_to(_REPO).as_posix(), path
+    if (_REPO / _PIPELINE).exists():
+        yield _PIPELINE, _REPO / _PIPELINE
+
+
+def test_no_python_source_presents_the_receipts_raw_failure_impact_rows():
+    """Every read of the bound raw rows' key in the engine, AssessHub and Atlas sources sits in an admitted unit: the
+    frozen binder or a receipt verifier. A presenter that reads ``rehearsal.impacts`` (a PIR writer, a workbook diff
+    tab, an API decorator) fails here; it must present the owner's ``impacts_view`` instead."""
+    offenders, units = [], set()
+    for rel, path in _python_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        units.update((rel, unit) for unit in set(_python_units(tree).values()))
+        for line, unit in _raw_rows_reads(tree):
+            if (rel, unit) not in _RAW_ROWS_ADMITTED:
+                offenders.append(f"{rel}:{line} in {unit}")
+    assert not offenders, ("these read the receipt's raw failure-impact rows (rehearsal.impacts), which are evidence, "
+                           f"not a presentation; read webapp.backend.engine.rehearsal_impacts_view: {offenders}")
+    # the allowlist names live units, so it cannot outlive what it admits
+    assert _RAW_ROWS_ADMITTED <= units, sorted(_RAW_ROWS_ADMITTED - units)
+
+
+def test_the_python_raw_rows_scan_is_not_vacuous():
+    """Each read shape is seen, in the unit that holds it; a write, a longer key and a docstring are not reads."""
+    source = (
+        "import operator\n"
+        "def a(c):\n    return c['operator_evidence']['rehearsal']['impacts']\n"
+        "def b(r):\n    return r.get('impacts') or []\n"
+        "def c(r):\n    return getattr(r, 'impacts')\n"
+        "def d(r):\n    return operator.itemgetter('impacts')(r)\n"
+        "class W:\n    def e(self, r):\n        def inner():\n            return r.impacts\n        return inner()\n"
+        "def f(r):\n    match r:\n        case {'impacts': rows}:\n            return rows\n"
+        "def ok(rows):\n    '''reads rehearsal.impacts? no'''\n"
+        "    return {'impacts': rows, 'n_impacts_total': len(rows)}, rows\n"
+    )
+    assert sorted(_raw_rows_reads(ast.parse(source))) == [
+        (3, "a"), (5, "b"), (7, "c"), (9, "d"), (13, "W.e"), (17, "f")]

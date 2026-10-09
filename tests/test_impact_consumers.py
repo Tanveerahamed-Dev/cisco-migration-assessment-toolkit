@@ -47,6 +47,7 @@ import os
 import pathlib
 import re
 import tokenize
+from typing import NamedTuple
 
 import pytest
 
@@ -175,13 +176,28 @@ def _section_reads(node, functions):
     return sorted(set(lines))
 
 
+class _Graph(NamedTuple):
+    """The resolved unit graph of one tree (see :func:`_graph`)."""
+    units: dict          # (module, name) -> (node, kind)
+    edges: dict          # unit -> the units it names, resolved (calls, references, dispatch tables, self.method)
+    direct: frozenset    # units that are the owner, or name it through a resolved import alias
+    readers: dict        # unit -> the lines where it reads the stored section
+    constructs: dict     # unit -> every method of each project class it names (a constructor runs its methods)
+    owner_refs: frozenset  # units naming the owner by an unaliased dotted path or importing it by any spelling
+
+
 @functools.lru_cache(maxsize=None)
-def _scan(root):
-    """``(readers, routed)``: every unit that reads the stored section (unit -> lines), and every unit that reaches
-    the owner (it is the owner, names it, or calls something that does, to a fixpoint). Cached per root: the
-    callers only read the result."""
+def _graph(root):
+    """The resolved unit graph of the scanned tree under `root`, built once per root (callers only read it).
+
+    ``edges`` and ``direct`` are what the W48 guard reads (:func:`_scan`). ``constructs`` and ``owner_refs`` are
+    extra, conservative routes that only the W50 receipt-closure check reads (``tests/test_operator_evidence_contract
+    .py``): there a missed route would hide an owner dependency, while in the W48 guard an extra route would admit a
+    raw reader, so they are kept apart."""
     modules = _module_map(root)
     units, edges, direct, readers = {}, {}, set(), {}
+    constructs, owner_refs = {}, set()
+    classes = {}
     parsed = {}
     for module, rel in modules.items():
         with open(os.path.join(root, rel), encoding="utf-8") as fh:
@@ -189,6 +205,8 @@ def _scan(root):
         parsed[module] = (rel, tree, _aliases(module, rel, tree, modules))
         for name, node, kind in _units(tree):
             units[(module, name)] = (node, kind)
+            if kind == "method":
+                classes.setdefault((module, name.split(".")[0]), set()).add((module, name))
     for module, (rel, tree, aliases) in parsed.items():
         own = {name for (m, name) in units if m == module}
         functions = {name for (m, name), (_n, kind) in units.items() if m == module and kind == "function"}
@@ -199,14 +217,16 @@ def _scan(root):
             if module == OWNER:
                 direct.add(unit)
             cls = name.split(".")[0] if "." in name else None
-            out = set()
+            out, built = set(), set()
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
                     if sub.id in own:
                         out.add((module, sub.id))
+                    built |= classes.get((module, sub.id), set())
                     bound = aliases.get(sub.id)
                     if bound and bound[0] == "name":
                         out.add((bound[1], bound[2]))
+                        built |= classes.get((bound[1], bound[2]), set())
                         if bound[1] == OWNER:
                             direct.add(unit)
                     elif bound and bound[1] == OWNER:
@@ -215,6 +235,7 @@ def _scan(root):
                     bound = aliases.get(sub.value.id)
                     if bound and bound[0] == "module":
                         out.add((bound[1], sub.attr))
+                        built |= classes.get((bound[1], sub.attr), set())
                         if bound[1] == OWNER:
                             direct.add(unit)
                     elif sub.value.id in ("self", "cls") and cls:
@@ -223,19 +244,56 @@ def _scan(root):
                     source = _resolve_from(module, rel, sub)
                     if source == OWNER or any(f"{source}.{a.name}" == OWNER for a in sub.names):
                         direct.add(unit)
+                if isinstance(sub, ast.Attribute) and sub.attr == OWNER.rpartition(".")[2]:
+                    owner_refs.add(unit)
+                elif isinstance(sub, ast.Import) and any(a.name == OWNER for a in sub.names):
+                    owner_refs.add(unit)
             edges[unit] = {e for e in out if e in units and e != unit}
+            constructs[unit] = {e for e in built if e in units and e != unit}
             lines = _section_reads(node, functions)
             if lines:
                 readers[unit] = lines
-    routed = set(direct)
+    return _Graph(units, edges, frozenset(direct), readers, constructs, frozenset(owner_refs))
+
+
+@functools.lru_cache(maxsize=None)
+def _scan(root):
+    """``(readers, routed)``: every unit that reads the stored section (unit -> lines), and every unit that reaches
+    the owner (it is the owner, names it, or calls something that does, to a fixpoint). Cached per root: the
+    callers only read the result."""
+    graph = _graph(root)
+    routed = set(graph.direct)
     changed = True
     while changed:
         changed = False
-        for unit, targets in edges.items():
+        for unit, targets in graph.edges.items():
             if unit not in routed and targets & routed:
                 routed.add(unit)
                 changed = True
-    return readers, routed
+    return graph.readers, routed
+
+
+def _closure(graph, roots):
+    """Every unit reachable from `roots` along resolved edges and constructor routes: unit -> the unit it was reached
+    from (``None`` for a root), breadth-first so each recorded path is a shortest one."""
+    parent = {root: None for root in roots}
+    queue = list(roots)
+    while queue:
+        unit = queue.pop(0)
+        for target in sorted(graph.edges.get(unit, set()) | graph.constructs.get(unit, set())):
+            if target not in parent:
+                parent[target] = unit
+                queue.append(target)
+    return parent
+
+
+def _path(parent, unit):
+    """The recorded route to `unit`, root first, as ``module:name`` strings."""
+    path = []
+    while unit is not None:
+        path.append(f"{unit[0]}:{unit[1]}")
+        unit = parent[unit]
+    return " -> ".join(reversed(path))
 
 
 def _raw(root):
@@ -593,17 +651,69 @@ def test_receipt_impact_rows_are_bound_raw_and_presented_only_through_the_owner(
     assert item["reasons"] == [{"code": code, "n": n} for code, n in verdict.code_counts], item
     for field in ia.IMPACT_MEASURES:
         cell = item["cells"][field]
+        assert cell == ia.cell_reading(verdict, field)._asdict(), (field, cell)     # the owner decides; W50 r4
         if verdict.withholds(field):
             assert cell == {"kind": "withheld", "text": None, "state": verdict.withheld_state(field)}, (field, cell)
         else:
             assert cell["text"] == str(ia.table_value(verdict, field)), (field, cell)
     assert item["cells"]["backup"]["kind"] == "withheld"      # core1's stored 0 is never presented as a measured 0
+    disclosed = [entry for entry in view["unranked"] if entry["index"] == verdict.index]
     if variant == "bounded":
         assert item["cells"]["stranded"] == {"kind": "floor", "text": f"≥ {row['stranded']}", "state": None}, item
         assert item["ranked"] is True and view["rows"][0]["host"] == "core1"     # its floor of 45 leads
+        assert disclosed == []
     else:
         assert item["assessable"] == ia.NOT_ASSESSED and item["ranked"] is False, item
         assert item["state"] == ia.NOT_COLLECTED and item["reasons"] == [{"code": "legacy_row", "n": 0}], item
+        # a held row is named in the owner's unranked disclosure, whatever cap a display puts on the ranked rows
+        assert disclosed == [{key: item[key] for key in ("index", "host", "assessable", "state", "reasons")}]
+
+
+_FROZEN_ROWS = ROOT / "tests" / "fixtures" / "operator_evidence_v1" / "after-rows.json"
+
+
+@pytest.mark.parametrize("variant", ["bounded", "held", "frozen_rows"])
+def test_the_owners_display_accessors_follow_its_own_rules(variant, request):
+    """W50 round 4 (P3-3): the display path only formats; every reading is an owner accessor, and each agrees with
+    the owner's own rules on the sample, a held row and the frozen corpus's odd-typed and non-object rows:
+    ``cell_reading`` (withheld exactly when ``withholds``; a floor only on a lower bound, worded by ``table_value``;
+    an unreadable value never a zero), ``RowVerdict.readable`` (the row is an object), ``unranked`` (exactly the
+    rows ``ranks`` refuses, in stored order) and ``ranking_order`` (every ranked row first, largest floor or count
+    first)."""
+    snap = json.loads(_FROZEN_ROWS.read_text(encoding="utf-8")) if variant == "frozen_rows" else \
+        request.getfixturevalue(variant)
+    verdicts = ia.assess_failure_impact(snap)
+    assert verdicts
+    for verdict in verdicts:
+        assert verdict.readable is isinstance(verdict.raw, dict)
+        for field in ia.CELL_FIELDS:
+            reading = ia.cell_reading(verdict, field)
+            assert reading.kind in ia.CELL_KINDS, reading
+            if verdict.withholds(field):
+                assert reading == (ia.CELL_WITHHELD, None, verdict.withheld_state(field)), (field, reading)
+            elif reading.kind == ia.CELL_FLOOR:
+                assert verdict.assessable == ia.LOWER_BOUND and field in ia.IMPACT_MEASURES, reading
+                assert reading.text == ia.table_value(verdict, field), reading
+            elif reading.kind == ia.CELL_PUBLISHED:
+                assert isinstance(reading.text, str) and reading.text.strip() and reading.state is None, reading
+                raw = verdict.raw[field]
+                if field == "severity":
+                    assert reading.text == raw and raw in ia.IMPACT_SEVERITIES, reading
+                elif field != "detail":
+                    assert reading.text == str(ia.count_value(raw)), reading     # the owner's count, never "None"
+            else:
+                assert reading == (ia.CELL_UNREADABLE, None, None), reading
+    with pytest.raises(ValueError):
+        ia.cell_reading(verdicts[0], "host")
+    assert [v.index for v in ia.unranked(verdicts)] == [v.index for v in verdicts if not ia.ranks(v)]
+    ordered = sorted(verdicts, key=ia.ranking_order)
+    flags = [ia.ranks(v) for v in ordered]
+    assert flags == sorted(flags, reverse=True)
+    counts = [ia.ranking_order(v)[1] for v in ordered if ia.ranking_order(v)[0] == 0]
+    assert counts == sorted(counts), counts                 # largest floor or measured count first
+    if variant == "frozen_rows":
+        assert {v.index for v in verdicts if not v.readable} == {2, 4, 5, 6, 7}
+        assert all(not ia.ranks(v) for v in verdicts if not v.readable)
 
 
 def test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner():
