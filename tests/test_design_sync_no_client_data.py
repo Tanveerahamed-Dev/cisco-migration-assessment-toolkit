@@ -76,8 +76,10 @@ _BARREL_HELPER_EXPORTS = frozenset(
 # heading) and the one link to Scope (the snapshot header's and Tools page's Open in Atlas Scope links). They exist
 # only to sit beside those page-level entries, whose links appear only when the server reports a usable Scope build,
 # so a standalone card would show a qualifier detached from the entry it qualifies. Their words and the link's
-# aria-describedby tie are pinned by src/components/ScopePreview.test.tsx, and src/scopeEntries.test.ts requires every
-# Scope entry to go through them; promoting any of them to a card would need its own hosted-captured baselines and a
+# aria-describedby tie (the qualifier, then the server's detail) are pinned by src/components/ScopePreview.test.tsx.
+# src/scopeEntries.test.ts derives every Scope entry site from the TypeScript program and checks each one: a link must
+# be ScopeEntryLink, any other entry must name one of these qualifiers through aria-describedby, and programmatic
+# navigation to Scope is refused. Promoting any of them to a card would need its own hosted-captured baselines and a
 # new visual contract.
 _DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
     "ComparisonDecision",
