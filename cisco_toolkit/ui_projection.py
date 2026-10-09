@@ -29,7 +29,8 @@ Slice 2 adds the row screens:
 * ``findings`` -- the engine's punch-list rows, with the severity vocabulary, the remediation the engine
   links and the show command it cites, and nothing it does not publish;
 * :func:`project_device` -- one standalone device page per host (identity, physical, blind-spot record,
-  health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks,
+  health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours with each neighbour's
+  collected peer host resolved through the topology's one address index (G17), security checks,
   native-VLAN mismatches, remediation, NRFU cases, the punch-list rows and endpoints naming it, and the stored
   failure-impact and structural-link rows naming it -- selected, never re-simulated; a device with no
   simulation row is a blind spot, never "no impact").
@@ -149,6 +150,13 @@ TOPOLOGY_WEIGHTS = ("normal", "strong")
 #: The failure-impact owner's bands, worst first (analyze.compute_failure_impact sev_rank order).
 IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES
 ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
+#: G17: the build.build_routing_neighbors row field that carries the neighbour's own address, per protocol key. OSPF's
+#: 'neighbor' is the Neighbor ID column, a router ID that need not be any interface address, and its 'address' is the
+#: adjacency address (parse.parse_ospf_neighbors); EIGRP and BGP name the peer by its address in 'neighbor'
+#: (parse.parse_eigrp_neighbors, parse.parse_bgp_summary). tests/test_ui_projection_peer_host.py holds each entry to
+#: the real parser's output and the keys to the producer's own protocol keys.
+NEIGHBOR_ADDRESS_FIELDS: Mapping[str, str] = MappingProxyType({"ospf": "address", "eigrp": "neighbor",
+                                                               "bgp": "neighbor"})
 #: The FIB owner's route fields a hop may report invalid, and its MTU-gap reasons (fib.trace_fib_path).
 FIB_ROUTE_FIELDS = ("admin_distance", "source", "next_hop", "out_intf")
 FIB_MTU_GAP_REASONS = ("malformed_hop_evidence", "egress_interface_not_observed")
@@ -676,6 +684,24 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "An empty neighbour list means the protocol is not running, or its command was not collected or not "
         "parsed. The engine does not tell these apart, so an empty list is withheld as not_collected.",
         ["/device/routing_neighbors"]),
+    _limitation(
+        "routing_peer_resolution_scope", "fib._connected_index, fib._hosts_owning_ip, build.build_routing_neighbors",
+        "peer_host is an exact address match, not an adjacency or reachability proof. It names the one collected "
+        "device that the address index (topology.source_addresses) places the neighbour's address on: configured "
+        "IPv4 interface addresses, primary and secondary, from the scoped interface running-config, plus in-scope "
+        "local and FHRP host routes. OSPF resolves its adjacency address, never its router ID. VRF selection is not "
+        "modelled: the index spans every VRF a captured interface configures, so an address on two devices in any "
+        "VRFs is unverified, and a published owner may carry the address in another VRF than the adjacency, where an "
+        "uncollected device could reuse it. Both a published owner and 'not resolved' (collected_but_empty) are "
+        "stated only over a readable, complete index: every input collected, every collected device's interface "
+        "addresses captured, and a readable collection_completeness record, which completes the device roster with "
+        "the inventory devices never reached. Otherwise a device the index cannot hold could be a second owner, so a "
+        "sole observed owner is not_collected, like an absence, and the reason states how many coverage gaps there "
+        "are (a capped number of them are cited). 'Not resolved' means that no record in the index states the "
+        "address. An address neither source states is not observed: a DHCP or negotiated interface address whose "
+        "local route was not captured in scope, or a firewall's failover standby address. Every IPv6 address is "
+        "not_collected, because the interface addresses the index takes from the running-config are IPv4 only.",
+        ["/device/routing_neighbors"]),
 )
 #: The payload limitations a device page can cite, re-addressed into a ``DeviceDocument`` (so the document defines
 #: every caveat it carries): limitation id -> its applies_to inside the document.
@@ -903,6 +929,8 @@ class _Ctx:
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
         self._impact: Any = _UNSET
         self._source: Any = _UNSET
+        self._addresses: Any = _UNSET
+        self._addr_cov: Any = _UNSET
 
     @property
     def impact(self) -> impact_assessability.ImpactSnapshot:
@@ -937,6 +965,22 @@ class _Ctx:
                 else:
                     self._source = (_PUB, sha, size, "")
         return self._source
+
+    @property
+    def addresses(self) -> Any:
+        """The one address index (:func:`_address_sources`), built once: topology.source_addresses publishes it and
+        every routing-neighbour peer resolution (G17) reads it, so the two can never disagree."""
+        if self._addresses is _UNSET:
+            self._addresses = _address_sources(self)
+        return self._addresses
+
+    @property
+    def address_coverage(self) -> Any:
+        """Whether that index holds every collected device's interface addresses, and its coverage gaps
+        (:func:`_address_coverage`)."""
+        if self._addr_cov is _UNSET:
+            self._addr_cov = _address_coverage(self)
+        return self._addr_cov
 
     @property
     def coverage_rows(self) -> Optional[CoverageRowIndex]:
@@ -4210,7 +4254,8 @@ def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) ->
                 cells = {f: _cell(ctx, row, f, "text", basis + f,
                                   missing=f"not collected: the {proto} neighbour parser does not emit {f}")
                          for f in ("neighbor", "state", "address", "interface", "as")}
-                rows.append({"index": i, "pointer": json_pointer(*toks), **cells})
+                rows.append({"index": i, "pointer": json_pointer(*toks), **cells,
+                             "peer_host": _peer_host(ctx, host, proto, toks, cells)})
         groups.append({"protocol": proto, "pointer": json_pointer(*gtoks),
                        "neighbors": _listing(ctx, state, reason, gtoks, group_basis, rows,
                                              sections=("routing_neighbors",),
@@ -4477,7 +4522,8 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
 
 def project_device(snap: Any, host: Any) -> Dict[str, Any]:
     """One device page, as a standalone ``DeviceDocument``: identity, physical, blind-spot record, health,
-    lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks, native-VLAN
+    lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours (each with its ``peer_host``: the one
+    collected device the topology's address index places the neighbour's address on, G17), security checks, native-VLAN
     mismatches, remediation, NRFU cases, the punch-list rows and endpoints that name it, and the stored
     failure-impact row (``failure_impact``) and structural-link rows (``structural_links``, either end) that name it.
     Those two are the fleet topology rows selected by exact host, never re-simulated; an empty selection is
@@ -4675,6 +4721,16 @@ IMPACT_INDETERMINATE_PREFIX = impact_assessability.IMPACT_INDETERMINATE_PREFIX
 _IMPACT_MEASURES = impact_assessability.IMPACT_MEASURES
 
 
+def _run_config_captured(ctx: _Ctx, host: Any) -> bool:
+    """Whether some interface of `host` carries ``run_config_observed: true``. build.py marks every interface its scoped
+    interface running-config capture ('show running-config interface' or '| section ^interface') parsed, and takes the
+    interface addresses (svi_ip, svi_ips) only from that capture. An absent marker reads as not captured: the snapshot
+    drops a false one (html.sparsify_interfaces), and older snapshots carry none. One rule for the failure-impact hold
+    and for the address index's coverage (:func:`_address_coverage`): this reads the failure-impact owner's scan
+    (impact_assessability.run_config_captured, memoised per host by :attr:`_Ctx.impact`), never a second copy."""
+    return _is_text(host) and ctx.impact.captured(host)[1]
+
+
 def _impact_cable_source(ctx: _Ctx) -> impact_assessability.CableSource:
     """This context's reading of the stored cable map for the owner's neighbour bound
     (impact_assessability.neighbour_bound). The cable list takes the envelope state every topology list takes; one
@@ -4770,8 +4826,21 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     return out
 
 
-def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
-    """Select positive interface/local/FHRP observations by FIB's ownership rules; no subnet host invention."""
+#: One positive address observation: ``(host, interface, origin, address, source tokens, family)``.
+_Observation = Tuple[str, str, str, str, Tuple[Any, ...], int]
+#: The inputs the address index reads; topology.source_addresses rolls its list state up over them.
+_ADDRESS_SECTIONS: Tuple[str, ...] = ("interfaces", "routes")
+_R_ADDRESS_MALFORMED = "unverified: malformed address source records were not usable"
+_R_ADDRESS_BLIND = "not collected: this host is a recorded collection blind spot"
+
+
+def _address_sources(ctx: _Ctx) -> Tuple[Tuple[_Observation, ...], Tuple[Tuple[Any, ...], ...],
+                                         Mapping[str, Tuple[int, ...]]]:
+    """The one address index, read through :attr:`_Ctx.addresses`: ``(observations, malformed, by_address)``. The
+    positive interface/local/FHRP observations by FIB's ownership rules (fib._connected_index's exact owners: an
+    interface address, a local host route, an FHRP host route naming itself; never a connected subnet, which every
+    router on a shared segment contains), in the order topology.source_addresses publishes them; the source records
+    that could not be read; and the observation indices of each address."""
     from cisco_toolkit import fib
 
     observations, malformed = [], []
@@ -4838,17 +4907,30 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
                     port = row.get("out_intf") if _is_text(row.get("out_intf")) else ""
                     observations.append((host, port, "local_route" if local else "fhrp_host_route",
                                          str(network.network_address), ("routes", host, j, "prefix"), network.version))
+    ordered = tuple(sorted(observations, key=lambda x: x[:4] + (json_pointer(*x[4]),)))
+    by_address: Dict[str, List[int]] = {}
+    for k, observation in enumerate(ordered):
+        by_address.setdefault(observation[3], []).append(k)
+    return ordered, tuple(malformed), MappingProxyType({a: tuple(ks) for a, ks in by_address.items()})
+
+
+def _address_hold(ctx: _Ctx, section: str, host: str) -> Tuple[Optional[Tuple[str, str]],
+                                                               List[Tuple[str, Sequence[Any]]]]:
+    """Why one address observation is withheld, with its witnesses; ``(None, [])`` when it is published. Match
+    ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even when the section's fleet
+    analysis failed (the enclosing list still discloses that failure); otherwise a failed or faulted section."""
+    if ctx.device_blind(section, host):
+        return (_NC, _R_ADDRESS_BLIND), ctx.cc_witness(host)
+    return _secs_fail(ctx, (section,)), []
+
+
+def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
+    """Select positive interface/local/FHRP observations by FIB's ownership rules; no subnet host invention."""
+    observations, malformed, _by_address = ctx.addresses
     items = []
-    for i, (host, port, origin, address, toks, family) in enumerate(sorted(observations, key=lambda x: x[:4] + (json_pointer(*x[4]),))):
+    for i, (host, port, origin, address, toks, family) in enumerate(observations):
         section = toks[0]
-        witnesses = []
-        # Match ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even
-        # when the section's fleet analysis failed. The enclosing list still discloses that failure.
-        if ctx.device_blind(section, host):
-            hit = (_NC, "not collected: this host is a recorded collection blind spot")
-            witnesses = ctx.cc_witness(host)
-        else:
-            hit = _secs_fail(ctx, (section,))
+        hit, witnesses = _address_hold(ctx, section, host)
         state, reason = hit or (_PUB, "")
         refs = ctx.refs([("subject", toks)] + ctx.failure_entries((section,), state == AU) + witnesses)
         def fact(value):
@@ -4861,10 +4943,189 @@ def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
         if not port and state == _PUB:
             items[-1]["interface"] = _envelope(_NC, None, json_pointer(*toks), refs,
                                                 "fib._connected_index:address interface", "not collected: no interface")
-    state, reason = (_UV, "unverified: malformed address source records were not usable") if malformed else (_PUB, None)
+    state, reason = (_UV, _R_ADDRESS_MALFORMED) if malformed else (_PUB, None)
     return _listing(ctx, state, reason, None, "fib._connected_index:positive address observations", items,
-                    sections=("interfaces", "routes"), rollup=("interfaces", "routes"),
+                    sections=_ADDRESS_SECTIONS, rollup=_ADDRESS_SECTIONS,
                     extra=[("witness", t) for t in malformed], caveats=("path_route_model_only",))
+
+
+#: The sections whose host keys name a collected device to the address index's coverage check: the inventory (devices),
+#: and every per-host capture that only a reached device can carry.
+_ADDRESS_ROSTER: Tuple[str, ...] = ("devices", "interfaces", "routes", "routing_neighbors")
+#: The record that completes that roster: analyze.compute_collection_completeness lists every inventory device that was
+#: not fully collected (its 'devices' rows), including one the collection never reached, which no roster section names.
+_ADDRESS_ROSTER_RECORD = "collection_completeness"
+#: One coverage gap of the address index: the witness ref entries that show it (none may resolve: an absent record).
+_CoverageGap = Tuple[Tuple[str, Sequence[Any]], ...]
+
+
+def _address_coverage(ctx: _Ctx) -> Tuple[bool, Tuple[_CoverageGap, ...]]:
+    """Whether the address index can hold every collected device's interface addresses, read through
+    :attr:`_Ctx.address_coverage`: ``(complete, gaps)``. The roster is every device a host key of
+    :data:`_ADDRESS_ROSTER` names, completed by the :data:`_ADDRESS_ROSTER_RECORD` rows. Each roster device is a gap
+    when collection_completeness calls it not collected, or when no interface of it carries run_config_observed
+    (:func:`_run_config_captured`), the only capture its interface addresses come from. Every record row that does not
+    name a roster device (by the owner's name rule) is a gap, whatever its status: a device outside the roster, or a
+    row that names none (not an object, or a host that is not text). The roster itself is unknown, so completeness is
+    never claimed, when the devices map cannot be read, or when the record is not readable: absent, failed or faulted
+    (``ssot.abstention_reason`` is neither published nor collected but empty), or its 'devices' is not a list."""
+    ifaces = ctx.s.get("interfaces")
+    gaps: List[_CoverageGap] = []
+    roster: Dict[str, str] = {}               # device -> the first roster section naming it (its witness otherwise)
+    for section in _ADDRESS_ROSTER:
+        keyed = ctx.s.get(section)
+        if isinstance(keyed, dict):
+            for name in keyed:
+                if _is_text(name):
+                    roster.setdefault(name, section)
+                elif section == "devices":
+                    gaps.append((("witness", ("devices",)),))
+        elif section == "devices":
+            gaps.append((("witness", ("devices",)),))
+    for name in sorted(roster):
+        if ctx.device_blind("interfaces", name):
+            gaps.append(tuple(ctx.cc_witness(name)))
+        elif not _run_config_captured(ctx, name):
+            gaps.append((("witness", ("interfaces", name) if isinstance(ifaces, dict) and name in ifaces
+                          else (roster[name], name)),))
+    record = ctx.abst(_ADDRESS_ROSTER_RECORD)
+    rows = _get(ctx.s, (_ADDRESS_ROSTER_RECORD, "devices"))
+    if record not in (_PUB, _CBE) or not isinstance(rows, list):
+        where = (_ADDRESS_ROSTER_RECORD,) if rows is _MISSING else (_ADDRESS_ROSTER_RECORD, "devices")
+        gaps.append((("witness", where),) + tuple(ctx.failure_entries((_ADDRESS_ROSTER_RECORD,), record == AU)))
+    if isinstance(rows, list):
+        named = {_norm(name) for name in roster}
+        for i, row in enumerate(rows):
+            listed = row.get("host") if isinstance(row, dict) else None
+            if not (_is_text(listed) and _norm(listed) in named):
+                gaps.append((("witness", (_ADDRESS_ROSTER_RECORD, "devices", i)),))
+    return not gaps, tuple(gaps)
+
+
+#: G17: the owner chain a peer_host fact cites. The address index is fib._connected_index's exact ownership (published
+#: as topology.source_addresses); more than one owning device is ambiguous by fib._hosts_owning_ip's rule.
+_B_PEER = ("fib._hosts_owning_ip(exact) over topology.source_addresses (fib._connected_index): the collected device "
+           "carrying build.build_routing_neighbors:routing_neighbors{}{}[].")
+_PEER_CAVEAT = "routing_peer_resolution_scope"
+#: The states an address observation can be withheld with (:func:`_address_hold`), in the module's precedence.
+_HOLD_ORDER: Tuple[str, ...] = (AU, _UV, _NC)
+_R_PEER_NO_FIELD = ("not collected: no neighbour-address field is registered for the routing protocol '{proto}' "
+                    "(NEIGHBOR_ADDRESS_FIELDS), so no address of this row is resolved")
+_R_PEER_EMPTY = "not collected: the neighbour row's {field} is empty, so there is no address to resolve"
+_R_PEER_NOT_IP = "unverified: the neighbour row's {field} is not an IP address, so it names no owner"
+_R_PEER_AMBIG = ("unverified: the address index (topology.source_addresses) places this address on {n} collected "
+                 "devices{among}, and more than one owner is ambiguous (fib._hosts_owning_ip), so no single peer can "
+                 "be chosen")
+_R_PEER_AMONG = " (this device among them)"
+_R_PEER_SELF = ("unverified: the address index (topology.source_addresses) places this address only on this device "
+                "itself, and a routing neighbour is another router, so the address cannot name the peer")
+_R_PEER_MALFORMED = ("unverified: {n} address source record(s) cannot be read (topology.source_addresses is "
+                     "unverified), and any of them could carry this address")
+_R_PEER_HELD = ("{why} (the one device the address index places this address on), so the address index "
+                "(topology.source_addresses) withholds that observation, and this peer with it")
+_R_PEER_FAMILY = ("not collected: the address index holds interface addresses only from the running-config 'ip "
+                  "address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), which are IPv4, so whether a "
+                  "collected device carries this IPv6 address was never observed")
+_R_PEER_FAMILY_OWNED = ("not collected: an IPv6 owner is observed (each observation is a witness), but the address "
+                        "index's IPv6 coverage is incomplete: the interface addresses it takes from the running-config "
+                        "are the IPv4 'ip address' and 'ipv4 address' lines (parse.parse_run_config_interfaces), so "
+                        "another device carrying this IPv6 address was never ruled out and a sole owner cannot be "
+                        "claimed")
+#: A sole owner, like an absence, is claimed only over a complete index: a device the index cannot hold could be a
+#: second owner, and more than one owner is ambiguous (fib._hosts_owning_ip).
+_R_PEER_INCOMPLETE = ("not collected: the address index (topology.source_addresses) may be incomplete, because {why}, "
+                      "so {tail}")
+_R_PEER_WHY_INPUTS = "inputs it is built from were not collected ({sections})"
+_R_PEER_WHY_GAPS = ("it has {n} coverage gap(s): a collected device whose interface addresses it does not hold (a "
+                    "collection blind spot, or no interface carries run_config_observed: true, so no scoped interface "
+                    "running-config was parsed), a collection_completeness row that names no device of the roster, or "
+                    "a device roster (the devices map, or the collection_completeness record that completes it) that "
+                    "is absent, failed or unreadable{cited}")
+_R_PEER_CITED = "; the witnesses cite the first {k} of them"
+_R_PEER_TAIL_ABSENT = "an address it does not hold is not a clean result"
+_R_PEER_TAIL_OWNER = ("the one device it places this address on cannot be named the only owner: a second owner was "
+                      "never ruled out, and more than one owner is ambiguous (fib._hosts_owning_ip)")
+#: At most this many coverage gaps are cited as witnesses on one peer_host fact. The reason states the total, so a fleet
+#: whose interface addresses were mostly not captured does not repeat its roster on every neighbour row.
+_PEER_GAPS_CITED = 8
+_R_PEER_NOT_RESOLVED = ("collected but empty: not resolved. No record in the address index (topology.source_addresses) "
+                        "states this address: no collected device's configured IPv4 interface address (the 'ip "
+                        "address' and 'ipv4 address' lines of its captured interface running-config) and no in-scope "
+                        "local or FHRP host route. An address neither source states is not observed, such as a DHCP or "
+                        "negotiated interface address whose local route was not captured in scope, or a firewall's "
+                        "failover standby address, so this does not prove that the neighbour is not a collected device")
+
+
+def _peer_host(ctx: _Ctx, host: Any, proto: str, toks: Tuple[Any, ...],
+               cells: Mapping[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """G17: the collected device a routing neighbour's address belongs to, or 'not resolved', read from the one address
+    index (:attr:`_Ctx.addresses`, published as topology.source_addresses): never a second index, never a subnet guess.
+    The address is the row's :data:`NEIGHBOR_ADDRESS_FIELDS` cell, whose withheld state withholds the resolution. Then,
+    first match wins, in the module's precedence (analysis unavailable, then unverified, then not collected): a failed
+    or faulted index input -> an address that is not an IP -> more than one owning device, or only this device ->
+    an unreadable source record that could also carry it -> an owning observation the index withholds -> an IPv6
+    address -> an index that may be incomplete (an uncollected input, or a coverage gap of :func:`_address_coverage`,
+    the first :data:`_PEER_GAPS_CITED` cited): not collected, for a sole observed owner as for an absence, since an
+    unheld device could be a second owner -> over a complete index, one owner is published, citing every observation of
+    it, and no owner is 'not resolved', collected but empty."""
+    from cisco_toolkit import fib
+
+    field = NEIGHBOR_ADDRESS_FIELDS.get(proto)
+    if field is None:
+        return _envelope(_NC, None, None, ctx.refs([("subject", toks)]), _B_PEER.rstrip("."),
+                         _R_PEER_NO_FIELD.format(proto=proto))
+    basis = _B_PEER + field
+    cell = cells[field]
+    if cell["state"] != _PUB:
+        refs = [dict(ref) for ref in cell["refs"]]
+        if cell["state"] == _CBE:
+            return _envelope(_NC, None, None, refs, basis, _R_PEER_EMPTY.format(field=field))
+        return _envelope(cell["state"], None, None, refs, basis, cell["reason"])
+    base = [("subject", toks + (field,))] + [("basis", (s,)) for s in _ADDRESS_SECTIONS]
+    failed = _secs_fail(ctx, _ADDRESS_SECTIONS)
+    if failed is not None:
+        return _envelope(failed[0], None, None,
+                         ctx.refs(base + ctx.failure_entries(_ADDRESS_SECTIONS, failed[0] == AU)), basis, failed[1])
+    ip = fib._ip(cell["value"])
+    if ip is None:
+        return _envelope(_UV, None, None, ctx.refs(base), basis, _R_PEER_NOT_IP.format(field=field))
+    observations, malformed, by_address = ctx.addresses
+    hits = [observations[k] for k in by_address.get(str(ip), ())]
+    owners = sorted({hit[0] for hit in hits})
+    wit = [("witness", hit[4]) for hit in hits]
+    if len(owners) > 1:
+        return _envelope(_UV, None, None, ctx.refs(base + wit), basis,
+                         _R_PEER_AMBIG.format(n=len(owners), among=_R_PEER_AMONG if host in owners else ""))
+    if owners == [host]:
+        return _envelope(_UV, None, None, ctx.refs(base + wit), basis, _R_PEER_SELF)
+    owner = owners[0] if owners else None
+    # an unreadable record could carry the address: for an owner, any record that is not the owner's own
+    bad = [t for t in malformed if owner is None or len(t) < 2 or t[1] != owner]
+    if bad:
+        return _envelope(_UV, None, None, ctx.refs(base + wit + [("witness", t) for t in bad]), basis,
+                         _R_PEER_MALFORMED.format(n=len(bad)))
+    held = [hold for hold in (_address_hold(ctx, hit[4][0], hit[0]) for hit in hits) if hold[0] is not None]
+    if held:
+        (worst, why), _its_witnesses = min(held, key=lambda hold: _HOLD_ORDER.index(hold[0][0]))
+        return _envelope(worst, None, None, ctx.refs(base + wit + [w for hold in held for w in hold[1]]), basis,
+                         _R_PEER_HELD.format(why=why))
+    if ip.version != 4:
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_FAMILY_OWNED if hits else _R_PEER_FAMILY)
+    tail = _R_PEER_TAIL_ABSENT if owner is None else _R_PEER_TAIL_OWNER
+    uncollected = [s for s in _ADDRESS_SECTIONS if ctx.abst(s) == _NC]
+    if uncollected:
+        return _envelope(_NC, None, None, ctx.refs(base + wit), basis, _R_PEER_INCOMPLETE.format(
+            why=_R_PEER_WHY_INPUTS.format(sections=", ".join(uncollected)), tail=tail))
+    complete, gaps = ctx.address_coverage
+    if not complete:
+        cited = gaps[:_PEER_GAPS_CITED]
+        why = _R_PEER_WHY_GAPS.format(
+            n=len(gaps), cited=_R_PEER_CITED.format(k=len(cited)) if len(cited) < len(gaps) else "")
+        return _envelope(_NC, None, None, ctx.refs(base + wit + [entry for gap in cited for entry in gap]), basis,
+                         _R_PEER_INCOMPLETE.format(why=why, tail=tail))
+    if owner is not None:
+        return _envelope(_PUB, owner, None, ctx.refs(base + wit), basis, "", caveats=(_PEER_CAVEAT,))
+    return _envelope(_CBE, None, None, ctx.refs(base), basis, _R_PEER_NOT_RESOLVED, caveats=(_PEER_CAVEAT,))
 
 
 def _topology_source(ctx: _Ctx, toks: Tuple[str, ...]) -> Tuple[str, Optional[str], Any]:
@@ -5547,7 +5808,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                          ("out_intf", _TEXT), ("admin_distance", "CountFact")))
     defs["NeighborRow"] = _row_def("NeighborRow", _indexed(), tuple((f, _TEXT) for f in ("neighbor", "state",
                                                                                           "address", "interface",
-                                                                                          "as")))
+                                                                                          "as", "peer_host")))
     defs["NeighborGroup"] = _closed("NeighborGroup", ("protocol", "pointer", "neighbors"),
                                     {"protocol": _str(), "pointer": _ref("Pointer"),
                                      "neighbors": _ref("NeighborRowList")})
@@ -5952,6 +6213,6 @@ __all__ = [
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
     "IMPACT_INDETERMINATE_PREFIX",
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
-    "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES",
+    "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES", "NEIGHBOR_ADDRESS_FIELDS",
     "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
 ]

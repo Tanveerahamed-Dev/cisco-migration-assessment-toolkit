@@ -1390,6 +1390,10 @@ CAP_SITES = {
     ("analyze.compute_lifecycle_risk", "_retrieved_at[:10]"):
         "exempt: the retained registry retrieval date used to judge lifecycle freshness, not a projected list",
     ("parse.parse_security", "raw[:1]"): "exempt: a first-character test, not a value",
+    # G17 cites the running-config interface parser as the owner of the address index's IPv4-only interface source
+    ("parse.parse_run_config_interfaces", "line[:1]"): "exempt: a first-character (indentation) test, not a value",
+    ("parse._global_forwarding_gate_evidence", "raw[:1]"): "exempt: a first-character (indentation) test, not a value",
+    ("parse._asa_global_forwarding_bindings", "raw[:1]"): "exempt: a first-character (indentation) test, not a value",
     ("analyze.compute_cable_map", "badges[:3]"): "exempt: badges are not projected",
     ("analyze.compute_device_dossiers",
      "[d['host'] for d in per_device if d['risk_band'] in ('Severe', 'Elevated')][:3]"):
