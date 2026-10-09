@@ -37,7 +37,7 @@ REVIEW_PATHS = (
     "tests/test_frontend_artifact_workflow_contract.py",
     ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py",
     ".github/scripts/observe_jsonschema_rs_wheel.py", "tests/test_jsonschema_rs_observation.py",
-    ".github/scripts/observe_ui_projection_contract.py", "tests/test_ui_projection_contract_observation.py",
+    "webapp/backend/observe_ui_projection_contract.py", "tests/test_ui_projection_contract_observation.py",
     "master-reference/release/pipeline.py", "portable/release_contract.py",
     "portable/atlas_bundle.py", "portable/windows-x64-requirements.lock",
     "portable/third-party-license-fallbacks.json", "portable/third-party-licenses/jsonschema-rs-LICENSE",
@@ -138,7 +138,7 @@ def assert_wiring(doc):
     }
     assert contract_observe == {
         "name": CONTRACT_OBSERVE, "working-directory": ".",
-        "run": "python -I -B .github/scripts/observe_ui_projection_contract.py",
+        "run": "python -I -B webapp/backend/observe_ui_projection_contract.py",
     }
     assert contract_upload == {
         "name": CONTRACT_UPLOAD, "if": "${{ always() }}", "uses": UPLOAD,
@@ -316,7 +316,7 @@ def test_contract_observation_never_replaces_or_follows_the_blocking_byte_check(
     elif mutation == "success-only-upload":
         named(steps, CONTRACT_UPLOAD)["if"] = "${{ success() }}"
     else:
-        doc["on"]["push"]["paths"].remove(".github/scripts/observe_ui_projection_contract.py")
+        doc["on"]["push"]["paths"].remove("webapp/backend/observe_ui_projection_contract.py")
     with pytest.raises(AssertionError):
         assert_wiring(doc)
 

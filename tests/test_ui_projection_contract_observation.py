@@ -12,7 +12,7 @@ import types
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("contract_observer", ROOT / ".github/scripts/observe_ui_projection_contract.py")
+SPEC = importlib.util.spec_from_file_location("contract_observer", ROOT / "webapp/backend/observe_ui_projection_contract.py")
 OBSERVER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(OBSERVER)
 
@@ -140,7 +140,7 @@ def test_main_retains_success_or_structured_failure_without_changing_pins(source
                        "GITHUB_JOB": "frontend", "GITHUB_SHA": head, "GITHUB_RUN_ID": "123",
                        "GITHUB_RUN_ATTEMPT": "1", "RUNNER_TEMP": str(output.parent)}.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(OBSERVER, "__file__", str(root / ".github/scripts/observe_ui_projection_contract.py"))
+    monkeypatch.setattr(OBSERVER, "__file__", str(root / "webapp/backend/observe_ui_projection_contract.py"))
     monkeypatch.setattr(OBSERVER.sys, "argv", ["observe_ui_projection_contract.py"])
     monkeypatch.setattr(OBSERVER.sys, "path", list(sys.path))
     monkeypatch.setattr(OBSERVER, "version", lambda name: "fixture-version")

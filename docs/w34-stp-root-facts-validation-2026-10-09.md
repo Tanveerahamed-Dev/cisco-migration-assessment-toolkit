@@ -163,3 +163,23 @@ bytes. Those counterexamples remain unexecuted and the owner merge does not
 waive them. G15 uses none of that receiver. Future G14 generation/adoption needs
 an admissible reviewed hosted route and fresh exact-source/output verification;
 the documented local receiver and dry-run remain prohibited.
+
+## Independent bootstrap architecture failure
+
+Reference job `113614726348` on bootstrap tested `3e623d9c` completed its quiet
+tests and lint, then failed **Compile exact tracked Git tree** with three
+undeclared `release_distribution -> assesshub_backend` edges (5/6/7), exit 2.
+Downstream steps 10–16 were skipped. This is separate from the API/native-pin
+failures and is not attributed to them. Portable binary job `113614726199`
+separately passed 1,714-file immutability, PyInstaller and selftest 13/13, then
+failed the frozen projection smoke; its log exposes no exact native/header
+subcause, so none is asserted here.
+
+The diagnostic's original `.github/scripts/` location classified its actual
+backend imports and exporter call as release tooling. The correction moves its
+unchanged implementation to `webapp/backend/observe_ui_projection_contract.py`,
+beside the contract owners it observes. Workflow invocation, direct path guards
+and test loading follow that owner. Architecture policy/allowlists and all
+conformance checks remain unchanged. No diagnostic, schema, pin or generated-type
+logic is altered by this relocation. Fresh Reference compilation, observer
+execution and all other gates must verify the corrected combined source.

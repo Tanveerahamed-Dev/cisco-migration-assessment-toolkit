@@ -59,7 +59,7 @@ RELEVANT_PATH_FILTERS = (
     ".github/scripts/test_frontend_candidate_materials.py",
     ".github/scripts/observe_jsonschema_rs_wheel.py",
     "tests/test_jsonschema_rs_observation.py",
-    ".github/scripts/observe_ui_projection_contract.py",
+    "webapp/backend/observe_ui_projection_contract.py",
     "tests/test_ui_projection_contract_observation.py",
     "master-reference/release/pipeline.py",
     "portable/release_contract.py",
