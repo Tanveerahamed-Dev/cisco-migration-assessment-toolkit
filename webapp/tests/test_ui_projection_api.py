@@ -153,6 +153,28 @@ def test_all_pages_preserve_original_indices_and_pointers(client, sample):
     assert collected == original["items"][:6]
 
 
+def test_findings_cross_layer_rows_page_as_an_owner_list(client, sample):
+    """G24: the engine's cross-layer rows are a second primary Findings list, paged whole with their host joins."""
+    from backend.ui_projection_api import LIST_CATALOG
+    assert LIST_CATALOG["findings"] == {"/rows": "FindingRowList", "/cross_layer": "CrossLayerRowList"}
+    sid = seed(client, sample)
+    original = owner.project(sample)["findings"]["cross_layer"]
+    assert original["state"] == "published" and len(original["items"]) == len(sample["cross_layer"]) > 4
+    view = client.get(url(sid, "findings"), params={"limit": 2})
+    assert view.status_code == 200, view.text[:200]
+    paged = view.json()["payload"]["cross_layer"]
+    assert paged["pointer"] == "/cross_layer"
+    assert paged["source_list"] == {k: v for k, v in original.items() if k != "items"}
+    assert paged["page"]["items"] == original["items"][:2] and paged["page"]["total"] == len(original["items"])
+    part = client.get(url(sid, "findings") + "/lists", params={"pointer": "/cross_layer", "offset": 3, "limit": 2})
+    assert part.status_code == 200, part.text[:200]
+    listed = part.json()["list"]
+    assert listed["pointer"] == "/cross_layer" and listed["page"]["items"] == original["items"][3:5]
+    host = listed["page"]["items"][0]["hosts"]["items"][0]
+    assert {"host", "device", "deduction_ref", "deduction"} <= set(host)
+    assert host["deduction_ref"]["state"] == "published" and host["deduction_ref"]["value"]["ref"] == "/cross_layer/3"
+
+
 @pytest.mark.parametrize("state", owner.STATES)
 def test_all_six_states_and_withheld_nonempty_lists_survive(client, sample, monkeypatch, state):
     sid = seed(client)
@@ -1230,8 +1252,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-                   "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5"}
+    prospective = {"view": "bd0702147829feba7dd94517519e5470050a67661b0f6a4350a707b89df7a63c",
+                   "list": "5228e59009aebefbe8f1fabf47f8d74a0801c7d733083e775c085db7ac4762c7"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)

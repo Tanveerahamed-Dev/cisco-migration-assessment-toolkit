@@ -22,7 +22,10 @@ Slice 2 adds the row screens:
   dual-homed lists, and the cable-map peers nobody collected; every list in a stable order with a total
   from its owner, ready to be paged;
 * ``findings`` -- the engine's punch-list rows, with the severity vocabulary, the remediation the engine
-  links and the show command it cites, and nothing it does not publish;
+  links and the show command it cites, and nothing it does not publish; and (G24) the stored cross-layer
+  correlation rows, each host joined by exact name to its collected device record and to the health deduction the
+  row drives there (the scorer's own reference to the row, and the line item carrying the row's label), never
+  recomputed, an unjoinable or repeated host unverified rather than dropped;
 * :func:`project_device` -- one standalone device page per host (identity, physical, blind-spot record,
   health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks,
   native-VLAN mismatches, remediation, NRFU cases, the punch-list rows and endpoints naming it, and the stored
@@ -396,7 +399,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total", "/topology"]),
+         "/findings/rows", "/findings/total", "/findings/cross_layer", "/topology"]),
     _limitation(
         "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
@@ -425,7 +428,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "address a path through a hostname that contains a dot either: a row cell takes its section's state and "
         "the device scope of ssot.abstention_reason, then its own row join and type check.",
         ["/overview/axes", "/overview/top_gating", "/trust/failures/record", "/trust/unknown_evidence/sources",
-         "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/findings/rows"]),
+         "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/cross_layer"]),
     _limitation(
         "coverage_matrix_shown_as_published", "coverage_matrix.compute_coverage_matrix",
         "The coverage matrix is shown exactly as the engine published it and is never recomputed. The "
@@ -442,12 +445,14 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "violation or an owner fault. On the row screens: the device total's row-count check, the punch-list "
         "priority and rank checks against the producer's rule, a cap's reached flag, the incomplete state of a list "
         "whose input a blind spot, a missing essential capture or a missing security row withheld, the empty "
-        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, and the "
-        "completeness claim of the uncollected-peer list.",
+        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, the "
+        "completeness claim of the uncollected-peer list, and the cross-layer checks against their producers: a host "
+        "a row names twice or names blank, a host with no devices-map record or no health row, a row naming no host, "
+        "and a deduction reference or line item that is missing, repeated or foreign.",
         ["/trust/census/embedded/matches_live", "/trust/ssot/stamp_matches_live",
          "/engine/snapshot_schema_supported", "/overview/top_gating", "/overview/absent_axes",
          "/inventory/devices/total", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows"]),
+         "/findings/rows", "/findings/cross_layer"]),
     _limitation(
         "device_physical_defaults_not_observed", "model.DevicePhysical",
         "The device record defaults its text fields to '' and num_power_supplies, num_modules and total_ports to 0, "
@@ -485,8 +490,10 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "'at least this many'; the projection never computes the missing total. Finding evidence references are "
         "capped separately at the engine's evidence cap; only their producer-published evidence_refs_total can "
         "state the uncapped count. Health reference truncation follows the deduction prefix before missing refs "
-        "are removed, so its shorter subsequence may also be capped.",
-        ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows"]),
+        "are removed, so its shorter subsequence may also be capped. A cross-layer row whose device's published "
+        "deductions reached that cut, and carry no reference to the row, may drive a deduction beyond it: that "
+        "deduction is withheld as not collected, never shown as absent.",
+        ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows", "/findings/cross_layer"]),
     _limitation(
         "move_group_label_absent", "analyze.compute_move_groups",
         "Legacy move-group rows have no stored 'group' labels. This projection does not invent positional labels "
@@ -543,18 +550,25 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "case or surrounding space, ssot.abstention_reason). Two rows naming the same key are unverified, never "
         "picked between. The inventory is the union of the devices map and the collection_completeness blind spots. "
         "A selection is null when its source list could not be read (selection_sources says why), and [] when it "
-        "was read and names nothing.",
-        ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans"]),
+        "was read and names nothing. A cross-layer row's host joins the devices-map record and the health_scores row "
+        "of exactly that name. The deduction the row drives on that device is the one deduction reference the health "
+        "row publishes to the cross-layer row, and its line item is the published deduction carrying the row's own "
+        "rule id and severity label (analyze.compute_health_scores writes '<id> <severity> (-<points>)'), never "
+        "paired with a reference by position. Several identical line items on one device are one published value "
+        "with a witness to each and no subject. The points are the scorer's per-item weight as published, before "
+        "its per-category cap and the device's criticality factor, so they are not the change in the score.",
+        ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans", "/findings/cross_layer"]),
     _limitation(
         "fleet_lists_exclude_blind_devices", "analyze.compute_collection_completeness",
         "collection_completeness lists devices the collection reached only partly or not at all. A fleet list derived "
         "from device evidence holds only what was collected: an uncollected capture adds no row, and a failure-impact "
         "or structural-link row is computed over the scanned model without it, so even a 'no impact' row or a small "
-        "pairs-cut count was never checked against that evidence. While any blind spot is listed, a published list "
-        "carries this caveat, with a witness ref to each blind-spot row, and an empty one is not_collected, never "
-        "'nothing found'.",
-        ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total", "/topology/structural_links",
-         "/topology/failure_impact"]),
+        "pairs-cut count was never checked against that evidence. Cross-layer correlations are computed over the same "
+        "collected evidence, so an uncollected device can neither add nor clear one. While any blind spot is listed, "
+        "a published list carries this caveat, with a witness ref to each blind-spot row, and an empty one is "
+        "not_collected, never 'nothing found'.",
+        ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total", "/findings/cross_layer",
+         "/topology/structural_links", "/topology/failure_impact"]),
     _limitation(
         "findings_without_running_config", "analyze.compute_migration_punchlist",
         "A device in the devices map with no security row (no captured running-config) contributes no "
@@ -3752,12 +3766,239 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     axes = _get(ctx.s, ("executive_brief", "axes"))
     heads = [k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"] \
         if isinstance(axes, list) else []
-    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing}
+    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing,
+            "cross_layer": _cross_layer(ctx)}
 
 
 def project_findings(snap: Any) -> Dict[str, Any]:
-    """The Findings screen: the engine's punch-list rows, with the remediation it links and nothing more."""
+    """The Findings screen: the engine's punch-list rows, with the remediation it links, and the engine's stored
+    cross-layer correlation rows with the health deduction each one drives on each device it names (G24); nothing
+    more."""
     return _findings(_Ctx(snap))
+
+
+# ---------------------------------------------------------------------------------------------------
+# findings: cross-layer correlations (G24) and the health deduction each one drives
+#
+# Selected from the stored rows, never recomputed: the rows are analyze.compute_cross_layer_correlations' own, in its
+# order. A host joins the devices map and its health_scores row by exact name. The deduction a row drives on a device
+# is the one reference that device's health row publishes to the row (analyze.compute_health_scores writes it beside
+# the line item, inside the same [:8] prefix), and the line item is the published deduction carrying the row's own
+# '<id> <severity>' label. An unjoinable or repeated host, a missing or repeated reference and a missing line item are
+# unverified with witnesses; a reference that may lie beyond the scorer's cut is not collected. Nothing is dropped.
+# ---------------------------------------------------------------------------------------------------
+#: The snapshot sections the cross-layer rules run over: the dependency map they read is built from the interface map
+#: (its all_interfaces parameter), physical_health and l3_forwarding. tests/test_ui_projection_cross_layer.py holds
+#: this table against the producer's signature.
+CROSS_LAYER_INPUTS: Tuple[str, ...] = ("interfaces", "physical_health", "l3_forwarding")
+_B_XL = "analyze.compute_cross_layer_correlations:cross_layer[]."
+_B_XL_DEVICE = "ui_projection:exact devices-map hostname join"
+_B_XL_REF = _B_HEALTH + "deduction_refs[] (the reference naming the cross-layer row)"
+_B_XL_LINE = _B_HEALTH + "deductions[] (the line item carrying the cross-layer row's label)"
+_R_XL_NO_HOSTS = ("unverified: analyze.compute_cross_layer_correlations names at least one device in every row, so a "
+                  "row naming none cannot be read")
+_R_XL_BLANK_HOST = "unverified: the host entry is blank, so it names no device"
+_R_XL_HOST_DUP = ("unverified: this row names this host {n} times, but analyze.compute_cross_layer_correlations writes "
+                  "each row's hosts once, so no single entry can be chosen")
+_R_XL_NO_DEVICE = ("unverified: the devices map has no record with this exact name, yet the cross-layer rules name "
+                   "only hosts of the collected interface model, so this host joins no collected device")
+_R_XL_NO_HEALTH = ("unverified: health_scores has no row with this exact switch name, yet analyze.compute_health_scores "
+                   "scores every named host of the interface model the cross-layer rules ran over, so the deduction "
+                   "this row drives cannot be found")
+_R_XL_REF_CAPPED = ("not collected: analyze.compute_health_scores cuts a device's deductions after {limit} and "
+                    "publishes no total, and none of this device's published references names this row, so the "
+                    "deduction it drives may lie beyond the cut")
+_R_XL_REF_MISSING = ("unverified: this device's published deductions stop short of the scorer's cut of {limit}, yet "
+                     "none of its references names this row; analyze.compute_health_scores writes one for every "
+                     "device a cross-layer row names")
+_R_XL_REF_AMBIG = ("unverified: {n} deduction references on this device name this row, but "
+                   "analyze.compute_health_scores writes one for each row and device, so none can be chosen")
+_R_XL_REF_FOREIGN = ("unverified: the deduction reference naming this row is not the scorer's analysis-row reference "
+                     "for this device (kind analysis_row, role derived_from, this host)")
+_R_XL_LINE_NONE = ("unverified: the deduction reference to this row lies inside the published deductions, yet no "
+                   "published deduction carries the row's label '{label}', so its line item cannot be read")
+_R_XL_LINE_DIFFER = ("unverified: {n} published deductions carry the row's label '{label}' with different points, so "
+                     "no single line item can be read")
+_R_XL_LINE_LABEL = "{word}: the row's {field} is withheld, so its deduction line item cannot be selected"
+#: The kind and role analyze.compute_health_scores gives the reference from a deduction to the cross-layer row behind
+#: it (its _evidence_ref("analysis_row", host, ("cross_layer", k), "derived_from", ...)).
+_XL_REF_KIND, _XL_REF_ROLE = "analysis_row", "derived_from"
+#: analyze.compute_health_scores' line item for a cross-layer row is f"{id} {severity}" then f" (-{points})": the
+#: label is the row's own id and severity, the tail the points. Pinned to the real producer by
+#: tests/test_ui_projection_cross_layer.py.
+_XL_LINE_TAIL = r" \(-[0-9]+\)"
+
+
+def _health_deductions(ctx: _Ctx, hrow: _Row) -> Tuple[str, Optional[str], Optional[Tuple[Any, ...]], Any, bool,
+                                                      Dict[str, Any], Any]:
+    """One health row's deduction prefix and its reference subsequence, read once by every surface that shows them
+    (the device page and the cross-layer rows): ``(state, reason, toks, deductions, capped, refs listing, refs)``.
+    The producer cuts both after its first eight deductions; reaching that cut is read from the deductions, never from
+    the shorter reference subsequence."""
+    dstate, dreason, dtoks, draw = _sub_list(
+        ctx, hrow, "deductions", pre_state=_not_scored(None, hrow),
+        empty=(_CBE, "collected but empty: the device was scored with no deduction (not a blind spot)"))
+    capped = (dstate in (_PUB, _CBE) and isinstance(draw, list)
+              and len(draw) >= ENGINE_LIST_CAPS["health_scores[].deductions"])
+    refs, refs_raw = _evidence_list(ctx, hrow, health=True, capped=capped)
+    return dstate, dreason, dtoks, draw, capped, refs, refs_raw
+
+
+def _merged_refs(*groups: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Resolved refs from several envelopes, de-duplicated in order, as new containers."""
+    out: List[Dict[str, str]] = []
+    for group in groups:
+        for ref in group:
+            if ref not in out:
+                out.append(dict(ref))
+    return out
+
+
+def _xl_device(ctx: _Ctx, host: str, host_toks: Tuple[Any, ...]) -> Dict[str, Any]:
+    """The collected device a cross-layer host names: the devices-map record of exactly that name (its pointer), or
+    why none can be joined. A blind spot is not collected; a name with no record is unverified, never dropped."""
+    joined = _resolve(ctx, ("devices",), ("devices",), key=host, host=host, absent=(_UV, _R_XL_NO_DEVICE))
+    entries: List[Tuple[str, Sequence[Any]]] = [("witness", host_toks)]
+    if joined.state is not None:
+        refs = ctx.refs(entries + ([("witness", joined.toks)] if joined.toks is not None else []) + joined.extra
+                        + ctx.failure_entries(joined.sections, joined.state == AU))
+        return _envelope(joined.state, None, None, refs, _B_XL_DEVICE, joined.reason or _R_NC)
+    return _envelope(_PUB, json_pointer(*joined.toks), None, ctx.refs(entries + [("witness", joined.toks)]),
+                     _B_XL_DEVICE, "")
+
+
+def _xl_deduction(ctx: _Ctx, k: int, host: str, host_toks: Tuple[Any, ...], cells: Mapping[str, Dict[str, Any]],
+                  cache: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(deduction_ref, deduction)``: the health-row reference to cross_layer[k] on `host`, and the line item it
+    sits beside. Selected, never derived: the reference by its exact pointer, the line item by the row's own label."""
+    if host not in cache:
+        hrow = _resolve(ctx, ("health_scores",), ("health_scores",), key=host, key_field="switch", host=host,
+                        absent=(_UV, _R_XL_NO_HEALTH))
+        cache[host] = (hrow, _health_deductions(ctx, hrow) if hrow.state is None else None)
+    hrow, read = cache[host]
+    secs = ("health_scores", "cross_layer")
+    witness: List[Tuple[str, Sequence[Any]]] = [("witness", host_toks)]
+
+    def withheld(state: str, reason: str, entries: Sequence[Tuple[str, Sequence[Any]]], basis: str,
+                 extra: Sequence[Dict[str, str]] = (), caveats: Sequence[str] = ()) -> Dict[str, Any]:
+        refs = _merged_refs(ctx.refs(witness + list(entries) + ctx.failure_entries(secs, state == AU)), extra)
+        return _envelope(state, None, None, refs, basis, reason, caveats=caveats)
+
+    def both(state: str, reason: str, entries: Sequence[Tuple[str, Sequence[Any]]],
+             extra: Sequence[Dict[str, str]] = (), caveats: Sequence[str] = ()) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        return (withheld(state, reason, entries, _B_XL_REF, extra, caveats),
+                withheld(state, reason, entries, _B_XL_LINE, extra, caveats))
+
+    if hrow.state is not None:
+        return both(hrow.state, hrow.reason or _R_NC,
+                    ([("witness", hrow.toks)] if hrow.toks is not None else []) + hrow.extra)
+    _dstate, _dreason, dtoks, draw, capped, listing, refs_raw = read
+    if listing["state"] not in (_PUB, _CBE):
+        return both(listing["state"], listing.get("reason") or _R_NC, [("witness", hrow.toks)], listing["refs"])
+    rtoks = hrow.toks + ("deduction_refs",)
+    target = json_pointer("cross_layer", k)
+    hits = [m for m, ref in enumerate(refs_raw if isinstance(refs_raw, list) else ())
+            if isinstance(ref, dict) and ref.get("ref") == target]
+    limit = ENGINE_LIST_CAPS["health_scores[].deductions"]
+    if len(hits) > 1:
+        return both(_UV, _R_XL_REF_AMBIG.format(n=len(hits)), [("witness", rtoks + (m,)) for m in hits])
+    if not hits:
+        if capped:
+            return both(_NC, _R_XL_REF_CAPPED.format(limit=limit), [("witness", dtoks)],
+                        caveats=("engine_list_capped",))
+        return both(_UV, _R_XL_REF_MISSING.format(limit=limit), [("witness", rtoks)])
+    m = hits[0]
+    ref = refs_raw[m]
+    if ref.get("host") != host or ref.get("kind") != _XL_REF_KIND or ref.get("role") != _XL_REF_ROLE:
+        return both(_UV, _R_XL_REF_FOREIGN, [("witness", rtoks + (m,))])
+    ref_fact = _cell(ctx, _Row(None, None, rtoks + (m,), ref, secs), None, "evidence_ref", _B_XL_REF,
+                     witness=witness)
+    if ref_fact["state"] != _PUB:
+        return ref_fact, withheld(ref_fact["state"], ref_fact["reason"], [], _B_XL_LINE, ref_fact["refs"])
+    on_ref: List[Tuple[str, Sequence[Any]]] = [("witness", rtoks + (m,))]
+    for field in ("id", "severity"):
+        cell = cells[field]
+        if cell["state"] != _PUB:
+            state = cell["state"] if cell["state"] in (AU, _NC) else _UV
+            return ref_fact, withheld(state, _R_XL_LINE_LABEL.format(word=_IMPACT_STATE_WORD[state], field=field),
+                                      on_ref + [("witness", ("cross_layer", k, field))], _B_XL_LINE)
+    label = f"{cells['id']['value']} {cells['severity']['value']}"
+    pattern = re.compile(re.escape(label) + _XL_LINE_TAIL)
+    lines = [n for n, text in enumerate(draw if isinstance(draw, list) else ())
+             if _is_text(text) and pattern.fullmatch(text)]
+    if not lines:
+        return ref_fact, withheld(_UV, _R_XL_LINE_NONE.format(label=label), on_ref + [("witness", dtoks)],
+                                  _B_XL_LINE)
+    if len({draw[n] for n in lines}) > 1:
+        return ref_fact, withheld(_UV, _R_XL_LINE_DIFFER.format(n=len(lines), label=label),
+                                  on_ref + [("witness", dtoks + (n,)) for n in lines], _B_XL_LINE)
+    cav = ("row_selection_by_exact_key",)
+    if len(lines) == 1:
+        return ref_fact, _cell(ctx, _Row(None, None, dtoks + (lines[0],), draw[lines[0]], secs), None, "text",
+                               _B_XL_LINE, witness=on_ref, published_caveats=cav)
+    # Several rows of one rule and severity name this device: their line items are byte-identical, so the value is
+    # this row's, but which position is its own is not published -- one value, a witness to each, no subject.
+    refs = ctx.refs([("witness", dtoks + (n,)) for n in lines] + on_ref)
+    return ref_fact, _envelope(_PUB, draw[lines[0]], None, refs, _B_XL_LINE, "",
+                               caveats=cav + _one_hop(ctx, _PUB, secs))
+
+
+def _xl_host(ctx: _Ctx, k: int, j: int, raw: Any, positions: Mapping[str, List[int]],
+             hold: Optional[Tuple[str, Optional[str]]], cells: Mapping[str, Dict[str, Any]],
+             cache: Dict[str, Any]) -> Dict[str, Any]:
+    """One host a cross-layer row names, with the collected device it joins and the deduction the row drives there.
+    A host that cannot be read or is named twice withholds its joins with its own state, reason and witnesses.
+    `positions` maps each text host of the row to every index naming it."""
+    toks = ("cross_layer", k, "hosts", j)
+    same = positions.get(raw, []) if _is_text(raw) else []
+    doubt: Optional[_Withheld] = None
+    if len(same) > 1:
+        doubt = (_UV, _R_XL_HOST_DUP.format(n=len(same)), [("witness", ("cross_layer", k, "hosts", i)) for i in same])
+    row = _Row(hold[0] if hold else None, hold[1] if hold else None, toks, raw, ("cross_layer",))
+    fact = _cell(ctx, row, None, "text", _B_XL + "hosts[]",
+                 pre=(lambda _raw, _row: doubt) if doubt is not None else None, empty=(_UV, _R_XL_BLANK_HOST))
+    item: Dict[str, Any] = {"index": j, "pointer": json_pointer(*toks), "host": fact}
+    if fact["state"] == _PUB:
+        item["device"] = _xl_device(ctx, raw, toks)
+        item["deduction_ref"], item["deduction"] = _xl_deduction(ctx, k, raw, toks, cells, cache)
+        return item
+    for name, basis in (("device", _B_XL_DEVICE), ("deduction_ref", _B_XL_REF), ("deduction", _B_XL_LINE)):
+        item[name] = _envelope(fact["state"], None, None, _merged_refs(fact["refs"]), basis, fact["reason"])
+    return item
+
+
+def _cross_layer_row(ctx: _Ctx, k: int, rec: Any, cache: Dict[str, Any]) -> Dict[str, Any]:
+    toks = ("cross_layer", k)
+    row = _list_row(toks, rec, ("cross_layer",))
+    cells: Dict[str, Dict[str, Any]] = {
+        "id": _cell(ctx, row, "id", "text", _B_XL + "id"),
+        "severity": _cell(ctx, row, "severity", "enum", _B_XL + "severity", vocab=SEVERITIES),
+    }
+    for field in ("layers", "title", "detail", "recommendation"):
+        cells[field] = _cell(ctx, row, field, "text", _B_XL + field)
+    state, reason, htoks, hosts = _sub_list(ctx, row, "hosts", empty=(_UV, _R_XL_NO_HOSTS))
+    hold = (state, reason) if state not in (_PUB, _CBE) else None
+    named = hosts if isinstance(hosts, list) else []
+    positions: Dict[str, List[int]] = {}
+    for j, raw in enumerate(named):
+        if _is_text(raw):
+            positions.setdefault(raw, []).append(j)
+    items = [_xl_host(ctx, k, j, raw, positions, hold, cells, cache) for j, raw in enumerate(named)]
+    listing = _listing(ctx, state, reason, htoks, _B_XL + "hosts", items, sections=row.sections, extra=row.extra,
+                       caveats=("row_selection_by_exact_key",))
+    return {"index": k, "pointer": json_pointer(*toks), **cells, "hosts": listing}
+
+
+def _cross_layer(ctx: _Ctx) -> Dict[str, Any]:
+    """``findings.cross_layer``: every stored cross-layer row, in the producer's order, with its hosts joined. The rules
+    run over every collected device's evidence, so the fleet's blind spots qualify the list (an empty one under a blind
+    spot is not collected, never 'no correlation')."""
+    toks = ("cross_layer",)
+    base, reason, raw = _list_state(ctx, toks, toks)
+    cache: Dict[str, Any] = {}
+    items = [_cross_layer_row(ctx, k, rec, cache) for k, rec in enumerate(raw if isinstance(raw, list) else ())]
+    return _listing(ctx, base, reason, toks, "analyze.compute_cross_layer_correlations:cross_layer", items,
+                    sections=toks, rollup=CROSS_LAYER_INPUTS, qualify=_fleet_qualify(ctx))
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -4057,17 +4298,14 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     health = _health_cells(ctx, host, j)
     hrow = j["health"]
     ded_cap = ENGINE_LIST_CAPS["health_scores[].deductions"]
-    dstate, dreason, dtoks, draw = _sub_list(
-        ctx, hrow, "deductions", pre_state=_not_scored(None, hrow),
-        empty=(_CBE, "collected but empty: the device was scored with no deduction (not a blind spot)"))
+    # One reading of the deduction prefix and its references, shared with the cross-layer rows (_xl_deduction).
+    dstate, dreason, dtoks, draw, ded_capped, deduction_refs, _ = _health_deductions(ctx, hrow)
     ded_readable = dstate in (_PUB, _CBE)
-    ded_capped = ded_readable and isinstance(draw, list) and len(draw) >= ded_cap
     deductions = _listing(ctx, dstate, dreason, dtoks, _B_HEALTH + "deductions",
                           _items(ctx, dtoks, draw, "text", _B_HEALTH + "deductions[]", ("health_scores",),
                                  hold=(dstate, dreason) if dstate == _NA else None),
                           sections=("health_scores",), extra=hrow.extra, bare=hrow.bare,
                           caveats=("engine_list_capped",) if ded_capped else ())
-    deduction_refs, _ = _evidence_list(ctx, hrow, health=True, capped=ded_capped)
     # The cap bounds the deduction prefix BEFORE unaddressable refs are removed. Reaching it is
     # determined from deductions, never from the shorter reference subsequence.
     deduction_refs_cap = _cap(ded_cap, draw, "analyze.compute_health_scores",
@@ -5319,6 +5557,12 @@ _FINDING_ROW_CELLS = (("priority", "CountFact"), ("rank", "CountFact"), ("severi
                       ("evidence_confidence", _TEXT), ("source_command", _TEXT),
                       ("evidence_basis", "EvidenceBasisFact"), ("evidence_refs", "EvidenceRefList"),
                       ("evidence_refs_total", "CountFact"), ("evidence_refs_cap", "EvidenceCap"))
+#: A cross-layer correlation row (G24): the producer's own fields, then the hosts it names.
+_CROSS_LAYER_ROW_CELLS = (("id", _TEXT), ("severity", "SeverityFact"), ("layers", _TEXT), ("title", _TEXT),
+                          ("detail", _TEXT), ("recommendation", _TEXT), ("hosts", "CrossLayerHostRowList"))
+#: One host a cross-layer row names: the collected device it joins and the health deduction the row drives there.
+_CROSS_LAYER_HOST_CELLS = (("host", _TEXT), ("device", "PointerFact"), ("deduction_ref", "EvidenceRefFact"),
+                           ("deduction", _TEXT))
 
 
 def _slice2_defs(defs: Dict[str, Any]) -> None:
@@ -5443,6 +5687,11 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                      ("move_groups", "TextListFact"), ("split_across_groups", "FlagFact")))
     defs["PeerRow"] = _row_def("PeerRow", _indexed(), (("host", _TEXT), ("kind", _TEXT)))
     defs["FindingRow"] = _row_def("FindingRow", _indexed(), _FINDING_ROW_CELLS)
+    defs["PointerFact"] = _fact_def("PointerFact", _ref("Pointer"))
+    defs["CrossLayerHostRow"] = _row_def("CrossLayerHostRow", _indexed(), _CROSS_LAYER_HOST_CELLS)
+    defs["CrossLayerHostRowList"] = _list_def("CrossLayerHostRowList", _ref("CrossLayerHostRow"))
+    defs["CrossLayerRow"] = _row_def("CrossLayerRow", _indexed(), _CROSS_LAYER_ROW_CELLS)
+    defs["CrossLayerRowList"] = _list_def("CrossLayerRowList", _ref("CrossLayerRow"))
     defs["InterfaceCells"] = _closed("InterfaceCells", IF_COLUMNS, {c: _ref(_TEXT) for c in IF_COLUMNS})
     defs["InterfaceRow"] = _closed("InterfaceRow", ("port", "pointer", "cells", "run_config_observed"),
                                    {"port": _str(), "pointer": _ref("Pointer"), "cells": _ref("InterfaceCells"),
@@ -5494,9 +5743,9 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["Inventory"] = _closed("Inventory", ("devices", "vlans", "endpoints", "uncollected_peers"),
                                 {"devices": _ref("InventoryDevices"), "vlans": _ref("InventoryVlans"),
                                  "endpoints": _ref("InventoryEndpoints"), "uncollected_peers": _ref("PeerList")})
-    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows"),
+    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows", "cross_layer"),
                                {"total": _ref("CountFact"), "headline_axis_index": _nullable(_nonneg_int()),
-                                "rows": _ref("FindingRowList")})
+                                "rows": _ref("FindingRowList"), "cross_layer": _ref("CrossLayerRowList")})
     identity = _closed("DeviceIdentity", IDENTITY_FIELDS, {f: _ref(_TEXT) for f in IDENTITY_FIELDS})
     physical_props = {**{f: _ref("CountFact") for f in DEVICE_PHYSICAL_ZERO_DEFAULTS + ("active_ports",)},
                       **{f: _ref(_TEXT) for f in PHYSICAL_TEXT_FIELDS}}
@@ -5827,7 +6076,7 @@ def ui_projection_schema() -> Dict[str, Any]:
 
 __all__ = [
     "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "BRIEF_INPUTS", "CC_STATUSES",
-    "CENSUS_KINDS", "COVERAGE_STATES", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
+    "CENSUS_KINDS", "COVERAGE_STATES", "CROSS_LAYER_INPUTS", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
     "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
     "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",
     "EXPOSURE_STATES", "FLEET_HEALTH_STATES", "HEALTH_BANDS", "HEALTH_BAND_NOT_SCORED", "IDENTITY_FIELDS",
