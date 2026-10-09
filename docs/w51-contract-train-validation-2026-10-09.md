@@ -241,3 +241,48 @@ classified, every class proof holds and there are no hand-list sites.
 Golden, sample, `atlas-scope/` and `webapp/frontend/dist` are byte-identical to `6ad57ed9`. The frontend source
 changes (W47, W50, the G21 facets), so the tracked dist is stale until the hosted handoff of the pushed head is
 verified and imported.
+
+## Hosted Vitest failure on `8f47dbfa`, and the dist import (2026-10-09)
+
+**Vitest (fixed in `57e64f02`).** Webapp-ci run `37916648764` on `8f47dbfa` failed 1 of 500 Vitest tests in frontend
+job `113774440827`; Distribution contract job `113774360599` showed the same single failure. The test is W47's
+`Snapshot.test.tsx` case "at most one tab stop per row", written and never run. It expects the per-row disclosure to be
+named "Reasons for core2: 6 value(s) not measured", but the computed name was "Reasonsfor core2: …".
+
+The cause is in dom-accessibility-api (0.5.16 and 0.6.3, both in the lock). It trims an inline child element's
+accumulated text and adds no separator for an inline element, so the leading space inside the `sr-only` span was lost.
+The space is now its own text node between the label and the span. The test is unchanged.
+
+The same run's `ui-projection-contract-7b8ae69b…` observation (artifact `11609549567`) observed the declared native pins
+(view `55bc576f…`, list `ce6e9c45…`). Its `openapi.json` equals the offline export above, and its `openapi.ts` equals the
+tracked file.
+
+**Dist import.** The verification follows the W29/W46 precedent (`docs/w13-coverage-validation-2026-10-05.md`).
+- **Expected record, selected from Git before the archive was read.** GitHub's tested merge for pushed head `57e64f02`
+  is `e808ec12` (parents main `f797444e` + `57e64f02`). Its tree `aa87586e` equals the head tree. The record covers 149
+  committed inputs, as `frontend_build_handoff.py` defines them: `webapp/frontend/**` without `dist/`, plus its five
+  processing inputs. Against the W51 head `6ad57ed9`, 20 frontend source inputs changed: W47, W50, the G21 facets and
+  the fix above.
+- **Run and job.** Webapp-ci run `37917351322` (pull_request, attempt 1); frontend job `113779670890` succeeded: api:check
+  ("Generated API types match the actual app schema"), Vitest 34 files and 500 tests, and the build.
+- **Archive.** Artifact `11610072540`, `frontend-dist-handoff-57e64f0217d20337d55c7fad244ee89e6a23b295-37917351322-1`,
+  568,793 bytes, sha256 `e226c06eb947fff2a79e58248e0f937e0fc05cfd93d3fd89e974e3901cf99d5b`. This equals the API digest
+  and the job log's upload digest and final size. The identity was unchanged on a closing API re-read.
+- **Closed seven-file inventory:** `source-before.json`, `handoff.json` and 5 dist members. There are no directory,
+  duplicate, absolute, backslash, parent or special entries.
+- **Source records.** Both equal the expected record, and `source-before.json` is byte-canonical. `handoff.json` has a
+  closed key set, `github_head` `57e64f02`, run `37917351322` and attempt 1.
+- **Non-promoting fields hold:** `GENERATED_INPUT_FOR_REVIEW_ONLY`, `release_authority` false,
+  `final_source_rebuild_required` true.
+- **Toolchain.** Node v24.19.0 and npm 11.17.0 equal the job log's environment details, and the member census equals
+  the vite 8.2.4 build log.
+- **Members.** The 5 member hashes and sizes pass, and so does the canonical path-aware marker policy (0 hits). The
+  index asset links resolve, and every asset is reachable from `index.html`.
+- **Negative controls are refused:** one altered input hash, a wrong npm version, the `8f47dbfa` tested-merge record
+  (`7b8ae69b`) and W45's (`7eb1868a`). The same verifier passes W45's known handoff (artifact `11601230589`) against its
+  own record and refuses it against another.
+
+Only the 5 verified generated members are imported: `index.html`, `assets/index-BWGrS9k2.js`,
+`assets/index-DGaCRfa4.css`, `assets/Topology3D-B-untAXO.js` and `assets/react-force-graph-3d-BlVMPyfx.js`. The four
+superseded files inside the owned dist directory are removed, and each indexed blob equals its member. No source,
+test, package or lock changes. This is review input: the new head must reproduce these bytes in fresh hosted gates.
