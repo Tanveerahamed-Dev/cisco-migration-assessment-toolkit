@@ -118,3 +118,20 @@ the job GitHub-hosted, and the self-hosted-runner guard is unchanged, but the li
 therefore carries a dated note under that decision, pending owner confirmation. If the owner prefers the
 literal label, reverting only the measurement leg means reverting its `ci.yml` matrix value and its pin in
 `tests/test_release_supply_chain.py`; the required `Tests · …` contexts are unaffected either way.
+
+## (c) Portable workflow: cancel superseded pull-request runs only
+
+`.github/workflows/portable-release.yml` ran with `cancel-in-progress: false`, so a new push to a pull request
+queued its two required portable checks (`Full source and frontend gate (unprivileged runner)`, `Build and
+qualify Atlas.exe`, up to 120 minutes each on Windows) behind the run for the superseded head. It is now
+`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`:
+
+- **pull request:** the group is the pull-request number, and a newer push cancels the in-flight run;
+- **workflow_dispatch:** the expression is false, so a candidate build, which may be attesting or attaching
+  draft-release assets, is never cancelled. Its group is the exact requested commit, so a pull request can
+  never cancel it either.
+
+The workflow has no other triggers. No existing test pinned this workflow's concurrency;
+`tests/test_portable_release_workflow.py` now pins the group, the expression and the trigger set through the
+duplicate-key-refusing workflow loader, rejects a job-level override, and carries six rejection cases
+(never-cancel, always-cancel, cancel-dispatch, a shared group, a job override, an added push trigger).

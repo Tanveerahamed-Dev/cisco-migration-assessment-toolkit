@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
@@ -18,6 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 from portable import release_contract
+from test_release_supply_chain import _RunnerWorkflowLoader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -346,6 +348,48 @@ def test_portable_workflow_separates_untrusted_build_from_draft_write_authority(
     assert "${{ inputs.draft_tag }}'" not in draft
     for match in re.finditer(r"uses:\s+[^\s]+@([^\s#]+)", text):
         assert re.fullmatch(r"[0-9a-f]{40}", match.group(1)), match.group(0)
+
+
+_PORTABLE_CONCURRENCY = {
+    "group": "atlas-portable-${{ github.event.pull_request.number || inputs.source_commit || github.sha }}",
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+}
+
+
+def _assert_portable_concurrency(document: dict) -> None:
+    assert set(document["on"]) == {"pull_request", "workflow_dispatch"}
+    assert document["concurrency"] == _PORTABLE_CONCURRENCY
+    for job_id, job in document["jobs"].items():
+        assert "concurrency" not in job, f"{job_id} overrides the workflow concurrency"
+
+
+def test_portable_workflow_cancels_only_superseded_pull_request_runs() -> None:
+    """A newer push to a pull request cancels that pull request's in-flight run, so required checks never queue
+    behind a stale head; a dispatched candidate build, which may be attesting or attaching draft assets, is never
+    cancelled by a later trigger. The two triggers never share a group (pull request number vs exact commit)."""
+    document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
+    _assert_portable_concurrency(document)
+
+
+@pytest.mark.parametrize("mutation", [
+    "never_cancel", "always_cancel", "cancel_dispatch", "shared_group", "job_override", "push_trigger",
+])
+def test_portable_concurrency_contract_rejects_drift(mutation: str) -> None:
+    document = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
+    if mutation == "never_cancel":
+        document["concurrency"]["cancel-in-progress"] = False
+    elif mutation == "always_cancel":
+        document["concurrency"]["cancel-in-progress"] = True
+    elif mutation == "cancel_dispatch":
+        document["concurrency"]["cancel-in-progress"] = "${{ github.event_name == 'workflow_dispatch' }}"
+    elif mutation == "shared_group":
+        document["concurrency"]["group"] = "atlas-portable"
+    elif mutation == "job_override":
+        document["jobs"]["draft"]["concurrency"] = {"group": "draft", "cancel-in-progress": True}
+    else:
+        document["on"]["push"] = {"branches": ["main"]}
+    with pytest.raises(AssertionError):
+        _assert_portable_concurrency(document)
 
 
 def test_archive_release_workflows_create_drafts_only() -> None:
