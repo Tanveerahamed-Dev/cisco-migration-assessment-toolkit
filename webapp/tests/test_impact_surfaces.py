@@ -832,3 +832,44 @@ def test_the_dossier_recompute_forwards_the_stored_producer_rows_unchanged(clien
     r = client.get(f"/api/snapshots/{sid}/section/device_dossiers")
     assert r.status_code == 200, r.text
     assert seen["failure_impact"] == impact
+
+
+def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind_device(sample):
+    """W43 (F6): the projection's fleet qualifier also cites a collection_completeness record it cannot read as a
+    blind spot (a row that is not an object or states no status of its owner's vocabulary, or a list or section of
+    the wrong type). Each could be one, so it qualifies the ranking, but it is not a device the owner lists as partial
+    or not collected: the note counts and words the two kinds apart, by the projection's own classifier."""
+    from backend import engine
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)            # the control: two readable rows
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (2, 0)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND.format(n=2)
+
+    snap["collection_completeness"]["devices"] = [{"host": "x", "status": "complete"}]
+    assert engine.fleet_blind_spot_rows(snap) == [] == ui.fleet_blind_spot_rows(snap)
+    listing = engine.failure_impact_projection(snap)
+    assert "fleet_lists_exclude_blind_devices" in listing["caveats"]               # the engine qualifies the list
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    note = summary.impact_blind_note(view)
+    assert note == summary._R_IMPACT_BLIND_UNREAD.format(n=1), note
+    assert "as partial or not collected:" not in note and "lists 1 device(s)" not in note
+    keystones = summary.summarize(snap)["keystones"]
+    tail = keystones[-1]
+    assert tail["host"] == "" and tail["severity"] == summary.IMPACT_NOT_ASSESSED, tail
+    assert f"The ranking is a lower bound: {note}" in tail["detail"] and "lists 1 device(s)" not in tail["detail"]
+    alone = cutover._worst_blast_radius({"core2"}, view)
+    assert alone["complete"] is False and note in alone["detail"], alone
+
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND) + [None]  # both kinds, each as what it is
+    assert engine.fleet_blind_spot_rows(snap) == [0, 1]
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (2, 1)
+    assert summary.impact_blind_note(view) == "; ".join(
+        [summary._R_IMPACT_BLIND.format(n=2), summary._R_IMPACT_BLIND_UNREAD.format(n=1)])
+
+    snap["collection_completeness"]["devices"] = {"core1": {"status": "not collected"}}   # a list it cannot read
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)

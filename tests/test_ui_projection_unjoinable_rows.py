@@ -13,12 +13,22 @@ same kind of join, held to one rule:
   status the owner's vocabulary does not name, every value about a device the scope does not call not collected is
   ``unverified`` with a witness to each such row; a device the owner does call not collected stays ``not_collected``;
 * the inventory universe (devices map + blind spots) and the fleet lists' blind-spot qualifier disclose a blind-spot
-  row they cannot read, with a witness, rather than passing over it.
+  row they cannot read, with a witness, rather than passing over it;
+* the blind-spot list itself is held to it: carried as something other than a list (or its section as something
+  other than an object), its owner reads it as listing no blind spot, so every device value is ``unverified`` and
+  every fleet list qualified, with a witness to that value, while a list the snapshot does not carry stays the
+  abstention core's ``not_collected``;
+* the topology joins are the same kind of join: the exact-hostname join over ``cable_map.nodes`` (a cable's ends, a
+  failure-impact row, an address observation, a path hop), the host-pair join over ``cable_map.cables`` and the
+  failure-impact neighbour bound's far-end join.
 
-The class members are found by reading the projection's own source (every ``key_field`` join and every
-``_selection_rows`` call), so a join added later is held to the rule here without editing this file. Every value is
-checked against the real stored sample (and the golden snapshot), and every withheld value is compared with the same
-page over the unedited sample, which publishes it.
+The class is read from the projection's own source, not from a list of call shapes: every exact-key join the module
+makes through its one cached join index (``_Ctx.index`` / ``_Ctx.pairs``) must read the rows that join cannot read
+(``_Ctx.unjoinable``, the only caller of ``_unjoinable_rows``) over the same list and key, or be a reviewed exemption
+with its reason, and every function holding such a join names the behavioural test below that exercises it. A join
+added later fails here until it is held to the rule and tested. Every value is checked against the real stored
+sample (and the golden snapshot), and every withheld value is compared with the same page over the unedited sample,
+which publishes it.
 """
 from __future__ import annotations
 
@@ -81,6 +91,11 @@ def topology_validator(schema):
     return Draft202012Validator({"$ref": "#/$defs/Topology", "$defs": schema["$defs"]})
 
 
+@pytest.fixture(scope="module")
+def path_validator(schema):
+    return Draft202012Validator({"$ref": "#/$defs/PathDocument", "$defs": schema["$defs"]})
+
+
 def _page(snap, host, validator):
     doc = ui.project_device(snap, host)
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
@@ -131,6 +146,20 @@ def _at(snap, toks):
     for tok in toks:
         cur = cur[tok]
     return cur
+
+
+def _resolves(snap, pointer):
+    """Independent RFC 6901 resolution of `pointer` in `snap`."""
+    cur = snap
+    for raw in pointer.split("/")[1:]:
+        tok = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict) and tok in cur:
+            cur = cur[tok]
+        elif isinstance(cur, list) and tok.isdigit() and int(tok) < len(cur):
+            cur = cur[int(tok)]
+        else:
+            return False
+    return True
 
 
 def _naming(rows, host, field, norm=False):
@@ -207,6 +236,78 @@ KEY_FIELD_JOINS, N_KEY_FIELD_JOINS = _key_field_joins()
 SELECTIONS, N_SELECTIONS = _selection_calls()
 
 
+def _calls_in_functions(tree):
+    """``(innermost enclosing function name, call)`` for every call in the module (a lambda keeps its function)."""
+    out = []
+
+    def visit(node, fn):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child.name)
+                continue
+            if isinstance(child, ast.Call):
+                out.append((fn, child))
+            visit(child, fn)
+
+    visit(tree, "<module>")
+    return out
+
+
+def _callee(call):
+    return getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+
+
+def _exact_key_joins():
+    """Every exact-key join through the module's one cached join index (``_Ctx.index`` / ``_Ctx.pairs``), read from its
+    source, as ``{(function, list path source, key fields source)}``, and the unjoinable-row reads
+    (``_Ctx.unjoinable``) in the same form."""
+    joins, reads = set(), set()
+    for fn, call in _calls_in_functions(_source_tree()):
+        if len(call.args) < 2 or not isinstance(call.func, ast.Attribute):
+            continue
+        key = (fn, ast.unparse(call.args[0]), ast.unparse(call.args[1]))
+        if call.func.attr in ("index", "pairs"):
+            joins.add(key)
+        elif call.func.attr == "unjoinable":
+            reads.add(key)
+    return joins, reads
+
+
+#: The exact-key joins that join no row to one device, endpoint or host pair, each with why the one rule does not
+#: apply. A new join is not added here to quiet the census: it is held to the rule (read its unjoinable rows) unless
+#: it is one of these kinds.
+EXEMPT_JOINS = {
+    ("cc_row", "('collection_completeness', 'devices')", "('host',)"):
+        "the owner's own first-match row (ssot._device_not_collected), reproduced on purpose; it is read only through "
+        "partial_row (behind scope_doubt), cc_witness (for a device the owner calls not collected) and the roster "
+        "join (which reads the list's unjoinable rows itself)",
+    ("_endpoint_rows", "stoks", "('ip',)"):
+        "an endpoint's shared-IP selection, keyed by IP, not by device: a bare pointer list with no fact envelope "
+        "that could carry a doubt (the VLAN-keyed selections' recorded residual)",
+    ("_endpoint_rows", "dtoks", "('mac',)"):
+        "an endpoint's dual-homed selection, keyed by MAC, not by device: a bare pointer list with no fact envelope "
+        "that could carry a doubt (the VLAN-keyed selections' recorded residual)",
+    ("_structural_dup", "('link_centrality',)", "_STRUCTURAL_HOSTS"):
+        "a uniqueness check inside a fleet list that shows every row: a row it cannot read stays in that list, "
+        "withheld by its own cells, and the device page's selection of the list follows the rule",
+    ("_impact_dup", "('failure_impact',)", "('host',)"):
+        "a uniqueness check inside a fleet list that shows every row: a row with no readable host stays in that "
+        "list, withheld by its own hold (_R_IMPACT_NO_HOST), and the device page's selection follows the rule",
+}
+#: Every function holding an exact-key join the rule governs -> the behavioural test in this module that exercises it.
+JOIN_TESTS = {
+    "_resolve": "test_a_row_the_key_join_cannot_read_makes_the_join_unverified",
+    "_selection_rows": "test_a_row_a_selection_cannot_read_never_vanishes_and_never_passes_silently",
+    "scope_doubt": "test_an_unjoinable_blind_spot_row_leaves_no_device_value_published_or_clean",
+    "_device_rows": "test_the_inventory_discloses_a_blind_spot_row_it_cannot_join",
+    "_roster_join": "test_an_unknown_host_beside_an_unreadable_roster_row_is_unverified_not_absent",
+    "_nrfu_block": "test_an_nrfu_device_entry_the_host_join_cannot_read_is_witnessed",
+    "_topology_join": "test_a_cable_map_node_the_hostname_join_cannot_read_never_leaves_a_node_join_clean",
+    "_topology_structural": "test_path_hop_nodes_and_host_pair_cables_follow_the_one_rule",
+    "_impact_peers": "test_a_node_row_the_host_join_cannot_read_makes_every_neighbour_fail_closed",
+}
+
+
 def test_the_class_is_read_from_the_source_and_covers_every_member():
     """Every key_field join lives in _joins, and every selection is a device-page entry, so the parametrized tests
     below reach each one. A join or selection added elsewhere fails here until it is held to the rule too."""
@@ -218,6 +319,27 @@ def test_the_class_is_read_from_the_source_and_covers_every_member():
             "structural_links"} <= set(SELECTIONS)
     # no selection can opt out of the rule: there is no parameter that would switch it off
     assert "strict" not in inspect.signature(ui._selection_rows).parameters
+
+
+def test_every_exact_key_join_reads_the_rows_it_cannot_join():
+    """The class itself, not a list of call shapes: every exact-key join the module makes through its join index
+    reads the rows that join cannot read, over the same list and key, in the same function -- or is a reviewed
+    exemption -- and every function holding one names the behavioural test that exercises it here."""
+    joins, reads = _exact_key_joins()
+    unpaired = joins - reads
+    assert unpaired == set(EXEMPT_JOINS), ("unpaired", sorted(unpaired - set(EXEMPT_JOINS)),
+                                           "stale exemption", sorted(set(EXEMPT_JOINS) - unpaired))
+    held = {fn for fn, _toks, _fields in joins - set(EXEMPT_JOINS)}
+    assert held == set(JOIN_TESTS), ("untested", sorted(held - set(JOIN_TESTS)),
+                                     "stale", sorted(set(JOIN_TESTS) - held))
+    for fn, name in JOIN_TESTS.items():
+        assert callable(globals().get(name)), (fn, name)
+    # one predicate decides what a join cannot read: the cached _Ctx.unjoinable is its only caller
+    callers = {fn for fn, call in _calls_in_functions(_source_tree()) if _callee(call) == "_unjoinable_rows"}
+    assert callers == {"unjoinable"}, callers
+    # the census sees the joins it is meant to see (a sanity floor, not the class itself)
+    assert {"_resolve", "_selection_rows", "_topology_join", "_topology_structural", "_impact_peers",
+            "_roster_join", "scope_doubt"} <= held
 
 
 # --------------------------------------------------------------------------------------------------
@@ -467,9 +589,13 @@ def test_a_blind_spot_row_that_cannot_be_read_qualifies_every_fleet_list(sample,
 
 
 def test_an_unknown_host_beside_an_unreadable_roster_row_is_unverified_not_absent(sample, doc_validator):
+    """A host no readable roster names is the clean "no roster names this device" only while every roster can be read
+    in full. Beside a roster row the join cannot read, or a roster carried as the wrong type, every fact on the page is
+    unverified, with a witness to each such row or roster: the page names what leaves its absence open."""
     host = "no-such-host"
+    n_nodes = len(sample["cable_map"]["nodes"])
 
-    def check(snap, want, text):
+    def check(snap, want, text, witness):
         page = _page(snap, host, doc_validator)
         facts = list(_top_facts(page))
         assert len(facts) > 30
@@ -477,15 +603,32 @@ def test_an_unknown_host_beside_an_unreadable_roster_row_is_unverified_not_absen
             if where.endswith(HOST_INDEPENDENT):
                 assert fact["state"] == NC and fact["refs"] == []
                 continue
-            assert fact["state"] == want and fact["refs"] == [], (where, fact)
+            assert fact["state"] == want, (where, fact)
             assert text in fact["reason"], (where, fact["reason"])
+            if witness:
+                assert witness <= _refs(fact), (where, fact["refs"])
+                for pointer, _role in _refs(fact):                    # every ref resolves in the snapshot
+                    assert _resolves(snap, pointer), (where, pointer)
+            else:
+                assert fact["refs"] == [], (where, fact)
 
-    check(sample, NC, "no roster in this snapshot names this device")        # the control
-    for edit in (lambda s: s["collection_completeness"]["devices"].append(copy.deepcopy(UNJOINABLE_CC)),
-                 lambda s: s["cable_map"]["nodes"].append({"host": None, "collected": False})):
+    check(sample, NC, "no roster in this snapshot names this device", set())        # the control: nothing to cite
+    cases = (
+        (lambda s: s["collection_completeness"]["devices"].append(copy.deepcopy(UNJOINABLE_CC)),
+         "1 roster row(s) cannot be joined by host", "/collection_completeness/devices/0"),
+        (lambda s: s["cable_map"]["nodes"].append({"host": None, "collected": False}),
+         "1 roster row(s) cannot be joined by host", f"/cable_map/nodes/{n_nodes}"),
+        (lambda s: s["collection_completeness"].__setitem__("devices", {host: {"status": "not collected"}}),
+         "collection_completeness.devices is present but is not a list", "/collection_completeness/devices"),
+        (lambda s: s.__setitem__("devices", sorted(s["devices"])),
+         "devices is present but is not an object", "/devices"),
+        (lambda s: s["cable_map"].__setitem__("nodes", "nodes"),
+         "cable_map.nodes is present but is not a list", "/cable_map/nodes"),
+    )
+    for edit, text, pointer in cases:
         snap = copy.deepcopy(sample)
         edit(snap)
-        check(snap, UV, "1 roster row(s) cannot be joined by host")
+        check(snap, UV, text, {(pointer, "witness")})
 
 
 # --------------------------------------------------------------------------------------------------
@@ -547,27 +690,363 @@ def test_the_stored_snapshots_raise_no_doubt(source, doc_validator):
     ctx = ui._Ctx(snap)
     hosts = sorted(snap["devices"])
     assert hosts
+    assert ctx.cc_unreadable() is None
+    assert ctx.unjoinable(("cable_map", "nodes"), ("host",)) == []
+    assert ctx.unjoinable(("cable_map", "cables"), ("a", "b")) == []
     for host in hosts:
         assert ctx.scope_doubt(host) is None, host
         page = _page(snap, host, doc_validator)
         for where, fact in _top_facts(page):
             reason = fact.get("reason") or ""
             for phrase in ("cannot be joined by exact key", "cannot be joined by host",
-                           "whether collection_completeness lists this device"):
+                           "cannot be joined by exact host", "whether collection_completeness lists this device",
+                           "is present but is not"):
                 assert phrase not in reason, (host, where, reason)
+
+
+def test_the_real_producers_distinct_hosts_raise_no_scope_doubt(sample, doc_validator, tmp_path):
+    """The stored shape the device scope reads, built by the REAL producer rather than left empty: one row per partial
+    or uncollected inventory host, no two naming one device. No devices-map host is doubted, a partial device keeps
+    its published score qualified by its own missing list, and a complete one is read as collected. (Both stored
+    snapshots carry no blind spot at all, so the test above cannot fail by over-withholding.)"""
+    essentials = [variants[0] for variants in analyze._ESSENTIAL_CMD_VARIANTS]
+    captured = {host: list(essentials) for host in sorted(sample["devices"])}
+    captured[HOST] = [c for c in essentials if c != "show version"]                # partial
+    captured["access2"] = [c for c in essentials if c != "show interface status"]  # partial
+    captured["Ghost-Edge"] = []                                                    # never reached
+    cc = _real_blind_spots(tmp_path, captured)
+    assert sorted((d["host"], d["status"]) for d in cc["devices"]) == [
+        ("Ghost-Edge", "not collected"), ("access2", "partial"), (HOST, "partial")]
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"] = cc
+    ctx = ui._Ctx(snap)
+    for host in sorted(snap["devices"]):
+        assert ctx.scope_doubt(host) is None, host
+    own = next(i for i, d in enumerate(cc["devices"]) if d["host"] == HOST)
+    score = _page(snap, HOST, doc_validator)["health"]["score"]
+    assert score["state"] == PUB and "health_scored_over_partial_collection" in score["caveats"], score
+    assert (_ptr("collection_completeness", "devices", own, "missing"), "witness") in _refs(score)
+    complete =_page(snap, "access1", doc_validator)["health"]["score"]
+    assert complete["state"] == PUB and "health_scored_over_partial_collection" not in complete.get("caveats", ())
+    ghost = _page(snap, "Ghost-Edge", doc_validator)["health"]["score"]
+    assert ghost["state"] == NC, ghost                         # the owner calls it not collected: a blind spot
+
+
+def _cc_list_reads():
+    """``{function}`` reading the blind-spot list itself: a join, an unjoinable-row read, a raw ``_get``, the
+    unreadable-container check or a ``_resolve`` whose arguments name ``collection_completeness.devices``."""
+    def names_list(node):
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id == "_CC_ROWS":
+                return True
+            if (isinstance(sub, ast.Tuple) and len(sub.elts) >= 2
+                    and all(isinstance(e, ast.Constant) for e in sub.elts[:2])
+                    and [e.value for e in sub.elts[:2]] == ["collection_completeness", "devices"]):
+                return True
+        return False
+
+    readers = ("index", "unjoinable", "pairs", "_get", "_unreadable_container", "_resolve", "_unjoinable_rows")
+    return {fn for fn, call in _calls_in_functions(_source_tree()) if _callee(call) in readers
+            and any(names_list(arg) for arg in list(call.args) + [k.value for k in call.keywords])}
+
+
+#: Every function that reads the blind-spot list itself, with why it may: the device scope's own readers, and the
+#: universes that disclose what they cannot read. Any other reader goes through device_scope (or blind_rows).
+CC_LIST_READERS = {
+    "scope_doubt": "the device scope's doubt: every row the owner's first-match key join passes over",
+    "cc_unreadable": "whether the list can be read at all (the doubt's, the qualifier's and the inventory's witness)",
+    "cc_row": "the owner's own first-match row, read only through partial_row, cc_witness and the roster join",
+    "blind_rows": "the fleet qualifier's readable blind spots (fleet_blind_spot_rows)",
+    "unread_blind_rows": "the fleet qualifier's rows it cannot read as a blind spot",
+    "_device_rows": "the inventory universe, which discloses the rows and lists it cannot read",
+    "_roster_join": "the unknown-host roster check, which discloses the rows and lists it cannot read",
+    "_joins": "the device's own blind-spot record: a key_field join held to the one rule inside _resolve",
+}
 
 
 def test_the_device_scope_is_read_only_through_its_doubt_aware_door():
     """Every reader of the owner's device scope takes it from _Ctx.device_scope, which carries the doubt; the raw
-    blind-spot answer and the first-match row are read nowhere else."""
-    tree = _source_tree()
+    blind-spot answer, the owner's device-scoped call and the first-match row are read nowhere else, and the list
+    itself is read only by the reviewed readers above."""
+    calls = _calls_in_functions(_source_tree())
     callers = {}
-    for scope in ast.walk(tree):
-        if not isinstance(scope, ast.FunctionDef):
-            continue
-        for node in ast.walk(scope):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                callers.setdefault(node.func.attr, set()).add(scope.name)
+    for fn, call in calls:
+        if isinstance(call.func, ast.Attribute):
+            callers.setdefault(call.func.attr, set()).add(fn)
     assert callers.get("device_blind") == {"device_scope"}, callers.get("device_blind")
-    assert callers.get("cc_row") == {"partial_row", "cc_witness", "_device_page"}, callers.get("cc_row")
+    assert callers.get("abst_dev") == {"device_blind"}, callers.get("abst_dev")
+    assert callers.get("cc_row") == {"partial_row", "cc_witness", "_roster_join"}, callers.get("cc_row")
     assert "device_scope" in callers and len(callers["device_scope"]) >= 5, callers.get("device_scope")
+    # the owner is asked a device-scoped question in exactly one place, whatever the call's spelling
+    scoped = {fn for fn, call in calls if _callee(call) == "abstention_reason"
+              and (len(call.args) > 2 or any(k.arg in ("device", None) for k in call.keywords))}
+    assert scoped == {"abst_dev"}, scoped
+    readers = _cc_list_reads()
+    assert readers == set(CC_LIST_READERS), ("unreviewed", sorted(readers - set(CC_LIST_READERS)),
+                                             "stale", sorted(set(CC_LIST_READERS) - readers))
+
+
+# --------------------------------------------------------------------------------------------------
+# (f) the topology joins: a node or cable row the join cannot read never leaves a join published or absent
+# --------------------------------------------------------------------------------------------------
+#: A cable-map node row the exact-hostname join cannot read; no producer writes one.
+BAD_NODE = {"host": None, "kind": "switch", "collected": True}
+
+
+def _node_joins(page, topology, host):
+    """``{where: join}`` for every exact-hostname node join that names `host` on its device page and the fleet
+    topology: a failure-impact row's nodes, a cable's or a structural link's end nodes, an address observation's
+    nodes. Found from the projected rows' own published host values, never from the module's join."""
+    out = {}
+    for k, item in enumerate(page["failure_impact"]["items"]):
+        out[f"/device/failure_impact/{k}/node_refs"] = item["node_refs"]
+    for scope, rows in (("/device/structural_links", page["structural_links"]["items"]),
+                        ("/topology/structural_links", topology["structural_links"]["items"]),
+                        ("/topology/cables", topology["cables"]["items"])):
+        for k, item in enumerate(rows):
+            ends = item["ends"]["value"] or {}
+            for side in ("a", "b"):
+                if ends.get(side) == host or ends.get(side + "_host") == host:
+                    out[f"{scope}/{k}/{side}_nodes"] = item[f"{side}_nodes"]
+    for scope in ("failure_impact", "source_addresses"):
+        for k, item in enumerate(topology[scope]["items"]):
+            if item["host"]["state"] == PUB and item["host"]["value"] == host:
+                out[f"/topology/{scope}/{k}/node_refs"] = item["node_refs"]
+    return out
+
+
+def _host_joins(snap, host, doc_validator, topology_validator):
+    return _node_joins(_page(snap, host, doc_validator), _topology(snap, topology_validator), host)
+
+
+def test_a_cable_map_node_the_hostname_join_cannot_read_never_leaves_a_node_join_clean(sample, doc_validator,
+                                                                                      topology_validator):
+    nodes = sample["cable_map"]["nodes"]
+    (own,) = _naming(nodes, HOST, "host")
+    own_witness = (_ptr("cable_map", "nodes", own), "witness")
+    clean = _host_joins(sample, HOST, doc_validator, topology_validator)
+    # the real sample joins core1's single node on every surface (published, never doubted)
+    surfaces = {where.rsplit("/", 2)[0] for where in clean}
+    assert {"/device/failure_impact", "/device/structural_links", "/topology/cables",
+            "/topology/failure_impact", "/topology/source_addresses"} <= surfaces, sorted(surfaces)
+    for where, join in clean.items():
+        assert join["state"] == PUB and [it["index"] for it in join["items"]] == [own], (where, join)
+
+    # 1. a node row the join cannot read beside core1's own: never a single node picked
+    snap = copy.deepcopy(sample)
+    snap["cable_map"]["nodes"].append(copy.deepcopy(BAD_NODE))
+    bad = (_ptr("cable_map", "nodes", len(nodes)), "witness")
+    edited = _host_joins(snap, HOST, doc_validator, topology_validator)
+    assert set(edited) == set(clean)
+    for where, join in edited.items():
+        assert join["state"] == UV and "cannot be joined" in join["reason"], (where, join)
+        assert {bad, own_witness} <= _refs(join), (where, join["refs"])
+        assert join["items"] == clean[where]["items"], where          # the node that does carry the name stays
+
+    # 2. core1's own node is gone: the clean absence, the control
+    gone = copy.deepcopy(sample)
+    del gone["cable_map"]["nodes"][own]
+    absent = _host_joins(gone, HOST, doc_validator, topology_validator)
+    assert set(absent) == set(clean)
+    for where, join in absent.items():
+        assert join["state"] == NC and "no cable-map node has this exact hostname" in join["reason"], (where, join)
+        assert join["items"] == []
+
+    # 3. core1's own node row with an unreadable host: it could be core1's, so the absence is not established
+    unread = copy.deepcopy(sample)
+    unread["cable_map"]["nodes"][own]["host"] = None
+    for where, join in _host_joins(unread, HOST, doc_validator, topology_validator).items():
+        assert join["state"] == UV and "cannot be joined" in join["reason"], (where, join)
+        assert own_witness in _refs(join) and join["items"] == [], (where, join)
+
+
+def _mini():
+    """A two-node topology every projection surface reads: one switch (edge1, an SVI from its scoped running-config)
+    cabled to an uncollected AP, its structural link and its failure-impact row (Info and zeros: an AP neighbour is
+    edge gear, so it bounds nothing). The path 10.0.0.2 -> 192.0.2.1 is computed through edge1."""
+    return {
+        "schema": "collect_parse_snapshot/1",
+        "devices": {"edge1": {}, "peer": {}},
+        "interfaces": {"edge1": {"Vlan1": {"svi_ip": "10.0.0.1/24", "ip_mtu": 1500, "run_config_observed": True}},
+                       "peer": {"Gi1": {}}},
+        "routes": {"edge1": [
+            {"prefix": "10.0.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan1"},
+            {"prefix": "192.0.2.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan1"},
+            {"prefix": "10.0.0.1/32", "source": "local", "next_hop": "", "out_intf": "Vlan1"}], "peer": []},
+        "cable_map": {
+            "nodes": [{"host": "edge1", "kind": "device", "role": "Core", "collected": True, "op_status": "up"},
+                      {"host": "offscan", "kind": "ap", "role": "", "collected": False, "op_status": "unknown"}],
+            "cables": [{"a": "edge1", "a_port": "Gi1", "b": "offscan", "b_port": "Gi0", "is_pc": False,
+                        "members": [{"a_port": "Gi1", "b_port": "Gi0"}], "speed": "1000",
+                        "confirmation": "One end (edge1)", "op_status": "up"}],
+            "summary": {"n_nodes": 2, "n_cables": 1}},
+        "link_centrality": [{"a_host": "edge1", "a_port": "Gi1", "b_host": "offscan", "b_port": "Gi0",
+                             "betweenness": 321.5, "is_bridge": True, "pairs_cut": 3, "rank": 1}],
+        "failure_impact": [{"host": "edge1", "severity": "Info", "vlans_impacted": 0, "stranded": 0,
+                            "hard": 0, "backup": 0, "fhrp": 0, "off_scan_gw_vlans": 0,
+                            "detail": "No reachability impact from removing this switch (within the scan)."}],
+    }
+
+
+def _hop_nodes(snap, path_validator):
+    doc = ui.project_path(snap, "10.0.0.2", "192.0.2.1")
+    errors = sorted(path_validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    assert not errors, [(list(e.absolute_path), e.message[:200]) for e in errors[:5]]
+    hops = doc["path"]["hop_evidence"]["items"]
+    assert hops and hops[0]["hop_index"] == 0, doc["path"]["result"]
+    return hops[0]["node_rows"]
+
+
+def _pair_cables(snap, topology_validator):
+    return _topology(snap, topology_validator)["structural_links"]["items"][0]["host_pair_cable_refs"]
+
+
+def test_path_hop_nodes_and_host_pair_cables_follow_the_one_rule(path_validator, topology_validator):
+    # the controls: one node carries the hop's host, one cable carries the link's host pair
+    hop = _hop_nodes(_mini(), path_validator)
+    assert hop["state"] == PUB and [it["index"] for it in hop["items"]] == [0], hop
+    pair = _pair_cables(_mini(), topology_validator)
+    assert pair["state"] == PUB and [it["index"] for it in pair["items"]] == [0], pair
+
+    # a path hop's node join beside a node row it cannot read
+    snap = _mini()
+    snap["cable_map"]["nodes"].append(copy.deepcopy(BAD_NODE))
+    hop = _hop_nodes(snap, path_validator)
+    assert hop["state"] == UV and "cannot be joined" in hop["reason"], hop
+    assert {("/cable_map/nodes/2", "witness"), ("/cable_map/nodes/0", "witness")} <= _refs(hop)
+    assert [it["index"] for it in hop["items"]] == [0]
+
+    # the host-pair join beside a cable row it cannot read
+    for bad in (None, {"a": None, "b": "offscan"}, {"a": "edge1"}):
+        snap = _mini()
+        snap["cable_map"]["cables"].append(copy.deepcopy(bad))
+        pair = _pair_cables(snap, topology_validator)
+        assert pair["state"] == UV and "cannot be joined by exact host pair" in pair["reason"], (bad, pair)
+        assert {("/cable_map/cables/1", "witness"), ("/cable_map/cables/0", "witness")} <= _refs(pair), bad
+        assert [it["index"] for it in pair["items"]] == [0], bad
+
+    # no cable carries the pair: the clean absence only while every cable row can be read
+    snap = _mini()
+    snap["cable_map"]["cables"][0]["b"] = "elsewhere"
+    pair = _pair_cables(snap, topology_validator)
+    assert pair["state"] == CBE and pair["items"] == [], pair
+    snap["cable_map"]["cables"].append(None)
+    pair = _pair_cables(snap, topology_validator)
+    assert pair["state"] == UV and ("/cable_map/cables/1", "witness") in _refs(pair) and pair["items"] == [], pair
+
+
+def test_a_node_row_the_host_join_cannot_read_makes_every_neighbour_fail_closed(topology_validator):
+    """analyze.compute_failure_impact counts only endpoints on scanned switches, so a neighbour is passed over only
+    when its far end joins exactly ONE node the cable map shows as collected or as edge gear. A node row the host join
+    cannot read could be a second node for that far end, so beside one no neighbour is assumed collected: the row's
+    Info, zeros and clean bill are withheld, citing the cable and the unreadable node row."""
+    row = _topology(_mini(), topology_validator)["failure_impact"]["items"][0]
+    for field in ("severity", "stranded", "detail"):
+        assert row[field]["state"] == PUB, (field, row[field])          # the AP neighbour bounds nothing
+    assert row["severity"]["value"] == "Info"
+    snap = _mini()
+    snap["cable_map"]["nodes"].append({"host": None, "kind": "switch", "collected": False})
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][0]
+    for field in ("severity", "stranded", "detail"):
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert "1 of them fail closed" in fact["reason"], (field, fact["reason"])
+        assert {("/cable_map/cables/0", "witness"), ("/cable_map/nodes/2", "witness")} <= _refs(fact), field
+
+
+# --------------------------------------------------------------------------------------------------
+# (g) a blind-spot list that cannot be read at all: every device doubted, every fleet list qualified
+# --------------------------------------------------------------------------------------------------
+def _set_devices(value):
+    return lambda s: s["collection_completeness"].__setitem__("devices", value)
+
+
+def _set_section(value):
+    return lambda s: s.__setitem__("collection_completeness", value)
+
+
+_DEVICES_TEXT = "collection_completeness.devices is present but is not a list"
+_SECTION_TEXT = "collection_completeness is present but is not an object"
+#: A blind-spot list (or its section) carried as the wrong type, which ssot._as_list reads as listing no blind spot.
+UNREADABLE_CC = {
+    "devices_object": (_set_devices({HOST: {"status": "not collected"}}), "/collection_completeness/devices",
+                       _DEVICES_TEXT),
+    "devices_text": (_set_devices("not collected"), "/collection_completeness/devices", _DEVICES_TEXT),
+    "devices_number": (_set_devices(7), "/collection_completeness/devices", _DEVICES_TEXT),
+    "devices_false": (_set_devices(False), "/collection_completeness/devices", _DEVICES_TEXT),
+    "section_list": (_set_section([{"host": HOST, "status": "not collected"}]), "/collection_completeness",
+                     _SECTION_TEXT),
+    "section_text": (_set_section("partial"), "/collection_completeness", _SECTION_TEXT),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNREADABLE_CC))
+def test_a_blind_spot_list_that_cannot_be_read_doubts_every_device_and_qualifies_every_fleet_list(
+        sample, doc_validator, payload_validator, topology_validator, case):
+    edit, pointer, text = UNREADABLE_CC[case]
+    witness = (pointer, "witness")
+    read = _read_facts(_page(sample, HOST, doc_validator))
+    clean_row = {w for w, f in _top_facts(_inventory_row(sample, HOST)) if f["state"] in (PUB, CBE)}
+    assert len(read) > 20 and clean_row
+    snap = copy.deepcopy(sample)
+    edit(snap)
+    # the owner reads the value as listing no blind spot, so its device scope calls core1 collected
+    assert ssot.abstention_reason(snap, "devices", device=HOST) == PUB
+    facts = dict(_top_facts(_page(snap, HOST, doc_validator)))
+    for where in sorted(read):
+        fact = facts[where]
+        if where.startswith("/collection/"):                 # the device's own record cannot be read either
+            assert fact["state"] not in (PUB, CBE), (where, fact)
+            continue
+        assert fact["state"] == UV, (where, fact)
+        assert witness in _refs(fact) and text in fact["reason"], (where, fact)
+    row = dict(_top_facts(_inventory_row(snap, HOST)))
+    for where in sorted(clean_row):
+        if where.startswith("/collection_status"):
+            assert row[where]["state"] not in (PUB, CBE), (where, row[where])
+            continue
+        assert row[where]["state"] == UV and witness in _refs(row[where]), (where, row[where])
+    # the inventory universe cannot list the blind spots it holds
+    inv = ui.project_inventory(snap)["devices"]
+    assert sorted(r["host"] for r in inv["rows"]["items"]) == sorted(sample["devices"])
+    assert inv["rows"]["state"] == UV and witness in _refs(inv["rows"]) and text in inv["rows"]["reason"]
+    assert inv["total"]["state"] != PUB, inv["total"]
+    if case.startswith("devices_"):                          # the owner's count is readable: it cannot be reconciled
+        assert inv["total"]["state"] == UV and witness in _refs(inv["total"]), inv["total"]
+    # every fleet list is qualified, and an empty one is not_collected, never "nothing found"
+    payload = _payload(snap, payload_validator)
+    for a, b in (("findings", "rows"), ("findings", "total"), ("topology", "failure_impact"),
+                 ("topology", "structural_links")):
+        fact = payload[a][b]
+        assert fact["state"] == PUB, (a, b, fact.get("reason"))
+        assert "fleet_lists_exclude_blind_devices" in fact["caveats"] and witness in _refs(fact), (a, b)
+    snap["failure_impact"], snap["link_centrality"] = [], []
+    topology = _topology(snap, topology_validator)
+    for key in ("failure_impact", "structural_links"):
+        assert topology[key]["state"] == NC and text in topology[key]["reason"], (key, topology[key])
+        assert witness in _refs(topology[key]), key
+
+
+@pytest.mark.parametrize("case", ["section_missing", "section_null", "devices_missing", "devices_null"])
+def test_a_blind_spot_list_the_snapshot_does_not_carry_stays_the_abstention_cores_not_collected(
+        sample, doc_validator, payload_validator, case):
+    """The boundary of the doubt: a list (or section) the snapshot does not carry is the abstention core's
+    not_collected on the device's own record, and no device is doubted for it."""
+    snap = copy.deepcopy(sample)
+    if case == "section_missing":
+        del snap["collection_completeness"]
+    elif case == "section_null":
+        snap["collection_completeness"] = None
+    elif case == "devices_missing":
+        del snap["collection_completeness"]["devices"]
+    else:
+        snap["collection_completeness"]["devices"] = None
+    ctx = ui._Ctx(snap)
+    assert ctx.cc_unreadable() is None
+    for host in sorted(snap["devices"]):
+        assert ctx.scope_doubt(host) is None, host
+    page = _page(snap, HOST, doc_validator)
+    assert page["collection"]["status"]["state"] == NC, page["collection"]["status"]
+    assert page["health"]["score"]["state"] == PUB, page["health"]["score"]
+    payload = _payload(snap, payload_validator)
+    assert "fleet_lists_exclude_blind_devices" not in payload["topology"]["failure_impact"].get("caveats", ())

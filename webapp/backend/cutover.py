@@ -216,8 +216,9 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     if bounded:
         notes.append(f"{len(bounded)} ranked switch(es) in this wave publish their counts only as lower bounds, so "
                      "any of them can be larger than it reads: " + summary.impact_disclosure(bounded))
-    if view["blind"]:
-        notes.append(summary.impact_blind_note(view))
+    blind_note = summary.impact_blind_note(view)
+    if blind_note:
+        notes.append(blind_note)
     if ranked:
         out = summary.impact_entry(min(ranked, key=summary.impact_rank_key))
         if notes:
