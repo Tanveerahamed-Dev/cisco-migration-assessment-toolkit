@@ -14,12 +14,18 @@ import re
 
 from .analyze import _canon_host
 from .model import InterfaceData
+from .ssot import ABSTENTION_STATES, ANALYSIS_UNAVAILABLE
 from .stp_topology import validate_stp_topology_observation
 from .textutils import is_valid_iface, normalize_ifname
 
 SCHEMA = "vlan_carriage/1"
 RELATIONS = ("forwarding", "stp_blocked", "not_carried")
-STATES = ("published", "collected_but_empty", "not_collected", "unverified", "analysis_unavailable")
+_UNVERIFIED = "unverified"
+_NOT_COLLECTED = next(state for state in ABSTENTION_STATES if state == "not_collected")
+# Keep the stored order while reading the shared presence/failure vocabulary from its owner.
+STATES = tuple(state for state in ABSTENTION_STATES if state != ANALYSIS_UNAVAILABLE) + (
+    _UNVERIFIED, ANALYSIS_UNAVAILABLE)
+_HOLD_PRECEDENCE = (ANALYSIS_UNAVAILABLE, _UNVERIFIED, _NOT_COLLECTED)
 END_SIGNALS = ("forwarding", "blocked", "allowed", "excluded")
 BASES = ("none", "typed_pvst", "stored_trunk_allowance", "member_consensus")
 EVIDENCE_SHAPES = ("both_ends", "one_end_only", "no_evidence", "unverified")
@@ -80,8 +86,18 @@ def _text(value: Any) -> bool:
     return type(value) is str and bool(value.strip()) and value == value.strip()
 
 
+def carriage_host_identity(value: Any) -> str:
+    """The existing cable-owner host join, without new identity or custody inference."""
+    return _canon_host(value)
+
+
+def carriage_port_identity(value: str) -> str:
+    """The existing interface normalization, not the strict port-admission predicate."""
+    return normalize_ifname(value)
+
+
 def _port(value: Any) -> str | None:
-    return normalize_ifname(value) if _text(value) and is_valid_iface(value) else None
+    return carriage_port_identity(value) if _text(value) and is_valid_iface(value) else None
 
 
 def _physical_identity(a: Any, ap: Any, b: Any, bp: Any) -> tuple | None:
@@ -212,7 +228,7 @@ class _Inputs:
         for host, records in (interfaces.items() if type(interfaces) is dict else ()):
             if not _text(host):
                 continue
-            self.hosts[_canon_host(host)].append(host)
+            self.hosts[carriage_host_identity(host)].append(host)
             ports: dict[str, list[str]] = defaultdict(list)
             for key in (records if type(records) is dict else ()):
                 normalized = _port(key)
@@ -250,7 +266,7 @@ class _Inputs:
         if type(self.interfaces) is not dict:
             return hold("missing_interface" if self.interfaces is None else "malformed_source",
                         "not_collected" if self.interfaces is None else "unverified")
-        if len(self.hosts.get(_canon_host(host), [])) > 1:
+        if len(self.hosts.get(carriage_host_identity(host), [])) > 1:
             return hold("host_collision")
         if host not in self.interfaces:
             return hold("missing_interface", "not_collected")
@@ -272,7 +288,7 @@ class _Inputs:
             return hold("interface_unreadable")
         if values["port"] and _port(values["port"]) != _port(port):
             return hold("endpoint_mismatch")
-        if values["cdp_neighbor"] and _canon_host(values["cdp_neighbor"]) != _canon_host(other_host):
+        if values["cdp_neighbor"] and carriage_host_identity(values["cdp_neighbor"]) != carriage_host_identity(other_host):
             return hold("endpoint_mismatch")
         if values["neighbor_port"] and _port(values["neighbor_port"]) != _port(other_port):
             return hold("endpoint_mismatch")
@@ -357,11 +373,11 @@ class _Inputs:
                 continue
             records = self.interfaces.get(host) if type(self.interfaces) is dict else None
             keys = self.ports.get(host, {}).get(_port(port), [])
-            if type(records) is not dict or len(keys) != 1 or len(self.hosts.get(_canon_host(other), [])) > 1:
+            if type(records) is not dict or len(keys) != 1 or len(self.hosts.get(carriage_host_identity(other), [])) > 1:
                 continue
             values = _interface_values(records[keys[0]])
             if (values is not None and _text(values["cdp_neighbor"]) and _port(values["neighbor_port"]) is not None
-                    and _canon_host(values["cdp_neighbor"]) == _canon_host(other)
+                    and carriage_host_identity(values["cdp_neighbor"]) == carriage_host_identity(other)
                     and _port(values["neighbor_port"]) == _port(other_port)):
                 witnessed[side] = [_pointer("interfaces", host, keys[0], field)
                                    for field in ("cdp_neighbor", "neighbor_port")]
@@ -538,7 +554,7 @@ def compute_vlan_carriage(cable_map: Any, interfaces: Any, stp_topology_observat
                          "vlan_pointer": _pointer("vlan_cutover", vi), "cable_index": ci,
                          "cable_pointer": pointer, "ends": dict(ends), **verdict, "members": results})
     states = [issue["state"] for issue in issues] + [row["state"] for row in rows]
-    state = next((s for s in ("analysis_unavailable", "unverified", "not_collected") if s in states),
+    state = next((s for s in _HOLD_PRECEDENCE if s in states),
                  "published" if rows else "collected_but_empty")
     reason = (next((issue["reason"] for issue in issues if issue["state"] == state), None)
               or next((row["reason"] for row in rows if row["state"] == state), None))
@@ -709,7 +725,7 @@ def validate_vlan_carriage(value: Any) -> tuple[bool, str]:
         if not keys(cov["by_state"], set(STATES)) or any(type(v) is not int for v in cov["by_state"].values()) or cov["by_state"] != counts:
             return False, "state_census"
         states = [issue["state"] for issue in issues] + [row["state"] for row in rows]
-        expected_state = next((s for s in ("analysis_unavailable", "unverified", "not_collected") if s in states),
+        expected_state = next((s for s in _HOLD_PRECEDENCE if s in states),
                               "published" if rows else "collected_but_empty")
         if value["state"] != expected_state:
             return False, "section_state"

@@ -9,11 +9,14 @@ import json
 
 import pytest
 
-from cisco_toolkit.analyze import _link_carries, compute_cable_map
+from cisco_toolkit.analyze import _canon_host, _link_carries, compute_cable_map
 from cisco_toolkit.model import InterfaceData
+from cisco_toolkit.ssot import ABSTENTION_STATES
 from cisco_toolkit.stp_topology import produce_stp_topology_observation
+from cisco_toolkit.textutils import normalize_ifname
 from cisco_toolkit.vlan_carriage import (
-    _Inputs, carriage_observation_admission, compute_vlan_carriage,
+    STATES, _Inputs, carriage_host_identity, carriage_observation_admission,
+    carriage_port_identity, compute_vlan_carriage,
     validate_vlan_carriage, vlan_row_identity,
 )
 
@@ -41,10 +44,15 @@ def _observation(state="FWD", *, port=PORT, namespace="VLAN", vid=10):
   Bridge ID Priority 32778
           Address aaaa.0001.0001
 Interface Role Sts Cost Prio.Nbr Type
+---------------- ---- --- --------- -------- ----------------
 {port} {role} {state} 4 128.1 P2p
 """
     detail = f"{namespace}{vid:04d}\n  Number of topology changes 0 last change occurred 00:00:00 ago\n"
-    return produce_stp_topology_observation(body, detail, state_capture_state="usable", detail_capture_state="usable")
+    observation = produce_stp_topology_observation(
+        body, detail, state_capture_state="usable", detail_capture_state="usable")
+    assert observation["role_candidate_count"] == observation["role_parsed_count"] == 1, observation
+    assert "role_row_malformed" not in observation["finding_codes"], observation
+    return observation
 
 
 def _compute(interfaces=None, *, observation=None, vlans=None, cables=None, failed=()):
@@ -59,6 +67,49 @@ def _row(document):
     assert len(document["rows"]) == 1
     assert document["coverage"]["capture_completeness_claim"] is False
     return document["rows"][0]
+
+
+def test_carriage_states_keep_the_stored_order_and_the_canonical_owner_membership():
+    assert STATES == ("published", "collected_but_empty", "not_collected", "unverified", "analysis_unavailable")
+    assert set(STATES) == set(ABSTENTION_STATES) | {"unverified"}
+    assert tuple(state for state in STATES if state != "unverified") == ABSTENTION_STATES
+
+
+@pytest.mark.parametrize(("malformed_tail", "failed", "expected"), [
+    (False, (), "not_collected"),
+    (True, (), "unverified"),
+    (True, ("interfaces",), "analysis_unavailable"),
+])
+def test_owner_backed_hold_precedence_keeps_missing_malformed_and_failed_evidence(
+        malformed_tail, failed, expected):
+    interfaces = _fleet("", "")
+    cables = compute_cable_map(interfaces)
+    if malformed_tail:
+        cables["cables"].append(None)  # Retain a real NC cable beside an explicitly malformed row.
+    doc = compute_vlan_carriage(cables, interfaces, None, [{"vlan": 10}], failed_sources=failed)
+    assert validate_vlan_carriage(doc) == (True, "ok")
+    assert doc["state"] == expected
+    assert all(row["relation"] is None for row in doc["rows"])
+    if malformed_tail:
+        assert len(doc["rows"]) == 2 and doc["rows"][1]["state"] == "unverified"
+    assert doc["rows"][0]["state"] == ("analysis_unavailable" if failed else "not_collected")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("Switch-A.example.net (SERIAL)", "switch-a"), (" switch-A ", "switch-a"),
+    ("switch/a~b", "switch/a~b"), ("", ""), (None, ""),
+])
+def test_public_carriage_host_identity_keeps_existing_cable_normalization(raw, expected):
+    assert carriage_host_identity(raw) == _canon_host(raw) == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("GigabitEthernet1/0/1", "Gi1/0/1"), (" Ethernet1/1 ", "Eth1/1"),
+    ("Port-channel001", "Po001"), ("Vl10", "Vlan10"),
+    ("Gi1/0/1", "Gi1/0/1"), ("not-an-interface", "not-an-interface"), ("", ""),
+])
+def test_public_carriage_port_identity_is_normalization_not_a_new_admission_rule(raw, expected):
+    assert carriage_port_identity(raw) == normalize_ifname(raw) == expected
 
 
 def test_typed_pvst_forwarding_retains_original_cable_and_role_pointers():
@@ -188,6 +239,36 @@ def test_stp_capture_failure_and_an_unreferenced_malformed_observation_stay_visi
     assert orphan["state"] == "unverified"
     assert orphan["issues"][0]["pointer"] == "/stp_topology_observations/synthetic-orphan"
     assert orphan["coverage"]["input_census_complete"] is False
+
+
+def test_missing_role_table_separator_remains_unverified_with_its_observation_witness():
+    # Deliberately retain the malformed bootstrap fixture shape: the legacy parser
+    # reads this row, but the strict candidate census requires the real table frame.
+    body = """VLAN0010
+  Root ID Priority 32778
+          Address aaaa.0001.0001
+          This bridge is the root
+  Bridge ID Priority 32778
+          Address aaaa.0001.0001
+Interface Role Sts Cost Prio.Nbr Type
+Gi1/0/1 Altn BLK 4 128.1 P2p
+"""
+    malformed = produce_stp_topology_observation(
+        body, "VLAN0010\n  Number of topology changes 0 last change occurred 00:00:00 ago\n",
+        state_capture_state="usable", detail_capture_state="usable")
+    assert malformed["role_candidate_count"] == 0 and malformed["role_parsed_count"] == 1, malformed
+    assert "role_row_malformed" in malformed["finding_codes"]
+    admission = carriage_observation_admission(malformed)
+    assert admission[:2] == ("unverified", "stp_unreadable")
+    assert admission[2] is malformed
+    doc = _compute(_fleet("", ""), observation={A: malformed, B: _observation()})
+    row = _row(doc)
+    assert row["state"] == "unverified" and row["relation"] is None
+    end = row["members"][0]["a"]
+    assert end["state"] == "unverified" and end["signal"] is None
+    assert f"/stp_topology_observations/{A}" in end["refs"]
+    assert any(issue["state"] == "unverified" and issue["pointer"] == f"/stp_topology_observations/{A}"
+               for issue in doc["issues"])
 
 
 @pytest.mark.parametrize(("case", "state", "reason", "retained"), [

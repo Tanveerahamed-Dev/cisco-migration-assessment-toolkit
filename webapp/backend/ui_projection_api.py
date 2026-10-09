@@ -49,8 +49,8 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "16b8095765891cebb3fe94d01d9c3ebfa966f7ead8ae9a139d84499d39b4db34",
-    "list": "bca688bd5a3991c70005e20c68a0be5c2d4f3c58aa6cc2a254a51fcc2a6b8c22",
+    "view": "1851c39053e44c896b5fced607e4ce2e4d7f4e83f77fab3e19081efc1179545e",
+    "list": "d0535478d51055a3926b975c5cf27cfc3cedcf0fafe70f4a46513ebb025f700b",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

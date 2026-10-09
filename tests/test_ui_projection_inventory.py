@@ -2107,10 +2107,19 @@ def test_i19_ambiguous_headline_and_unreadable_peer_flags(snaps, payloads):
 # --------------------------------------------------------------------------------------------------
 def test_i20_selections_carry_their_source_state(snaps, payloads):
     p = payloads["a"]["inventory"]
+    assert snaps["a"]["vlan_carriage"]["state"] == UV  # Reviewed generated sample retains incomplete evidence.
     assert {k: v["state"] for k, v in p["vlans"]["selection_sources"].items()} == \
-        {"stp_roots": PUB, "gateways": PUB, "endpoints": PUB}
+        {"stp_roots": PUB, "carriage": UV, "gateways": PUB, "endpoints": PUB}
     assert {k: v["state"] for k, v in p["endpoints"]["selection_sources"].items()} == \
         {"interfaces": PUB, "vlan_rows": PUB, "shared_ip": PUB, "dual_homed": PUB}
+    legacy = copy.deepcopy(snaps["a"])
+    del legacy["vlan_carriage"]
+    old_vlans = uip.project_inventory(legacy)["vlans"]
+    assert old_vlans["selection_sources"]["carriage"]["state"] == NC
+    for row in old_vlans["rows"]["items"]:
+        assert row["selections"]["carriage"]["state"] == NC
+        assert row["selections"]["carriage"]["items"] == []
+        assert row["selections"]["carriage"]["reason"]
     snap = copy.deepcopy(snaps["a"])
     del snap["stp_roots"], snap["l3_forwarding"]
     vl = uip.project_inventory(snap)["vlans"]

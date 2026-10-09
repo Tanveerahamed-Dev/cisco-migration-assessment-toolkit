@@ -1398,9 +1398,13 @@ def test_native_accepts_each_real_published_carriage_relation_without_fallback(c
             observations[host] = produce_stp_topology_observation(
                 "VLAN0010\n  Root ID Priority 32778\n          Address aaaa.0001.0001\n"
                 "          This bridge is the root\n  Bridge ID Priority 32778\n          Address aaaa.0001.0001\n"
-                f"Interface Role Sts Cost Prio.Nbr Type\nGi1/0/1 {role} {state} 4 128.1 P2p\n",
+                "Interface Role Sts Cost Prio.Nbr Type\n"
+                "---------------- ---- --- --------- -------- ----------------\n"
+                f"Gi1/0/1 {role} {state} 4 128.1 P2p\n",
                 "VLAN0010\n  Number of topology changes 0 last change occurred 00:00:00 ago\n",
                 state_capture_state="usable", detail_capture_state="usable")
+            assert observations[host]["role_candidate_count"] == observations[host]["role_parsed_count"] == 1
+            assert "role_row_malformed" not in observations[host]["finding_codes"]
     snap["stp_topology_observations"] = observations
     snap["vlan_carriage"] = compute_vlan_carriage(snap["cable_map"], snap["interfaces"], observations, snap["vlan_cutover"])
     sid = seed(client, snap)
@@ -1410,7 +1414,7 @@ def test_native_accepts_each_real_published_carriage_relation_without_fallback(c
     body = response.json()
     parent = body["list"] if surface == "list" else body["payload"]["vlans"]["rows"]
     fact = parent["page"]["items"][0]["selections"]["carriage"]["items"][0]["relation"]
-    assert (fact["state"], fact["value"]) == ("published", relation)
+    assert (fact["state"], fact["value"]) == ("published", relation), fact
     schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
     validator = api._NativeTransportValidator(schema, surface)
     native = validator._NativeTransportValidator__native

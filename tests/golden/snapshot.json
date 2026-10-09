@@ -12595,7 +12595,7 @@
     "id": "no_egress_import_graph",
     "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
     "result": "HOLDS",
-    "detail": "0 unexplained network-library imports across 100 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+    "detail": "0 unexplained network-library imports across 101 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
    },
    {
     "id": "rest_collect_get_only",
@@ -12607,7 +12607,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 102 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 103 modules (analysis package + collector entry)"
    }
   ]
  },
@@ -15408,6 +15408,1091 @@
    "rollback_owner": ""
   }
  ],
+ "vlan_carriage": {
+  "schema": "vlan_carriage/1",
+  "state": "unverified",
+  "reason": "unverified: this cable has no complete readable endpoint/member identity",
+  "basis": "cisco_toolkit.vlan_carriage:compute_vlan_carriage",
+  "coverage": {
+   "vlan_rows": 3,
+   "cable_rows": 6,
+   "requested_pairs": 18,
+   "emitted_pairs": 18,
+   "by_state": {
+    "published": 4,
+    "collected_but_empty": 0,
+    "not_collected": 3,
+    "unverified": 11,
+    "analysis_unavailable": 0
+   },
+   "input_census_complete": false,
+   "capture_completeness_claim": false
+  },
+  "issues": [
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "pointer": "/cable_map/cables/0"
+   },
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable member has no complete readable endpoint identity",
+    "pointer": "/cable_map/cables/0/members/0"
+   },
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "pointer": "/cable_map/cables/3"
+   },
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable member has no complete readable endpoint identity",
+    "pointer": "/cable_map/cables/3/members/0"
+   },
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "pointer": "/cable_map/cables/4"
+   },
+   {
+    "state": "unverified",
+    "reason": "unverified: this cable member has no complete readable endpoint identity",
+    "pointer": "/cable_map/cables/4/members/0"
+   }
+  ],
+  "rows": [
+   {
+    "index": 0,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 0,
+    "cable_pointer": "/cable_map/cables/0",
+    "ends": {
+     "a": "access1",
+     "a_port": "Gi0/2",
+     "b": "AP-floor1",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/0/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "access1",
+       "port": "Gi0/2",
+       "interface_pointer": "/interfaces/access1/Gi0~12",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/access1/Gi0~12",
+        "/stp_topology_observations/access1"
+       ]
+      },
+      "b": {
+       "host": "AP-floor1",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 1,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 1,
+    "cable_pointer": "/cable_map/cables/1",
+    "ends": {
+     "a": "core1",
+     "a_port": "Gi1/0/24",
+     "b": "access1",
+     "b_port": "Gi0/1",
+     "is_pc": false
+    },
+    "state": "published",
+    "relation": "forwarding",
+    "reason": null,
+    "basis": "typed_pvst",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/1/members/0",
+      "state": "published",
+      "relation": "forwarding",
+      "reason": null,
+      "basis": "typed_pvst",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Gi1/0/24",
+       "interface_pointer": "/interfaces/core1/Gi1~10~124",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Gi1~10~124",
+        "/stp_topology_observations/core1",
+        "/stp_topology_observations/core1/roles/0"
+       ]
+      },
+      "b": {
+       "host": "access1",
+       "port": "Gi0/1",
+       "interface_pointer": "/interfaces/access1/Gi0~11",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/access1/Gi0~11",
+        "/stp_topology_observations/access1",
+        "/stp_topology_observations/access1/roles/0"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 2,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 2,
+    "cable_pointer": "/cable_map/cables/2",
+    "ends": {
+     "a": "core1",
+     "a_port": "Po1",
+     "b": "core2",
+     "b_port": "Po1",
+     "is_pc": true
+    },
+    "state": "published",
+    "relation": "forwarding",
+    "reason": null,
+    "basis": "typed_pvst",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/2/members/0",
+      "state": "published",
+      "relation": "forwarding",
+      "reason": null,
+      "basis": "typed_pvst",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core1/Po1",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Po1",
+        "/stp_topology_observations/core1",
+        "/stp_topology_observations/core1/roles/1",
+        "/interfaces/core1/Po1/cdp_neighbor",
+        "/interfaces/core1/Po1/neighbor_port"
+       ]
+      },
+      "b": {
+       "host": "core2",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core2/Po1",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core2/Po1",
+        "/stp_topology_observations/core2",
+        "/stp_topology_observations/core2/roles/0",
+        "/interfaces/core2/Po1/cdp_neighbor",
+        "/interfaces/core2/Po1/neighbor_port"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 3,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 3,
+    "cable_pointer": "/cable_map/cables/3",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/20",
+     "b": "SEP00112233AABB",
+     "b_port": "Port",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/3/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/20",
+       "interface_pointer": "/interfaces/core2/Eth1~120",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~120",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "SEP00112233AABB",
+       "port": "Port",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 4,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 4,
+    "cable_pointer": "/cable_map/cables/4",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/30",
+     "b": "AP-floor3-01",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/4/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/30",
+       "interface_pointer": "/interfaces/core2/Eth1~130",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~130",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "AP-floor3-01",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 5,
+    "vlan_index": 0,
+    "vlan": 10,
+    "vlan_pointer": "/vlan_cutover/0",
+    "cable_index": 5,
+    "cable_pointer": "/cable_map/cables/5",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/47",
+     "b": "wan-edge-rtr1.lab",
+     "b_port": "Gi0/0/1",
+     "is_pc": false
+    },
+    "state": "not_collected",
+    "relation": null,
+    "reason": "not collected: neither cable end has admitted carriage evidence",
+    "basis": "none",
+    "evidence_shape": "no_evidence",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/5/members/0",
+      "state": "not_collected",
+      "relation": null,
+      "reason": "not collected: neither cable end has admitted carriage evidence",
+      "basis": "none",
+      "evidence_shape": "no_evidence",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/47",
+       "interface_pointer": "/interfaces/core2/Eth1~147",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~147",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "wan-edge-rtr1.lab",
+       "port": "Gi0/0/1",
+       "interface_pointer": null,
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this exact cable end has no stored interface record",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 6,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 0,
+    "cable_pointer": "/cable_map/cables/0",
+    "ends": {
+     "a": "access1",
+     "a_port": "Gi0/2",
+     "b": "AP-floor1",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/0/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "access1",
+       "port": "Gi0/2",
+       "interface_pointer": "/interfaces/access1/Gi0~12",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/access1/Gi0~12",
+        "/stp_topology_observations/access1"
+       ]
+      },
+      "b": {
+       "host": "AP-floor1",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 7,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 1,
+    "cable_pointer": "/cable_map/cables/1",
+    "ends": {
+     "a": "core1",
+     "a_port": "Gi1/0/24",
+     "b": "access1",
+     "b_port": "Gi0/1",
+     "is_pc": false
+    },
+    "state": "published",
+    "relation": "forwarding",
+    "reason": null,
+    "basis": "stored_trunk_allowance",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/1/members/0",
+      "state": "published",
+      "relation": "forwarding",
+      "reason": null,
+      "basis": "stored_trunk_allowance",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Gi1/0/24",
+       "interface_pointer": "/interfaces/core1/Gi1~10~124",
+       "state": "published",
+       "signal": "allowed",
+       "basis": "stored_trunk_allowance",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Gi1~10~124",
+        "/stp_topology_observations/core1",
+        "/interfaces/core1/Gi1~10~124/trunk_allowed_vlans",
+        "/interfaces/core1/Gi1~10~124/trunk_native_vlan",
+        "/interfaces/core1/Gi1~10~124/switchport_mode"
+       ]
+      },
+      "b": {
+       "host": "access1",
+       "port": "Gi0/1",
+       "interface_pointer": "/interfaces/access1/Gi0~11",
+       "state": "published",
+       "signal": "allowed",
+       "basis": "stored_trunk_allowance",
+       "reason": null,
+       "refs": [
+        "/interfaces/access1/Gi0~11",
+        "/stp_topology_observations/access1",
+        "/interfaces/access1/Gi0~11/trunk_allowed_vlans",
+        "/interfaces/access1/Gi0~11/trunk_native_vlan",
+        "/interfaces/access1/Gi0~11/switchport_mode"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 8,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 2,
+    "cable_pointer": "/cable_map/cables/2",
+    "ends": {
+     "a": "core1",
+     "a_port": "Po1",
+     "b": "core2",
+     "b_port": "Po1",
+     "is_pc": true
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: these end observations do not establish a common carriage basis",
+    "basis": "none",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/2/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: these end observations do not establish a common carriage basis",
+      "basis": "none",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core1/Po1",
+       "state": "published",
+       "signal": "allowed",
+       "basis": "stored_trunk_allowance",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Po1",
+        "/stp_topology_observations/core1",
+        "/interfaces/core1/Po1/trunk_allowed_vlans",
+        "/interfaces/core1/Po1/trunk_native_vlan",
+        "/interfaces/core1/Po1/switchport_mode",
+        "/interfaces/core1/Po1/cdp_neighbor",
+        "/interfaces/core1/Po1/neighbor_port"
+       ]
+      },
+      "b": {
+       "host": "core2",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core2/Po1",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core2/Po1",
+        "/stp_topology_observations/core2",
+        "/stp_topology_observations/core2/roles/1",
+        "/interfaces/core2/Po1/cdp_neighbor",
+        "/interfaces/core2/Po1/neighbor_port"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 9,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 3,
+    "cable_pointer": "/cable_map/cables/3",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/20",
+     "b": "SEP00112233AABB",
+     "b_port": "Port",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/3/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/20",
+       "interface_pointer": "/interfaces/core2/Eth1~120",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~120",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "SEP00112233AABB",
+       "port": "Port",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 10,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 4,
+    "cable_pointer": "/cable_map/cables/4",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/30",
+     "b": "AP-floor3-01",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/4/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/30",
+       "interface_pointer": "/interfaces/core2/Eth1~130",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~130",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "AP-floor3-01",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 11,
+    "vlan_index": 1,
+    "vlan": 20,
+    "vlan_pointer": "/vlan_cutover/1",
+    "cable_index": 5,
+    "cable_pointer": "/cable_map/cables/5",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/47",
+     "b": "wan-edge-rtr1.lab",
+     "b_port": "Gi0/0/1",
+     "is_pc": false
+    },
+    "state": "not_collected",
+    "relation": null,
+    "reason": "not collected: neither cable end has admitted carriage evidence",
+    "basis": "none",
+    "evidence_shape": "no_evidence",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/5/members/0",
+      "state": "not_collected",
+      "relation": null,
+      "reason": "not collected: neither cable end has admitted carriage evidence",
+      "basis": "none",
+      "evidence_shape": "no_evidence",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/47",
+       "interface_pointer": "/interfaces/core2/Eth1~147",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~147",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "wan-edge-rtr1.lab",
+       "port": "Gi0/0/1",
+       "interface_pointer": null,
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this exact cable end has no stored interface record",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 12,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 0,
+    "cable_pointer": "/cable_map/cables/0",
+    "ends": {
+     "a": "access1",
+     "a_port": "Gi0/2",
+     "b": "AP-floor1",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/0/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "access1",
+       "port": "Gi0/2",
+       "interface_pointer": "/interfaces/access1/Gi0~12",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/access1/Gi0~12",
+        "/stp_topology_observations/access1"
+       ]
+      },
+      "b": {
+       "host": "AP-floor1",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 13,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 1,
+    "cable_pointer": "/cable_map/cables/1",
+    "ends": {
+     "a": "core1",
+     "a_port": "Gi1/0/24",
+     "b": "access1",
+     "b_port": "Gi0/1",
+     "is_pc": false
+    },
+    "state": "published",
+    "relation": "forwarding",
+    "reason": null,
+    "basis": "typed_pvst",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/1/members/0",
+      "state": "published",
+      "relation": "forwarding",
+      "reason": null,
+      "basis": "typed_pvst",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Gi1/0/24",
+       "interface_pointer": "/interfaces/core1/Gi1~10~124",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Gi1~10~124",
+        "/stp_topology_observations/core1",
+        "/stp_topology_observations/core1/roles/2"
+       ]
+      },
+      "b": {
+       "host": "access1",
+       "port": "Gi0/1",
+       "interface_pointer": "/interfaces/access1/Gi0~11",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/access1/Gi0~11",
+        "/stp_topology_observations/access1",
+        "/stp_topology_observations/access1/roles/1"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 14,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 2,
+    "cable_pointer": "/cable_map/cables/2",
+    "ends": {
+     "a": "core1",
+     "a_port": "Po1",
+     "b": "core2",
+     "b_port": "Po1",
+     "is_pc": true
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: these end observations do not establish a common carriage basis",
+    "basis": "none",
+    "evidence_shape": "both_ends",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/2/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: these end observations do not establish a common carriage basis",
+      "basis": "none",
+      "evidence_shape": "both_ends",
+      "a": {
+       "host": "core1",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core1/Po1",
+       "state": "published",
+       "signal": "forwarding",
+       "basis": "typed_pvst",
+       "reason": null,
+       "refs": [
+        "/interfaces/core1/Po1",
+        "/stp_topology_observations/core1",
+        "/stp_topology_observations/core1/roles/3",
+        "/interfaces/core1/Po1/cdp_neighbor",
+        "/interfaces/core1/Po1/neighbor_port"
+       ]
+      },
+      "b": {
+       "host": "core2",
+       "port": "Po1",
+       "interface_pointer": "/interfaces/core2/Po1",
+       "state": "published",
+       "signal": "allowed",
+       "basis": "stored_trunk_allowance",
+       "reason": null,
+       "refs": [
+        "/interfaces/core2/Po1",
+        "/stp_topology_observations/core2",
+        "/interfaces/core2/Po1/trunk_allowed_vlans",
+        "/interfaces/core2/Po1/trunk_native_vlan",
+        "/interfaces/core2/Po1/switchport_mode",
+        "/interfaces/core2/Po1/cdp_neighbor",
+        "/interfaces/core2/Po1/neighbor_port"
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "index": 15,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 3,
+    "cable_pointer": "/cable_map/cables/3",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/20",
+     "b": "SEP00112233AABB",
+     "b_port": "Port",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/3/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/20",
+       "interface_pointer": "/interfaces/core2/Eth1~120",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~120",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "SEP00112233AABB",
+       "port": "Port",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 16,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 4,
+    "cable_pointer": "/cable_map/cables/4",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/30",
+     "b": "AP-floor3-01",
+     "b_port": "Gi0",
+     "is_pc": false
+    },
+    "state": "unverified",
+    "relation": null,
+    "reason": "unverified: this cable has no complete readable endpoint/member identity",
+    "basis": "none",
+    "evidence_shape": "unverified",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/4/members/0",
+      "state": "unverified",
+      "relation": null,
+      "reason": "unverified: this cable member has no complete readable endpoint identity",
+      "basis": "none",
+      "evidence_shape": "unverified",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/30",
+       "interface_pointer": "/interfaces/core2/Eth1~130",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~130",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "AP-floor3-01",
+       "port": "Gi0",
+       "interface_pointer": null,
+       "state": "unverified",
+       "signal": null,
+       "basis": "none",
+       "reason": "unverified: this cable member has no complete readable endpoint identity",
+       "refs": []
+      }
+     }
+    ]
+   },
+   {
+    "index": 17,
+    "vlan_index": 2,
+    "vlan": 30,
+    "vlan_pointer": "/vlan_cutover/2",
+    "cable_index": 5,
+    "cable_pointer": "/cable_map/cables/5",
+    "ends": {
+     "a": "core2",
+     "a_port": "Eth1/47",
+     "b": "wan-edge-rtr1.lab",
+     "b_port": "Gi0/0/1",
+     "is_pc": false
+    },
+    "state": "not_collected",
+    "relation": null,
+    "reason": "not collected: neither cable end has admitted carriage evidence",
+    "basis": "none",
+    "evidence_shape": "no_evidence",
+    "members": [
+     {
+      "index": 0,
+      "pointer": "/cable_map/cables/5/members/0",
+      "state": "not_collected",
+      "relation": null,
+      "reason": "not collected: neither cable end has admitted carriage evidence",
+      "basis": "none",
+      "evidence_shape": "no_evidence",
+      "a": {
+       "host": "core2",
+       "port": "Eth1/47",
+       "interface_pointer": "/interfaces/core2/Eth1~147",
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this interface has no admitted PVST state or explicit trunk allowance",
+       "refs": [
+        "/interfaces/core2/Eth1~147",
+        "/stp_topology_observations/core2"
+       ]
+      },
+      "b": {
+       "host": "wan-edge-rtr1.lab",
+       "port": "Gi0/0/1",
+       "interface_pointer": null,
+       "state": "not_collected",
+       "signal": null,
+       "basis": "none",
+       "reason": "not collected: this exact cable end has no stored interface record",
+       "refs": []
+      }
+     }
+    ]
+   }
+  ],
+  "limitations": [
+   "Relations concern the supplied stored cable/member and VLAN-row universe, not every possible cable or VLAN.",
+   "PVST port states are observations from separate captures, not simultaneous forwarding or data-plane delivery.",
+   "Mutual stored trunk allowance is a configured-carriage model, not observed STP forwarding or traffic.",
+   "MST instances have no admitted VLAN mapping here; legacy namespace-free interface STP ranges are never used.",
+   "Bundle relations require agreement of every member; no first member represents an incomplete or mixed bundle.",
+   "Source pointers and closed-shape validation are not authenticated capture custody or collection completeness."
+  ]
+ },
  "data_authorities": {
   "oui": {
    "status": "verified-authoritative",
@@ -17147,6 +18232,13 @@
     "note": "seen \u2014 collected and non-empty"
    },
    {
+    "key": "vlan_carriage",
+    "state": "published",
+    "count": 8,
+    "kind": "dict",
+    "note": "seen \u2014 collected and non-empty"
+   },
+   {
     "key": "executive_brief",
     "state": "published",
     "count": 6,
@@ -17225,10 +18317,10 @@
    }
   ],
   "summary": {
-   "n_published": 111,
+   "n_published": 112,
    "n_collected_but_empty": 7,
    "n_not_collected": 0,
-   "n_sections": 118
+   "n_sections": 119
   }
  }
 }

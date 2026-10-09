@@ -118,7 +118,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Opti
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index, _canon_host,
+    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -128,8 +128,8 @@ from cisco_toolkit.vlan_carriage import (
     RELATIONS as CARRIAGE_RELATIONS, END_SIGNALS as CARRIAGE_END_SIGNALS,
     BASES as CARRIAGE_BASES, EVIDENCE_SHAPES as CARRIAGE_EVIDENCE_SHAPES,
     validate_vlan_carriage, vlan_row_identity, carriage_observation_admission,
+    carriage_host_identity, carriage_port_identity,
 )
-from cisco_toolkit.textutils import normalize_ifname
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -3466,11 +3466,11 @@ def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequ
     for host, records in (interfaces.items() if isinstance(interfaces, dict) else ()):
         if not _is_text(host):
             continue
-        host_keys.setdefault(_canon_host(host), []).append(host)
+        host_keys.setdefault(carriage_host_identity(host), []).append(host)
         port_keys[host] = {}
         for key in records if isinstance(records, dict) else ():
             if _is_text(key):
-                port_keys[host].setdefault(normalize_ifname(key), []).append(key)
+                port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
     observations: Dict[str, Any] = {}
 
     def current_observation(host: str) -> Any:
@@ -3488,8 +3488,8 @@ def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequ
                     continue
                 toks = ("vlan_carriage", "rows", row["index"], "members", mi, side)
                 host, port = end["host"], end["port"]
-                if (len(host_keys.get(_canon_host(host), [])) != 1
-                        or len(port_keys.get(host, {}).get(normalize_ifname(port), [])) != 1):
+                if (len(host_keys.get(carriage_host_identity(host), [])) != 1
+                        or len(port_keys.get(host, {}).get(carriage_port_identity(port), [])) != 1):
                     bad.append(("witness", toks + ("interface_pointer",)))
                 for ri, pointer in enumerate(end["refs"]):
                     resolved = _stored_pointer_tokens(ctx, pointer)
@@ -3499,7 +3499,7 @@ def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequ
                         if resolved[0] == "interfaces":
                             valid = ((len(resolved) == 3 and isinstance(value, dict)) or
                                      (len(resolved) == 4 and _is_text(value) and bool(value.strip())))
-                            valid = valid and normalize_ifname(resolved[2]) == normalize_ifname(port)
+                            valid = valid and carriage_port_identity(resolved[2]) == carriage_port_identity(port)
                         elif resolved[0] == "stp_topology_observations":
                             valid = ((len(resolved) == 2 or
                                       (len(resolved) == 4 and resolved[2] == "roles")) and isinstance(value, dict))
@@ -3514,10 +3514,10 @@ def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequ
                          "trunk_native_vlan", "port_channel"))
                 peer = member["b" if side == "a" else "a"]
                 if (not record_readable
-                        or (record.get("port") and normalize_ifname(record["port"]) != normalize_ifname(port))
-                        or (record.get("cdp_neighbor") and _canon_host(record["cdp_neighbor"]) != _canon_host(peer["host"]))
+                        or (record.get("port") and carriage_port_identity(record["port"]) != carriage_port_identity(port))
+                        or (record.get("cdp_neighbor") and carriage_host_identity(record["cdp_neighbor"]) != carriage_host_identity(peer["host"]))
                         or (record.get("neighbor_port") and (not _is_text(peer["port"])
-                            or normalize_ifname(record["neighbor_port"]) != normalize_ifname(peer["port"])))):
+                            or carriage_port_identity(record["neighbor_port"]) != carriage_port_identity(peer["port"])))):
                     bad.append(("witness", toks + ("interface_pointer",)))
                 if end["basis"] != "typed_pvst":
                     continue
@@ -3525,7 +3525,7 @@ def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequ
                 matches = [(i, value) for i, value in enumerate(observation["roles"])
                            if value["namespace"] == "pvst_vlan"
                            and vlan_row_identity({"vlan": value["instance"]}) == row["vlan"]
-                           and normalize_ifname(value["interface"]) == normalize_ifname(port)] if observation else []
+                           and carriage_port_identity(value["interface"]) == carriage_port_identity(port)] if observation else []
                 if (not observation or admitted_state != _PUB or len(matches) != 1
                         or matches[0][1]["state"] != end["signal"]
                         or json_pointer("stp_topology_observations", host, "roles", matches[0][0]) not in end["refs"]):
