@@ -244,3 +244,22 @@ The observed 182 receipt still applies to that membership, while the shared
 backend/app changes require entirely fresh combined-source validation. No prior
 peer or G15 result qualifies the new head. W27 is retired in NOW with both full
 parent histories retained; W36 remains on hold.
+
+## Hosted companion receipt correction
+
+The next early CI execution on `f4cde86a`, Linux 3.11 job `113664291659`,
+checks out tested merge `7216676d8134b69d20fc03ce44ff29c33702361d`
+(tree `7da72386f494960f8406835cf0344d6ccb280da7`). Independent review of its
+complete terminal log observes one focused failure in 0.45 seconds, exit 1,
+at the existing broader receipt assertion. It prints the actual companion:
+144 paths, `sha256:1d005cc108a69ca5bfc253fe26b526be53a4f4311e42b8656a86f44730f3449b`.
+
+This correction adopts only that pair. Path membership, attribute rules,
+publisher and derived-owner scopes, source byte checks, workflow and test
+assertions remain unchanged. No hash is computed locally. The earlier
+182-path LF assertion, publisher receipt, effective HEAD/worktree attributes,
+derived-owner38 receipt and owner subset checks completed before this failure.
+That control-flow evidence does not establish the later per-file byte checks:
+those and the full suite were not executed after the early failure. Fresh
+hosted runs must pass every guard on the corrected source. Earlier failure and
+unobserved-receipt checkpoints are retained as history, not silently regraded.
