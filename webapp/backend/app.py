@@ -3301,8 +3301,16 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 # engine function (main stores the same failure_impact its _device_dossiers adapter reads), and the
                 # engine owns its inputs. Whether the dossier's impact term should honour the projection's holds is
                 # an engine question, not one this route answers by feeding it different rows.
+                # W48: it also passes the engine owner's verdicts on those rows, exactly as main() does, so a held
+                # or lower-bound impact is disclosed here too and never phrased as an exact measurement. The owner
+                # is total; the pipeline's phase fallback (a document with no row verdicts) covers a fault.
+                from cisco_toolkit import impact_assessability
                 from cisco_toolkit.analyze import compute_device_dossiers
                 from cisco_toolkit.ssot import failed_sections
+                try:
+                    _fi_verdicts = impact_assessability.assessment_document(snap)
+                except Exception:   # noqa: BLE001 -- mirrors main()'s guarded phase: no verdict, never published
+                    _fi_verdicts = impact_assessability.unavailable_document()
                 data = compute_device_dossiers(
                     health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
                     lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
@@ -3313,7 +3321,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
                     move_groups=snap.get("move_groups"),
                     protocol_assessability=snap.get("protocol_assessability"),
-                    parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap))
+                    parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap),
+                    failure_impact_assessability=_fi_verdicts)
         return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")

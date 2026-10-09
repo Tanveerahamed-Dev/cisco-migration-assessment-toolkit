@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
 from cisco_toolkit import comparison as _comparison  # noqa: E402
 from cisco_toolkit import html as _html  # noqa: E402
+from cisco_toolkit import impact_assessability as _impact_assessability  # noqa: E402
 from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fail-soft numeric coercion)
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
 from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 schema gate)
@@ -62,6 +63,18 @@ def fleet_blind_spot_rows(snapshot: Any) -> List[int]:
     as one, so a surface wording the qualifier tells the two kinds apart by this one owner, never by re-reading the
     stored rows."""
     return _ui_projection.fleet_blind_spot_rows(snapshot)
+
+
+# The engine owner's wave rule (W48 follow-up): how a migration wave's failure-impact rows add up to one worst-case
+# figure, and the projection's fleet qualifier counts it takes (impact_assessability.fleet_blind over the projected
+# list and fleet_blind_spot_rows above: blind devices, and records it cannot read as one). The cutover plan applies
+# the rule the MOP applies, to the projection's rows where the MOP reads the owner's verdicts.
+WaveRow = _impact_assessability.WaveRow
+wave_blast = _impact_assessability.wave_blast
+failure_impact_fleet_blind = _impact_assessability.fleet_blind
+IMPACT_FLEET_BLIND_CAVEAT = _impact_assessability.FLEET_BLIND_CAVEAT
+IMPACT_R_FLEET_BLIND = _impact_assessability.R_WAVE_FLEET_BLIND
+IMPACT_R_FLEET_BLIND_UNREAD = _impact_assessability.R_WAVE_FLEET_BLIND_UNREAD
 
 
 def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:

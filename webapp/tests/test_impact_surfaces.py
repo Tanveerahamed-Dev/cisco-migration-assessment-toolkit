@@ -1057,3 +1057,64 @@ def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind
     view = summary.impact_view(snap)
     assert (view["blind"], view["blind_unread"]) == (0, 1)
     assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+
+
+# --------------------------------------------------------------------------------------------------
+# W48 follow-up: the MOP and the cutover plan read ONE wave rule (impact_assessability.wave_blast)
+# --------------------------------------------------------------------------------------------------
+def _published_sample(sample):
+    """The sample with every stored row's evidence a measurement (no inter-switch link without trunk/STP evidence,
+    every uncollected cable-map peer that could carry endpoints shown as collected). Precondition, from the owner:
+    every row is published."""
+    snap = copy.deepcopy(sample)
+    for row in snap["failure_impact"]:
+        row["blind_links"] = 0
+    for node in snap["cable_map"]["nodes"]:
+        if node.get("collected") is False and node.get("kind") not in ia.IMPACT_EDGE_KINDS:
+            node["collected"] = True
+    assert {v.assessable for v in ia.assess_failure_impact(snap)} == {ia.PUBLISHED}
+    return snap
+
+
+@pytest.mark.parametrize("variant", ["published", "hostless", "fleet_caveat", "fleet_unread"])
+def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
+    """Refutation P2-2: the cutover plan bounded a wave by a row naming no readable host and by the projection's fleet
+    qualifier (collection_completeness lists a partial or never-collected device) while the MOP printed the same wave
+    as exact. Both now read the engine owner's wave rule: on a fully published fleet both are exact, and a host-less
+    row or a blind spot makes both a lower bound, each saying why in the same words. W51: a collection record the
+    projection cannot read as a blind device (here, one the snapshot does not carry) bounds both too, and both word it
+    as that record, never as a listed device."""
+    from cisco_toolkit import mop
+
+    snap = _published_sample(sample)
+    if variant == "hostless":
+        snap["failure_impact"].append(dict(snap["failure_impact"][0], host=None))
+    elif variant == "fleet_caveat":
+        snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)
+        snap["collection_completeness"]["summary"]["inventory"] += 1        # ghost1 is outside the devices map
+    elif variant == "fleet_unread":
+        del snap["collection_completeness"]
+    view = summary.impact_view(copy.deepcopy(snap))
+    rows, blind = ia.wave_rows(snap), mop._fleet_blind(snap)
+    assert blind == (view["blind"], view["blind_unread"]) == {"fleet_caveat": (len(BLIND), 0),
+                                                              "fleet_unread": (0, 1)}.get(variant, (0, 0)), blind
+    waves = cutover.build_plan(copy.deepcopy(snap))["waves"]
+    assert waves
+    for wave in waves:
+        br = wave["blast_radius"]
+        mine = mop._blast_for(wave["switches"], rows, blind)
+        assert br["complete"] is (mine.assessable == ia.PUBLISHED) is (variant == "published"), (wave["group"], br)
+        assert br["n_not_ranked"] == mine.n_not_ranked, (wave["group"], br, mine)
+        if variant == "published":
+            assert ia.wave_why(mine) == "" and "LOWER BOUND" not in br["detail"], br
+            continue
+        assert "LOWER BOUND, the worst case may be larger" in br["detail"], br["detail"]
+        why = ia.wave_why(mine)
+        if variant == "hostless":
+            assert "names no readable host" in br["detail"] and "name no readable switch" in why, (br, why)
+        else:
+            said = (ia.R_WAVE_FLEET_BLIND.format(n=len(BLIND)) if variant == "fleet_caveat"
+                    else ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=1))
+            assert summary.impact_blind_note(view) == said and said in br["detail"] and said in why, (br, why)
+            if variant == "fleet_unread":
+                assert "as partial or not collected:" not in why + br["detail"], (br, why)
