@@ -48,6 +48,10 @@ _RUNNER_JOBS = {
     "engine-output-handoff.yml": {
         "regenerate": ("Regenerate engine outputs for review (manual)", _LINUX_IMAGE),
     },
+    # Manual, hosted-only receipt of that handoff as review data; never a required check.
+    "engine-output-receipt.yml": {
+        "receive": ("Receive engine outputs as review data (manual)", _LINUX_IMAGE),
+    },
     "master-reference-ci.yml": {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
     },
@@ -162,7 +166,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 17
+    assert linux_selectors == 18
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
