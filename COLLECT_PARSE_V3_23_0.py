@@ -1097,12 +1097,17 @@ def _close_detect_session(guesser) -> None:
         logger.debug(f"autodetect session close failed (ignored): {e}")
 
 
-def autodetect_platform(ip: str, username: str, password: str) -> str:
+def autodetect_platform(ip: str, username: str, password: str, port: Optional[int] = None) -> str:
+    """The `platform: auto` probe. `port` is the device row's optional devices.json ``port`` (W59 PR-1 review): the
+    probe sends the same credentials as the observed session that follows, so it must reach the SAME port -- never
+    netmiko's default 22 when the row names another one. ``None`` keeps netmiko's default."""
     if SSHDetect is None: return "ios"
     guesser = None
+    probe = dict(device_type="autodetect", host=ip, username=username, password=password)
+    if port is not None:
+        probe["port"] = port
     try:
-        guesser = SSHDetect(device_type="autodetect", host=ip,
-                            username=username, password=password)
+        guesser = SSHDetect(**probe)
         best = (guesser.autodetect() or "").strip().lower()
         if "nxos" in best: return "nxos"
         return "ios"
@@ -1305,7 +1310,7 @@ def connect_device(ip, hostname, username, password, platform, session=None, por
         library=_ssh_library_block())
     resolved = platform
     if platform in ("auto", ""):                       # CHANGED-V3.23.1: detect once,
-        resolved = autodetect_platform(ip, username, password)  # not per retry
+        resolved = autodetect_platform(ip, username, password, port=port)  # not per retry; the row's own port
         recorder.platform_source = "autodetect"        # the autodetect probe itself is not observed (§4.2)
     attempts = max(1, CONNECT_MAX_ATTEMPTS)
     last_err = None
@@ -1370,7 +1375,8 @@ def connect_device(ip, hostname, username, password, platform, session=None, por
                 # changes between attempts), and it is never retried over a weaker profile either.
                 recorder.finish_failure("negotiation_refused", e, refusal)
                 logger.error(f"[REFUSED] {hostname}: SSH negotiation refused ({refusal['classification']}): "
-                             f"{ssh_session.refusal_message(refusal, recorder.consent)} (not retrying)")
+                             f"{ssh_session.refusal_message(refusal, recorder.consent, observation.snapshot())} "
+                             "(not retrying)")
                 return None, resolved
             if attempt < attempts:
                 wait = CONNECT_BACKOFF_BASE * attempt
@@ -1402,16 +1408,53 @@ RUN_RECORD_FAILED = "failed"
 RUN_RECORD_CONFLICT = "conflict"
 
 
-def _unlink_stale_session_record(path: str) -> None:
+#: The attribute a failed stale-record removal's exception carries: how many ``os.unlink`` attempts were made.
+UNLINK_ATTEMPTS_ATTRIBUTE = "ssh_record_unlink_attempts"
+
+
+def _attempt_count(exc: BaseException, attribute: str) -> int:
+    """The attempt count a failed record operation's exception carries (0 when it carries none or a non-count)."""
+    n = getattr(exc, attribute, 0)
+    return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else 0
+
+
+def _unlink_stale_session_record(path: str, *, unlink: Optional[Callable[[str], None]] = None,
+                                 sleep: Optional[Callable[[float], None]] = None) -> int:
     """Remove the session record an earlier run left at `path` before this run writes its own (a missing file is
     fine). Raises when an existing record cannot be removed: the device is then NOT connected, so a stale record can
-    never stand beside a session this run opened (P2-a)."""
-    if os.path.lexists(path):
-        os.unlink(path)
+    never stand beside a session this run opened (P2-a).
+
+    W59 PR-1 review: on Windows an on-access scanner or the indexer holds exactly this file for a moment, so one
+    attempt turned a transient sharing violation into a device left uncollected for the whole run. The removal is
+    retried over the same bounded backoff as the atomic replace (``ssh_session.REPLACE_BACKOFF_S``: seven attempts,
+    3.15 s in all). Returns the attempt count (0: nothing to remove); a final failure carries it on the exception as
+    :data:`UNLINK_ATTEMPTS_ATTRIBUTE`, so the manifest's record failure discloses it. ``unlink`` / ``sleep`` default to
+    ``os.unlink`` / ``time.sleep`` (injectable for tests)."""
+    unlink = unlink or os.unlink
+    sleep = sleep or time.sleep
+    attempts = 0
+    for delay in ssh_session.REPLACE_BACKOFF_S + (None,):
+        if not os.path.lexists(path):
+            return attempts
+        attempts += 1
+        try:
+            unlink(path)
+            return attempts
+        except FileNotFoundError:
+            return attempts                      # gone between the check and the unlink: nothing stale remains
+        except OSError as exc:
+            if delay is None:
+                try:
+                    setattr(exc, UNLINK_ATTEMPTS_ATTRIBUTE, attempts)
+                except Exception:                                       # noqa: BLE001 - an exception without __dict__
+                    pass
+                raise
+            sleep(delay)
+    return attempts
 
 
 def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any,
-                         on_record_failure: Callable[[str, str, str, int], None],
+                         on_record_failure: Callable[..., None],
                          written: Optional[Dict[str, str]] = None) -> Tuple[str, Optional[Dict[str, str]]]:
     """ONE device's live collection: session record, connection, command sweep, disconnect.
 
@@ -1421,8 +1464,9 @@ def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any
     removed first, and a removal that fails leaves the device unconnected (P2-a). `written` (host -> one of
     RUN_RECORD_*) is where the run learns which sidecars it wrote itself. Returns ``(platform, cmd_to_file)`` with
     ``cmd_to_file=None`` when the device was not collected. `on_record_failure(host, stage, error_class,
-    replace_attempts)` lands a record-write failure, with the writer's atomic-replace attempt count, in the run
-    manifest's consent block."""
+    replace_attempts[, unlink_attempts])` lands a record-write failure, with the writer's atomic-replace attempt
+    count, in the run manifest's consent block; a stale record that could not be removed
+    (``ssh_session.RECORD_STAGE_STALE_UNLINK``) adds the removal's own attempt count as the fifth argument."""
     hostname = devinfo["hostname"]
     platform = devinfo["platform"]
     recorder = _session_recorder_for(devinfo, dev_dir)
@@ -1440,21 +1484,24 @@ def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any
         claimed.add(sidecar_key)
         if duplicate and written is not None:
             written[hostname] = RUN_RECORD_CONFLICT
-    stage = "pending"
+    stage = ssh_session.RECORD_STAGE_PENDING
     try:
         if duplicate:
             raise FileExistsError("another device in this run already claimed this session record")
         port = _ssh_port(devinfo)
         os.makedirs(dev_dir, exist_ok=True)
-        stage = "stale_record_unlink"
+        stage = ssh_session.RECORD_STAGE_STALE_UNLINK
         _unlink_stale_session_record(recorder.path)
-        stage = "pending"
+        stage = ssh_session.RECORD_STAGE_PENDING
         recorder.write_pending()
     except Exception as e:                                              # noqa: BLE001
         _mark(RUN_RECORD_FAILED)
-        attempts = getattr(e, ssh_session.REPLACE_ATTEMPTS_ATTRIBUTE, 0)
-        on_record_failure(hostname, stage, type(e).__name__,
-                          attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0)
+
+        if stage == ssh_session.RECORD_STAGE_STALE_UNLINK:
+            on_record_failure(hostname, stage, type(e).__name__, 0, _attempt_count(e, UNLINK_ATTEMPTS_ATTRIBUTE))
+        else:
+            on_record_failure(hostname, stage, type(e).__name__,
+                              _attempt_count(e, ssh_session.REPLACE_ATTEMPTS_ATTRIBUTE))
         logger.error(f"  [FAIL] {hostname}: the SSH session record could not be written before connecting "
                      f"({stage}: {type(e).__name__}: {e}); the device is NOT connected")
         return platform, None
@@ -1463,7 +1510,7 @@ def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any
     dev, platform = connect_device(devinfo["ip"], hostname, devinfo["username"], devinfo["password"], platform,
                                    session=recorder, port=port)
     for fail in recorder.write_failures:
-        if fail.get("stage") != "pending":
+        if fail.get("stage") != ssh_session.RECORD_STAGE_PENDING:
             on_record_failure(hostname, fail.get("stage", "?"), fail.get("error_class", "?"),
                               fail.get("replace_attempts", 0))
     if not dev:
@@ -4495,12 +4542,15 @@ def main():
     # run WROTE are read as current posture; any other sidecar in the folder is `unknown`, never a stale `modern`.
     _ssh_run_records: Dict[str, str] = {}
 
-    def _ssh_record_failure(hostname: str, stage: str, error_class: str, replace_attempts: int = 0) -> None:
+    def _ssh_record_failure(hostname: str, stage: str, error_class: str, replace_attempts: int = 0,
+                            unlink_attempts: int = 0) -> None:
+        # Every entry has the same five keys: the atomic-replace attempts of a record write, and the removal attempts
+        # of a stale record (W59 PR-1 review: the removal is retried too, and a failed one says how hard it tried).
         with _progress_lock:
             fails = _ssh_consent.setdefault("record_failures", [])
             if isinstance(fails, list):
                 fails.append({"host": hostname, "stage": stage, "error_class": error_class,
-                              "replace_attempts": replace_attempts})
+                              "replace_attempts": replace_attempts, "unlink_attempts": unlink_attempts})
 
     def collect_one(devinfo):
         hostname = devinfo["hostname"]

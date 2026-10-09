@@ -2087,7 +2087,12 @@ def write_runbook_docx(
             "cautious software-train lifecycle classification. This is screening, NOT a "
             "vulnerability scan — validate every running release with the Cisco PSIRT Software "
             "Checker before drawing release-level conclusions.")
-        _sr_find = _R(sr.get("findings"))
+        # W59 PR-1 review (P3-h): the session-evidenced ssh-legacy-transport findings share software_risk.findings with
+        # the configuration surfaces but are the collector's own negotiated SSH sessions: counted and listed apart,
+        # with no PSIRT step (owner: ssh_session.partition_software_findings). Without one this reads as before W59.
+        from cisco_toolkit.ssh_session import (SURFACE_COUNT_NOUN as _SSH_NOUN, SURFACE_NO_PSIRT as _SSH_NO_PSIRT,
+                                               partition_software_findings as _sr_partition)
+        _sr_find, _sr_ssh = _sr_partition(_R(sr.get("findings")))
         rrows = []
         for f in _sr_find[:15]:
             adv = "; ".join(f"{a.get('cve')}" for a in _as_list(f.get("advisories"))) or "—"
@@ -2102,6 +2107,11 @@ def write_runbook_docx(
             doc.add_paragraph("No exposed advisory surfaces on the config-assessable devices."
                               if rsum.get("n_config_assessable") else
                               "No full running-config captures — surface screening not assessable.")
+        if _sr_ssh:
+            doc.add_paragraph(
+                f"Separately, {len(_sr_ssh)} {_SSH_NOUN}: "
+                + _join_cap(sorted({str(f.get('host')) for f in _sr_ssh if f.get('host')}), 40, ", ")
+                + f". {_SSH_NO_PSIRT} Each device's disclosure is in §2.2 (Collection transport).")
         tb = _as_dict(rsum.get("train_bands"))
         worst = [b for b in ("Replace/Upgrade", "Verify EoL") if tb.get(b)]
         if worst:

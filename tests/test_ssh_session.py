@@ -310,6 +310,17 @@ _CONNECTION_CONSTRUCTOR_SITES = {
     "_ObservedClientMixin._get_ssh_client_instance": ["_ObservedSSHClient"],
     "_ObservedSSHClient.connect._transport_factory": ["transport_cls"],
 }
+#: W59 PR-1 review (P3-f, round 2): the ONLY sites that hand a connection-capable value to other code as a call
+#: argument, each with the callee it hands it to. The factory passes the profile's transport class to the cached
+#: driver builder; the client hook passes it to the client it constructs; the library probe passes paramiko's stock
+#: classes to ``ssh_session.permits_sha1``, which reads their tables and calls nothing. A tainted value handed to any
+#: other callee (a helper that calls it, ``functools.partial``, ``setattr``, ``map``, ``sorted(key=...)``) is a route
+#: this guard does not follow into, so the hand-over is a violation by itself.
+_CONNECTION_ARGUMENT_SITES = {
+    "_open_connection": ["_observed_driver_for"],
+    "_ObservedClientMixin._get_ssh_client_instance": ["_ObservedSSHClient"],
+    "_ssh_library_block": ["ssh_session.permits_sha1"],
+}
 _SSH_LIBRARIES = ("netmiko", "paramiko")
 
 
@@ -330,26 +341,454 @@ def _connection_roots(tree):
     return roots
 
 
-def _mentions(node, tainted):
-    return any(isinstance(n, ast.Name) and n.id in tainted for n in ast.walk(node))
+# A value's taint SHAPE: False (carries nothing), True (a connection-capable class, callable or module), (_SEQ, (s,
+# ...)) a tuple or list display with one shape per element, or (_BAG, s) any other container whose members have shape s.
+_SEQ, _BAG = "seq", "bag"
+#: calls whose result can be ANY name -- a namespace, an import by string, an evaluated string -- so it is a root
+_DYNAMIC_ROOT_CALLS = frozenset({"__import__", "import_module", "globals", "vars", "locals", "eval"})
+#: calls that execute code from a string: each is a violation by itself, whatever it is handed
+_DYNAMIC_CODE_CALLS = frozenset({"exec", "eval", "compile"})
+#: readers the shape model already follows: handing them a tainted value hands it to no code
+_READERS = frozenset({"type", "getattr", "isinstance", "issubclass", "hasattr"})
+#: container operations that never call what they are given; on an already-tainted container they keep it tainted
+_CONTAINER_OPS = frozenset({"get", "setdefault", "pop", "append", "extend", "insert", "add", "update", "index",
+                            "count", "remove", "discard", "copy", "items", "keys", "values"})
+#: attribute reads that are data, never a class (a class's name, a module's version)
+_DATA_DUNDERS = frozenset({"__name__", "__qualname__", "__module__", "__version__", "__doc__"})
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
-def _class_valued(node, tainted, factories):
-    """True when expression `node` evaluates to a connection-capable class or callable: a tainted name, an attribute
-    chain or subscript rooted at one, ``getattr(<tainted>, ...)``, ``type(name, <bases naming one>, ...)``, or a call to
-    a function that returns one (a class factory such as ``_observed_driver_for``). A CALL of a tainted callable is an
-    instance, not a class, and taints nothing."""
-    if isinstance(node, ast.Name):
-        return node.id in tainted
-    if isinstance(node, (ast.Attribute, ast.Subscript)):
-        return _class_valued(node.value, tainted, factories)
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id == "type" and len(node.args) >= 2:
-            return _mentions(node.args[1], tainted)
-        if node.func.id == "getattr" and node.args:
-            return _class_valued(node.args[0], tainted, factories)
-        return node.func.id in factories
+def _any(shape):
+    if shape is True:
+        return True
+    if isinstance(shape, tuple):
+        return _any(shape[1]) if shape[0] == _BAG else any(_any(e) for e in shape[1])
     return False
+
+
+def _elem(shape):
+    """What iterating, indexing or a container operation on a value of `shape` yields."""
+    if shape is True:
+        return True
+    if isinstance(shape, tuple):
+        if shape[0] == _BAG:
+            return shape[1]
+        out = False
+        for e in shape[1]:
+            out = _join(out, e)
+        return out
+    return False
+
+
+def _join(a, b):
+    if a is True or b is True:
+        return True
+    if not a:
+        return b
+    if not b:
+        return a
+    if a == b:
+        return a
+    if a[0] == b[0] == _SEQ and len(a[1]) == len(b[1]):
+        return (_SEQ, tuple(_join(x, y) for x, y in zip(a[1], b[1])))
+    return (_BAG, _join(_elem(a), _elem(b)))
+
+
+def _bag(shape):
+    return (_BAG, shape) if _any(shape) else False
+
+
+def _target_names(target):
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for e in target.elts:
+            yield from _target_names(e)
+    elif isinstance(target, ast.Starred):
+        yield from _target_names(target.value)
+
+
+class _Scopes:
+    """Python's own name resolution, statically: each function (and lambda) has its locals -- parameters and every
+    name it binds, minus its ``global`` / ``nonlocal`` declarations -- and a name resolves to the innermost enclosing
+    FUNCTION that binds it (class bodies are skipped, as Python skips them), else to the module. A method's first
+    parameter is keyed by its class, so ``self`` in one method is the same object as in another."""
+
+    def __init__(self, tree):
+        self.scope_of, self.parent, self.locals, self.kind, self.self_key = {}, {}, {"<module>": set()}, {}, {}
+        self.defs = {}                                   # binding key of a def/class -> its node
+        self._visit(tree, "<module>")
+
+    def _bound(self, node):
+        out = set()
+        if isinstance(node, _FUNCS):
+            a = node.args
+            out |= {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+            out |= {x.arg for x in (a.vararg, a.kwarg) if x is not None}
+        declared = set()
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        stack = list(body) if isinstance(body, list) else [body]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (ast.Global, ast.Nonlocal)):
+                declared |= set(n.names)
+                continue
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(n.name)
+                stack.extend(n.decorator_list)
+                if not isinstance(n, ast.ClassDef):
+                    stack.extend(n.args.defaults + [d for d in n.args.kw_defaults if d is not None])
+                else:
+                    stack.extend(n.bases + [k.value for k in n.keywords])
+                continue                                 # its body is its own scope
+            if isinstance(n, ast.Lambda):
+                stack.extend(n.args.defaults + [d for d in n.args.kw_defaults if d is not None])
+                continue
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                out.add(n.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                out |= {(a.asname or a.name).split(".")[0] for a in n.names}
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                out.add(n.name)
+            stack.extend(ast.iter_child_nodes(n))
+        return out - declared, declared
+
+    def _visit(self, node, scope):
+        for child in ast.iter_child_nodes(node):
+            self.scope_of[id(child)] = scope
+            if isinstance(child, (*_FUNCS, ast.ClassDef)):
+                name = getattr(child, "name", f"<lambda@{child.lineno}:{child.col_offset}>")
+                inner = name if scope == "<module>" else f"{scope}.{name}"
+                if not isinstance(child, ast.Lambda):
+                    where = (scope, name) if self.kind.get(scope) == "class" else self.resolve_name(name, scope)
+                    self.defs.setdefault(where, []).append(child)
+                self.parent[inner] = scope
+                self.kind[inner] = "class" if isinstance(child, ast.ClassDef) else "function"
+                if isinstance(child, ast.ClassDef):
+                    self.locals[inner] = set()
+                    for item in child.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.args.args:
+                            self.self_key[(f"{inner}.{item.name}", item.args.args[0].arg)] = ("<self>", inner)
+                else:
+                    self.locals[inner], _declared = self._bound(child)
+                # decorators, defaults and bases are evaluated in the ENCLOSING scope
+                for sub in (getattr(child, "decorator_list", []) + getattr(child, "bases", [])
+                            + [k.value for k in getattr(child, "keywords", [])]):
+                    self._mark(sub, scope)
+                if isinstance(child, _FUNCS):
+                    for d in child.args.defaults + [d for d in child.args.kw_defaults if d is not None]:
+                        self._mark(d, scope)
+                self._visit_body(child, inner)
+            else:
+                self._visit(child, scope)
+
+    def _mark(self, node, scope):
+        for sub in ast.walk(node):
+            self.scope_of[id(sub)] = scope
+        self._visit(node, scope)
+
+    def _visit_body(self, node, scope):
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        for stmt in body:
+            self.scope_of[id(stmt)] = scope
+            if isinstance(stmt, (*_FUNCS, ast.ClassDef)):
+                wrapper = ast.Module(body=[stmt], type_ignores=[])
+                self._visit(wrapper, scope)
+            else:
+                self._visit(stmt, scope)
+
+    def resolve_name(self, name, scope):
+        """The binding key of `name` read in `scope`."""
+        if (scope, name) in self.self_key:
+            return self.self_key[(scope, name)]
+        s, first = scope, True
+        while s != "<module>":
+            if (self.kind.get(s) == "function" or first) and name in self.locals.get(s, ()):
+                return (s, name)
+            first = False
+            s = self.parent.get(s, "<module>")
+        return ("<module>", name)
+
+    def key(self, node):
+        scope = self.scope_of.get(id(node), "<module>")
+        # a method's first parameter, anywhere inside that method (nested closures included)
+        s = scope
+        while s != "<module>":
+            if (s, node.id) in self.self_key:
+                return self.self_key[(s, node.id)]
+            if node.id in self.locals.get(s, ()) and self.kind.get(s) == "function":
+                break
+            s = self.parent.get(s, "<module>")
+        return self.resolve_name(node.id, scope)
+
+
+class _Env:
+    """Shapes of every binding key, of every (receiver, attribute) store, and of what every def returns."""
+
+    def __init__(self, tree):
+        self.scopes = _Scopes(tree)
+        self.names = {("<module>", name): True for name in _connection_roots(tree)}
+        for node in ast.walk(tree):                      # a root bound inside a function is that function's local
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                scope = self.scopes.scope_of.get(id(node), "<module>")
+                for alias in node.names:
+                    bound = (alias.asname or alias.name).split(".")[0]
+                    if bound in _connection_roots(ast.Module(body=[node], type_ignores=[])):
+                        self.names[self.scopes.resolve_name(bound, scope)] = True
+        self.attrs, self.returns, self.methods = {}, {}, {}
+        self.changed = False
+
+    def key(self, node):
+        return self.scopes.key(node)
+
+    def receiver(self, node):
+        return self.key(node) if isinstance(node, ast.Name) else ast.unparse(node)
+
+    def put(self, table, key, shape):
+        if not shape:
+            return
+        old = table.get(key, False)
+        new = _join(old, shape)
+        if new != old:
+            table[key] = new
+            self.changed = True
+
+    # ------------------------------------------------------------------------------------------- shapes ---
+    def shape(self, node):
+        if node is None:
+            return False
+        if isinstance(node, ast.Name):
+            key = self.key(node)
+            own = self.names.get(key, False)
+            for (recv, _attr), s in self.attrs.items():
+                if recv == key:                     # an object carrying a tainted attribute, used whole
+                    own = _join(own, _bag(s))
+            return own
+        if isinstance(node, ast.Attribute):
+            if node.attr in _DATA_DUNDERS:
+                return False
+            base = self.names.get(self.key(node.value), False) if isinstance(node.value, ast.Name) \
+                else self.shape(node.value)
+            if base is True:
+                return True
+            return self.attrs.get((self.receiver(node.value), node.attr), False)
+        if isinstance(node, ast.Subscript):
+            if ast.unparse(node.value) in ("sys.modules", "modules"):
+                key = node.slice
+                return not (isinstance(key, ast.Constant) and isinstance(key.value, str)) \
+                    or key.value.split(".")[0] in _SSH_LIBRARIES
+            base = self.shape(node.value)
+            if isinstance(base, tuple) and base[0] == _SEQ and isinstance(node.slice, ast.Constant) \
+                    and isinstance(node.slice.value, int) and -len(base[1]) <= node.slice.value < len(base[1]):
+                return base[1][node.slice.value]
+            return _elem(base)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            if any(isinstance(e, ast.Starred) for e in node.elts):
+                out = False
+                for e in node.elts:
+                    out = _join(out, _elem(self.shape(e.value)) if isinstance(e, ast.Starred) else self.shape(e))
+                return _bag(out)
+            elts = tuple(self.shape(e) for e in node.elts)
+            return (_SEQ, elts) if any(_any(e) for e in elts) else False
+        if isinstance(node, ast.Set):
+            out = False
+            for e in node.elts:
+                out = _join(out, self.shape(e))
+            return _bag(out)
+        if isinstance(node, ast.Dict):
+            out = False
+            for k, v in zip(node.keys, node.values):
+                out = _join(out, self.shape(k) if k is not None else False)
+                out = _join(out, self.shape(v) if k is not None else _elem(self.shape(v)))
+            return _bag(out)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return _bag(self.shape(node.elt))
+        if isinstance(node, ast.DictComp):
+            return _bag(_join(self.shape(node.key), self.shape(node.value)))
+        if isinstance(node, ast.IfExp):
+            return _join(self.shape(node.body), self.shape(node.orelse))
+        if isinstance(node, ast.BoolOp):
+            out = False
+            for v in node.values:
+                out = _join(out, self.shape(v))
+            return out
+        if isinstance(node, (ast.NamedExpr, ast.Starred, ast.Await, ast.YieldFrom)):
+            return self.shape(node.value)
+        if isinstance(node, ast.Lambda):
+            return True if _any(self.shape(node.body)) else False
+        if isinstance(node, ast.Call):
+            return self.call_shape(node)
+        return False
+
+    @staticmethod
+    def callee_name(func):
+        return func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+
+    def defs_of(self, call):
+        """The defs a call reaches: a resolvable name's own def (a class's ``__init__``), or every method of that
+        name for an attribute call (the receiver's class is not resolved statically, so all of them)."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            for node in self.scopes.defs.get(self.key(func), ()):
+                if isinstance(node, ast.ClassDef):
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+                            yield item, True
+                else:
+                    yield node, False
+        elif isinstance(func, ast.Attribute):
+            for key, nodes in self.scopes.defs.items():
+                if key[1] == func.attr and self.scopes.kind.get(key[0]) == "class":
+                    for node in nodes:
+                        if not isinstance(node, ast.ClassDef):
+                            yield node, True
+
+    def call_shape(self, node):
+        func = node.func
+        name = self.callee_name(func)
+        if name == "type" and len(node.args) >= 2:
+            return True if _any(self.shape(node.args[1])) else False
+        if name == "getattr" and isinstance(func, ast.Name) and node.args:
+            attr = node.args[1] if len(node.args) >= 2 else None
+            if isinstance(attr, ast.Constant) and attr.value in _DATA_DUNDERS:
+                return False
+            base = self.names.get(self.key(node.args[0]), False) if isinstance(node.args[0], ast.Name) \
+                else self.shape(node.args[0])
+            if base is True:
+                return True
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                return self.attrs.get((self.receiver(node.args[0]), attr.value), False)
+            return _elem(self.shape(node.args[0]))     # a computed attribute name: whatever the object carries
+        if name in ("__import__", "import_module"):
+            arg = node.args[0] if node.args else None
+            return not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)) \
+                or arg.value.split(".")[0] in _SSH_LIBRARIES
+        if name in _DYNAMIC_ROOT_CALLS and isinstance(func, ast.Name):
+            return True
+        if name == "partial" and node.args and _any(self.shape(node.args[0])):
+            return True
+        out = False
+        for fn, _method in self.defs_of(node):
+            out = _join(out, self.returns.get(id(fn), False))
+        if out:
+            return out
+        if self.shape(func) is True:
+            return False                           # calling a class builds an instance, which taints nothing
+        if isinstance(func, ast.Attribute) and name in _CONTAINER_OPS:
+            recv = self.shape(func.value)
+            if isinstance(recv, tuple):
+                return _elem(recv)                 # a container operation hands back what the container holds
+        return False
+
+    # ------------------------------------------------------------------------------------------ binding ---
+    def bind(self, target, shape, value=None):
+        if isinstance(target, ast.Name):
+            key = self.key(target)
+            self.put(self.names, key, shape)
+            if isinstance(value, ast.Name):        # an alias of an object carrying tainted attributes
+                src = self.key(value)
+                for (recv, attr), s in list(self.attrs.items()):
+                    if recv == src:
+                        self.put(self.attrs, (key, attr), s)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            starred = any(isinstance(e, ast.Starred) for e in target.elts)
+            if not starred and isinstance(shape, tuple) and shape[0] == _SEQ and len(shape[1]) == len(target.elts):
+                vals = value.elts if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(
+                    target.elts) else [None] * len(target.elts)
+                for e, s, v in zip(target.elts, shape[1], vals):
+                    self.bind(e, s, v)
+            else:
+                for e in target.elts:
+                    self.bind(e, _bag(_elem(shape)) if isinstance(e, ast.Starred) else _elem(shape))
+        elif isinstance(target, ast.Starred):
+            self.bind(target.value, shape)
+        elif isinstance(target, ast.Attribute):
+            self.put(self.attrs, (self.receiver(target.value), target.attr), shape)
+        elif isinstance(target, ast.Subscript):
+            root = target.value                    # storing into a container taints the container
+            if isinstance(root, ast.Name):
+                self.put(self.names, self.key(root), _bag(shape))
+            elif isinstance(root, ast.Attribute):
+                self.put(self.attrs, (self.receiver(root.value), root.attr), _bag(shape))
+
+    def bind_params(self, fn, call, skip_self):
+        scope = self.scopes.scope_of.get(id(fn.body[0] if isinstance(fn.body, list) else fn.body), None)
+        args = fn.args
+        params = [a.arg for a in args.posonlyargs + args.args]
+        if skip_self and params:
+            params = params[1:]
+
+        def put(param, shape):
+            self.put(self.names, (scope, param), shape)
+
+        for i, a in enumerate(call.args):
+            if isinstance(a, ast.Starred):
+                for q in params[i:]:
+                    put(q, _elem(self.shape(a.value)))
+                if args.vararg is not None:
+                    put(args.vararg.arg, _bag(_elem(self.shape(a.value))))
+                break
+            if i < len(params):
+                put(params[i], self.shape(a))
+            elif args.vararg is not None:
+                put(args.vararg.arg, _bag(self.shape(a)))
+        named = set(params) | {a.arg for a in args.kwonlyargs}
+        for kw in call.keywords:
+            if kw.arg is None:
+                for q in named:
+                    put(q, _elem(self.shape(kw.value)))
+                if args.kwarg is not None:
+                    put(args.kwarg.arg, self.shape(kw.value))
+            elif kw.arg in named:
+                put(kw.arg, self.shape(kw.value))
+            elif args.kwarg is not None:
+                put(args.kwarg.arg, _bag(self.shape(kw.value)))
+
+    def step(self, tree):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                if any(_any(self.shape(b)) for b in list(node.bases) + [k.value for k in node.keywords]):
+                    self.put(self.names, self.scopes.resolve_name(node.name, self.scopes.scope_of.get(
+                        id(node), "<module>")), True)
+            elif isinstance(node, ast.Assign):
+                s = self.shape(node.value)
+                for t in node.targets:
+                    self.bind(t, s, node.value)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+                self.bind(node.target, self.shape(node.value), node.value)
+            elif isinstance(node, ast.NamedExpr):
+                self.bind(node.target, self.shape(node.value), node.value)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                self.bind(node.target, _elem(self.shape(node.iter)))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        self.bind(item.optional_vars, self.shape(item.context_expr))
+            elif isinstance(node, _FUNCS):
+                args = node.args
+                positional = args.posonlyargs + args.args
+                inner = self.scopes.scope_of.get(id(node.body[0] if isinstance(node.body, list) else node.body))
+                for a, d in zip(positional[len(positional) - len(args.defaults):], args.defaults):
+                    self.put(self.names, (inner, a.arg), self.shape(d))
+                for a, d in zip(args.kwonlyargs, args.kw_defaults):
+                    if d is not None:
+                        self.put(self.names, (inner, a.arg), self.shape(d))
+                if not isinstance(node, ast.Lambda):
+                    out = False
+                    stack = list(node.body)
+                    while stack:
+                        r = stack.pop()
+                        if isinstance(r, (*_FUNCS, ast.ClassDef)):
+                            continue                 # a nested def's returns are its own
+                        if isinstance(r, ast.Return) and r.value is not None:
+                            out = _join(out, self.shape(r.value))
+                        elif isinstance(r, (ast.Yield, ast.YieldFrom)) and r.value is not None:
+                            out = _join(out, _bag(self.shape(r.value)))
+                        stack.extend(ast.iter_child_nodes(r))
+                    self.put(self.returns, id(node), out)
+            elif isinstance(node, ast.Call):
+                for fn, skip_self in self.defs_of(node):
+                    self.bind_params(fn, node, skip_self)
 
 
 def _qualified_owners(tree):
@@ -371,63 +810,76 @@ def _qualified_owners(tree):
 
 
 def _connection_constructor_calls(tree):
-    """{qualified owner: sorted callee sources} for every call that constructs (or calls) a connection-capable
-    object. Taint is a fixpoint over the whole module: class definitions with a tainted base, assignments of a
-    class-valued expression (tuple targets included), and functions returning one (class factories). Taint is by
-    name and scope-insensitive -- a conservative over-approximation: a false positive fails loudly, never silently."""
-    tainted, factories = set(_connection_roots(tree)), set()
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name not in tainted \
-                    and any(_mentions(base, tainted) for base in node.bases):
-                tainted.add(node.name)
-                changed = True
-            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-                value = node.value
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for target in targets:
-                    pairs = (list(zip(target.elts, value.elts))
-                             if isinstance(target, ast.Tuple) and isinstance(value, ast.Tuple)
-                             and len(target.elts) == len(value.elts) else [(target, value)])
-                    for tgt, val in pairs:
-                        # only a NAME binding carries the class on; storing it into a container or attribute
-                        # (``_OBSERVED_DRIVERS[key] = cls``) taints neither the container nor its key
-                        names = [tgt] if isinstance(tgt, ast.Name) else [
-                            e for e in getattr(tgt, "elts", ()) if isinstance(e, ast.Name)]
-                        if _class_valued(val, tainted, factories):
-                            for n in names:
-                                if n.id not in tainted:
-                                    tainted.add(n.id)
-                                    changed = True
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name not in factories:
-                if any(isinstance(r, ast.Return) and r.value is not None
-                       and _class_valued(r.value, tainted, factories) for r in ast.walk(node)):
-                    factories.add(node.name)
-                    changed = True
+    """``(constructs, hands_over, tainted, factories)`` over the module `tree`: ``{qualified owner: sorted callee
+    sources}`` for every call that constructs through a connection-capable callee (and every ``exec`` / ``eval`` /
+    ``compile``), the same for every call a connection-capable value is handed to as an argument (the readers and the
+    container operations the shape model follows excepted), the set of tainted binding keys ``(scope, name)``, and the
+    names of the defs that return a tainted value. The taint is a fixpoint over the whole module (see the T8 test)."""
+    env = _Env(tree)
+    for _ in range(64):
+        env.changed = False
+        env.step(tree)
+        if not env.changed:
+            break
+    else:
+        raise AssertionError("the taint fixpoint did not converge")
     owners = _qualified_owners(tree)
-    found = {}
+    found, passes = {}, {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _class_valued(node.func, tainted, factories) \
-                and not (isinstance(node.func, ast.Name) and node.func.id in ("type", "getattr")):
-            found.setdefault(owners.get(id(node), "<module>"), []).append(ast.unparse(node.func))
-    return {owner: sorted(callees) for owner, callees in found.items()}, tainted, factories
+        owner = owners.get(id(node), "<module>")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for dec in node.decorator_list:
+                if env.shape(dec.func if isinstance(dec, ast.Call) else dec) is True:
+                    found.setdefault(owner, []).append("@" + ast.unparse(dec))
+        if not isinstance(node, ast.Call):
+            continue
+        name = env.callee_name(node.func)
+        if isinstance(node.func, ast.Name) and name in _DYNAMIC_CODE_CALLS:
+            found.setdefault(owner, []).append(name)
+            continue
+        if env.shape(node.func) is True and not (isinstance(node.func, ast.Name) and name in _READERS):
+            found.setdefault(owner, []).append(ast.unparse(node.func))
+        if isinstance(node.func, ast.Name) and name in _READERS:
+            continue
+        if isinstance(node.func, ast.Attribute) and name in _CONTAINER_OPS and isinstance(
+                env.shape(node.func.value), tuple):
+            continue
+        if any(_any(env.shape(a)) for a in node.args) or any(_any(env.shape(k.value)) for k in node.keywords):
+            passes.setdefault(owner, []).append(ast.unparse(node.func))
+    factories = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and env.returns.get(id(n))}
+    return ({o: sorted(c) for o, c in found.items()}, {o: sorted(c) for o, c in passes.items()},
+            {key for key, shape in env.names.items() if _any(shape)}, factories)
 
 
 def test_t8_open_connection_is_the_only_constructor_of_a_netmiko_connection():
-    """T8 (default half), structural (W59 PR-1 review, P3-f). Every name the netmiko / paramiko imports bind is a
-    root; attribute chains, subscripts, getattr, aliases, subclasses, ``type()`` compositions and class-returning
-    functions propagate from it. No connection-capable callee may be CALLED outside the four named sites, and each
-    named site constructs exactly through its declared callee. Catches: ``_netmiko.ConnectHandler(...)``,
+    """T8 (default half), structural (W59 PR-1 review, P3-f, closed in round 2). Every name the netmiko / paramiko
+    imports bind is a root, and so is every dynamic route to a name (``importlib.import_module`` / ``__import__`` of
+    either library or of a computed name, ``sys.modules[...]``, ``globals()`` / ``vars()`` / ``locals()`` /
+    ``eval``). Taint flows through every binding and expression form: assignment and augmented assignment, tuple
+    unpacking (element-wise), conditional expressions and ``and`` / ``or``, tuple / list / set / dict displays and
+    comprehensions, ``for`` and comprehension targets, ``with ... as``, the walrus, attribute stores (keyed by the
+    receiver, ``self`` by its class) and aliases of their receiver, subscript stores into a container, function
+    parameters (bound from every resolvable call and from defaults), returns and ``yield`` (class factories),
+    lambdas, ``functools.partial``, subclasses and ``type()`` compositions. Names resolve as Python resolves them
+    (innermost enclosing function, then the module), so an unrelated local of the same name is never tainted.
+    No connection-capable callee may be CALLED outside the four named sites, each constructs exactly through its
+    declared callee, no connection-capable value may be HANDED to code outside the three named argument sites, and
+    ``exec`` / ``eval`` / ``compile`` appear nowhere. Catches ``_netmiko.ConnectHandler(...)``,
     ``CLASS_MAPPER[...](...)``, ``getattr(_netmiko, ...)(...)``, an aliased class map, ``_paramiko.SSHClient()``, a
-    second ``_observed_driver_for(...)(...)`` -- any route that bypasses the observer and the live-safety patch
-    point -- where the old guard matched only a hand-listed set of spellings."""
+    second ``_observed_driver_for(...)(...)`` and every shape in the bypass list below -- any route that bypasses the
+    observer and the live-safety patch point.
+
+    What it does not establish: it is static and by name. An INSTANCE's own methods are not followed (constructing one
+    is what it guards), a callee resolved only at run time through an object it cannot see is not followed except
+    through the argument rule, and source text executed from a string is refused outright rather than analysed."""
     tree = _engine_tree()
-    found, tainted, factories = _connection_constructor_calls(tree)
+    found, passes, tainted, factories = _connection_constructor_calls(tree)
     assert {"_netmiko", "_paramiko", "_NETMIKO_CLASS_MAPPER", "SSHDetect"} <= _connection_roots(tree)
     assert {"_observed_driver_for", "_transport_for_profile"} <= factories, factories     # non-vacuity
+    assert ("_open_connection", "transport_cls") in tainted and ("_observed_driver_for", "cls") in tainted
     assert found == _CONNECTION_CONSTRUCTOR_SITES, found
+    assert passes == _CONNECTION_ARGUMENT_SITES, passes
     assert not [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "ConnectHandler"]
     owners = _qualified_owners(tree)
     for callee, callers in (("_open_connection", ["connect_device"]), ("autodetect_platform", ["connect_device"])):
@@ -435,6 +887,18 @@ def test_t8_open_connection_is_the_only_constructor_of_a_netmiko_connection():
                and isinstance(n.func, ast.Name) and n.func.id == callee]
         assert got == callers, (callee, got)
     assert not hasattr(C, "ConnectHandler"), "a stale `C.ConnectHandler` patch must fail loudly, not pass silently"
+
+
+def test_t8_an_unrelated_local_of_a_tainted_name_is_not_tainted():
+    """The scan resolves names as Python does, so the guard is exact without false positives: a function elsewhere
+    whose locals are also called ``base`` / ``cls`` / ``driver`` (names the factory's own locals use) constructs
+    nothing connection-capable, and a method's ``self`` belongs to its own class."""
+    extra = ("def _elsewhere(rows):\n    base = dict(rows)\n    cls = type(base)\n    driver = cls()\n"
+             "    return driver\n\nclass _Other:\n    def __init__(self):\n        self._ssh_transport_cls = int\n\n"
+             "    def run(self):\n        return self._ssh_transport_cls(3)\n")
+    found, passes, _tainted, _factories = _connection_constructor_calls(
+        ast.parse(ENGINE.read_text(encoding="utf-8") + "\n\n" + extra))
+    assert found == _CONNECTION_CONSTRUCTOR_SITES and passes == _CONNECTION_ARGUMENT_SITES, (found, passes)
 
 
 @pytest.mark.parametrize("bypass", [
@@ -447,13 +911,52 @@ def test_t8_open_connection_is_the_only_constructor_of_a_netmiko_connection():
     "def _bypass():\n    client = _paramiko.SSHClient()\n    return client\n",
     "class _Sneaky(_paramiko.SSHClient):\n    pass\n\ndef _bypass():\n    return _Sneaky()\n",
     "def _bypass():\n    return SSHDetect(device_type='autodetect', host='x')\n",
+    # W59 PR-1 review (P3-f, round 2): the nine shapes the first structural guard could not follow
+    "def _bypass(flag):\n    cls = _netmiko.ConnectHandler if flag else None\n    return cls(host='x')\n",
+    "def _bypass():\n    classes = [_netmiko.ConnectHandler]\n    return classes[0](host='x')\n",
+    "def _bypass():\n    for cls in (_netmiko.ConnectHandler,):\n        return cls(host='x')\n",
+    "def _bypass():\n    if (cls := _netmiko.ConnectHandler):\n        return cls(host='x')\n",
+    "class _Holder:\n    def __init__(self):\n        self.cls = _netmiko.ConnectHandler\n\n"
+    "    def _bypass(self):\n        return self.cls(host='x')\n",
+    "def _open(factory):\n    return factory(host='x')\n\ndef _bypass():\n    return _open(_netmiko.ConnectHandler)\n",
+    "import functools\n\ndef _bypass():\n    return functools.partial(_netmiko.ConnectHandler, host='x')()\n",
+    "import importlib\n\ndef _bypass():\n    return importlib.import_module('netmiko').ConnectHandler(host='x')\n",
+    "def _bypass():\n    return __import__('paramiko').SSHClient()\n",
+    # and the further forms the closure covers
+    "def _bypass():\n    return [cls(host='x') for cls in (_netmiko.ConnectHandler,)]\n",
+    "def _bypass(flag):\n    cls = flag and _netmiko.ConnectHandler\n    return cls(host='x')\n",
+    "def _bypass(cls=_netmiko.ConnectHandler):\n    return cls(host='x')\n",
+    "def _bypass(*, cls=_paramiko.SSHClient):\n    return cls()\n",
+    "def _bypass():\n    return sys.modules['netmiko'].ConnectHandler(host='x')\n",
+    "def _bypass():\n    return globals()['_netmiko'].ConnectHandler(host='x')\n",
+    "def _bypass():\n    make = lambda: _netmiko.ConnectHandler\n    return make()(host='x')\n",
+    "def _bypass():\n    table = {'ios': _netmiko.ConnectHandler}\n    return table.get('ios')(host='x')\n",
+    "def _bypass():\n    box = []\n    box.append(_netmiko.ConnectHandler)\n    return box\n",
+    "def _bypass():\n    exec('import netmiko')\n",
+    "def _gen():\n    yield _netmiko.ConnectHandler\n\ndef _bypass():\n    for cls in _gen():\n        return cls(host='x')\n",
+    "def _bypass():\n    alias = _SESSION_HANDOFF\n    return alias.value[1](object())\n",
+    "def _bypass():\n    return setattr(_SESSION_HANDOFF, 'x', _netmiko.ConnectHandler)\n",
+    "def _bypass():\n    return _OBSERVED_DRIVERS.get(('cisco_ios', ObservedTransport))(host='x')\n",
 ])
 def test_t8_the_structural_guard_catches_every_bypass_shape(bypass):
-    """Non-vacuity of the guard above: each shape, appended to the real engine source, is found as a connection
-    constructor in a site that is not one of the four named ones."""
+    """Non-vacuity of the guard above: each shape, appended to the real engine source, is found constructing through,
+    or handing over, a connection-capable value in a site that is not one of the named ones."""
     tree = ast.parse(ENGINE.read_text(encoding="utf-8") + "\n\n" + bypass)
-    found, _tainted, _factories = _connection_constructor_calls(tree)
-    assert "_bypass" in found and found != _CONNECTION_CONSTRUCTOR_SITES, found
+    found, passes, _tainted, _factories = _connection_constructor_calls(tree)
+    owners = [o for o in list(found) + list(passes) if o.split(".")[-1] == "_bypass"]
+    assert owners and (found != _CONNECTION_CONSTRUCTOR_SITES or passes != _CONNECTION_ARGUMENT_SITES), (
+        found, passes)
+
+
+def _dynamic_ssh_imports(tree):
+    """Calls importing netmiko or paramiko by a string constant (``importlib.import_module`` / ``__import__``)."""
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _Env.callee_name(node.func) in ("import_module", "__import__") \
+                and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) \
+                and node.args[0].value.split(".")[0] in _SSH_LIBRARIES:
+            out.append(node.lineno)
+    return out
 
 
 def test_t8_no_other_shipped_module_imports_an_ssh_library():
@@ -465,7 +968,7 @@ def test_t8_no_other_shipped_module_imports_an_ssh_library():
             tree = _parse(ROOT / rel)
         except (SyntaxError, UnicodeDecodeError):
             continue
-        if _connection_roots(tree):
+        if _connection_roots(tree) or _dynamic_ssh_imports(tree):
             importers.add(rel)
     assert importers == {"COLLECT_PARSE_V3_23_0.py"}, importers
 
@@ -1173,7 +1676,9 @@ def test_p2a_a_stale_record_that_cannot_be_removed_refuses_the_connection(monkey
     written, failures = {}, []
     _platform, cmd = C._collect_live_device(_dev(), str(dev_dir), claimed=set(), lock=threading.Lock(),
                                             on_record_failure=lambda *a: failures.append(a), written=written)
-    assert cmd is None and failures == [("SW1", "stale_record_unlink", "PermissionError", 0)]
+    # a stale-record removal failure carries its own attempt count as the fifth field (0 here: the patched remover
+    # reports none); the atomic-replace count of a removal is 0, never another stage's count
+    assert cmd is None and failures == [("SW1", "stale_record_unlink", "PermissionError", 0, 0)]
     assert _row_after(dev_dir, written)["status"] == "unknown"
 
 
@@ -1577,3 +2082,221 @@ def test_p3j_an_invalid_port_fails_at_load_time_before_any_connection(tmp_path, 
     good.write_text(json.dumps([dict(row, port=2222), dict(row, hostname="SW2")]), encoding="utf-8")
     loaded = C.load_devices(str(good), allow_prompt=allow_prompt)
     assert loaded[0]["port"] == 2222 and "port" not in loaded[1]
+
+
+# =========================================================================== PR-1 review, round 2 ===
+class _ProbeDev:
+    def send_command(self, cmd, read_timeout=None):
+        return "ok\n"
+
+
+def test_r2_the_autodetect_probe_reaches_the_rows_own_port(monkeypatch):
+    """Round 2 (P2). Catches: a devices.json ``port`` honoured by the observed session but not by the ``platform:
+    auto`` probe, which then sent the device's credentials over an unobserved session to whatever answers on 22."""
+    probes, opened = [], []
+
+    class _Detect:
+        def __init__(self, **kwargs):
+            probes.append(kwargs)
+            self.connection = None
+
+        def autodetect(self):
+            return "cisco_ios"
+
+    def fake_open(kwargs, platform, profile, recorder):
+        opened.append(kwargs.get("port"))
+        return _ProbeDev()
+
+    monkeypatch.setattr(C, "SSHDetect", _Detect)
+    monkeypatch.setattr(C, "_open_connection", fake_open)
+    _dev_obj, resolved = C.connect_device("192.0.2.10", "SW1", "u", "p", "auto", port=2201)
+    assert resolved == "ios" and len(probes) == 1 and probes[0]["port"] == 2201 and opened == [2201]
+    probes.clear()
+    opened.clear()
+    C.connect_device("192.0.2.10", "SW1", "u", "p", "auto")
+    assert len(probes) == 1 and "port" not in probes[0] and opened == [None]   # no row port: netmiko's default
+    probes.clear()
+    C.connect_device("192.0.2.10", "SW1", "u", "p", "ios", port=2201)
+    assert probes == []                                   # an explicit platform never probes
+
+
+def test_r2_a_stale_record_removal_is_retried_over_the_bounded_backoff(tmp_path):
+    """Round 2 (P3). Catches: one ``os.unlink`` attempt on the record an earlier run left, so a scanner's transient
+    handle left the device uncollected for the whole run."""
+    path = tmp_path / S.SIDECAR_FILENAME
+    assert C._unlink_stale_session_record(str(path)) == 0                # nothing to remove: no attempt
+    path.write_bytes(b"{}")
+    sleeps, calls = [], []
+
+    def flaky(p):
+        calls.append(p)
+        if len(calls) <= 3:
+            raise PermissionError("held by an on-access scan")
+        os.unlink(p)
+
+    assert C._unlink_stale_session_record(str(path), unlink=flaky, sleep=sleeps.append) == 4
+    assert not path.exists() and sleeps == list(S.REPLACE_BACKOFF_S[:3])
+    path.write_bytes(b"{}")
+    sleeps.clear()
+
+    def held(p):
+        raise PermissionError("held")
+
+    with pytest.raises(PermissionError) as info:
+        C._unlink_stale_session_record(str(path), unlink=held, sleep=sleeps.append)
+    assert getattr(info.value, C.UNLINK_ATTEMPTS_ATTRIBUTE) == len(S.REPLACE_BACKOFF_S) + 1
+    assert sleeps == list(S.REPLACE_BACKOFF_S) and path.exists()
+
+
+def test_r2_a_failed_removal_discloses_its_attempts_and_never_connects(monkeypatch, tmp_path):
+    original = C._unlink_stale_session_record
+
+    def held_remover(p):
+        return original(p, unlink=lambda q: (_ for _ in ()).throw(PermissionError("held")), sleep=lambda _s: None)
+
+    monkeypatch.setattr(C, "_unlink_stale_session_record", held_remover)
+    monkeypatch.setattr(C, "_open_connection", lambda *a, **k: pytest.fail("must not connect"))
+    failures = []
+    _platform, cmd = C._collect_live_device(_dev(), str(_stale_modern_folder(tmp_path)), claimed=set(),
+                                            lock=threading.Lock(), on_record_failure=lambda *a: failures.append(a))
+    assert cmd is None
+    assert failures == [("SW1", S.RECORD_STAGE_STALE_UNLINK, "PermissionError", 0, len(S.REPLACE_BACKOFF_S) + 1)]
+
+
+def test_r2_every_manifest_record_failure_has_one_fixed_shape():
+    """The run manifest's ``record_failures`` entries (main()'s ``_ssh_record_failure``) always carry both attempt
+    counts, so a reader never has to guess which operation a count belongs to."""
+    tree = _engine_tree()
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_ssh_record_failure")
+    dicts = [n for n in ast.walk(fn) if isinstance(n, ast.Dict)]
+    assert len(dicts) == 1
+    assert {k.value for k in dicts[0].keys} == {"host", "stage", "error_class", "replace_attempts", "unlink_attempts"}
+
+
+def _eligible_rows(failures, *, live=True):
+    block = (dict(S.live_consent_block([], None), devices_eligible=["sw1"], record_failures=failures)
+             if live else S.offline_consent_block())
+    return S.compute_ssh_sessions(["sw1"], lambda h: (None, None), live=live, consent=block,
+                                  evidence_path=lambda h: h, run_written=[] if live else None)["rows"][0]
+
+
+def test_r2_a_pre_connect_record_failure_is_not_recorded_live_and_offline_alike():
+    """Design re-check P3 (section 6.1 step 1 against section 6.2). Catches: a device left UNCONNECTED by a failed
+    pre-connect record write derived ``legacy_unrecorded`` (exposed, Medium) on the live run -- nothing was negotiated
+    -- while an offline re-analysis of the same folder says ``not_recorded``."""
+    for stage in sorted(S.PRE_CONNECT_RECORD_STAGES):
+        row = _eligible_rows([{"host": "sw1", "stage": stage, "error_class": "PermissionError",
+                               "replace_attempts": 0, "unlink_attempts": 7}])
+        assert (row["status"], row["finding"], row["reason"]) == ("not_recorded", "verify", S.REASON_NOT_CONNECTED)
+    assert _eligible_rows(None, live=False)["status"] == "not_recorded"
+    # non-vacuity: an authorized device with no record and no pre-connect failure stays exposed, and neither a
+    # post-connect failure nor another host's failure changes that
+    assert _eligible_rows([])["status"] == "legacy_unrecorded"
+    assert _eligible_rows([{"host": "sw1", "stage": "established", "error_class": "OSError",
+                            "replace_attempts": 7, "unlink_attempts": 0}])["status"] == "legacy_unrecorded"
+    assert _eligible_rows([{"host": "sw2", "stage": S.RECORD_STAGE_PENDING, "error_class": "OSError",
+                            "replace_attempts": 7, "unlink_attempts": 0}])["status"] == "legacy_unrecorded"
+    assert S.PRE_CONNECT_RECORD_STAGES == {S.RECORD_STAGE_PENDING, S.RECORD_STAGE_STALE_UNLINK}
+    text = ENGINE.read_text(encoding="utf-8")
+    assert "stage = ssh_session.RECORD_STAGE_STALE_UNLINK" in text and "stage = ssh_session.RECORD_STAGE_PENDING" in text
+
+
+@pytest.mark.parametrize("server_change, opt_in_collects", [
+    ({}, True),                                                          # SHA-1 kex and host key: the tier closes both
+    ({"host_key": ["rsa-sha2-512"]}, True),                              # only the kex is refused
+    ({"host_key": ["ssh-dss"]}, False),                                  # SHA-1 kex, DSA-only host key
+    ({"cipher_c2s": ["blowfish-cbc"], "cipher_s2c": ["blowfish-cbc"]}, False),   # no common cipher either
+])
+def test_r2_the_opt_in_advice_needs_the_tier_to_close_every_empty_category(server_change, opt_in_collects):
+    """Design re-check P3 (section 4.4). Catches: "requires the legacy-sha1 opt-in" for a device the opt-in still
+    cannot collect -- the classifier names the FIRST refused category, but the advice must hold for every category with
+    no common algorithm. The collector's log line (full sink lists) and the row's label (the sealed record's lists)
+    agree."""
+    server = dict({"kex": [_G14_SHA1, "ext-info-s"], "host_key": [_RSA_SHA1], "cipher_c2s": ["aes128-ctr"],
+                   "cipher_s2c": ["aes128-ctr"], "mac_c2s": ["hmac-sha2-256"], "mac_s2c": ["hmac-sha2-256"]},
+                  **server_change)
+    obs = _obs_with_lists(server, _P5_CLIENT)
+    refusal = S.classify_failure(EOFError(), obs)
+    assert (refusal["category"], refusal["classification"]) == ("kex", "refused_legacy_only")
+    assert S.legacy_tier_closes(server, _P5_CLIENT) is opt_in_collects
+    rec = S.build_record(outcome="negotiation_refused", consent=_DEFAULT_CONSENT, library=_lib(), attempts=1,
+                         observation=obs.snapshot(), refusal=refusal, failure_class="NetmikoTimeoutException")
+    label = S.derive_row("sw1", S.render_record(rec), evidence="e", live=False)["label"]
+    message = S.refusal_message(refusal, _DEFAULT_CONSENT, obs.snapshot())
+    for text in (label, message):
+        assert ("requires the legacy-sha1 opt-in" in text) is opt_in_collects, text
+        assert ("no profile of this collector implements" in text) is not opt_in_collects, text
+
+
+def test_r2_a_session_only_high_finding_on_a_high_impact_device_carries_no_psirt_step():
+    """Round 2 (P3). Catches: the session-evidenced ssh-legacy-transport finding counted and worded as a configuration
+    advisory surface to validate with the PSIRT checker -- compound pattern CR-04 on a high-impact device and the
+    executive brief's Software risk axis."""
+    from cisco_toolkit import analyze
+
+    block = _session_block()             # edge2: a 1024-bit group, refused (High); edge1 / access4: SHA-1 (Medium)
+    hosts = sorted(r["host"] for r in block["rows"])
+    sr = analyze.compute_software_risk({}, {}, {}, hosts, ssh_sessions=block)
+    impact = [{"host": "edge2", "severity": "High", "stranded": 0, "vlans_impacted": 3}]
+    rows = {r["host"]: r for r in analyze.compute_device_dossiers(
+        software_risk=sr, failure_impact=impact, ssh_sessions=block)["per_device"]}
+    cr04 = [c for c in rows["edge2"]["compound"] if c["code"] == "CR-04"]
+    assert len(cr04) == 1 and cr04[0]["title"] == "Legacy SSH transport on a high-impact asset", cr04
+    assert S.SURFACE_KIND in cr04[0]["basis"] and "session-evidenced" in cr04[0]["basis"]
+    assert "PSIRT" not in cr04[0]["basis"]
+    axis = next(a for a in analyze.compute_executive_brief(software_risk=sr)["axes"] if a["axis"] == "Software risk")
+    assert axis["severity"] == "High" and f"{len(sr['findings'])} {S.SURFACE_COUNT_NOUN}" in axis["headline"]
+    assert "configuration surfaces not assessable" in axis["headline"] and S.SURFACE_NO_PSIRT in axis["detail"]
+    # a configuration trigger on the same device keeps its PSIRT wording and names the session finding beside it
+    config = {"edge2": "hostname edge2\nip http server\n"}
+    sr_cfg = analyze.compute_software_risk(config, {"edge2": {"model": "C9300", "sw_version": "17.9.4"}}, {},
+                                           ["edge2"], ssh_sessions=block)
+    cfg_cr = [c for r in analyze.compute_device_dossiers(software_risk=sr_cfg, failure_impact=impact,
+                                                         ssh_sessions=block)["per_device"]
+              for c in r["compound"] if c["code"] == "CR-04"]
+    assert len(cfg_cr) == 1 and cfg_cr[0]["title"] == "Open advisory surface on a high-impact asset"
+    assert "PSIRT" in cfg_cr[0]["basis"] and S.SURFACE_KIND in cfg_cr[0]["basis"]
+    axis = next(a for a in analyze.compute_executive_brief(software_risk=sr_cfg)["axes"]
+                if a["axis"] == "Software risk")
+    n_session = sum(1 for f in sr_cfg["findings"] if f["kind"] == S.SURFACE_KIND)
+    assert n_session == len(hosts)                         # every host the session block names keeps its finding
+    assert axis["headline"].startswith(f"1 exposed advisory surface(s) · {n_session} {S.SURFACE_COUNT_NOUN}"), axis
+    # non-vacuity: without a session block both read exactly as before W59
+    sr_old = analyze.compute_software_risk(config, {"edge2": {"model": "C9300", "sw_version": "17.9.4"}}, {},
+                                           ["edge2"])
+    old_cr = [c for r in analyze.compute_device_dossiers(software_risk=sr_old, failure_impact=impact)["per_device"]
+              for c in r["compound"] if c["code"] == "CR-04"]
+    assert old_cr[0]["basis"].endswith("validate with the Cisco PSIRT Software Checker before the window.")
+    axis = next(a for a in analyze.compute_executive_brief(software_risk=sr_old)["axes"]
+                if a["axis"] == "Software risk")
+    assert S.SURFACE_KIND not in axis["headline"] and axis["detail"] == (
+        "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker.")
+
+
+def test_r2_the_runbook_and_handbook_count_the_session_findings_apart(tmp_path):
+    """Round 2 (P3). Catches: runbook section 6.12 and the operations handbook (known issues, section 5) counting
+    the session-evidenced findings as exposed advisory surfaces with a PSIRT step."""
+    pytest.importorskip("docx")
+    from cisco_toolkit import analyze
+    from cisco_toolkit.ops import write_ops_handbook_docx
+    from cisco_toolkit.runbook import write_runbook_docx
+
+    snap, _labels = _disclosure_snapshot()
+    block = snap["ssh_sessions"]
+    session = analyze.compute_software_risk({}, {}, {}, sorted(r["host"] for r in block["rows"]),
+                                            ssh_sessions=block)["findings"]
+    config = list(snap["software_risk"]["findings"])
+    assert session and config and all(f["kind"] != S.SURFACE_KIND for f in config)
+    snap["software_risk"]["findings"] = config + session
+    snap["software_risk"]["summary"]["n_findings"] = len(config) + len(session)
+    runbook = str(tmp_path / "rb.docx")
+    write_runbook_docx(runbook, snap, "W59 round 2")
+    ops = str(tmp_path / "ops.docx")
+    write_ops_handbook_docx(ops, snap, "W59 round 2")
+    rb_text, ops_text = _docx_text(runbook), _docx_text(ops)
+    noun = f"{len(session)} {S.SURFACE_COUNT_NOUN}"
+    assert f"Separately, {noun}" in rb_text and S.SURFACE_NO_PSIRT in rb_text
+    assert f"{len(config)} exposed advisory / hardening surface(s) open at assessment" in ops_text
+    assert "Software Risk (SSH transport)" in ops_text and S.SURFACE_NO_PSIRT in ops_text
+    assert f"{len(config)} exposed advisory surface(s) were open" in ops_text and f"Separately, {noun}" in ops_text
+    assert f"{len(config) + len(session)} exposed advisory" not in rb_text + ops_text

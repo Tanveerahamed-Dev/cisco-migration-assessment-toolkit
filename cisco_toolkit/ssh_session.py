@@ -248,6 +248,22 @@ SURFACE_RECOMMENDATION = (
     "SSHv2 configuration guide for its release. Where the release cannot negotiate SHA-2 SSH at all, plan a "
     "management-plane modernization or replacement before the migration. Below 2048 bits: treat the "
     "collection account's password as exposed and rotate it.")
+#: W59 PR-1 review (P3-h): how every collection-integrity and software-risk summary names the session-evidenced
+#: findings, apart from the configuration-screened advisory surfaces they share ``software_risk.findings`` with.
+SURFACE_COUNT_NOUN = (f"legacy SSH transport finding(s) ({SURFACE_KIND}; session-evidenced, needs no "
+                      "running-config)")
+SURFACE_NO_PSIRT = ("Legacy SSH transport is the collector's own negotiated SSH session, not a release advisory: it "
+                    "has no PSIRT step. Enable SHA-2 SSH on the device; where a Diffie-Hellman group below 2048 bits "
+                    "was negotiated, rotate the collection account's password.")
+
+
+def partition_software_findings(findings: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(configuration findings, session-evidenced findings)`` of a ``software_risk.findings`` list: the second holds
+    every :data:`SURFACE_KIND` row, the first every other object row, each in its stored order. A summary that counts
+    the two together calls the collector's own SSH session an advisory surface to validate with the PSIRT checker.
+    Total on hostile input (a non-list is empty, a non-object row is skipped)."""
+    rows = [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    return ([f for f in rows if f.get("kind") != SURFACE_KIND], [f for f in rows if f.get("kind") == SURFACE_KIND])
 
 # --------------------------------------------------------------------------------------------------------
 # Name grammar (RFC 4251 §6) and privacy screens
@@ -693,20 +709,42 @@ def _is_named(exc: BaseException, name: str) -> bool:
     return any(c.__name__ == name for c in type(exc).__mro__)
 
 
+def _names(container: Any, key: str) -> List[str]:
+    values = container.get(key) if isinstance(container, Mapping) else None
+    return [v for v in values if isinstance(v, str)] if isinstance(values, (list, tuple)) else []
+
+
+def empty_categories(server: Any, client: Any) -> List[str]:
+    """EVERY category with no common algorithm, in paramiko's own order: kex, host key, cipher, MAC (a cipher or MAC
+    category is empty when either direction is). Pseudo-algorithms never make a kex category common."""
+    out: List[str] = []
+    skex = [n for n in _names(server, "kex") if not is_pseudo_kex(n)]
+    if not set(skex) & set(_names(client, "kex")):
+        out.append("kex")
+    if not set(_names(server, "host_key")) & set(_names(client, "host_key")):
+        out.append("host_key")
+    for cat in ("cipher", "mac"):
+        mine = set(_names(client, cat))
+        if not (set(_names(server, f"{cat}_c2s")) & mine) or not (set(_names(server, f"{cat}_s2c")) & mine):
+            out.append(cat)
+    return out
+
+
 def _first_empty_category(server: Mapping[str, List[str]], client: Mapping[str, List[str]]) -> Optional[str]:
-    """Paramiko's own order: kex, host key, cipher, MAC. The first category with no common algorithm."""
-    skex = [n for n in server.get("kex", []) if not is_pseudo_kex(n)]
-    if not set(skex) & set(client.get("kex", [])):
-        return "kex"
-    if not set(server.get("host_key", [])) & set(client.get("host_key", [])):
-        return "host_key"
-    ccipher = set(client.get("cipher", []))
-    if not (set(server.get("cipher_c2s", [])) & ccipher) or not (set(server.get("cipher_s2c", [])) & ccipher):
-        return "cipher"
-    cmac = set(client.get("mac", []))
-    if not (set(server.get("mac_c2s", [])) & cmac) or not (set(server.get("mac_s2c", [])) & cmac):
-        return "mac"
-    return None
+    """The first category with no common algorithm (paramiko's order): the category paramiko itself refuses on."""
+    cats = empty_categories(server, client)
+    return cats[0] if cats else None
+
+
+def legacy_tier_closes(server: Any, client: Any) -> bool:
+    """True when the ``legacy-sha1`` tier (:data:`LEGACY_SHA1_TIER_KEX` / :data:`LEGACY_SHA1_TIER_HOST_KEYS`), appended
+    to the client's own lists, leaves NO category empty -- i.e. the opt-in would let this device negotiate. A refusal
+    that also lacks a common cipher or MAC, or whose other SHA-1-class category offers names outside the tier (DSA),
+    is not closed by it, so its advice must not point at the opt-in (design section 4.4)."""
+    widened = {k: _names(client, k) for k in _CLIENT_KEYS}
+    widened["kex"] = widened["kex"] + [n for n in LEGACY_SHA1_TIER_KEX if n not in widened["kex"]]
+    widened["host_key"] = widened["host_key"] + [n for n in LEGACY_SHA1_TIER_HOST_KEYS if n not in widened["host_key"]]
+    return not empty_categories(server, widened)
 
 
 def _kex_is_modern(name: str) -> bool:
@@ -834,14 +872,18 @@ def _refusal(category: str, classification: str, detail: str, bits: Optional[int
             "offered_group_bits": bits, "names": stored}
 
 
-def refusal_message(refusal: Mapping[str, Any], consent: Mapping[str, Any]) -> str:
+def refusal_message(refusal: Mapping[str, Any], consent: Mapping[str, Any],
+                    observation: Optional[Mapping[str, Any]] = None) -> str:
     """The actionable log line for a refusal (§4.4): the device row's profile, whether the run named it, and
-    what would be needed."""
+    what would be needed. ``observation`` is the attempt's sink snapshot (:meth:`SessionObservation.snapshot`): its
+    full server and client lists decide whether the opt-in would close EVERY empty category
+    (:func:`_within_legacy_tier`), so the advice never points at an opt-in that cannot collect the device."""
     cls = refusal.get("classification")
     names = ", ".join(refusal.get("names") or []) or "(none recorded)"
     who = (f"device row profile {consent.get('device_profile')}, "
            f"{'named' if consent.get('named_on_run_flag') else 'not named'} on the run flag")
-    if cls == "refused_legacy_only" and not _within_legacy_tier(refusal):
+    snap = observation if isinstance(observation, Mapping) else {}
+    if cls == "refused_legacy_only" and not _within_legacy_tier(refusal, snap.get("server"), snap.get("client")):
         tail = (f"the device offers only SHA-1-class SSH ({names}), which no profile of this collector "
                 "implements")
     elif cls == "refused_legacy_only":
@@ -954,6 +996,16 @@ REPLACE_BACKOFF_S: Tuple[float, ...] = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 #: came before the first replace, e.g. the temp file could not be written).
 REPLACE_ATTEMPTS_ATTRIBUTE = "ssh_record_replace_attempts"
 
+#: The ``stage`` of a record failure (``SessionRecorder.write_failures`` and the run manifest's
+#: ``ssh_transport_consent.record_failures``). The two PRE-CONNECT stages leave the device NOT connected: the
+#: ``pending`` write before connecting (design section 6.1 step 1), and the removal of a record an earlier run left in
+#: the folder, which precedes it. A device with a pre-connect failure negotiated nothing, so on a live run its missing
+#: record is ``not_recorded`` -- exactly what an offline re-analysis of the same folder says -- never
+#: ``legacy_unrecorded`` (:func:`compute_ssh_sessions`).
+RECORD_STAGE_PENDING = "pending"
+RECORD_STAGE_STALE_UNLINK = "stale_record_unlink"
+PRE_CONNECT_RECORD_STAGES = frozenset({RECORD_STAGE_PENDING, RECORD_STAGE_STALE_UNLINK})
+
 
 def write_record_atomic(path: str, record: Mapping[str, Any], *,
                         replace: Optional[Callable[[str, str], None]] = None,
@@ -1012,7 +1064,9 @@ def _int_range(v: Any, lo: int, hi: int, *, nullable: bool = False) -> bool:
 
 
 def _name_list(v: Any) -> bool:
-    return isinstance(v, list) and len(v) <= MAX_LIST_LENGTH and all(recordable_name(x) == x for x in v)
+    # every element a STRING of the vocabulary: ``recordable_name(None) == None`` must not admit a null element
+    return isinstance(v, list) and len(v) <= MAX_LIST_LENGTH and all(
+        isinstance(x, str) and recordable_name(x) == x for x in v)
 
 
 def _opt_name(v: Any) -> bool:
@@ -1100,7 +1154,8 @@ def validate_record(record: Any) -> List[str]:
                 errors.append(f"observation.{k}")
     hk = record["host_key"]
     if _exact_keys(hk, _HOST_KEY_KEYS, "host_key", errors):
-        if hk != _HOST_KEY_BLOCK:
+        # exact values, never ``==`` on the block: ``False == 0 == 0.0`` would admit a number as "not verified"
+        if hk["policy"] != _HOST_KEY_BLOCK["policy"] or hk["verified"] is not False:
             errors.append("host_key")
     ref = record["refusal"]
     if ref is not None and _exact_keys(ref, _REFUSAL_KEYS, "refusal", errors):
@@ -1192,7 +1247,7 @@ class SessionRecorder:
 
     def write_pending(self) -> None:
         self._write(build_record(outcome="pending", consent=self.consent, library=self.library,
-                                 platform_source=self.platform_source, attempts=0), "pending")
+                                 platform_source=self.platform_source, attempts=0), RECORD_STAGE_PENDING)
 
     def begin_attempt(self) -> SessionObservation:
         self.attempts += 1
@@ -1284,10 +1339,21 @@ def _negotiated_status(record: Mapping[str, Any]) -> Tuple[str, Optional[str]]:
     return STATUS_UNKNOWN, "inconsistent observation"
 
 
+#: W59 PR-1 review: the reason a live run gives a device with no record because a PRE-CONNECT record failure
+#: (:data:`PRE_CONNECT_RECORD_STAGES`) left it unconnected. Nothing was negotiated, so it is ``not_recorded`` -- the
+#: status an offline re-analysis of the same folder derives -- even for a device the run authorized for a legacy
+#: profile (design section 6.1 step 1 and section 6.2 agree).
+REASON_NOT_CONNECTED = ("the session record could not be written before connecting, so the device was not connected "
+                        "and nothing was negotiated")
+
+
 def derive_row(host: str, data: Optional[bytes], *, evidence: str, live: bool,
-               eligible_hosts: Iterable[str] = (), read_error: Optional[str] = None) -> Dict[str, Any]:
+               eligible_hosts: Iterable[str] = (), read_error: Optional[str] = None,
+               not_connected: bool = False) -> Dict[str, Any]:
     """One ``ssh_sessions`` row. Consent fields are read ONLY from the sealed sidecar, never from the current
-    devices.json or command line."""
+    devices.json or command line. ``not_connected`` marks a live-run device whose pre-connect record write failed (the
+    manifest's ``record_failures``): with no record it is ``not_recorded`` (:data:`REASON_NOT_CONNECTED`), never
+    ``legacy_unrecorded``."""
     eligible = set(eligible_hosts or ())
     row: Dict[str, Any] = {
         "host": host, "recorded": False, "outcome": None, "attempts": None, "platform_source": None,
@@ -1301,6 +1367,9 @@ def derive_row(host: str, data: Optional[bytes], *, evidence: str, live: bool,
     }
     if data is None and read_error is None:
         row["evidence"] = None
+        if not_connected:
+            row["status"], row["reason"] = STATUS_NOT_RECORDED, REASON_NOT_CONNECTED
+            return _finish(row)
         row["status"] = STATUS_LEGACY_UNRECORDED if (live and host in eligible) else STATUS_NOT_RECORDED
         row["reason"] = ("authorized for a legacy profile by this run but no session record exists"
                          if row["status"] == STATUS_LEGACY_UNRECORDED else "no session record")
@@ -1384,7 +1453,7 @@ def disclosure_sentence(row: Mapping[str, Any]) -> Optional[str]:
         return ("authorized for SHA-1 SSH by its run, but the session record was never completed; treated as "
                 "collected over SHA-1")
     if status == "refused_legacy_only":
-        if _within_legacy_tier(refusal):
+        if _within_legacy_tier(refusal, row.get("server_offered"), row.get("client_offered")):
             return (f"not collected: the device offers only SHA-1-class SSH ({names}); collecting it requires "
                     "the legacy-sha1 opt-in")
         return (f"not collected: the device offers only SHA-1-class SSH ({names}), which no profile of this "
@@ -1400,11 +1469,21 @@ def disclosure_sentence(row: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def _within_legacy_tier(refusal: Mapping[str, Any]) -> bool:
-    """True when a legacy-only refusal's offered names include one the legacy-sha1 profile would add."""
+def _within_legacy_tier(refusal: Mapping[str, Any], server: Any = None, client: Any = None) -> bool:
+    """True when the ``legacy-sha1`` opt-in would collect a legacy-only refusal's device, so its advice may say the
+    device "requires the legacy-sha1 opt-in" (design section 4.4). The refused category's offered names must include
+    one the tier adds; and when both sides' recorded lists are given, the tier must close EVERY category with no
+    common algorithm (:func:`legacy_tier_closes`), not only the first one paramiko refused on -- a device that also
+    lacks a common cipher, or whose host keys are DSA-only while its kex is SHA-1, is not collectable by any profile.
+    A legacy-only refusal is classified only from recorded lists, so a real record always supplies them; without them
+    (a hand-built row) only the refused category is judged."""
     names = set(refusal.get("names") or [])
     tier = LEGACY_SHA1_TIER_KEX if refusal.get("category") == "kex" else LEGACY_SHA1_TIER_HOST_KEYS
-    return bool(names & set(tier))
+    if not names & set(tier):
+        return False
+    if isinstance(server, Mapping) and isinstance(client, Mapping):
+        return legacy_tier_closes(server, client)
+    return True
 
 
 #: W59 PR-1 review (P2-a): the reason a live run gives a sidecar it did not write itself -- a record an earlier run
@@ -1424,11 +1503,17 @@ def compute_ssh_sessions(hosts: Iterable[str], read_sidecar: Callable[[str], Tup
     On a LIVE run a row is derived ONLY from a sidecar this run wrote: ``run_written`` is the set of hosts whose
     ``pending`` record this run published (and that no second devices.json row claimed). Any other sidecar present
     in the folder is ``unknown`` with :data:`REASON_NOT_WRITTEN_BY_THIS_RUN`, never its stale posture; an absent one
-    is ``not_recorded`` (or ``legacy_unrecorded`` for a device the run authorized). ``None`` on a live run means
+    is ``not_recorded`` (or ``legacy_unrecorded`` for a device the run authorized, unless the consent block's
+    ``record_failures`` show a PRE-CONNECT failure for it: that device was never connected, so it is ``not_recorded``
+    with :data:`REASON_NOT_CONNECTED`, the status an offline re-analysis derives). ``None`` on a live run means
     nothing was written (fail closed). An offline re-analysis (``live=False``) reads every sealed sidecar."""
     consent_block = dict(consent) if isinstance(consent, Mapping) else (
         offline_consent_block() if not live else live_consent_block(()))
     eligible = consent_block.get("devices_eligible") or ()
+    failures = consent_block.get("record_failures")
+    not_connected = {f.get("host") for f in (failures if isinstance(failures, list) else ())
+                     if isinstance(f, Mapping) and isinstance(f.get("host"), str)
+                     and f.get("stage") in PRE_CONNECT_RECORD_STAGES} if live else set()
     written = {str(h) for h in (run_written or ()) if isinstance(h, str)}
     rows: List[Dict[str, Any]] = []
     for host in sorted({str(h) for h in hosts or () if str(h)}):
@@ -1439,7 +1524,7 @@ def compute_ssh_sessions(hosts: Iterable[str], read_sidecar: Callable[[str], Tup
         if live and host not in written and (data is not None or err is not None):
             data, err = None, REASON_NOT_WRITTEN_BY_THIS_RUN
         rows.append(derive_row(host, data, evidence=evidence_path(host), live=live,
-                               eligible_hosts=eligible, read_error=err))
+                               eligible_hosts=eligible, read_error=err, not_connected=host in not_connected))
     by_status = {s: 0 for s in STATUSES}
     for r in rows:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1

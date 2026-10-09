@@ -12544,22 +12544,35 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
             ax("QoS posture", "Info", "not assessable — no full running-config captures", "")
     sr_s = (software_risk or {}).get("summary") or {}
     if sr_s.get("n_devices"):
+        # W59 PR-1 review (P3-h): the session-evidenced ssh-legacy-transport findings are the collector's own negotiated
+        # SSH sessions, not configuration-screened advisory surfaces: they are counted apart, carry no PSIRT step, and
+        # need no running-config. Without one the axis reads exactly as before W59.
+        _sr_cfg, _sr_ssh = _ssh_session.partition_software_findings((software_risk or {}).get("findings"))
+        _ssh_detail = f"{len(_sr_ssh)} {_ssh_session.SURFACE_COUNT_NOUN}" if _sr_ssh else ""
+        _ssh_note = (" " + _ssh_session.SURFACE_NO_PSIRT) if _sr_ssh else ""
         # V3.23.170: the same not-assessable honesty gate the sibling axes carry -- with no
         # config captures AND no versions there is no evidence in EITHER layer, and 'Low'
         # would be the Low-by-silence this fold exists to prevent.
         if not (sr_s.get("n_config_assessable") or sr_s.get("n_version_known")):
-            ax("Software risk", "Info",
-               "not assessable — no running-configs or software versions captured",
-               "Absence of evidence is declared, never scored.")
+            if _sr_ssh:
+                ax("Software risk", _worst(_sr_ssh) or "Medium",
+                   "configuration surfaces not assessable — no running-configs or software versions captured · "
+                   + _ssh_detail,
+                   "Absence of configuration evidence is declared, never scored." + _ssh_note)
+            else:
+                ax("Software risk", "Info",
+                   "not assessable — no running-configs or software versions captured",
+                   "Absence of evidence is declared, never scored.")
         else:
             w = _worst((software_risk or {}).get("findings"))
             tb = sr_s.get("train_bands") or {}
             lifecycle_pressure = tb.get("Replace/Upgrade") or tb.get("Verify EoL")
             sev = w or ("Medium" if lifecycle_pressure else "Low")
+            n_cfg = (sr_s.get("n_findings", 0) if not _sr_ssh else len(_sr_cfg))
             ax("Software risk", sev,
-               f"{sr_s.get('n_findings', 0)} exposed advisory surface(s) · trains "
+               f"{n_cfg} exposed advisory surface(s)" + (f" · {_ssh_detail}" if _ssh_detail else "") + " · trains "
                + (", ".join(f"{v}× {k}" for k, v in tb.items()) or "—"),
-               "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker.")
+               "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker." + _ssh_note)
     ph_s = (platform_health or {}).get("summary") or {}
     if ph_s.get("n_devices"):
         if ph_s.get("n_collected"):
@@ -12871,8 +12884,13 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
     inputs = {key: value for key, value in locals().items()
               if key in {s for sections in DOSSIER_AXIS_INPUTS.values() for s in sections}}
     direct, unattributed = input_failures if input_failures is not None else (frozenset(), False)
+    # W59 PR-1 review (supervisor P2): an unattributed failure makes a deep-empty input a possible crashed phase's
+    # fallback -- but `ssh_sessions=None` is NOT SUPPLIED (a snapshot whose producer predates the section, or a direct
+    # caller), never a fallback: main() always passes the block, and its failed phase's {} is attributed through
+    # ssot.PHASE_SECTIONS. Reading None as a fallback withheld every pre-W59 snapshot's Software risk axis.
+    not_supplied = {"ssh_sessions"} if ssh_sessions is None else set()
     failed_axes = {axis for axis, sections in DOSSIER_AXIS_INPUTS.items()
-                   if any(s in direct or (unattributed and _is_deep_empty(inputs.get(s)))
+                   if any(s in direct or (unattributed and s not in not_supplied and _is_deep_empty(inputs.get(s)))
                           for s in sections)}
     hs_by = by_host(health_scores, "switch")
     fi_by = by_host(failure_impact)
@@ -13276,9 +13294,25 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                f"{'Critical health' if state.get('Health') == 'risk' else 'hard L1 findings'} — "
                "a root failure reconverges every VLAN it anchors.")
         if state.get("Software risk") == "risk" and fi_sev in ("High", "Medium"):
-            cr("CR-04", "Open advisory surface on a high-impact asset", "High",
-               f"Config-evidenced advisory surface is open AND {impact_phrase} — "
-               "validate with the Cisco PSIRT Software Checker before the window.")
+            # W59 PR-1 review (P3-h): the axis is 'risk' for a High configuration surface or an end-of-era train, OR
+            # for a High session-evidenced ssh-legacy-transport finding (a group below 2048 bits). The configuration
+            # trigger keeps its PSIRT step; a session-only trigger is the collector's own negotiated session and has
+            # none. Without a session-evidenced High finding the pattern is exactly the pre-W59 one.
+            _ssh_high = "High" in ssh_sevs
+            _cfg_trigger = "High" in cfg_sevs or swb == "Replace/Upgrade"
+            if _cfg_trigger:
+                cr("CR-04", "Open advisory surface on a high-impact asset", "High",
+                   f"Config-evidenced advisory surface is open AND {impact_phrase} — "
+                   "validate with the Cisco PSIRT Software Checker before the window."
+                   + (" The collector's own SSH session also negotiated a Diffie-Hellman group below 2048 bits "
+                      f"({_SSH_SURFACE_KIND}; session-evidenced): rotate the collection account's password."
+                      if _ssh_high else ""))
+            elif _ssh_high:
+                cr("CR-04", "Legacy SSH transport on a high-impact asset", "High",
+                   f"The collector's own SSH session negotiated a Diffie-Hellman group below 2048 bits "
+                   f"({_SSH_SURFACE_KIND}; session-evidenced, needs no running-config) AND {impact_phrase} — "
+                   "rotate the collection account's password and enable SHA-2 SSH with a group of at least 2048 "
+                   "bits on the device before the window; no PSIRT step applies.")
         if state.get("Control plane") == "risk" and fi_sev == "High":
             cr("CR-05", "Stressed control plane at a single point of failure", "High",
                f"Control plane is already Hot AND {impact_phrase} — "

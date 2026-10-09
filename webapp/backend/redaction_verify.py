@@ -843,12 +843,16 @@ def verify_shareable_artifacts(snapshot_path: Path, artifacts: Iterable[Path]) -
 #: when (1) every key is one of the schema's own field names and every leaf is a bounded integer, a boolean,
 #: null, or a short printable token carrying no address-, MAC- or serial-shaped text; (2) every algorithm-name
 #: position (the offered lists, the negotiated names, a refusal's names) holds a member of the producer's closed
-#: recordable vocabulary; and (3) the server banner token matches the vendor-banner grammar. (2) and (3) are what
-#: keep device-controlled free text -- a crafted name or banner carrying an organisation or host name -- out of a
-#: file this verifier vouches for (review P3-e). Stated HERE, not imported: like the capture rule above, this
-#: verifier never imports the producer side (``cisco_toolkit.ssh_session`` owns the schema);
-#: ``webapp/tests/test_ssh_session_ingest_redaction.py`` holds the two statements in agreement over generated and
-#: mutated records, and holds the restated vocabulary and grammar equal to the owner's.
+#: recordable vocabulary; (3) the server banner token matches the vendor-banner grammar; and (4) the record meets the
+#: producer's WHOLE closed schema, restated below position by position: each object's exact key set, every enum set
+#: (outcome, platform source, profiles, refusal category / classification / detail), every scalar's grammar and range,
+#: the fixed host-key block and the cross-field rules. (2) and (3) are what keep device-controlled free text -- a
+#: crafted name or banner carrying an organisation or host name -- out of a file this verifier vouches for (review
+#: P3-e); (4) makes "covered by schema" mean exactly "valid": a record the owner's validator refuses stays NOT
+#: COVERED (design section 6.4). Stated HERE, not imported: like the capture rule above, this verifier never imports
+#: the producer side (``cisco_toolkit.ssh_session`` owns the schema); ``webapp/tests/test_ssh_session_ingest_redaction.py``
+#: holds every restated set, grammar and vocabulary equal to the owner's, and holds the two statements in agreement
+#: over every leaf of the producer's own records, each replaced by every value of a generated mutation set.
 SSH_SESSION_RECORD_BASENAME = "_ssh_session.json"
 _SSH_SESSION_RECORD_SCHEMA = "ssh_session/1"
 _SSH_SESSION_RECORD_MAX_BYTES = 1024 * 1024
@@ -888,8 +892,41 @@ _SSH_SESSION_ALGORITHM_NAME_DIGESTS = frozenset({
 _SSH_SESSION_SERVER_SOFTWARE_RE = re.compile(
     r"^SSH-(?:2\.0|1\.99)-(?:Cisco|OpenSSH|dropbear|libssh|AsyncSSH|paramiko|RomSShell|Comware|HUAWEI|ROSSSH)[-_]"
     r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}(?:p[0-9]{1,3})?$")
-_SSH_SESSION_NAME_LIST_SECTIONS = ("client_offered", "server_offered")
 _SSH_SESSION_NEGOTIATED_NAMES = ("kex", "host_key_algorithm", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c")
+#: W59 PR-1 review (design re-check P2): the producer's WHOLE closed schema, restated position by position -- every
+#: object's exact key set, every enum set, every scalar grammar and range, the fixed host-key block and the two
+#: cross-field rules (``ssh_session.validate_record``). A record this verifier reports covered by schema is one the
+#: owner's validator accepts, and nothing else (design section 6.4: "a sidecar that fails validation stays NOT
+#: COVERED"). Restated, never imported (as above); the agreement test walks every leaf of the producer's own records.
+_SSH_SESSION_TOP_KEYS = frozenset({
+    "schema", "outcome", "attempts", "platform_source", "consent", "library", "client_offered", "server_offered",
+    "negotiated", "observation", "host_key", "refusal", "failure_class", "dropped_names"})
+_SSH_SESSION_CONSENT_KEYS = frozenset({"device_profile", "run_flag_profile", "named_on_run_flag", "effective_profile"})
+_SSH_SESSION_LIBRARY_KEYS = frozenset({"paramiko", "netmiko", "transport_class", "default_permits_sha1"})
+_SSH_SESSION_CLIENT_KEYS = frozenset({"kex", "host_key", "cipher", "mac"})
+_SSH_SESSION_SERVER_KEYS = frozenset({"kex", "host_key", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c"})
+_SSH_SESSION_NEGOTIATED_KEYS = frozenset({
+    "kex", "kex_hash_bytes", "dh_group_bits", "host_key_algorithm", "cipher_c2s", "cipher_s2c", "mac_c2s",
+    "mac_s2c", "strict_kex", "server_software"})
+_SSH_SESSION_OBSERVATION_KEYS = frozenset({"kexinit", "newkeys", "engine_name_agrees", "group_size_agrees"})
+_SSH_SESSION_REFUSAL_KEYS = frozenset({"category", "classification", "detail", "offered_group_bits", "names"})
+_SSH_SESSION_HOST_KEY_BLOCK = {"policy": "auto-add", "verified": False}
+_SSH_SESSION_OUTCOMES = ("pending", "established", "auth_failed", "negotiation_refused", "connect_failed")
+_SSH_SESSION_PLATFORM_SOURCES = ("device_row", "autodetect")
+_SSH_SESSION_PROFILES = ("default", "legacy-sha1")
+_SSH_SESSION_REFUSAL_CLASSES = ("refused_weak_dh", "refused_legacy_only", "refused_unsupported_modern",
+                                "refused_cipher_mac", "unclassified")
+_SSH_SESSION_REFUSAL_CATEGORIES = ("kex", "host_key", "cipher", "mac", "compression", "version", "unknown")
+_SSH_SESSION_REFUSAL_DETAILS = ("no_common_kex", "no_common_host_key", "no_common_cipher", "no_common_mac",
+                                "weak_group_refused", "incompatible_peer")
+_SSH_SESSION_MAX_LIST = 64
+_SSH_SESSION_VERSION_RE = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}(?:\.[0-9]{1,4})?(?:(?:a|b|rc)[0-9]{1,4})?"
+                                     r"(?:\.post[0-9]{1,4})?(?:\.dev[0-9]{1,4})?$")
+_SSH_SESSION_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+#: The owner's name screens (``ssh_session._IPV4_IN_TEXT`` / ``_MAC_IN_TEXT``): a vocabulary name never carries one,
+#: and a banner token that matches the vendor grammar but spells an address is refused, exactly as the owner does.
+_SSH_SESSION_IPV4_IN_TEXT = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
+_SSH_SESSION_MAC_IN_TEXT = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}(?![0-9a-f])")
 
 
 def _ssh_session_known_name(value: Any) -> bool:
@@ -899,37 +936,112 @@ def _ssh_session_known_name(value: Any) -> bool:
     return hashlib.sha256(value.encode("ascii")).hexdigest()[:16] in _SSH_SESSION_ALGORITHM_NAME_DIGESTS
 
 
-def _ssh_session_positions_conform(doc: dict) -> bool:
-    """The record's device-controlled positions: offered lists, negotiated names and refusal names hold only
-    vocabulary names, and the banner token matches the vendor grammar. Every other leaf is the walk's business."""
-    for section in _SSH_SESSION_NAME_LIST_SECTIONS:
-        block = doc.get(section)
-        if block is None:
-            continue
-        if not isinstance(block, dict):
+def _ssh_session_int(value: Any, low: int, high: int, *, nullable: bool = False) -> bool:
+    if value is None:
+        return nullable
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _ssh_session_enum(value: Any, allowed: tuple[str, ...], *, nullable: bool = False) -> bool:
+    if value is None:
+        return nullable
+    return isinstance(value, str) and value in allowed
+
+
+def _ssh_session_opt_bool(value: Any) -> bool:
+    return value is None or isinstance(value, bool)
+
+
+def _ssh_session_name_list(value: Any) -> bool:
+    return (isinstance(value, list) and len(value) <= _SSH_SESSION_MAX_LIST
+            and all(_ssh_session_known_name(n) for n in value))
+
+
+def _ssh_session_banner(value: Any) -> bool:
+    return value is None or (
+        isinstance(value, str) and _SSH_SESSION_SERVER_SOFTWARE_RE.match(value) is not None
+        and _SSH_SESSION_TOKEN_RE.match(value) is not None
+        and not _SSH_SESSION_IPV4_IN_TEXT.search(value) and not _SSH_SESSION_MAC_IN_TEXT.search(value))
+
+
+def _ssh_session_object(value: Any, keys: frozenset[str]) -> bool:
+    return isinstance(value, dict) and set(value) == keys
+
+
+def _ssh_session_closed_schema(doc: Any) -> bool:
+    """The restated ``ssh_session/1`` closed schema (see above): True only for a record the owner's validator accepts.
+    Every object's exact key set, every enum, every scalar's grammar and range, the fixed host-key block, and the two
+    cross-field rules (a refusal exactly on a refused outcome; a pending record holds no observation)."""
+    if not _ssh_session_object(doc, _SSH_SESSION_TOP_KEYS) or doc["schema"] != _SSH_SESSION_RECORD_SCHEMA:
+        return False
+    if not (_ssh_session_enum(doc["outcome"], _SSH_SESSION_OUTCOMES)
+            and _ssh_session_int(doc["attempts"], 0, 100)
+            and _ssh_session_enum(doc["platform_source"], _SSH_SESSION_PLATFORM_SOURCES)
+            and _ssh_session_int(doc["dropped_names"], 0, 1_000_000)):
+        return False
+    failure_class = doc["failure_class"]
+    if failure_class is not None and not (isinstance(failure_class, str)
+                                          and _SSH_SESSION_IDENTIFIER_RE.match(failure_class)):
+        return False
+    consent = doc["consent"]
+    if not (_ssh_session_object(consent, _SSH_SESSION_CONSENT_KEYS)
+            and _ssh_session_enum(consent["device_profile"], _SSH_SESSION_PROFILES)
+            and _ssh_session_enum(consent["run_flag_profile"], _SSH_SESSION_PROFILES, nullable=True)
+            and isinstance(consent["named_on_run_flag"], bool)
+            and _ssh_session_enum(consent["effective_profile"], _SSH_SESSION_PROFILES)):
+        return False
+    library = doc["library"]
+    if not _ssh_session_object(library, _SSH_SESSION_LIBRARY_KEYS):
+        return False
+    for key in ("paramiko", "netmiko"):
+        if library[key] is not None and not (isinstance(library[key], str)
+                                             and _SSH_SESSION_VERSION_RE.match(library[key])):
             return False
-        for names in block.values():
-            if not isinstance(names, list) or not all(_ssh_session_known_name(n) for n in names):
-                return False
-    negotiated = doc.get("negotiated")
+    transport = library["transport_class"]
+    if transport is not None and not (isinstance(transport, str) and _SSH_SESSION_IDENTIFIER_RE.match(transport)):
+        return False
+    if not _ssh_session_opt_bool(library["default_permits_sha1"]):
+        return False
+    for section, keys in (("client_offered", _SSH_SESSION_CLIENT_KEYS), ("server_offered", _SSH_SESSION_SERVER_KEYS)):
+        block = doc[section]
+        if block is not None and not (_ssh_session_object(block, keys)
+                                      and all(_ssh_session_name_list(block[k]) for k in keys)):
+            return False
+    negotiated = doc["negotiated"]
     if negotiated is not None:
-        if not isinstance(negotiated, dict):
+        if not _ssh_session_object(negotiated, _SSH_SESSION_NEGOTIATED_KEYS):
             return False
-        for key in _SSH_SESSION_NEGOTIATED_NAMES:
-            value = negotiated.get(key)
-            if value is not None and not _ssh_session_known_name(value):
-                return False
-        banner = negotiated.get("server_software")
-        if banner is not None and not (isinstance(banner, str) and _SSH_SESSION_SERVER_SOFTWARE_RE.match(banner)):
+        if not all(negotiated[k] is None or _ssh_session_known_name(negotiated[k])
+                   for k in _SSH_SESSION_NEGOTIATED_NAMES):
             return False
-    refusal = doc.get("refusal")
-    if refusal is not None:
-        if not isinstance(refusal, dict):
+        if not (_ssh_session_banner(negotiated["server_software"])
+                and _ssh_session_int(negotiated["kex_hash_bytes"], 1, 128, nullable=True)
+                and _ssh_session_int(negotiated["dh_group_bits"], 1, 65536, nullable=True)
+                and isinstance(negotiated["strict_kex"], bool)):
             return False
-        names = refusal.get("names")
-        if names is not None and (not isinstance(names, list)
-                                  or not all(_ssh_session_known_name(n) for n in names)):
-            return False
+    observation = doc["observation"]
+    if not (_ssh_session_object(observation, _SSH_SESSION_OBSERVATION_KEYS)
+            and isinstance(observation["kexinit"], bool) and isinstance(observation["newkeys"], bool)
+            and _ssh_session_opt_bool(observation["engine_name_agrees"])
+            and _ssh_session_opt_bool(observation["group_size_agrees"])):
+        return False
+    host_key = doc["host_key"]
+    if not (isinstance(host_key, dict) and set(host_key) == set(_SSH_SESSION_HOST_KEY_BLOCK)
+            and host_key["policy"] == "auto-add" and host_key["verified"] is False):
+        return False
+    refusal = doc["refusal"]
+    if refusal is not None and not (
+            _ssh_session_object(refusal, _SSH_SESSION_REFUSAL_KEYS)
+            and _ssh_session_enum(refusal["category"], _SSH_SESSION_REFUSAL_CATEGORIES)
+            and _ssh_session_enum(refusal["classification"], _SSH_SESSION_REFUSAL_CLASSES)
+            and _ssh_session_enum(refusal["detail"], _SSH_SESSION_REFUSAL_DETAILS)
+            and _ssh_session_int(refusal["offered_group_bits"], 1, 65536, nullable=True)
+            and _ssh_session_name_list(refusal["names"])):
+        return False
+    if (refusal is not None) != (doc["outcome"] == "negotiation_refused"):
+        return False
+    if doc["outcome"] == "pending" and (negotiated is not None or doc["server_offered"] is not None):
+        return False
     return True
 
 
@@ -975,7 +1087,7 @@ def _ssh_session_record_conforms(raw: bytes) -> bool:
                 return False
         else:
             return False                       # floats and anything else are outside the schema
-    return _ssh_session_positions_conform(doc)
+    return _ssh_session_closed_schema(doc)
 
 
 def is_uncoverable_capture(filename: str) -> str:

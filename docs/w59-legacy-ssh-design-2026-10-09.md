@@ -168,9 +168,11 @@ these, because each install form reads a different file:
 - `portable/release_contract.py`: its census pins `netmiko` 4.7.0, `paramiko` 4.0.0 and `ruamel-yaml` 0.19.1. PR-3
   updates the census to match the new lock; the lock alone is not enough.
 - **A runtime probe**, because a floor in a manifest does not bind an environment that already has paramiko 4, one
-  that installed `netmiko[par4]`, or one installed with `--no-deps`. `ssh_session.permits_sha1(...)` inspects the
-  stock `Transport._preferred_kex`, `Transport._key_info` and `RSAKey.HASHES` for SHA-1 names. The collector records
-  the result in every session record as `library.default_permits_sha1` (PR-1). After PR-3, a live run in which it is
+  that installed `netmiko[par4]`, or one installed with `--no-deps`. `ssh_session.permits_sha1(transport_cls,
+  rsakey_cls=None)` reads the stock tables of the transport class it is given (`_preferred_kex`, `_kex_info`,
+  `_preferred_keys`, `_key_info`) and, when an RSA key class is given, its `HASHES`, for SHA-1-class names. The
+  collector calls it once per run as `permits_sha1(paramiko.Transport, paramiko.RSAKey)` and records the result in
+  every session record as `library.default_permits_sha1` (PR-1). After PR-3, a live run in which it is
   true is refused before the first connection, naming the fix. The frozen `--selftest` asserts it is false (PR-3).
 
 **Audit (PR-3):**
@@ -238,6 +240,13 @@ its algorithm names from `cisco_toolkit.ssh_session`'s vocabulary (§5) and rest
 | `LegacySHA1RSAKey` | `RSAKey` | `HASHES = MappingProxyType({**RSAKey.HASHES, "ssh-rsa": hashes.SHA1, "ssh-rsa-cert-v01@openssh.com": hashes.SHA1})` |
 | `LegacySHA1Transport` | `(ObservingTransportMixin, Transport)` | `_preferred_kex = Transport._preferred_kex + ("diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1")`; `_kex_info = MappingProxyType({**Transport._kex_info, ...})`; `_preferred_keys = Transport._preferred_keys + ("ssh-rsa",)`; `_key_info = MappingProxyType({**Transport._key_info, "ssh-rsa": LegacySHA1RSAKey, "ssh-rsa-cert-v01@openssh.com": LegacySHA1RSAKey})`. `_preferred_pubkeys`, ciphers and MACs are untouched. |
 
+**The tier tuples** are PR-1's exports (§4.2): `LEGACY_SHA1_TIER_KEX = ("diffie-hellman-group14-sha1",
+"diffie-hellman-group-exchange-sha1")` and `LEGACY_SHA1_TIER_HOST_KEYS = ("ssh-rsa", "ssh-rsa-cert-v01@openssh.com")`.
+The host-key tuple holds the plain name **and** its certificate variant, because both are what the legacy key class
+verifies (the two `_key_info` rows and the two `HASHES` rows above). `_preferred_keys` appends only the tuple's plain
+names (`n for n in LEGACY_SHA1_TIER_HOST_KEYS if not n.endswith("-cert-v01@openssh.com")`): paramiko's
+`preferred_keys` property derives each certificate variant from a plain name itself.
+
 **Host-key order, precisely.** `ssh-rsa` follows every stock *plain* host-key algorithm. Paramiko's `preferred_keys`
 property then appends a `-cert-v01@openssh.com` variant of each plain name after all of them [P1, P13 **verified**].
 So `ssh-rsa` sits before the stock `rsa-sha2-*-cert-v01@openssh.com` entries. Cisco devices do not offer host
@@ -252,8 +261,9 @@ keys.
   the floor check ran.
 - `LegacyKexGexSHA1._parse_kexdh_gex_group(self, m)` therefore reads the prime from a **copy** of the message
   (`type(m)(m.asbytes())`) [P15 **verified**], so the original's read position is untouched. When the prime is below
-  `floor_bits`, it records the offered size in the session's observation sink and raises `WeakGroupRefused`. Only when
-  the prime passes does it call `super()._parse_kexdh_gex_group(m)`.
+  `floor_bits`, it raises `WeakGroupRefused` carrying the offered size as `offered_bits`; PR-1's classifier reads the
+  size from the exception (the sink has no offered-size field, and the legacy module writes no sink). Only when the
+  prime passes does it call `super()._parse_kexdh_gex_group(m)`.
 - `WeakGroupRefused` subclasses paramiko's `IncompatiblePeer` and carries `offered_bits`. The collector's negotiation
   classifier (§4.4) therefore matches it, so the device gets **exactly one attempt** and the status `refused_weak_dh`.
   Revision 1 raised a plain `SSHException`, which netmiko 4.8.0 turns into `NetmikoTimeoutException`
@@ -318,22 +328,53 @@ observer. The hook is the only per-connection seam. **The collector** (not the l
   transport class). The class is `type("Observed" + base.__name__, (_ObservedClientMixin, base), {})`, where
   `base = netmiko.ssh_dispatcher.CLASS_MAPPER[device_type]` [N5].
 
-The collector gains **one** module-level factory, `_open_connection(kwargs, platform, profile, sink)`:
+The collector gains **one** module-level factory, `_open_connection(kwargs, platform, profile, recorder)`, where
+`recorder` is the device's `ssh_session.SessionRecorder`:
 
-- It selects `ObservedTransport` when `profile == "default"`. Otherwise it imports `cisco_toolkit.legacy_ssh` lazily
-  and takes `legacy_ssh.transport_for(profile)`.
+- It selects its transport through `_transport_for_profile(profile)`: `ObservedTransport` when `profile ==
+  "default"`. Otherwise it imports `cisco_toolkit.legacy_ssh` lazily and takes `legacy_ssh.transport_for(profile)`
+  (PR-2; PR-1 raises for any other profile, so a non-default profile never silently falls back).
 - It returns `_observed_driver_for(platform, transport_cls)(**kwargs)`.
 
-`connect_device()` calls only this factory. A structural test asserts that no other site in the collector constructs a
-netmiko connection. The live-safety tests patch this one name, so both paths are intercepted (T8).
+**Exactly two sanctioned construction sites.** `connect_device()` constructs the device's session only through this
+factory. The second site is `autodetect_platform`, whose `SSHDetect(...)` probe runs for a `platform: auto` row before
+the factory, is not observed (below), and receives the row's own `port`, the same as the observed session. A
+structural test (T8) runs a closed taint scan over the collector: every netmiko / paramiko import binding and every
+dynamic route to a name is a root, taint follows every binding and expression form, and no connection-capable callee
+may be called, nor a connection-capable value handed to other code, outside the named sites. The live-safety tests
+patch `_open_connection`, which intercepts both paths, and for a `platform: auto` device they patch `C.SSHDetect` as
+well.
+
+**The PR-1 / PR-2 interface, pinned.** PR-2 is built on PR-1's merged API, never in parallel with it, and uses it
+exactly as follows:
+
+- **Names it imports from `cisco_toolkit.ssh_session`:** `ObservingTransportMixin`, `LEGACY_SHA1_TIER_KEX`,
+  `LEGACY_SHA1_TIER_HOST_KEYS`, `DH_FLOOR_BITS`, `permits_sha1`, `SSH_PROFILES`, `DEFAULT_PROFILE` and
+  `LEGACY_SHA1_PROFILE`. It restates none of them, and it touches no sink: the observation sink, `SINK_ATTRIBUTE` and
+  `SessionRecorder` stay the collector's and the owner's.
+- **The tier tuples hold plain names and their certificate variants** (§4.1): two key-exchange names, and `ssh-rsa`
+  with `ssh-rsa-cert-v01@openssh.com`. PR-2's `_preferred_keys` appends only the plain names.
+- **The probe signature** is `permits_sha1(transport_cls, rsakey_cls=None) -> bool`, called as
+  `permits_sha1(paramiko.Transport, paramiko.RSAKey)`. There is no three-argument form.
+- **The legacy module's one entry point** is `legacy_ssh.transport_for(profile) -> type`, returning a transport class
+  composed as `(ObservingTransportMixin, <legacy paramiko.Transport subclass>)`. The collector's
+  `_transport_for_profile` gains exactly that branch. `_open_connection`, `_ObservedSSHClient`, the thread-local
+  hand-off, `SessionRecorder` and the evidence-first `classify_failure` are PR-1's and stay unchanged, so a legacy
+  session writes its sidecar through the same recorder and sink.
+- **The consent block keys** (the manifest's and the snapshot's `ssh_transport_consent`) are exactly `mode`,
+  `run_flag`, `devices_requesting_legacy`, `devices_eligible`, `named_not_requested`, `requested_not_named`,
+  `devices_negotiated_sha1` and `record_failures`. Each `record_failures` entry is `{host, stage, error_class,
+  replace_attempts, unlink_attempts}`; PR-2 fills `run_flag` from `--allow-legacy-ssh` and keeps every key.
 
 **The per-connection observation sink** (critique P3). netmiko's `__init__` accepts no extra keyword arguments, so the
 sink cannot be passed through the driver constructor. The sink travels in two steps:
 
-1. `_open_connection` puts the sink in a **thread-local** for the duration of the driver constructor and clears it in
-   `finally`. `_get_ssh_client_instance()` runs in that same caller thread, reads the thread-local and binds the sink
-   to the client it returns.
-2. The client's transport-factory closure binds the same sink to the transport **instance**.
+1. `_open_connection` puts the device's recorder and transport class in a **thread-local** for the duration of the
+   driver constructor and clears it in `finally`. `_get_ssh_client_instance()` runs in that same caller thread, reads
+   the thread-local and hands both to the client it returns; the recorder holds the current attempt's sink
+   (`SessionRecorder.begin_attempt`).
+2. The client's transport-factory closure binds that attempt's sink to the transport **instance**
+   (`ssh_session.bind_observation`).
 
 Step 2 is required because paramiko runs the key exchange in its own transport thread, not in the caller's thread:
 `start_client` starts the thread and re-raises any saved exception in the caller [P1 P13 **verified**]. The overrides
@@ -367,8 +408,10 @@ no-egress walk. It is composed with `paramiko.Transport` by the collector (defau
   can be classified from evidence (§4.4).
 - **`_parse_newkeys(self, m)`.** Before calling `super()`, on the first key exchange only, it records:
   - the engine's `name`;
-  - the group size, from `getattr(eng, "p", None)` for group exchange, else `getattr(eng, "P", None)` for a fixed
-    group. It is `null` for elliptic-curve and Curve25519 engines, which have neither;
+  - the group size, read only when the negotiated name's vocabulary grade says the method is a MODP group
+    (`KexGrade.modp`): `getattr(eng, "p", None)` for group exchange, else `getattr(eng, "P", None)` for a fixed group.
+    It is never selected by attribute presence -- on paramiko 4.0.0 an ECDH engine carries a `P` too -- so it is
+    `null` for every elliptic-curve, Curve25519 and hybrid method, and for a name the vocabulary does not grade;
   - `host_key_type`, the ciphers and MACs in both directions, `agreed_on_strict_kex` and `remote_version`;
   - `len(self.session_id)`.
 
@@ -398,15 +441,19 @@ compression [P1 **verified**]. netmiko 4.8.0 turns any `SSHException` into `Netm
 `connect_device()` gains `_classify_connect_failure(exc, sink)`, owned by `ssh_session.classify_failure` and fed
 **evidence first**:
 
-1. **The sink's server lists**, when recorded. The first category whose client and server lists share no algorithm is
-   the refusal category, in paramiko's own order: kex, host key, cipher, MAC.
-2. **The exception chain**, otherwise. `IncompatiblePeer` or `WeakGroupRefused` anywhere in the chain is a negotiation
-   refusal; its message names the category.
+1. **The sink's server lists**, when recorded **and complete**: both sides' lists recorded, every client list
+   non-empty, no observation error and no server name dropped (a dropped name could have been the common one).
+   Every category is evaluated, in paramiko's own order (kex, host key, cipher, MAC). The first category with no
+   common algorithm is the refusal category, the one paramiko refuses on. When every category shares an algorithm,
+   the lists show no refusal: the failure is an ordinary connection failure and the same-profile retry applies.
+2. **The exception chain**, otherwise. `WeakGroupRefused`, or paramiko's deterministic group-exchange refusal (a plain
+   `SSHException` naming a server prime outside its 1024-8192-bit window) below 2048 bits, is `refused_weak_dh`; that
+   refusal above the window, or `IncompatiblePeer`, is `unclassified`, its message naming the category.
 
 | Refusal | Condition | Retry |
 |---|---|---|
 | `refused_weak_dh` | `WeakGroupRefused` (legacy GEX floor, offered bits recorded); or a kex-category refusal where every server-offered kex method is a MODP group below 2048 bits | none: one attempt |
-| `refused_legacy_only` | kex or host-key category; server lists recorded; every algorithm the server offered in that category is graded legacy (SHA-1-class) in the vocabulary (§5) | none |
+| `refused_legacy_only` | kex or host-key category; server lists recorded; every algorithm the server offered in that category is graded legacy (SHA-1-class) in the vocabulary (§5). The advice says the device "requires the legacy-sha1 opt-in" only when the tier names, appended to the client's lists, leave **no** category empty (`ssh_session.legacy_tier_closes`); a device whose other SHA-1-class category is out of tier (a DSA-only host key) or that also shares no cipher or MAC gets the "no profile of this collector implements" wording (§6.3) | none |
 | `refused_unsupported_modern` | kex or host-key category; server lists recorded; at least one offered algorithm is graded modern but this paramiko does not implement it, such as the RFC 8731 name `curve25519-sha256` [R9] (paramiko 5 registers only `curve25519-sha256@libssh.org`) or a post-quantum hybrid | none |
 | `refused_cipher_mac` | cipher or MAC category | none |
 | `unclassified` | a version or compression refusal; a server list holding a name the vocabulary does not grade; or a refusal with no server lists recorded | none for an `IncompatiblePeer`; see the disconnect race below |
@@ -417,8 +464,9 @@ The pseudo-algorithms `ext-info-*` and `kex-strict-*` are ignored when grading a
 `EOFError` or `SSHException("Negotiation failed.")`, not `IncompatiblePeer` [P1 **verified**]:
 
 - If the server's KEXINIT arrived before its `DISCONNECT`, paramiko parses it first, because the stream is ordered. The
-  sink then holds the server's lists, and the refusal is classified from them as in the table, whatever exception
-  surfaces, with no retry.
+  sink then holds the server's lists. When they show a category with no common algorithm (and the observation is
+  complete, step 1), the refusal is classified from them as in the table, whatever exception surfaces, with no
+  retry. When every category overlaps, the failure is not a negotiation refusal and the same-profile retry applies.
 - If the `DISCONNECT` arrives before any server KEXINIT, there is no evidence of what the server offers. It is a
   connection failure with status `unknown`. The existing same-profile retry applies, because no password is sent before
   key exchange completes, and the profile never changes between attempts.
@@ -484,10 +532,13 @@ hosts and every name must match.
 **Where consent is recorded:**
 
 - the devices.json bytes, whose SHA-256 is already in the run manifest `inputs` (`devices_file_sha256`);
-- a new manifest meta block, `ssh_transport_consent`. On a live run it holds `{run_flag: {profile, hosts_named},
-  devices_requesting_legacy, devices_eligible, named_not_requested, requested_not_named, devices_negotiated_sha1}`. On a
-  `--no-collect` run it is `{"mode": "offline"}` with every consent field `null`, so a re-analysis never states a
-  consent it did not observe (critique P2-8). Hosts are recorded by the device's `hostname` key, the same key every
+- a new manifest meta block, `ssh_transport_consent`. On a live run it holds `{mode: "live", run_flag: {profile,
+  hosts_named}, devices_requesting_legacy, devices_eligible, named_not_requested, requested_not_named,
+  devices_negotiated_sha1, record_failures}`; `devices_negotiated_sha1` is `null` until the disclosure phase computes
+  it from the sealed records (never an empty list before any session ran), and each `record_failures` entry is
+  `{host, stage, error_class, replace_attempts, unlink_attempts}`. On a `--no-collect` run it is `{"mode":
+  "offline"}` with every consent field `null`, so a re-analysis never states a consent it did not observe (critique
+  P2-8). Hosts are recorded by the device's `hostname` key, the same key every
   other snapshot block uses; `redact_snapshot` keeps hostnames and pseudonymizes IP addresses wherever they appear;
 - the per-device session sidecar (§6.1), which is the **only** source of a device's consent fields in the snapshot.
 
@@ -518,6 +569,8 @@ refused. It is a separate file rather than new keys in `_capture_meta.json`. Tha
 `{command: reason}` map, and `compute_capture_integrity_from_paths` looks commands up in it, so a non-command key would
 be read as a command.
 
+The closed key set, exactly (`ssh_session.validate_record`; every object's keys are exactly these):
+
 ```json
 {
   "schema": "ssh_session/1",
@@ -529,7 +582,8 @@ be read as a command.
   "library": {"paramiko": "5.0.0", "netmiko": "4.8.0", "transport_class": "LegacySHA1Transport",
               "default_permits_sha1": false},
   "client_offered": {"kex": ["...stock order...", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"],
-                     "host_key": ["...stock plain names...", "ssh-rsa", "...-cert-v01 variants..."]},
+                     "host_key": ["...stock plain names...", "ssh-rsa", "...-cert-v01 variants..."],
+                     "cipher": ["...stock order..."], "mac": ["...stock order..."]},
   "server_offered": {"kex": ["diffie-hellman-group14-sha1"], "host_key": ["ssh-rsa"],
                      "cipher_c2s": ["aes128-ctr"], "cipher_s2c": ["aes128-ctr"],
                      "mac_c2s": ["hmac-sha1"], "mac_s2c": ["hmac-sha1"]},
@@ -537,21 +591,32 @@ be read as a command.
                  "host_key_algorithm": "ssh-rsa",
                  "cipher_c2s": "aes128-ctr", "cipher_s2c": "aes128-ctr", "mac_c2s": "hmac-sha1", "mac_s2c": "hmac-sha1",
                  "strict_kex": false, "server_software": "SSH-2.0-Cisco-1.25"},
+  "observation": {"kexinit": true, "newkeys": true, "engine_name_agrees": true, "group_size_agrees": true},
   "host_key": {"policy": "auto-add", "verified": false},
-  "refusal": null
+  "refusal": null,
+  "failure_class": null,
+  "dropped_names": 0
 }
 ```
+
+A refused record carries `"refusal": {"category", "classification", "detail", "offered_group_bits", "names"}` and
+`negotiated: null`; a `pending` record carries `server_offered: null` and `negotiated: null`. `failure_class` is the
+failing exception's class name (an identifier) or `null`.
 
 **How each field is captured:**
 
 - `server_offered`, `client_offered` and `negotiated` come from the observation sink (§4.3), never from the transport
   after `connect()` returns.
 - `negotiated.kex_hash_bytes` is `len(session_id)`, the hook-free second witness.
-- `negotiated.dh_group_bits` is the engine's `p` (group exchange) or `P` (fixed group) bit length, and `null` for an
-  engine that has neither.
-- `server_software` keeps only `SSH-protoversion-softwareversion`. The free-text comment after the first space
-  (RFC 4253 §4.2 [R1]) is dropped, so it cannot carry identifying text.
-- `refusal` carries `{category, classification, detail, offered_group_bits}` from §4.4.
+- `negotiated.dh_group_bits` is the engine's `p` (group exchange) or `P` (fixed group) bit length, read only for a
+  method the vocabulary grades MODP (§4.3), and `null` for every other method.
+- `server_software` is stored only when the banner's `SSH-protoversion-softwareversion` matches the vendor grammar
+  (`ssh_session.SERVER_SOFTWARE_RE`: a known SSH implementation's product token followed by a numeric version, such as
+  `SSH-2.0-Cisco-1.25` or `SSH-2.0-OpenSSH_9.6p1`). The free-text comment after the first space (RFC 4253 §4.2 [R1])
+  is always dropped. Any other softwareversion -- a custom banner, which a device owner can set to an organisation or
+  host name -- is stored as `null` and counted in `dropped_names`.
+- `refusal` carries `{category, classification, detail, offered_group_bits, names}` from §4.4; `names` holds only
+  recordable vocabulary names (below).
 - `outcome` is one of `pending`, `established`, `auth_failed`, `negotiation_refused` or `connect_failed`. `pending`
   means the session record was never completed (below).
 - An **authentication failure** keeps its negotiated fields. The sink was bound to the transport, so the record no
@@ -560,25 +625,36 @@ be read as a command.
 
 **A closed schema with no client identifier** (critique P2-5). The sidecar holds no hostname, no IP address and no
 host-key fingerprint. The device is identified by its folder, which the collection already names. Every string is an
-enum value, a version, or an algorithm name matching the RFC 4251 §6 name grammar [R8] (printable US-ASCII, no comma
-or whitespace, at most 64 characters). Each list holds at most 64 names. A non-conforming name is dropped and counted,
-never stored. The host-key fingerprint is **never written inside the collection tree**; host-key custody belongs to the
-W61 follow-up (§7, threat 1).
+enum value, a library version, an identifier (the transport class, the failure class), a banner token of the vendor
+grammar (above), or an algorithm name of the **recordable vocabulary** (`ssh_session.RECORDABLE_ALGORITHM_NAMES`: the
+graded key-exchange, host-key, cipher and MAC vocabularies plus the exact pseudo-algorithm names), which also meets
+the RFC 4251 §6 name grammar [R8]. A grammar-conforming name outside that vocabulary -- a vendor extension, or a
+crafted name carrying an organisation or host name -- is never stored: it is counted in `dropped_names`, and the
+classifier still grades the refusal on every name the server offered. Each list holds at most 64 names. The host-key
+fingerprint is **never written inside the collection tree**; host-key custody belongs to the W61 follow-up (§7,
+threat 1).
 
 **When it is written** (critique P2-6). The record is written in up to three steps, so that a device authorized for
 SHA-1 can never end up with no record of that authorization, even on an offline re-analysis:
 
-1. **Before connecting:** an exclusive create of the sidecar with `outcome: "pending"`, the consent fields and the
-   `library` block. If this write fails, the device is **not connected**, and the failure is written to the run
-   manifest. Nothing was negotiated, so its later status is `not_recorded`.
+1. **Before connecting:** the run claims the device's folder in an in-memory set (a second devices.json row that
+   resolves to the same folder is refused, and the host's record is ambiguous); removes any record an earlier run
+   left there (retried over the same bounded backoff as the replace below); and publishes the `pending` record --
+   `outcome: "pending"`, the consent fields and the `library` block -- through `ssh_session.write_record_atomic`
+   (validate, same-directory temp file, `fsync`, `os.replace` retried over `REPLACE_BACKOFF_S`, seven attempts and
+   3.15 s at most). If any of these steps fails, the device is **not connected**, and the failure (`stage`,
+   `error_class`, `replace_attempts`, `unlink_attempts`) is written to the run manifest's `record_failures`. Nothing
+   was negotiated, so its status is `not_recorded` ("not connected") on the live run and on every later re-analysis
+   alike, even for a device the run authorized for a legacy profile (§6.2).
 2. **Established sessions:** inside `_ObservedSSHClient.connect()`, after authentication succeeds and before
    `connect()` returns, the pending record is replaced by the full record. netmiko opens the shell and runs its
    session preparation only after that call, so the record exists **before the first command** reaches the device.
    That covers netmiko's own `terminal` commands and the collector's `TERMINAL_SETUP_CMDS`. If the replacement fails,
    the client closes the transport and raises `SessionRecordError`. The device is then not collected and not retried,
    the failure is written to the run manifest, and the sealed sidecar stays `pending`.
-3. **Failed sessions:** in `_open_connection`'s failure path, after classification, the pending record is replaced by
-   the failure record. If that replacement fails, the sidecar stays `pending` and the failure is written to the run
+3. **Failed sessions:** in `connect_device`'s failure path, after classification (an authentication failure, a
+   negotiation refusal, or a connection failure after the last same-profile attempt), the pending record is replaced
+   by the failure record. If that replacement fails, the sidecar stays `pending` and the failure is written to the run
    manifest.
 
 A sidecar sealed as `pending` is therefore evidence that a session was started and its record never completed. With
@@ -599,8 +675,9 @@ later re-analysis alike.
 
 ### 6.2 Snapshot block: `snap["ssh_sessions"]` (schema `ssh_session_set/1`, owner `cisco_toolkit.ssh_session`, PR-1)
 
-The block has one row per device. On a live run, that is every device in devices.json. On a `--no-collect` run it is
-every device folder, including a folder that holds only a sidecar (§6.4). Each row has these fields:
+The block has one row per device in the run's devices.json, live and `--no-collect` alike; a folder no devices.json
+row names gets no row. AssessHub's ingest synthesizes its devices.json from every device folder, a folder that holds
+only a sidecar included (§6.4), so there every attempted device has a row. Each row has these fields:
 
 - `host`;
 - `recorded`, which is `false` when there is no sidecar;
@@ -621,12 +698,12 @@ every device folder, including a folder that holds only a sidecar (§6.4). Each 
 
 | `status` | Condition | Finding |
 |---|---|---|
-| `legacy_unrecorded` | A sealed sidecar still `pending` with an effective legacy profile; or, on a live run, no sidecar while the manifest consent block lists the device as eligible | `exposed`, Medium |
-| `not_recorded` | No sidecar otherwise: an offline import, a collection made before W59, or a device not connected because its first record write failed | `verify` |
-| `unknown` | Malformed sidecar (the parse error is kept); a `pending` sidecar on the default profile; a negotiation that was never observed (connect failure, unclassified refusal, a disconnect without server lists); an authentication failure with no observed key exchange; or an inconsistent observation (§4.3) | `verify` |
+| `legacy_unrecorded` | A sealed sidecar still `pending` with an effective legacy profile; or, on a live run, no sidecar while the manifest consent block lists the device as eligible **and** its `record_failures` show no pre-connect failure for it | `exposed`, Medium |
+| `not_recorded` | No sidecar otherwise: an offline import, a collection made before W59, or a device not connected because a pre-connect record step failed (§6.1 step 1; the live run's reason says "not connected", and an offline re-analysis derives the same status) | `verify` |
+| `unknown` | Malformed sidecar (the parse error is kept); on a live run, a sidecar this run did not write (an earlier run's, or one another devices.json row claimed); a `pending` sidecar on the default profile; a negotiation that was never observed (connect failure, unclassified refusal, a disconnect without server lists); an authentication failure with no observed key exchange; or an inconsistent observation (§4.3) | `verify` |
 | `weak_dh` | Key exchange observed with a MODP group below 2048 bits, on either path. It takes precedence over `legacy_sha1`, and `sha1.kex` is still recorded | `exposed`, High |
-| `legacy_sha1` | Key exchange observed with SHA-1 in the exchange hash (`kex_hash_bytes` 20) or an `ssh-rsa` host-key signature | `exposed`, Medium |
-| `modern` | Key exchange observed: SHA-256 or better, agreed by the engine name and `kex_hash_bytes`; host-key signature not `ssh-rsa`; and either a MODP group of at least 2048 bits or a non-MODP exchange | `closed` |
+| `legacy_sha1` | Key exchange observed with SHA-1 in the exchange hash (`kex_hash_bytes` 20) or a host-key algorithm graded legacy in the vocabulary (`ssh-rsa`, its certificate variant, `ssh-dss`, `x509v3-ssh-rsa` and the rest of `SHA1_HOST_KEY_NAMES`) | `exposed`, Medium |
+| `modern` | Key exchange observed: SHA-256 or better, agreed by the engine name and `kex_hash_bytes`; a host-key algorithm graded modern in the vocabulary; and either a MODP group of at least 2048 bits or a non-MODP exchange | `closed` |
 | `refused_weak_dh` | Refusal classified `refused_weak_dh` (§4.4) | `exposed`, High |
 | `refused_legacy_only` | Refusal classified `refused_legacy_only` | `exposed`, Medium |
 | `refused_unsupported_modern` | Refusal classified `refused_unsupported_modern`: a collector gap, not a device weakness | `verify` |
@@ -675,7 +752,8 @@ the one owner of the wording:
 | `legacy_sha1` | `default` | "negotiated SHA-1 SSH without opt-in (the collector permitted SHA-1: paramiko {version}); session integrity weakened; host key not verified" |
 | `weak_dh` | either | "negotiated a {bits}-bit Diffie-Hellman group, below 2048 ({with opt-in / without opt-in}); treat the collection account's password as exposed and rotate it; host key not verified" |
 | `legacy_unrecorded` | `legacy-sha1` | "authorized for SHA-1 SSH by its run, but the session record was never completed; treated as collected over SHA-1" |
-| `refused_legacy_only` | either | "not collected: the device offers only SHA-1-class SSH ({names}); collecting it requires the legacy-sha1 opt-in" |
+| `refused_legacy_only`, within the tier | either | "not collected: the device offers only SHA-1-class SSH ({names}); collecting it requires the legacy-sha1 opt-in" -- only when the tier closes every category with no common algorithm (§4.4) |
+| `refused_legacy_only`, outside the tier | either | "not collected: the device offers only SHA-1-class SSH ({names}), which no profile of this collector implements" -- a DSA-only host key, or a device the opt-in would still refuse on another category |
 | `refused_weak_dh` | either | "not collected: the device offered only a {bits}-bit Diffie-Hellman group, below the 2048-bit floor" |
 | `refused_unsupported_modern`, `refused_cipher_mac` | either | "not collected: the device requires {names}, which this collector's SSH library does not implement (a collector gap, not a device weakness)" |
 | `unknown`, `not_recorded` | — | "SSH session posture not recorded" |
@@ -709,9 +787,16 @@ The `paramiko {version}` clause is filled only when `library.default_permits_sha
 **Redaction** (critique P2-5):
 
 - The fingerprint is never in the collection tree, so `--redact-collection` has nothing to remove.
-- The redaction verifier recognizes `_ssh_session.json` by its closed schema (§6.1). A sidecar that validates is
-  reported as **covered by schema**: it holds only enums, versions and grammar-conforming algorithm names. A sidecar
-  that fails validation stays NOT COVERED, exactly as an unknown file does today.
+- The redaction verifier recognizes `_ssh_session.json` by its closed schema (§6.1). It never imports the producer:
+  it restates the whole schema position by position -- every object's exact key set, every enum set (outcome,
+  platform source, profiles, refusal category / classification / detail), every scalar's grammar and range, the fixed
+  host-key block and the two cross-field rules -- plus the recordable vocabulary (as SHA-256 digests, so no SSH SHA-1
+  name leaves its owner) and the vendor banner grammar. A sidecar it reports **covered by schema** is one the owner's
+  validator accepts: it holds only enums, library versions, identifiers, small integers, booleans, vocabulary
+  algorithm names and a vendor-grammar banner token, never device-controlled free text. A sidecar that fails
+  validation stays NOT COVERED, exactly as an unknown file does today. A test holds every restated set equal to the
+  owner's and the two statements in agreement over every leaf of the producer's own records under generated
+  mutations.
 - Without this, every W59 collection would add one NOT COVERED file per device, and that permanent noise would bury
   the signal the disclosure exists for.
 
@@ -853,7 +938,7 @@ In the floating environment, every seam is tested by behaviour.
 | T5 | 2 | **GEX floor.** The raw responder offers a 1024-bit group for `diffie-hellman-group-exchange-sha1` under `legacy-sha1`. Status `refused_weak_dh` with `offered_group_bits` 1024, **exactly one attempt**, and the responder receives no `KEXDH_GEX_INIT` and no authentication. Separately, the fixture's stock 2048-bit group exchange under `legacy-sha1` negotiates gex-sha1 with `dh_group_bits` 2048. | Floor override removed; check placed after `super()` (GEX_INIT sent); a plain `SSHException` (retried 3 times, `unknown`) |
 | T6 | 2 | **Consent matrix.** Every (row profile, named on the run flag) pair gives the right effective profile. Load errors for a non-string or unknown profile, and for a legacy profile whose **mapped** platform is `auto` (including `"asa"`). A run-flag host that matches no row is an error before any connection. The eligible and mismatch lists are printed and in the manifest before the first connection. `--no-collect` with `--allow-legacy-ssh` is an error. | Truthiness coercion; platform checked before mapping; unmatched names ignored; flag without a host list accepted |
 | T7 | 1 | **netmiko and paramiko seam contract, by behaviour.** A spy proves that `_build_ssh_client` calls `_get_ssh_client_instance`. The observed driver's MRO is (mixin, `CLASS_MAPPER` class). `_ObservedSSHClient.connect` forces `transport_factory`. After a real handshake against the fixture, the sink holds the server lists, the engine name and the group size. The floating environment's stock tables contain no SHA-1 (`permits_sha1` false). Exact versions are asserted only against the lock text. | The hook renamed upstream (simulated); `_parse_newkeys` no longer the handler-table entry (simulated) |
-| T8 | 1, 2 | **Live-safety seam.** `_open_connection` is the only constructor of a netmiko connection (AST), and patching it intercepts the default path (PR-1) and the legacy path (PR-2). This extends `test_collect_parse_live_safety.py`. | A direct `ConnectHandler(...)` or `_observed_driver_for(...)(...)` call in `connect_device` |
+| T8 | 1, 2 | **Live-safety seam.** `_open_connection` and the autodetect probe (`SSHDetect`) are the only constructors of an SSH connection, by a closed AST taint scan (§4.2), and no connection-capable value is handed to other code outside three named sites. Patching `_open_connection` intercepts the default path (PR-1) and the legacy path (PR-2); a `platform: auto` device also needs `C.SSHDetect` patched, and the probe receives the row's own `port`. This extends `test_collect_parse_live_safety.py`. | A direct `ConnectHandler(...)` or `_observed_driver_for(...)(...)` call in `connect_device`; a class reached through a conditional, a container, a loop target, a walrus, an attribute, a helper argument, `functools.partial` or a string import |
 | T9 | 2 | **Attestation.** `NO_EGRESS_EXCLUDE` contains `legacy_ssh.py`. The no-egress method and detail text, and the doctrine test, derive from the set. `legacy_ssh_confined` HOLDS on the tree, turns `VIOLATED` under each of three planted mutations (a store into a paramiko table, a `send_command` call, a SHA-1 literal in another module), and is `NOT_EVALUATED` without the source. | The hard-coded `rest_collect.py` string restored; the claim reduced to a constant |
 | T10 | 1, 2 | **SHA-1 identifier scope.** Among shipped `.py` files (wheel and bundle denominators, collector included), SSH SHA-1 algorithm literals appear only in `ssh_session.py`'s vocabulary; the legacy-tier name tuples are imported only by `legacy_ssh.py`; `hashes.SHA1` appears only in `legacy_ssh.py`; `hashlib.sha1` appears only there and in the declared git-blob identity sites. | `"ssh-rsa"` added to a default-path module |
 | T11 | 3 | **Audit contract.** The suppression registry has no entry for this ID and the lock pins paramiko 5.0.0. A named-but-unused suppression fails. | Suppression left behind |
@@ -1108,3 +1193,20 @@ The independent critique of revision 1 found no P0. Every finding is applied:
 | P3 | asyncssh supply chain | §8 (hash-pinned file, own audit step, subprocess venv) |
 | P3 | No SSOT row for `ssh_sessions` | §6.2 |
 | P3 | Disconnect race | §4.4, T17 |
+
+**PR-1 re-check (2026-10-09).** The re-check of revision 2 against PR-1's implementation found the text wrong in eleven
+places; each is now the implemented behaviour (the stale PR-2 build it also reviewed is rebuilt on PR-1's merged API):
+
+| Finding | Summary | Corrected in |
+|---|---|---|
+| P2 | The PR-1 / PR-2 seam was named but not pinned, and the text supported two incompatible builds | §3 (`permits_sha1(transport_cls, rsakey_cls=None)`), §4.1 (the tier tuples), §4.2 (the pinned interface) |
+| P2 | "A sidecar that fails validation stays NOT COVERED" was not what the redaction verifier checked | §6.4 (the verifier restates the whole closed schema; generated-leaf agreement test) |
+| P3 | The privacy rule was weaker than the implementation | §6.1 (vocabulary-only names, the vendor banner grammar, `dropped_names`) |
+| P3 | The group size was said to be null for engines without `p`/`P`; paramiko 4.0.0's ECDH engine has `P` | §4.3, §6.1 (read only for a MODP method by vocabulary grade) |
+| P3 | `legacy_sha1` / `modern` named `ssh-rsa` only | §6.2 (host-key algorithms graded by the vocabulary) |
+| P3 | §6.1 said a failed first write is `not_recorded`; §6.2 made it `legacy_unrecorded` live | §6.1 step 1, §6.2 (no pre-connect failure in `record_failures`; live and offline agree) |
+| P3 | The opt-in advice judged only the first empty category, and §6.3 had one `refused_legacy_only` wording | §4.4 (every category, `legacy_tier_closes`), §6.3 (the out-of-tier wording) |
+| P3 | "No retry" was said for lists in which every category overlaps | §4.4 (the retry applies; list evidence must be complete) |
+| P3 | §4.2 named one construction site; T8 sanctions the autodetect probe too | §4.2, §8 T8 (both sites; `C.SSHDetect` patched for `auto` rows; the probe gets the row's port) |
+| P3 | §6.1 described an exclusive create and an incomplete key set | §6.1 (the implemented unlink, claim and atomic-replace mechanism; the real `ssh_session/1` keys) |
+| P3 | §6.2 said an offline run has a row per folder; PR-1 derives rows from devices.json | §6.2 (devices.json hosts; AssessHub synthesizes devices.json from every folder) |
