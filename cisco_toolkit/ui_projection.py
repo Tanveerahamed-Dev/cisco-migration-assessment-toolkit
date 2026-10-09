@@ -4999,7 +4999,7 @@ def _carriage_selection(ctx: _Ctx, source: Dict[str, Any], rows: Sequence[Any],
     items = [_carriage_record(ctx, row, ("vlan_carriage", "rows", row["index"]), failed)
              for row in rows] if valid_vlan else []
     result = _listing(ctx, state, reason, ("vlan_carriage", "rows"), _B_CARRIAGE, items,
-                      sections=_CARRIAGE_SECTIONS, caveats=_CARRIAGE_CAVEATS)
+                      sections=_CARRIAGE_SECTIONS, caveats=_CARRIAGE_CAVEATS, qualify=_fleet_qualify(ctx))
     result["refs"].extend(ref for ref in source["refs"] if ref not in result["refs"])
     return result
 

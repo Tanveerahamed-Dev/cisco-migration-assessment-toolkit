@@ -129,6 +129,10 @@ def test_invalid_stored_contract_or_current_identity_never_recomputes(damage):
 
 def test_empty_stored_cables_and_absent_section_have_different_states():
     snap = snapshot()
+    snap["devices"] = {host: {"hostname": host} for host in (A, B)}
+    snap["collection_completeness"] = {
+        "devices": [], "summary": {"inventory": 2, "partial": 0, "not_collected": 0},
+    }
     snap["cable_map"]["cables"] = []
     snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
         snap["cable_map"], snap["interfaces"], None, snap["vlan_cutover"])
@@ -137,6 +141,48 @@ def test_empty_stored_cables_and_absent_section_have_different_states():
     checked(snap)
     del snap["vlan_carriage"]
     assert selection(snap)["state"] == "not_collected"
+
+
+@pytest.mark.parametrize("gap", ["blind_device", "absent_record", "unreadable_rows", "summary_gap"])
+def test_empty_carriage_is_not_clean_absence_under_fleet_coverage_gap(gap):
+    snap = snapshot()
+    snap["devices"] = {host: {"hostname": host} for host in (A, B)}
+    snap["cable_map"]["cables"] = []
+    snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
+        snap["cable_map"], snap["interfaces"], None, snap["vlan_cutover"])
+    snap["collection_completeness"] = {
+        "devices": [], "summary": {"inventory": 2, "partial": 0, "not_collected": 0},
+    }
+    if gap == "blind_device":
+        snap["collection_completeness"]["devices"] = [{"host": B, "status": "partial"}]
+        snap["collection_completeness"]["summary"]["partial"] = 1
+    elif gap == "absent_record":
+        del snap["collection_completeness"]
+    elif gap == "unreadable_rows":
+        snap["collection_completeness"]["devices"] = [None]
+    else:
+        snap["collection_completeness"]["summary"]["partial"] = 1
+    result = selection(snap)
+    assert result["state"] == "not_collected" and result["items"] == []
+    assert "empty list" in result["reason"]
+    if gap == "blind_device":
+        assert {"pointer": "/collection_completeness/devices/0", "role": "witness"} in result["refs"]
+    checked(snap)
+
+
+def test_nonempty_carriage_keeps_local_facts_and_fleet_blind_spot_qualification():
+    snap = snapshot()
+    snap["devices"] = {host: {"hostname": host} for host in (A, B)}
+    snap["collection_completeness"] = {
+        "devices": [{"host": B, "status": "partial"}],
+        "summary": {"inventory": 2, "partial": 1, "not_collected": 0},
+    }
+    result = selection(snap)
+    assert result["state"] == "published" and len(result["items"]) == 1
+    assert "fleet_lists_exclude_blind_devices" in result["caveats"]
+    assert {"pointer": "/collection_completeness/devices/0", "role": "witness"} in result["refs"]
+    assert result["items"][0]["relation"]["value"] == "forwarding"
+    checked(snap)
 
 
 def test_source_uncertainty_keeps_readable_member_evidence_and_no_completeness_promotion():

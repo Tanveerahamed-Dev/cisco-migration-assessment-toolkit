@@ -580,3 +580,39 @@ history/text bindings precede publication; all combined exact-head runtime and
 current strict protected/wholeworkflow/final review gates precede readiness.
 No W53/Preview implementation, local runtime/compiler/hash/controller, new manual
 run or data intake, test waiver, signing/release/device/vault action occurs here.
+
+## Owner-approved final Codex handoff and fleet-list qualification
+
+The supervisor directs a final push on codex/cable-vlan-carriage and then STOP.
+Automation is already PAUSED. Claude takes over G14 from the final pushed head on
+a separate claude/ branch and never writes this Codex branch. This is a source
+handoff, not a green-head readiness or merge approval. Current8bd metadata records
+frontend api:check FAIL after successful observer controls/observation/upload,
+E2E and Distribution FAIL, Installed consequential SKIP; terminal causes/material
+have not been read or qualified. The TS/native/dist parent bootstraps remain
+explicitly unqualified. All earlier partial passes,111Scope failures/recovery,
+source-derived G16 P2 and historical negative/custody limits remain.
+
+Final owner finding: a per-VLAN carriage selection spans the stored cable universe
+and must consume the blind-spot record's fleet coverage verdict. Pass
+qualify=_fleet_qualify(ctx) to its existing _listing call. The common owner keeps
+readable nonempty local relations while adding fleet caveat/witnesses; a source-
+empty list under blind/absent/unreadable/inconsistent coverage is not collected,
+never a clean no-cable claim. Existing withholding/source/ref identity guards,
+producer/election/namespace logic, caps, schemas and native pins are unchanged.
+
+The prior clean-empty test now supplies an explicit complete two-device roster
+and reconciled coverage record rather than accepting coverage by omission. New
+source controls cover an actual blind row, absent record, unreadable row and
+summary gap, plus a nonempty admitted relation retaining the blind witness/caveat.
+These meaningful cases are authored for GitHub; only cheap touched AST syntax and
+whitespace were checked locally. Runtime verification remains outstanding.
+
+PR #633/W54 rewrites engine_output_handoff. Do NOT regenerate golden/sample
+through this route until #633 is owner-merged and its applicable source/route
+is reconciled. No generation, new artifact/log intake, dispatch/rerun, status-only
+body update, other-owner implementation, signing/release/device/vault action is
+part of this final handoff. Independent final-patch/source/text and actual new
+prepublication privacy/all12 raw commit/per-parent/NUL-path/log/body/title/current
+policy bindings precede the one final push. Claude owns later combined hosted
+schema/native/types/SPA/golden/UTC/Scope/all-protected/whole-workflow validation.
