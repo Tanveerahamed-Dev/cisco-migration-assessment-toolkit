@@ -8,7 +8,9 @@ re-derives a headline number and never turns an absence into a value.
 Slice 1 covers two screens:
 
 * ``overview`` -- the canonical headline facts (:data:`ssot.CANONICAL_FACTS`), the fleet-health
-  scoring state, the executive-brief axes (and the registered axes the brief does not carry), the
+  scoring state, the executive-brief axes (and the registered axes the brief does not carry), each
+  axis with how many devices it could not assess out of how many, read from its producer
+  (:data:`AXIS_UNASSESSED`; not_collected, never 0, where the producer stores no such count), the
   top-gating list, the posture statement, and the lifecycle band partition in its canonical order;
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
   unknown-evidence summary, the SSOT self-verification, and the projection's own stated limitations;
@@ -224,6 +226,47 @@ POSTURE_STATEMENT_BASIS: Tuple[str, ...] = ("health_scores", "lifecycle_risk", "
                                             "multicast_intelligence", "migration_readiness")
 #: Every brief input: an unregistered axis label fails CLOSED to all of them.
 BRIEF_INPUTS: Tuple[str, ...] = tuple(sorted(set().union(*AXIS_BASIS.values(), POSTURE_STATEMENT_BASIS)))
+#: G05 -- axis label -> where its producer stores how many devices the axis could NOT assess, and out of how many:
+#: ``(producer, count path, denominator path, per-device rows path, row field, the field's could-not-assess value)``.
+#: The brief publishes no per-axis denominator, so this table is owned HERE. Tests hold every entry against its
+#: producer: the real producer writes the count equal to the number of its per-device rows carrying that value,
+#: and the denominator equal to the number of those rows. The rows are the count's raw basis: a readable row list
+#: that disagrees with the stored count or denominator makes both unverified.
+AXIS_UNASSESSED: Mapping[str, Tuple[str, str, str, str, str, Union[str, bool]]] = MappingProxyType({
+    "Hardware lifecycle (EoL)": ("analyze.compute_lifecycle_risk", "lifecycle_risk.summary.n_unknown",
+                                 "lifecycle_risk.summary.n_devices", "lifecycle_risk.per_device", "band", "Unknown"),
+    "Operational logs": ("analyze.compute_syslog_intelligence", "syslog_intelligence.summary.n_not_collected",
+                         "syslog_intelligence.summary.n_devices", "syslog_intelligence.per_device", "collected", False),
+    "QoS posture": ("analyze.compute_qos_audit", "qos_audit.summary.n_not_assessable", "qos_audit.summary.n_devices",
+                    "qos_audit.per_device", "assessable", False),
+    "Software risk": ("analyze.compute_software_risk", "software_risk.summary.n_config_not_assessable",
+                      "software_risk.summary.n_devices", "software_risk.per_device", "config_assessable", False),
+    "Platform capacity": ("analyze.compute_platform_health", "platform_health.summary.bands.Unknown",
+                          "platform_health.summary.n_devices", "platform_health.per_device", "band", "Unknown"),
+    "Asset risk register": ("analyze.compute_device_dossiers", "device_dossiers.summary.bands.Unassessed",
+                            "device_dossiers.summary.n_devices", "device_dossiers.per_device", "risk_band",
+                            "Unassessed"),
+})
+#: The counters whose producer omits an entry no device holds (a Counter): there, a missing could-not-assess entry is
+#: a zero only when the per-device rows confirm that no device carries the value. Held by a test against the producer.
+AXIS_UNASSESSED_SPARSE: FrozenSet[str] = frozenset({"platform_health.summary.bands"})
+#: The axis whose count an owner computes live: ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored``, the brief's
+#: own unscored health rows (the scored-row predicate the brief averages over), out of ``n_rows``.
+AXIS_UNASSESSED_LIVE: Tuple[str, ...] = ("Fleet health",)
+#: Axis label -> why its producer stores no count of devices it could not assess (both cells are not_collected).
+AXIS_UNASSESSED_ABSENT: Mapping[str, str] = MappingProxyType({
+    "Migration punch-list": "analyze.compute_migration_punchlist writes finding rows only, and keeps no record of "
+                            "the devices it could not assess",
+    "Application domains": "analyze.compute_application_intelligence summarizes application domains and their "
+                           "couplings, not devices",
+    "Cutover sequence": "its producers order application domains and give move-group readiness verdicts, not "
+                        "per-device verdicts",
+    "Segmentation": "analyze.compute_segmentation summarizes gateway interfaces and VRFs, not devices",
+    "Multicast / timing": "analyze.compute_multicast_intelligence summarizes multicast groups, querier VLANs and PTP "
+                          "clocks, not devices",
+    "Remediation": "analyze.compute_remediation_plan counts the devices it generated configuration for, not the "
+                   "devices it could not assess",
+})
 #: Every scalar path this projection cross-checks against ``ssot.reconcile`` (its check names).
 RECONCILED_PATHS: Tuple[str, ...] = tuple(path for path, _c in ssot.CANONICAL_FACTS.values()) + (
     "lifecycle_risk.summary.n_devices",)
@@ -398,11 +441,26 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
          "/findings/rows", "/findings/total", "/topology"]),
     _limitation(
-        "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
+        "axis_basis_owned_by_projection",
+        "cisco_toolkit.ui_projection.AXIS_BASIS, cisco_toolkit.ui_projection.AXIS_UNASSESSED",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
         "this projection and held against the producer's source by tests; an unregistered axis label fails "
         "closed to every brief input. The producer omits an axis whose input carries nothing to report; "
-        "absent_axes names every registered axis the brief does not carry.",
+        "absent_axes names every registered axis the brief does not carry. Nor does the brief publish how many "
+        "devices an axis could not assess: each axis's unassessed n, out of of, is read from that axis's producer "
+        "through a table this projection owns (AXIS_UNASSESSED), held against the producers by tests, never from "
+        "the headline text. Hardware lifecycle counts the devices with no authoritative lifecycle band; Operational "
+        "logs, the devices whose log buffer was not collected; QoS posture, the devices with no full running-config; "
+        "Software risk, the devices with no running-config, which is only its configuration layer (a device whose "
+        "software version is not captured is counted apart, by n_version_known, and not here); Platform capacity, "
+        "its Unknown band (capacity output absent or unrecognised; that counter omits a band no device holds, so "
+        "a zero is published only when the per-device rows confirm it); Asset risk register, its Unassessed band; "
+        "Fleet health, ssot.fleet_avg_health's health rows minus its scored rows. Each is out of that producer's "
+        "own device count, so the counts cover different device universes and are never added across axes. A "
+        "device an axis assessed only in part (a dossier axis marked na, a device with a configuration but no "
+        "version) is not counted. A count is unverified when it exceeds its denominator, or when its producer's "
+        "per-device rows disagree with it or cannot be read; these checks are this projection's. An axis whose "
+        "producer stores no such count is not_collected, never 0.",
         ["/overview/axes", "/overview/absent_axes"]),
     _limitation(
         "reconcile_checks_only_with_raw_basis", "ssot.reconcile",
@@ -416,8 +474,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "basis section is uncollected, ssot.reconcile does not reject it, and its owner's domain state does "
         "not call the input incomplete; engine_state keeps the owner's token. An empty text or mapping "
         "stays collected_but_empty.",
-        ["/overview/facts", "/overview/lifecycle", "/trust/unknown_evidence", "/trust/ssot/engine_stamp",
-         "/inventory/devices/total"]),
+        ["/overview/facts", "/overview/axes", "/overview/lifecycle", "/trust/unknown_evidence",
+         "/trust/ssot/engine_stamp", "/inventory/devices/total"]),
     _limitation(
         "abstention_addresses_dict_paths_only", "ssot.abstention_reason",
         "The abstention core cannot address an array element. A list item takes its list's state, then its "
@@ -1614,10 +1672,35 @@ def _overview_facts(ctx: _Ctx) -> Dict[str, Any]:
     return out
 
 
-def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
-    fh = ctx.fh
+def _fleet_health_count(ctx: _Ctx, key: str, caveats: Sequence[str] = ()) -> Dict[str, Any]:
+    """``ssot.fleet_avg_health``'s ``n_scored`` or ``n_rows``: a live count over the health rows (no snapshot
+    address). One builder for the fleet-health block and the Fleet health axis's could-not-assess count."""
     hs_t = ctx.abst("health_scores")
     health = ctx.s.get("health_scores")
+    entries: List[Tuple[str, Sequence[Any]]] = [("basis", ("health_scores",))]
+    if key == "n_scored":
+        entries.append(("witness", ("executive_brief", "posture", "n_scored")))
+    reason = ""
+    value = None
+    if hs_t == AU:
+        state = AU
+    elif hs_t == _FAULT:
+        state, reason = _UV, ctx.fault(("health_scores",))
+    elif health is not None and not isinstance(health, list):
+        state, reason = _UV, "unverified: health_scores is not a list, so no row can be counted"
+    elif not isinstance(health, list):
+        state = _NC
+    else:
+        ok, value = _count(ctx.fh.get(key))
+        state = _PUB if ok else _UV
+    refs = ctx.refs(entries + ctx.failure_entries(("health_scores",), state == AU))
+    return _envelope(state, value, None, refs, f"ssot.fleet_avg_health:{key}",
+                     reason or _state_reason(ctx, state, "count", ("health_scores",)),
+                     caveats=caveats if state == _PUB else ())
+
+
+def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
+    fh = ctx.fh
     block: Dict[str, Any] = {"state": avg["state"]}
     if avg["state"] != _PUB:
         block["reason"] = avg["reason"]
@@ -1629,25 +1712,7 @@ def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
         token = raw if isinstance(raw, str) and raw in NOT_ASSESSED_REASONS else None
     block["not_assessed_reason"] = token
     for key in ("n_scored", "n_rows"):
-        entries: List[Tuple[str, Sequence[Any]]] = [("basis", ("health_scores",))]
-        if key == "n_scored":
-            entries.append(("witness", ("executive_brief", "posture", "n_scored")))
-        reason = ""
-        value = None
-        if hs_t == AU:
-            state = AU
-        elif hs_t == _FAULT:
-            state, reason = _UV, ctx.fault(("health_scores",))
-        elif health is not None and not isinstance(health, list):
-            state, reason = _UV, "unverified: health_scores is not a list, so no row can be counted"
-        elif not isinstance(health, list):
-            state = _NC
-        else:
-            ok, value = _count(fh.get(key))
-            state = _PUB if ok else _UV
-        refs = ctx.refs(entries + ctx.failure_entries(("health_scores",), state == AU))
-        block[key] = _envelope(state, value, None, refs, f"ssot.fleet_avg_health:{key}",
-                               reason or _state_reason(ctx, state, "count", ("health_scores",)))
+        block[key] = _fleet_health_count(ctx, key)
     block["bands"] = _health_bands(ctx)
     return block
 
@@ -1815,6 +1880,167 @@ def _readiness(ctx: _Ctx) -> Dict[str, Any]:
                                 + ctx.failure_entries(READINESS_INPUTS, state == AU))}
 
 
+# ---------------------------------------------------------------------------------------------------
+# G05: per axis, the devices it could not assess, out of how many -- read from the axis's producer
+# ---------------------------------------------------------------------------------------------------
+_B_AXIS_TABLE = "cisco_toolkit.ui_projection.AXIS_UNASSESSED"
+_B_AXIS_ABSENT = "cisco_toolkit.ui_projection.AXIS_UNASSESSED_ABSENT"
+_B_FLEET_UNSCORED = "ssot.fleet_avg_health:n_rows - n_scored"
+_R_AXIS_NO_LABEL = ("unverified: the axis row carries no readable label, so no producer count of the devices it could "
+                    "not assess can be chosen")
+_R_AXIS_UNREGISTERED = ("not collected: this projection registers no producer count of the devices this axis label "
+                        "could not assess, so nothing is claimed for it; it is never shown as 0")
+_R_COVERED_NONE = ("collected but empty: the producer covered no device, so no device was left unassessed and none "
+                   "was assessed (not a blind spot)")
+#: One could-not-assess entry: ``(producer, count, denominator, rows, field, value)`` (see :data:`AXIS_UNASSESSED`).
+_UnassessedSpec = Tuple[str, str, str, str, str, Union[str, bool]]
+
+
+def _unassessed_rows(ctx: _Ctx, rows_path: str, field: str, mark: Union[str, bool]) -> Tuple[Optional[bool], int, int]:
+    """A count's raw basis: ``(readable, rows, rows whose `field` is `mark`)``. ``readable`` is ``None`` when the
+    producer's per-device rows are absent (nothing to check the count against) and ``False`` when they are present but
+    are not a list of records each carrying `field` with the type of `mark`."""
+    rows = _get(ctx.s, _tokens(rows_path))
+    if rows is _MISSING or rows is None:
+        return None, 0, 0
+    kind = type(mark)
+    if not isinstance(rows, list) or not all(isinstance(row, dict) and type(row.get(field)) is kind for row in rows):
+        return False, 0, 0
+    return True, len(rows), sum(1 for row in rows if row[field] == mark)
+
+
+def _missing_unassessed(ctx: _Ctx, spec: _UnassessedSpec, of: Dict[str, Any], cav: Tuple[str, ...],
+                        rows: Tuple[Optional[bool], int, int],
+                        doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]) -> Dict[str, Any]:
+    """The count's entry is absent from a summary its producer did write. A counter that omits an entry no device
+    holds (:data:`AXIS_UNASSESSED_SPARSE`) reads as zero only when its per-device rows and a published device count
+    confirm that none carries the value; any other absence is a count this snapshot does not store."""
+    owner, n_path, of_path, rows_path, field, mark = spec
+    n_toks, of_toks, rows_toks = _tokens(n_path), _tokens(of_path), _tokens(rows_path)
+    parent_path, leaf = ".".join(n_toks[:-1]), n_toks[-1]
+    basis = f"{owner}:{n_path}"
+    readable, marked = rows[0], rows[2]
+    witness: List[Tuple[str, Sequence[Any]]] = [("witness", n_toks[:-1]), ("witness", rows_toks)]
+    if parent_path not in AXIS_UNASSESSED_SPARSE:
+        return _envelope(_NC, None, json_pointer(*n_toks), ctx.refs(witness[:1]), basis,
+                         f"not collected: {parent_path} stores no {leaf} (a snapshot that predates this count), so how "
+                         "many devices this axis could not assess is not known; it is never shown as 0")
+    if doubt:
+        return _envelope(_UV, None, json_pointer(*n_toks), ctx.refs(witness + doubt[1]), basis, doubt[0])
+    if readable and marked:
+        return _envelope(_UV, None, json_pointer(*n_toks), ctx.refs(witness), basis,
+                         f"unverified: {parent_path} stores no {leaf} entry, yet {marked} of the rows in {rows_path} "
+                         f"carry {field} {mark!r}")
+    if readable and of["state"] == _PUB:
+        refs = ctx.refs(witness + [("denominator", of_toks)])
+        live = f"{basis} (an entry its counter omits; zero confirmed by {rows_path})"
+        if of["value"] == 0:
+            return _envelope(_CBE, None, None, refs, live, _R_COVERED_NONE)
+        return _envelope(_PUB, 0, None, refs, live, "", caveats=cav)
+    return _envelope(_NC, None, json_pointer(*n_toks), ctx.refs(witness), basis,
+                     f"not collected: {parent_path} stores no {leaf} entry, which its producer omits when no device "
+                     f"holds it, and {rows_path} with a published device count cannot confirm that here, so the count "
+                     "is not known; it is never shown as 0")
+
+
+def _stored_unassessed(ctx: _Ctx, spec: _UnassessedSpec, cav: Tuple[str, ...]) -> Dict[str, Any]:
+    """The producer's stored count and denominator, each through :func:`_scalar` (failure, blind spot, type and
+    reconcile rules), then held against each other and against the producer's per-device rows: any disagreement
+    withholds both as unverified, and a zero over a zero denominator is no measurement."""
+    owner, n_path, of_path, rows_path, field, mark = spec
+    n_toks, of_toks = _tokens(n_path), _tokens(of_path)
+    rows = _unassessed_rows(ctx, rows_path, field, mark)
+    readable, total, marked = rows
+    n_raw = _get(ctx.s, n_toks)
+    n_ok, n_val = _count(n_raw)
+    of_ok, of_val = _count(_get(ctx.s, of_toks))
+    doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = None
+    if n_ok and of_ok and n_val > of_val:
+        doubt = (f"unverified: the producer's count of devices this axis could not assess ({n_val}) exceeds its own "
+                 f"device count ({of_val})", [("witness", n_toks), ("witness", of_toks)])
+    elif readable is False:
+        doubt = (f"unverified: {rows_path} cannot be read as per-device records each carrying {field}, so the "
+                 "stored count cannot be checked against its raw basis", [("witness", _tokens(rows_path))])
+    elif readable and ((of_ok and total != of_val) or (n_ok and marked != n_val)):
+        stored = (f"{n_val}" if n_ok else "no readable count") + " of " + (
+            f"{of_val}" if of_ok else "no readable device count")
+        doubt = (f"unverified: {rows_path} holds {total} device row(s), {marked} of them with {field} {mark!r}, "
+                 f"while the producer's summary stores {stored}", [("witness", _tokens(rows_path))])
+
+    def of_gate(_ctx: _Ctx, _value: Any, _zero: bool):
+        return (_UV, doubt[0], list(doubt[1])) if doubt else None
+
+    def n_gate(_ctx: _Ctx, typed: Any, _zero: bool):
+        if doubt:
+            return _UV, doubt[0], list(doubt[1])
+        if typed == 0 and of_ok and of_val == 0:
+            return _CBE, _R_COVERED_NONE, []
+        return None
+
+    of = _scalar(ctx, of_path, "count", f"{owner}:{of_path}", gate=of_gate, published_caveats=cav)
+    # A missing entry the abstention core calls a blind spot (not a failed phase or an owner fault) inside a summary
+    # the producer did write: a sparse counter's zero, or a count this snapshot does not store.
+    if n_raw is _MISSING and isinstance(_get(ctx.s, n_toks[:-1]), dict) and ctx.abst(n_path) == _NC:
+        n = _missing_unassessed(ctx, spec, of, cav, rows, doubt)
+    else:
+        n = _scalar(ctx, n_path, "count", f"{owner}:{n_path}", gate=n_gate, witness=[("denominator", of_toks)],
+                    published_caveats=cav)
+    return {"n": n, "of": of}
+
+
+def _fleet_unassessed(ctx: _Ctx, cav: Tuple[str, ...]) -> Dict[str, Any]:
+    """Fleet health: the brief's unscored health rows, ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored`` (the
+    predicate the brief averages over), out of ``n_rows``; the same live counts the fleet-health block publishes."""
+    of = _fleet_health_count(ctx, "n_rows", caveats=cav)
+    scored = _fleet_health_count(ctx, "n_scored")
+    refs = [dict(ref) for ref in of["refs"]] + [dict(ref) for ref in scored["refs"] if ref not in of["refs"]]
+    if of["state"] != _PUB or scored["state"] != _PUB:
+        source = of if of["state"] != _PUB else scored
+        n = _envelope(source["state"], None, None, refs, _B_FLEET_UNSCORED, source["reason"])
+    elif scored["value"] > of["value"]:
+        n = _envelope(_UV, None, None, refs, _B_FLEET_UNSCORED,
+                      "unverified: ssot.fleet_avg_health counts more scored health rows than health rows")
+    elif of["value"] == 0:
+        n = _envelope(_CBE, None, None, refs, _B_FLEET_UNSCORED,
+                      "collected but empty: the snapshot publishes no health row, so no row was left unscored and "
+                      "none was scored (not a blind spot)")
+    else:
+        n = _envelope(_PUB, of["value"] - scored["value"], None, refs, _B_FLEET_UNSCORED, "", caveats=cav)
+    return {"n": n, "of": of}
+
+
+def _axis_unassessed(ctx: _Ctx, label: Optional[str], toks: Tuple[Any, ...]) -> Dict[str, Any]:
+    """G05: how many devices this axis could not assess (``n``), out of how many (``of``), read from the axis's producer
+    (:data:`AXIS_UNASSESSED`, :data:`AXIS_UNASSESSED_LIVE`), never from its headline. An axis whose producer stores no
+    such count (:data:`AXIS_UNASSESSED_ABSENT`) or an unregistered label is not_collected, never 0; a row with no
+    readable label is unverified."""
+    cav = _brief_caveats(ctx, "axis_basis_owned_by_projection")
+    if label is not None and label in AXIS_UNASSESSED_LIVE:
+        return _fleet_unassessed(ctx, cav)
+    spec = AXIS_UNASSESSED.get(label) if label is not None else None
+    if spec is not None:
+        return _stored_unassessed(ctx, spec, cav)
+    basis = _B_AXIS_TABLE
+    if label is None:
+        state, reason, entries = _UV, _R_AXIS_NO_LABEL, [("witness", toks)]
+    else:
+        why = AXIS_UNASSESSED_ABSENT.get(label)
+        sections = AXIS_BASIS.get(label, ())
+        state, entries = _NC, [("basis", (s,)) for s in sections]
+        if why:
+            basis = _B_AXIS_ABSENT
+            reason = (f"not collected: {why}; how many devices this axis could not assess is not stored, so it is "
+                      "never shown as 0")
+        else:
+            reason = _R_AXIS_UNREGISTERED
+        if _item_basis_state(ctx, sections)[0] == AU:
+            state, reason = AU, ctx.unavailable_reason(sections)    # a failed input always wins
+            entries += ctx.failure_entries(sections, True)
+    refs = ctx.refs(entries)
+    return {"n": _envelope(state, None, None, refs, basis, reason),
+            "of": _envelope(state, None, None, [dict(ref) for ref in refs], basis, reason)}
+
+
 def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
     path = "executive_brief.axes"
     base, owner, raw, breason = _list_base(ctx, path)
@@ -1841,7 +2067,8 @@ def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
         fact = _envelope(state, value, json_pointer(*toks), refs, "analyze.compute_executive_brief",
                          reason or _state_reason(ctx, state, "axis", basis),
                          caveats=cav if state == _PUB else ())
-        items.append({"index": i, "axis": label, "basis_sections": list(basis), "fact": fact})
+        items.append({"index": i, "axis": label, "basis_sections": list(basis), "fact": fact,
+                      "unassessed": _axis_unassessed(ctx, label, toks)})
     present = {it["axis"] for it in items}
     contradiction = None
     missing_always = [lab for lab in ALWAYS_EMITTED_AXES if lab not in present]
@@ -5704,9 +5931,11 @@ def _build_schema() -> Dict[str, Any]:
         "CanonCount": _canon_def("CanonCount", "CountFact"),
         "CanonScore": _canon_def("CanonScore", "ScoreFact"),
         "CanonBand": _canon_def("CanonBand", "BandFact"),
-        "AxisItem": _closed("AxisItem", ("index", "axis", "basis_sections", "fact"),
+        "AxisUnassessed": _closed("AxisUnassessed", ("n", "of"), {"n": _ref("CountFact"), "of": _ref("CountFact")}),
+        "AxisItem": _closed("AxisItem", ("index", "axis", "basis_sections", "fact", "unassessed"),
                             {"index": _nonneg_int(), "axis": _nullable(_str()),
-                             "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("AxisFact")}),
+                             "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("AxisFact"),
+                             "unassessed": _ref("AxisUnassessed")}),
         "AbsentAxis": _closed("AbsentAxis", ("axis", "basis_sections", "fact"),
                               {"axis": {"type": "string", "enum": list(AXIS_BASIS)},
                                "basis_sections": {"type": "array", "items": _str()}, "fact": _ref("WithheldFact")}),
@@ -5826,7 +6055,8 @@ def ui_projection_schema() -> Dict[str, Any]:
 
 
 __all__ = [
-    "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "BRIEF_INPUTS", "CC_STATUSES",
+    "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "AXIS_UNASSESSED",
+    "AXIS_UNASSESSED_ABSENT", "AXIS_UNASSESSED_LIVE", "AXIS_UNASSESSED_SPARSE", "BRIEF_INPUTS", "CC_STATUSES",
     "CENSUS_KINDS", "COVERAGE_STATES", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
     "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
     "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",

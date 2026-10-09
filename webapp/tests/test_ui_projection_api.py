@@ -1221,6 +1221,46 @@ def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(nat
     assert _validation_errors(native, altered) == _validation_errors(stock, altered)
 
 
+@pytest.mark.parametrize("mutation", ["missing_block", "missing_of", "extra_key", "bool_count", "negative_count",
+                                      "withheld_value", "published_reason"])
+def test_native_g05_axis_unassessed_matches_stock_on_valid_and_rejected_shapes(native_body, mutation):
+    """W40: each overview axis row carries its closed could-not-assess block on the real transport shape."""
+    from backend import ui_projection_api as api
+
+    def fact(value, **extra):
+        return {"state": "published", "value": value, "subject": None, "refs": [], "basis": "synthetic.owner",
+                **extra}
+
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    rows = native_body["payload"]["axes"]["page"]["items"]
+    assert rows and all(set(row["unassessed"]) == {"n", "of"} for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "published" for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "not_collected" for row in rows)
+    assert native.is_valid(native_body) and stock.is_valid(native_body)
+    altered = deepcopy(native_body)
+    row = altered["payload"]["axes"]["page"]["items"][0]
+    block = row["unassessed"]
+    if mutation == "missing_block":
+        del row["unassessed"]
+    elif mutation == "missing_of":
+        del block["of"]
+    elif mutation == "extra_key":
+        block["total"] = deepcopy(block["of"])
+    elif mutation == "bool_count":
+        block["n"] = fact(True)
+    elif mutation == "negative_count":
+        block["n"] = fact(-1)
+    elif mutation == "withheld_value":
+        block["n"] = {**fact(0), "state": "not_collected", "reason": "synthetic withheld count"}
+    else:
+        block["of"] = fact(1, reason="a published count carries no reason")
+    assert not native.is_valid(altered) and not stock.is_valid(altered)
+    assert _validation_errors(native, altered) == _validation_errors(stock, altered)
+
+
 @pytest.mark.parametrize("surface", ["inventory", "inventory_list", "device"])
 @pytest.mark.parametrize("mutation", ["missing_rollup", "missing_severity", "extra_severity", "bool_count",
                                      "fractional_count", "negative_count", "oversized_count", "unknown_worst", "extra_rollup",
@@ -1230,8 +1270,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-                   "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5"}
+    prospective = {"view": "f782eaa0f1f76a760b770a3390d4e7cbd4fbcfea92c3b42ab087f548c42d30ae",
+                   "list": "346c838a509ef681f825f8dfd3f38fa1302ad2286550d99502e514cf8f5e2552"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
