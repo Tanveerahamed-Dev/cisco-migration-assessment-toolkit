@@ -314,9 +314,35 @@ six of them:
   in the Vite graph);
 - `.github/workflows/webapp-ci.yml` and `.github/scripts/classify_webapp_ci_scope.py`.
 
-No bundled source changes, so the rebuild is expected to be byte-identical, but the binding is input-based. The
-hosted `frontend-dist-handoff-<sha>-<run>-<attempt>` of the pushed head decides: it is verified as the W29/W46
-precedent requires, and its members are imported only if they differ from the tracked dist.
+No bundled source changes, so the rebuild was expected to be byte-identical, but the binding is input-based. The
+hosted `frontend-dist-handoff-<sha>-<run>-<attempt>` of the pushed head decided it.
+
+**Dist handoff evidence (no import).** After the rule-7 scans, `31d9b5b9` was pushed. Webapp-ci run `37897012004`
+(pull_request, attempt 1) and its frontend job `113710626305` succeeded. That job ran api:check ("Generated API types
+match the actual app schema"), Vitest (32 files) and the build. The handoff was verified as the W29/W46 precedent
+requires:
+- **Expected record, selected from Git before the archive was read.** It is the tested merge `7eb1868a` (parents
+  `f797444e` + `31d9b5b9`), whose tree `bcf4ff84` equals the head tree, with 146 committed inputs. Six inputs
+  differ from `f309ed61`'s.
+- **Archive.** Artifact `11601230589`, `frontend-dist-handoff-31d9b5b938c291a62b8276a65890d1fe1e00c6c3-37897012004-1`,
+  562,004 bytes, sha256 `4f4f2aa223a03d3595bb6b040df9e53a8ac7779c67556f82c55e7d9ca4b603a7`. This equals the API
+  digest and the job-log upload digest.
+- **Closed seven-file inventory:** `source-before.json`, `handoff.json` and 5 dist members. There are no directory,
+  duplicate, absolute or parent paths, and `handoff.json` has a closed key set.
+- **Source records.** Both equal the expected record. `github_head` is `31d9b5b9`, with run `37897012004`, attempt 1.
+- **Non-promoting fields hold:** `GENERATED_INPUT_FOR_REVIEW_ONLY`, `release_authority` false,
+  `final_source_rebuild_required` true.
+- **Toolchain.** Node v24.19.0 and npm 11.17.0 equal the job log's environment details, and the member census
+  equals the vite build log.
+- **Members.** The 5 member hashes and sizes pass, as do the canonical path-aware marker policy and the index asset
+  links. Every asset is reachable from `index.html`.
+- **Negative controls are refused:** one altered input hash, a wrong npm version, and `f309ed61`'s tested-merge
+  record.
+
+All 5 members (`index.html`, `index-Cd6jS7wb.css`, `index-Cxzz7hwX.js`, `Topology3D-DpMNQuyH.js`,
+`react-force-graph-3d-DarJyKca.js`) are byte-identical to the tracked dist, which is #628's import. No dist path
+changes and nothing is imported. The handoff is review input; the final head must still reproduce these bytes in
+fresh hosted gates.
 
 **Static checks on `bc37c587`:**
 - every changed `.py` compiles;
