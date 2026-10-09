@@ -76,9 +76,12 @@ The view draws what the collection recorded. A device, link or finding
 the collection did not see is simply not there - an empty or quiet
 view is NOT a clean bill of health.
 The same view also opens inside Topology & Paths as 3-D investigation.
-Atlas Scope is a PREVIEW: it has not passed its acceptance review. Use
-it to look around, and check anything it shows on the core screens
-before you act on it or repeat it to the client.
+Atlas Scope ships as a labelled PREVIEW: its acceptance is not
+complete. Its status bar is marked Preview on every view and at every
+window size, and the app marks Preview beside "Open in Atlas Scope"
+and beside the 3-D investigation heading. Use it to look around, and
+check anything it shows on the core screens before you act on it or
+repeat it to the client.
 
 LOSS OF STICK (prepare BEFORE the first engagement)
 ---------------------------------------------------
@@ -134,9 +137,48 @@ The ingest never connects to a device.
 An execution run that binds its post-change snapshot makes a
 comparison receipt: a permanent decision record. Atlas refuses to
 delete a snapshot a receipt names, an execution run that holds one,
-or a campaign that contains one. There is NO per-campaign purge yet,
-so that data stays in data\assesshub.db and in data\backups\.
+or a campaign that contains one. There is NO purge in the app, by
+decision: Atlas keeps everything, so that data stays in
+data\assesshub.db and in data\backups\. Removing client data is a
+manual step outside Atlas (see DISPOSING OF CLIENT DATA).
 The app does NOT redact documents you download (see REDACTION).
+
+DISPOSING OF CLIENT DATA (MANUAL, OUTSIDE ATLAS)
+------------------------------------------------
+Do this only at the end of an engagement, and only when the client
+agreement allows it. It is not a repair: for a damaged database,
+follow CORRUPTION instead. Never edit the database or try to remove
+single records - receipts are permanent by design.
+  1. First hand over or archive everything the agreement says to
+     keep: the deliverables, and the receipts and execution records
+     they rest on.
+  2. Close Atlas and its browser tab (EJECT DISCIPLINE, steps 1-2).
+  3. Find every copy. Client data can be in all of these places:
+     Inside Atlas\data\ on the stick:
+       assesshub.db, and assesshub.db-journal if it exists
+       any .corrupt files you made (see CORRUPTION)
+       backups\          start-time copies of the database, and any
+                         copies you parked there yourself
+       release-backups\  database copies and hash receipts kept by
+                         updates and rollbacks
+       *.log             engine logs (they name devices and hosts)
+     Beside Atlas\ on the stick: Atlas.data-handoff, if an update
+     was interrupted - it holds the whole data folder.
+     Folders you chose: collection folders (raw captures), every
+     --out folder, and engine output folders.
+     On the laptop: documents downloaded from the app (usually the
+     Downloads folder), engine logs in the folder an engine run was
+     started from, and anything named assesshub_* or atlas_redact_*
+     in the temporary folder (%TEMP%). Atlas removes those after each
+     run, but a removal that failed is not reported.
+  4. Delete them with Windows Explorer, not through the app. Empty
+     Atlas\data\ as a whole - the database together with backups\
+     and release-backups\ - so no older copy is left behind. The
+     empty data folder itself can stay.
+  5. Deleting a file does not make it unrecoverable on a stick or a
+     disk. If the agreement requires that, follow your organisation's
+     media-sanitisation procedure for the stick and the laptop.
+The next start begins with a new, empty database.
 
 EJECT DISCIPLINE
 ----------------

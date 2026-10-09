@@ -5,6 +5,7 @@ import { loadProjection, type Fact, type Projection, type Schemas, type View, ty
 import { EvidenceProvider, FactView, ListState, StateLabel, ValueText } from "./core/ProjectionEvidence";
 import { ProjectionList } from "./core/ProjectionList";
 import { TopologyPaths } from "./core/TopologyPaths";
+import { WithScopePreview } from "../components/ScopePreview";
 import "./coreSnapshot.css";
 
 const titles = { overview: "Overview", trust: "Trust", inventory: "Inventory", findings: "Findings", topology: "Topology & Paths", device: "Device" };
@@ -43,7 +44,7 @@ function ScopeLink({ sid }: { sid: number }) {
     }).catch(() => {});
     return () => { active = false; };
   }, [sid]);
-  return href ? <a className="btn" href={href}>Open in Atlas Scope ↗</a> : null;
+  return href ? <WithScopePreview><a className="btn" href={href}>Open in Atlas Scope ↗</a></WithScopePreview> : null;
 }
 
 function Overview({ document }: { document: ViewDocument<"overview"> }) {

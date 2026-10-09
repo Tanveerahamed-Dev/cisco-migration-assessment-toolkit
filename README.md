@@ -24,10 +24,11 @@ This repository is **one application**, and **AssessHub** is its door:
 - **The engine** (`COLLECT_PARSE_V3_23_0.py` + `cisco_toolkit/`, command `cisco-assess`)
   owns every analysis fact. The screens render what it published.
 - **Atlas Scope** ([`atlas-scope/`](atlas-scope/README.md)) is a 3-D investigation view
-  that AssessHub serves at `/scope`. It is an integrated **preview**, not an accepted
-  product: its [acceptance report](atlas-scope/docs/acceptance-report.md) (graded
-  2026-10-02/03) records 24 of 39 acceptance criteria failing. Atlas Scope has changed
-  since that grade, and no later grade is recorded.
+  that AssessHub serves at `/scope`. It ships as a **labelled preview**, not an accepted
+  product: its acceptance is not complete, and its
+  [acceptance report](atlas-scope/docs/acceptance-report.md) (graded 2026-10-02/03) records
+  24 of 39 acceptance criteria failing. Atlas Scope has changed since that grade, and no later
+  grade is recorded. Scope's status bar and AssessHub's entries to it are marked **Preview**.
 
 How to read the core screens, including how they show missing evidence, is in the
 [operator guide](docs/operator-guide-core-screens.md).
@@ -412,10 +413,13 @@ from an execution run.
   go / no-go → window → hypercare exit).
 
 **Records that cannot be deleted.** AssessHub refuses (HTTP 409) to delete a snapshot a receipt
-names, an execution run that holds a receipt, or a campaign that contains one. A **per-campaign
-purge is not implemented yet**: it was decided in
-[ADR 0007](docs/decisions/0007-one-application-direction.md) (D10) together with retention of
-scrubbed raw evidence, and neither exists today.
+names, an execution run that holds a receipt, or a campaign that contains one. **There is no
+purge in AssessHub, by decision**: on 2026-10-09 the owner decided to keep everything, with
+receipts immutable and no in-app purge, so the per-campaign purge planned in
+[ADR 0007](docs/decisions/0007-one-application-direction.md) (D10) is not built. Disposing of a
+client's data is a documented manual step outside the application: see the
+[operator guide](docs/operator-guide-core-screens.md) (section 10) and
+[`portable/README-FIELD.txt`](portable/README-FIELD.txt) (DISPOSING OF CLIENT DATA).
 
 **Where the data lives.** `Atlas.exe` keeps its database in `Atlas\data\assesshub.db`; a
 checkout uses `webapp/data/assesshub.db`; an installed `assesshub` uses the user's
@@ -470,7 +474,11 @@ in the owner block at the end of docs/operator-guide-core-screens.md.
   finally).
 - Receipts and deletion refusals: webapp/backend/app.py compare, compare_execution, delete_* (409);
   webapp/backend/storage.py delete_*_if_unreceipted; pages/Execution.tsx (PASS rule).
-- Purge not implemented: no purge/retention route in webapp/backend; ADR 0007 D10.
+- No purge, by decision: no purge/retention route in webapp/backend; the owner's 2026-10-09
+  keep-everything decision (docs/NOW.md, W62 handoff) leaves ADR 0007 D10's purge unbuilt.
+- Preview labels: atlas-scope/src/app/PreviewLabel.tsx (rendered by StatusBar.tsx);
+  webapp/frontend/src/components/ScopePreview.tsx (CoreSnapshot.tsx ScopeLink, Snapshot.tsx
+  AtlasScopeLink, core/TopologyScope.tsx).
 - Data and backups: webapp/backend/app.py _platform_default_db; serve.py main
   (boot_hardening=True); storage.py Store._boot_hardening (quick_check, no copy of a
   campaign-free store, mtime test), _BACKUP_DIR, _BACKUP_KEEP.

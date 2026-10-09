@@ -184,11 +184,19 @@ Atlas Scope is a 3-D investigation view of one snapshot. AssessHub serves it at
 investigation** under Topology & Paths. It reads the stored snapshot from AssessHub, and it is
 read-only.
 
-It is an integrated **preview**, not an accepted product. Its acceptance report
+It ships in the next release candidate as a **labelled preview** (owner decision, 2026-10-09),
+not an accepted product. Its acceptance is not complete: its acceptance report
 (`atlas-scope/docs/acceptance-report.md`, graded 2026-10-02/03) records 24 of 39 acceptance
 criteria failing and 3 unproven. Atlas Scope has changed since that grade, and no later grade is
-recorded. Use it to look around, and confirm any finding on the core screens before you act on
-it. A quiet or empty 3-D view is not a clean bill of health.
+recorded. The label is on screen wherever you meet it:
+
+- Atlas Scope's status bar carries a **Preview** label on every view and at every window width.
+- AssessHub shows **Preview** beside **Open in Atlas Scope ↗** (on the snapshot header and on
+  Tools and downloads) and beside the embedded **3-D investigation** heading, whose view has no
+  status bar of its own.
+
+Use it to look around, and confirm any finding on the core screens before you act on it. A quiet
+or empty 3-D view is not a clean bill of health.
 
 ## 7. The Tools and downloads page
 
@@ -219,7 +227,7 @@ it. A quiet or empty 3-D view is not a clean bill of health.
   - A run that predates receipts is shown as legacy and cannot be backfilled.
   - The Post-Implementation Review comes only from an execution run.
 
-## 9. Records you cannot delete, and what is not built yet
+## 9. Records you cannot delete, and why there is no purge
 
 - A comparison receipt is an append-only decision record. AssessHub refuses, with HTTP 409 and
   the reason, to delete:
@@ -227,10 +235,11 @@ it. A quiet or empty 3-D view is not a clean bill of health.
   - an execution run that holds a receipt;
   - a campaign that contains one.
 - A campaign without receipts can be deleted from its page.
-- **A per-campaign purge is not implemented yet.** The decision to retain scrubbed raw evidence,
-  with a retention indicator and a per-campaign purge, is recorded in
-  `docs/decisions/0007-one-application-direction.md` (D10). Neither the purge nor the retention
-  indicator exists today.
+- **There is no purge in AssessHub, by decision.** The owner decided on 2026-10-09 to keep
+  everything: receipts stay immutable, and AssessHub has no in-app purge. The per-campaign purge
+  and retention indicator that `docs/decisions/0007-one-application-direction.md` (D10) had
+  planned are not built under this decision. Removing a client's data at the end of an engagement
+  is a documented manual step outside the application (section 10, *Disposing of client data*).
 
 ## 10. Where the data lives, and backups
 
@@ -249,6 +258,43 @@ has changed since the last copy and holds at least one campaign, it keeps a time
 a `backups` folder beside it, and it keeps the **newest 3** of its own copies. Backups are taken
 at start, not continuously. The restore procedure is in `portable/README-FIELD.txt`, under
 CORRUPTION.
+
+### Disposing of client data (manual, outside AssessHub)
+
+AssessHub keeps everything and has no purge (section 9). Disposal is a deliberate step you take
+with the operating system, at the end of an engagement and only when the client agreement allows
+it. It is not a repair: for a damaged database, follow CORRUPTION in `portable/README-FIELD.txt`.
+Never edit the database or try to remove single records: receipts are immutable by design. On the
+stick the same procedure is in `portable/README-FIELD.txt`, DISPOSING OF CLIENT DATA.
+
+1. Hand over or archive everything the agreement says to keep first: the deliverables, and the
+   comparison receipts and execution records they rest on.
+2. Stop AssessHub (close the `Atlas.exe` console window, or stop `assesshub`) and close its
+   browser tab.
+3. Find every copy. Client data can be in all of these places:
+   - **Beside the database** (the table above): the database file; a `-journal` file of the same
+     name, if one exists; any `.corrupt` copies made during a restore; the `backups` folder
+     (start-time copies, and any copy you parked there yourself); and, on the stick,
+     `Atlas\data\release-backups` (database copies and hash receipts kept by updates and
+     rollbacks).
+   - **Engine logs** (`cisco_migration_autofill_v<version>.log`, which name devices and hosts):
+     in `Atlas\data` for an engine run started inside the Atlas folder on the stick, otherwise
+     in the folder the run was started from.
+   - **Beside `Atlas\` on the stick:** `Atlas.data-handoff`, if an update was interrupted. It
+     holds the whole data folder.
+   - **Folders you chose:** raw collection folders, every `--out` folder and engine output
+     folders.
+   - **The computer that ran AssessHub:** documents downloaded from it (usually the browser's
+     Downloads folder), and anything named `assesshub_*` or `atlas_redact_*` in the system
+     temporary folder. AssessHub removes those after each run or download, but a failed removal
+     is not reported.
+4. Delete them with the operating system, not through AssessHub. Remove the database together
+   with `backups` and `release-backups`, so that no older copy survives. The empty folder that
+   held them can stay.
+5. Deleting a file does not make it unrecoverable on a stick or a disk. Where the agreement
+   requires that, follow your organisation's media-sanitisation procedure.
+
+The next start creates a new, empty database.
 
 ## 11. Redaction is a command-line step
 
@@ -300,8 +346,9 @@ Until #630 merges, this guide describes `main`. Update this section when it does
 
 <!--
 Owners behind each statement (verified on origin/main 6390b66c, 2026-10-09; section 12 and the
-corrections from the W56 review re-verified the same day). This block is for maintainers; correct
-the prose above when an owner changes.
+corrections from the W56 review re-verified the same day; the preview labels, section 9's no-purge
+decision and section 10's disposal procedure added by W62 on main ec289ab0, 2026-10-09). This
+block is for maintainers; correct the prose above when an owner changes.
 - One door, --run-engine, loopback-only frozen bind: webapp/backend/serve.py (ENGINE_SENTINEL,
   _run_engine, main: numeric-loopback refusal when frozen); ingest._engine_argv; pyproject.toml
   [project.scripts] assesshub, cisco-assess.
@@ -334,8 +381,21 @@ the prose above when an owner changes.
   webapp/frontend/src/components/CutoverPlanner.tsx (Start execution run);
   cisco_toolkit/docmeta.py WEB_ONLY_KINDS, artifact_spec("pir").
 - Deletion refusals: webapp/backend/app.py delete_campaign, delete_snapshot, delete_execution (409);
-  webapp/backend/storage.py delete_*_if_unreceipted. Purge not implemented: no purge or retention
-  route in webapp/backend; decision in docs/decisions/0007-one-application-direction.md D10.
+  webapp/backend/storage.py delete_*_if_unreceipted. No purge, by decision: no purge or retention
+  route in webapp/backend; the owner's 2026-10-09 keep-everything decision (receipts immutable, no
+  in-app purge, manual disposal outside the app) is recorded in docs/NOW.md (W62 handoff); ADR 0007
+  D10's planned purge is not built.
+- Preview labels (owner decision 2026-10-09, Scope ships as a labelled preview):
+  atlas-scope/src/app/PreviewLabel.tsx (ACCEPTANCE_GRADE cache, reconciled to the report by
+  PreviewLabel.test.tsx) rendered by StatusBar.tsx; webapp/frontend/src/components/ScopePreview.tsx
+  beside CoreSnapshot.tsx ScopeLink, Snapshot.tsx AtlasScopeLink and core/TopologyScope.tsx's
+  heading (contract mode, atlas-scope/src/contract-mode/, renders no status bar).
+- Disposal locations: storage.py _BACKUP_DIR; portable/make_stick.ps1 release-backups,
+  Atlas.data-handoff; cisco_toolkit/__init__.py engine_log_path; ingest.py mkdtemp prefixes
+  assesshub_ingest_ and atlas_redact_ under _engine_temp_parent; app.py/deliverables.py/engine.py
+  mkstemp prefixes assesshub_*, removed by _send_file or their own finally blocks with errors
+  suppressed; storage.py
+  _boot_hardening (an absent database is a first boot).
 - Data locations and backups: webapp/backend/app.py _platform_default_db, _default_db_path;
   webapp/backend/serve.py _resolve_db, main (boot_hardening=True); webapp/backend/storage.py
   Store._boot_hardening (quick_check refusal, OperationalError warn-and-continue, no copy of a

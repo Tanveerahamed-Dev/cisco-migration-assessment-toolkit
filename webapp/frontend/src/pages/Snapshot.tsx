@@ -20,6 +20,7 @@ import CutoverPlanner from "../components/CutoverPlanner";
 import ArchReviewPanel from "../components/ArchReview";
 import DesignBlueprintPanel from "../components/DesignBlueprint";
 import CausalFlowPanel from "../components/CausalFlow";
+import { WithScopePreview } from "../components/ScopePreview";
 import {
   VerificationBadge,
   VerificationWarning,
@@ -794,10 +795,13 @@ function AtlasScopeLink({ snapId }: { snapId: number }) {
   // test in Snapshot.test.tsx pins the outcome, not this line.)
   const href = !loading && !error && data?.available === true ? data.href : null;
   if (typeof href !== "string" || !href.startsWith("/scope/")) return null;
+  // Atlas Scope is a labelled preview (components/ScopePreview.tsx): the qualifier sits beside the link.
   return (
-    <a className="btn" href={href} title={data?.detail}>
-      ⬡ Open in Atlas Scope
-    </a>
+    <WithScopePreview>
+      <a className="btn" href={href} title={data?.detail}>
+        ⬡ Open in Atlas Scope
+      </a>
+    </WithScopePreview>
   );
 }
 
