@@ -395,3 +395,37 @@ previously skipped package/installed tail, portable source/binary, complete Scop
 default/golden/UTC sample/LF/native checks and all current protected/workflow gates
 still decide readiness. No runtime result or final green handoff is inferred from
 successful receipt or patch application.
+
+## Python 3.10 marker-loader compatibility correction
+
+The completed historical f2 Linux3.12 job `113811947704` reports 12,167 passes,
+144 skips, one xfail, eight warnings and 26 subtests, followed by the real UTC
+sample check printing FRESH. This does not erase Linux3.10 job `113811947857`:
+four failures, 12,019 passes, 288 skips, one xfail, one warning and 26 subtests.
+All four failures concern the marker-policy loader. It refuses the canonical
+distribution owner's `import tomllib` as non-stdlib on Python3.10, raising
+HandoffRefusal before the owner's ModuleNotFoundError/tomli fallback can run.
+Three positive/cache/bytecode controls fail; the sibling-refusal negative is
+masked by this earlier error. This is a compatibility defect, not binding drift
+or a diagnosed flaky test. The same helper bytes were present in b3.
+
+The independently reviewed correction keeps this loader restricted to marker
+functions. Only exact absolute `import tomllib`, integer level0, no from-import,
+and the actual bound distribution_verify globals receive a fresh state-free
+capability-denial object. No TOML parser, installed backport, cached module or
+project-local module executes. Attribute access, truthiness and calls raise
+HandoffRefusal; direct tomli, dotted/from imports, forged globals and wrong
+callers stay refused before generic stdlib admission. Identity/type inspection
+is not claimed to be a sandbox boundary. Normal distribution metadata parsing
+and its existing tomli dependency declaration remain unchanged.
+
+The real marker functions and patterns still come from the same four immutable
+Git owners. Existing private-namespace, relative-export, cache-impostor, pyc,
+physical-byte and project-sibling controls, output caps and producerPython3.12
+requirements remain. Sixteen new authored hosted cases exercise missing-stdlib
+and cached/local poison, unsupported forms/callers and deferred capability use;
+canonical JSON12 and minified-JS11 pattern/signature parity is retained. No skip,
+new privacy exception, copied pattern list or third-party/project import fallback
+is added. Only touched Ruff and whitespace checks ran locally. Exact-source
+refutation is clear; fresh Python3.10 and every supported matrix/full-source
+result must verify runtime recovery before readiness.

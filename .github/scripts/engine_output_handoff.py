@@ -507,7 +507,9 @@ def marker_patterns_for(root: Path):
 
     Adapted from the reviewed frontend receiver's four-file policy loader. The
     producer's Python 3.12 profile is enforced by producer_environment; this pure
-    loader is also exercised on every supported test interpreter. It is not a
+    loader is also exercised on every supported test interpreter. Only marker
+    functions are returned, so the owner's unused TOML import receives no parser
+    capability or import/cache fallback, including on Python 3.10. It is not a
     Python sandbox or admission of the legacy ZIP receiver.
     """
     head = commit_of(root, "HEAD")
@@ -525,11 +527,26 @@ def marker_patterns_for(root: Path):
     modules, loaded, owned_names = {}, set(), []
     original_import = builtins.__import__
 
+    class MarkerOnlyToml:
+        """No actual TOML module, parser or data is needed to load marker rules."""
+        __slots__ = ()
+
+        def __getattribute__(self, _name):
+            raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+        def __bool__(self):
+            raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+        def __call__(self, *_args, **_kwargs):
+            raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+    marker_only_toml = MarkerOnlyToml()
+
     def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+        caller_name = globals.get("__name__") if type(globals) is dict else None
+        caller = next((key for key, module in modules.items()
+                       if module.__name__ == caller_name and module.__dict__ is globals), None)
         if level:
-            caller_name = globals.get("__name__") if type(globals) is dict else None
-            caller = next((key for key, module in modules.items()
-                           if module.__name__ == caller_name and module.__dict__ is globals), None)
             need(level == 1 and caller in MARKER_IMPORTS and name in MARKER_IMPORTS[caller]
                  and name in loaded and type(fromlist) in (tuple, list) and bool(fromlist)
                  and frozenset(fromlist) == MARKER_IMPORTS[caller][name],
@@ -537,6 +554,13 @@ def marker_patterns_for(root: Path):
             module = modules[name]
             need(all(item in module.__dict__ for item in fromlist), "bound marker relative export is missing")
             return module
+        # Before generic stdlib admission: no dotted/from import can reach real TOML
+        # code on newer Pythons, and Python 3.10 need not import its optional backport.
+        if type(name) is str and name.split(".", 1)[0] in ("tomllib", "tomli"):
+            need(name == "tomllib" and type(level) is int and level == 0 and caller == "distribution_verify"
+                 and (fromlist is None or type(fromlist) is tuple and not fromlist),
+                 "TOML import is outside the marker-only dependency boundary")
+            return marker_only_toml
         need(type(name) is str and name.split(".", 1)[0] in sys.stdlib_module_names,
              "marker absolute import is not standard library; no project fallback")
         return original_import(name, globals, locals, fromlist, 0)

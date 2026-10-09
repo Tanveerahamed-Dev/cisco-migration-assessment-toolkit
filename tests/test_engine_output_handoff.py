@@ -6,6 +6,7 @@ the same checkouts with an explicit hosted environment. One round trip proves th
 """
 from __future__ import annotations
 
+import builtins
 import copy
 import hashlib
 import importlib.util
@@ -681,6 +682,107 @@ def test_marker_policy_cannot_import_an_unadmitted_project_sibling(repo):
     _commit(repo, "unadmitted policy import")
     with pytest.raises(handoff.HandoffRefusal, match="relative import escaped"):
         handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("poison_kind", ["cached", "project"])
+def test_marker_only_toml_import_never_uses_cache_or_project_code(repo, tmp_path, monkeypatch, poison_kind):
+    _policy_checkout(repo)
+    if poison_kind == "cached":
+        poison = SimpleNamespace(loads=lambda _text: pytest.fail("cached TOML capability was used"))
+        for name in ("tomllib", "tomli"):
+            monkeypatch.setitem(sys.modules, name, poison)
+    else:
+        for name in ("tomllib", "tomli"):
+            (tmp_path / f"{name}.py").write_text("raise AssertionError('project TOML code executed')\n", encoding="utf-8")
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.syspath_prepend(str(tmp_path))
+    # Exercise the missing-stdlib condition on every hosted interpreter, including
+    # the actual Python 3.10 leg. No foreign TOML provider is needed by marker rules.
+    monkeypatch.setattr(sys, "stdlib_module_names", sys.stdlib_module_names - {"tomllib"})
+    attempts = []
+    original_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name.split(".", 1)[0] in ("tomllib", "tomli"):
+            attempts.append(name)
+            raise AssertionError("marker loader attempted a real TOML import")
+        return original_import(name, *args, **kwargs)
+
+    # Override only the helper's view of builtins, not the process-global importer.
+    monkeypatch.setattr(handoff, "builtins", SimpleNamespace(**{**vars(builtins), "__import__": observe_import}))
+    identity, contents = sys.path, list(sys.path)
+    before = {name for name in sys.modules if name.startswith("_atlas_engine_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    for output in handoff.OUTPUT_PATHS:
+        actual = policy(output)
+        assert len(actual) == 12
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(output)]
+    # Preserve the existing path-specific policy, not just the JSON-output profile:
+    # only immediate minified JS assets omit the canonical bare-initials rule.
+    for path, count, bare_initials in (
+        ("webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("release-root/webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("webapp/frontend/dist/assets/nested/index-reviewed.js", 12, True),
+        ("webapp/frontend/dist/assets/index-reviewed.css", 12, True),
+    ):
+        actual = policy(path)
+        assert len(actual) == count
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(path)]
+        assert any(rule.search("a" + "j") for rule in actual) is bare_initials
+        assert any(rule.search("al" + "jazeera") for rule in actual)
+    assert attempts == []
+    assert sys.path is identity and sys.path == contents
+    assert {name for name in sys.modules if name.startswith("_atlas_engine_marker_")} == before
+    for name in ("tomllib", "tomli"):
+        if poison_kind == "cached":
+            assert sys.modules[name] is poison
+        else:
+            assert name not in sys.modules
+
+
+@pytest.mark.parametrize("statement", [
+    "import tomli", "import tomllib._parser", "from tomllib import loads",
+    "__import__('tomllib', dict(globals()), None, None, 0)",
+    "__import__('tomllib', globals(), None, None, None)",
+    "__import__('tomllib', globals(), None, None, False)",
+])
+def test_marker_only_toml_boundary_refuses_other_import_forms(repo, statement):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + b"\n" + statement.encode("utf-8") + b"\n")
+    _commit(repo, "unsupported TOML import form")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+def test_marker_only_toml_boundary_refuses_another_admitted_caller(repo):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "registry_integrity.py"
+    target.write_bytes(target.read_bytes() + b"\nimport tomllib\n")
+    _commit(repo, "TOML import by another closure member")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("expression", [
+    "tomllib.loads('value = 1')", "getattr(tomllib, 'loads')", "hasattr(tomllib, 'loads')",
+    "getattr(tomllib, 'loads', None)", "tomllib.__dict__", "bool(tomllib)", "tomllib()",
+])
+def test_marker_policy_refuses_toml_capability_even_after_namespace_cleanup(repo, expression):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + (
+        "\n_original_markers = _marker_patterns_for\n"
+        "def _marker_patterns_for(name):\n"
+        f"    {expression}\n"
+        "    return _original_markers(name)\n"
+    ).encode("utf-8"))
+    _commit(repo, "future marker dependency on TOML is outside profile")
+    before = {name for name in sys.modules if name.startswith("_atlas_engine_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    assert {name for name in sys.modules if name.startswith("_atlas_engine_marker_")} == before
+    with pytest.raises(handoff.HandoffRefusal, match="TOML capability is unavailable"):
+        policy(handoff.OUTPUT_PATHS[0])
 
 
 # --------------------------------------------------------------------------- hosted producer phases
