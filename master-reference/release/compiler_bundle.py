@@ -124,15 +124,18 @@ _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
 # verified compiler chunk byte plus every identity-depth source blob byte.  It
 # is not a privacy rule and never narrows the scan: the scan stays exhaustive,
 # and a census above this ceiling refuses the build instead of sampling or
-# skipping bytes.  What it bounds is the intake's memory and time, because
+# skipping bytes.  What it bounds is memory and time, because
 # ``load_compiler_bundle`` keeps the parsed records of every requested group
-# (the release pipeline requests all of them), at about 2.0-2.6 times their
-# canonical JSON bytes in CPython 3.12.  At 3 GiB that is roughly 6.5-8.5 GB of
-# retained records on the 16 GB GitHub-hosted public Linux runner.  Each run's
-# census and the CI step's peak RSS are printed, so the next approach to this
-# ceiling is measured rather than discovered.  Reasoning and estimates:
-# ``docs/w63-compiler-census-headroom-2026-10-09.md``.
-_MAX_COMPILER_CHUNK_BYTES = 3 * 1024 * 1024 * 1024
+# (the release pipeline requests all of them) and the release family is then
+# built from them.  Measured on the 16 GB GitHub-hosted public Linux runner
+# (Master reference run 37985453718): a 2,146,489,257-byte census peaked
+# ``python -m cli build`` at 12,004,760 KiB RSS, about 5.7 times the census.
+# 2.25 GiB therefore predicts about 12.9 GiB peak, leaving room for the OS and
+# runner; 3 GiB would predict about 17.2 GiB and fail by memory exhaustion
+# before this refusal could name the cause.  Each run prints the census and
+# the step's peak RSS, so the next approach is measured rather than
+# discovered.  Record: ``docs/w63-compiler-census-headroom-2026-10-09.md``.
+_MAX_COMPILER_CHUNK_BYTES = 2304 * 1024 * 1024
 _GENERIC_AUTOMATION_USERS = frozenset({"actions", "agent", "build", "builder", "codex", "github", "root", "runner"})
 REQUIRED_GROUPS = frozenset(RECORD_GROUPS)
 _MANIFEST_KEYS = frozenset(

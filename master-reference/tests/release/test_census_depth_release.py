@@ -147,7 +147,7 @@ def test_census_reports_every_scanned_byte_and_each_ceiling_refusal_names_its_ow
     identity_bytes = len(identity_text.encode("utf-8"))
     scanned_bytes = chunk_bytes + identity_bytes
     limit = compiler_bundle._MAX_COMPILER_CHUNK_BYTES
-    assert limit == 3 * 1024 * 1024 * 1024
+    assert limit == 2304 * 1024 * 1024
 
     bundle = compiler_bundle.load_compiler_bundle(output, repository_root=repo)
     assert bundle.chunk_census == {

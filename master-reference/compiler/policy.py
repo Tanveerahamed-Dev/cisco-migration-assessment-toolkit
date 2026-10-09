@@ -309,7 +309,7 @@ class CensusDepthDeclaration:
 # 868 MB of per-line, symbol, source-text, call and dossier records).  That
 # breaks the 32 MiB compiler-chunk bound, the 2 GiB expanded-projection and
 # the then-2 GiB release privacy-scan budgets (the release ceiling became
-# 3 GiB in W63).  These are resource safety bounds, not a claim
+# 2.25 GiB in W63).  These are resource safety bounds, not a claim
 # about a hosting platform's capacity.  Internal reference validation no longer
 # imposes an aggregate Sites quota; this coverage deferral remains unchanged.  The
 # owner recorded the decision to defer line projection for this prefix until a

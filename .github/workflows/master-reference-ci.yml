@@ -53,6 +53,7 @@ jobs:
       - name: Compile the exact tracked Git tree
         working-directory: master-reference
         run: |
+          free -b
           /usr/bin/time -v python -m compiler --repo-root .. --output "$RUNNER_TEMP/atlas-compiler"
           find "$RUNNER_TEMP/atlas-compiler/chunks" -type f -name '*.json' -printf '%s\n' \
             | awk '{ n += 1; s += $1 } END { printf "compiler chunk census: chunks=%d bytes=%.0f\n", n, s }'
