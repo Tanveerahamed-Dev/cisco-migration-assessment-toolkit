@@ -102,3 +102,19 @@ or native pin, and neither #630 nor G14/#631 is edited. Independent source revie
 The `95c6085e` Scope suite passes the unit step and proceeds into mount validation;
 it does not qualify the missing mount companion. Its complete terminal result remains in
 Actions. A fresh final-head run must pass all Scope and broader gates after this correction.
+
+## Cable-only admission-context citation
+
+Independent final source review identifies a directly in-scope provenance edge: a valid
+snapshot can contain a cable-map-only host with a raw failure-impact row and missing or
+duplicate dossier ownership. The held result must not cite a nonexistent inventory record.
+Pass the device's existing inventory/topology context citation into `ownedImpact` and
+reuse it only when no unique dossier exists. Select no raw row on this fallback. The new
+missing/duplicate-ownership cable-only controls retain null measurements and null raw row
+while requiring the real topology citation. Normal sample output should be unchanged by
+source reasoning; the final hosted byte-reproduction gate must prove it.
+
+The preceding `e6c12c91` Scope run `37931443453` and webapp run `37931443476`
+have completed successfully, including the mount companion. Their successes remain exact
+to that head and do not transfer across the final citation correction; all required final-head
+gates remain required. No local tests or builders are run for this correction.

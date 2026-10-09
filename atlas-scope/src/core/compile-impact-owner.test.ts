@@ -88,4 +88,16 @@ describe("failure-impact measurements consume the persisted dossier owner", () =
     Object.assign(snap.failure_impact[0], { stranded: "45", hard: -1, backup: 0.5, fhrp: Number.MAX_SAFE_INTEGER + 1 });
     expect(impact(snap)).toMatchObject({ stranded: null, hard: null, backup: null, fhrp: null, vlans: 3 });
   });
+
+  it.each(["missing", "duplicate"])("%s ownership on a cable-only host cites its existing topology context", (state) => {
+    const snap = snapshot();
+    snap.devices = {};
+    snap.cable_map.nodes = [{ host: HOST, collected: false, kind: "switch" }];
+    snap.device_dossiers.per_device = state === "missing" ? [] : [dossier(), dossier()];
+    const device = compile(snap).devices.find((d) => d.host === HOST)!;
+    expect(device.cite).toBe(`cable_map.nodes[host=${HOST}]`);
+    expect(device.impact).toMatchObject({ cite: device.cite, assessable: null, row: null,
+      severity: null, stranded: null, vlans: null, hard: null, backup: null, fhrp: null });
+    expect(device.impact?.unavailable).toBeTypeOf("string");
+  });
 });

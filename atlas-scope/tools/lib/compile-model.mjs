@@ -983,8 +983,9 @@ function compileEvidence(p, i, snap) {
  * @param {string} host
  * @param {unknown[]} dossiers
  * @param {unknown[]} rows
+ * @param {string} contextCite  the existing inventory or topology record, never an invented inventory path
  */
-function ownedImpact(host, dossiers, rows) {
+function ownedImpact(host, dossiers, rows, contextCite) {
   const matches = dossiers.map((d, index) => ({ d: obj(d), index })).filter(({ d }) => own(d, "host") === host);
   const rawMatches = rows.filter((r) => own(obj(r), "host") === host);
   if (matches.length === 0 && rawMatches.length === 0) return null;
@@ -995,7 +996,7 @@ function ownedImpact(host, dossiers, rows) {
   const verdict = own(owner, "assessable");
   const why = typeof own(owner, "why") === "string" ? own(owner, "why") : null;
   const pointer = own(owner, "pointer");
-  const cite = match ? `device_dossiers.per_device[${match.index}]${ownerPresent ? ".impact_assessability" : ""}` : `devices.${host}`;
+  const cite = match ? `device_dossiers.per_device[${match.index}]${ownerPresent ? ".impact_assessability" : ""}` : contextCite;
   let unavailable = matches.length > 1
     ? "More than one device dossier names this host; no single impact owner can be selected."
     : matches.length === 0 ? "No device dossier supplies a failure-impact verdict for this host." : null;
@@ -1096,7 +1097,8 @@ export function compileFabric(snap, binding, opts = {}) {
     const d = own(inventory, host);
     const n = nodeByHost.get(host);
     const h = healthByHost.get(host);
-    const impact = ownedImpact(host, impactDossiers, impactRows);
+    const cite = d ? `devices.${host}` : `cable_map.nodes[host=${host}]`;
+    const impact = ownedImpact(host, impactDossiers, impactRows, cite);
     return {
       id: host,
       host,
@@ -1126,7 +1128,7 @@ export function compileFabric(snap, binding, opts = {}) {
       deductions: strs(h?.deductions, `health_scores[switch=${host}].deductions`),
       impact,
       fieldCites: deviceFieldCites(host, d, n, h),
-      cite: d ? `devices.${host}` : `cable_map.nodes[host=${host}]`,
+      cite,
     };
   });
 
