@@ -134,6 +134,53 @@ function CoverageRollup({ rollup, label }: { rollup: Schemas["UiProjection1_Devi
   </div>;
 }
 
+// G10/G11: the engine's stored scanned-model rows selected for this device, rendered cell by cell as supplied.
+// A withheld cell shows its own state and reason, never a value, a zero or a clean bill; rows keep engine order.
+// The device document carries no topology legend, so each row's style fact is shown as the engine's own label
+// and token. No tone, severity map or bridge test exists on this page.
+function RowRefs({ label, refs }: { label: string; refs: Schemas["UiProjection1_RowRefList"] }) {
+  return <div><ListState label={label} source={refs} />
+    {refs.items.map((ref) => <Pointer key={`${ref.index}:${ref.pointer}`} pointer={ref.pointer} />)}</div>;
+}
+
+function FailureImpactRow({ row }: { row: Schemas["UiProjection1_TopologyImpactRow"] }) {
+  return <div role="group" aria-label={`Failure impact source row ${row.index}`}>
+    <div className="projection-fact-grid">
+      <FactView label="Engine presentation" fact={row.style} compact />
+      <FactView label="Severity" fact={row.severity} compact />
+      <FactView label="VLANs impacted" fact={row.vlans_impacted} compact />
+      <FactView label="Stranded endpoints" fact={row.stranded} compact />
+      <FactView label="Hard-partition VLANs" fact={row.hard} compact />
+      <FactView label="Backup-covered VLANs" fact={row.backup} compact />
+      <FactView label="FHRP-covered VLANs" fact={row.fhrp} compact />
+      <FactView label="Off-scan gateway VLANs" fact={row.off_scan_gw_vlans} compact />
+    </div>
+    <FactView label="Per-VLAN detail" fact={row.detail} />
+    <details><summary>Row host and topology node join</summary>
+      <FactView label="Row host" fact={row.host} compact />
+      <RowRefs label={`Topology node records for failure impact row ${row.index}`} refs={row.node_refs} />
+    </details><Pointer pointer={row.pointer} />
+  </div>;
+}
+
+function StructuralLinkRow({ row }: { row: Schemas["UiProjection1_TopologyStructuralLinkRow"] }) {
+  return <div role="group" aria-label={`Structural link source row ${row.index}`}>
+    <div className="projection-fact-grid">
+      <FactView label="Engine presentation" fact={row.style} compact />
+      <FactView label="Link ends" fact={row.ends} compact />
+      <FactView label="Bridge" fact={row.is_bridge} compact />
+      <FactView label="Switch pairs severed" fact={row.pairs_cut} compact />
+      <FactView label="Betweenness" fact={row.betweenness} compact />
+      <FactView label="Betweenness rank" fact={row.rank} compact />
+    </div>
+    <details><summary>Node joins and host-pair cable candidates</summary>
+      <RowRefs label={`A-end node records for structural link row ${row.index}`} refs={row.a_nodes} />
+      <RowRefs label={`B-end node records for structural link row ${row.index}`} refs={row.b_nodes} />
+      <RowRefs label={`Host-pair cable candidates for structural link row ${row.index}`} refs={row.host_pair_cable_refs} />
+    </details><Pointer pointer={row.pointer} />
+  </div>;
+}
+
 function DeviceCard({ row, sid }: { row: Schemas["UiProjection1_DeviceRow"]; sid: number }) {
   return <article><h3><Link to={deviceUrl(sid, row.host)}>{row.host} ↗</Link></h3><Pointer pointer={row.pointer} />
     <FactGrid facts={{ model: row.model, health_band: row.health_band, move_group: row.move_group }} />
@@ -217,6 +264,9 @@ function Device({ document }: { document: ViewDocument<"device"> }) {
     <Panel title="Finding severity"><FindingRollup label="Device finding severity" rollup={p.findings_rollup} /></Panel>
     <Panel title="Coverage summary"><CoverageRollup label="Device coverage summary" rollup={p.coverage_rollup} /></Panel>
     <Panel title="Risk register"><FactView label="Risk band" fact={p.dossier.risk_band} /></Panel>
+    <ProjectionList title="If this device fails" document={document} host={host} initial={p.failure_impact} renderRow={(row) => <FailureImpactRow row={row} />} />
+    <ProjectionList title="Structural links" document={document} host={host} initial={p.structural_links} renderRow={(row) => <StructuralLinkRow row={row} />} />
+    <Disclosure>Failure impact and structural links are the engine's stored scanned-model rows for this device, in engine order; this page does not simulate, rank or fill them in. This device view carries no topology legend, so each row's presentation is shown as the engine's label and token, without a colour tone.</Disclosure>
     <ProjectionList title="Exposure axes" document={document} host={host} initial={p.dossier.exposures} renderRow={(row) => <FactView label={`Exposure ${row.index}`} fact={row.fact} />} />
     <ProjectionList title="Compound findings" document={document} host={host} initial={p.dossier.compound} renderRow={(row) => <FactView label={`Compound ${row.index}`} fact={row.fact} />} />
     <ProjectionList title="Health deductions" document={document} host={host} initial={p.health.deductions} renderRow={(row) => <FactView label={`Deduction ${row.index}`} fact={row.fact} />} />
