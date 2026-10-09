@@ -42,14 +42,23 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W28 (G08 trust inputs) schema delta on top of W23+W24 (main 366d1ab3): compact
-# ensure_ascii JSON plus LF, in owner key order. See
-# docs/w28-trust-inputs-validation-2026-10-08.md (prior: W24/W23/W12/W13 notes).
+# W51 contract train: the combined G41 + G17 + G16 + G05 + G21 + G24 schema delta
+# (W37-W42) on top of #629 + #628 (W28 pins 6aa9a264.../a3021b67...): compact
+# ensure_ascii JSON plus LF, in owner key order. Re-pinned once on the combined
+# schema; reviewed delta in the W51 pull request (18 definitions added, 9 changed,
+# none removed or reordered, keyword profile unchanged). Per-slice notes:
+# docs/w37-snapshot-identity-validation-2026-10-09.md,
+# docs/w38-peer-host-validation-2026-10-09.md,
+# docs/w39-gateway-detail-validation-2026-10-09.md,
+# docs/w40-axis-unassessed-validation-2026-10-09.md,
+# docs/w41-punch-facets-validation-2026-10-09.md,
+# docs/w42-cross-layer-validation-2026-10-09.md
+# (prior: docs/w28-trust-inputs-validation-2026-10-08.md).
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "6aa9a264cf5622d5eb905f5cace25aa612cbb46437a46eed63ae957baad23745",
-    "list": "a3021b672f785a76c3d88ae33db58ac487e5fa151d84de69af52949c1cc2df58",
+    "view": "1fea93051f73933872dac61f41a184647916031acf564a39a107cc461bb40569",
+    "list": "ae6537f5115c39f3bb892ef7ee56d53358a0267cb51b8842fc15d2a46754850c",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

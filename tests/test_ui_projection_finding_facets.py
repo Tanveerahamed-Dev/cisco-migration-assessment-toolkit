@@ -128,7 +128,8 @@ def test_f0_facet_keys_are_the_owner_vocabularies_and_the_schema_closes_them():
     schema = uip.ui_projection_schema()
     Draft202012Validator.check_schema(schema)
     d = schema["$defs"]
-    assert d["Findings"]["required"] == ["total", "headline_axis_index", "rows", "facets"]
+    # W51: the combined schema carries G21's facets and G24's cross_layer, in merge order
+    assert d["Findings"]["required"] == ["total", "headline_axis_index", "rows", "facets", "cross_layer"]
     assert d["Findings"]["properties"]["facets"] == {"$ref": "#/$defs/FindingFacets"}
     facets = d["FindingFacets"]
     assert facets["additionalProperties"] is False and facets["required"] == list(uip.FINDING_FACETS)

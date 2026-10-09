@@ -470,6 +470,10 @@ _UNREADABLE_RECORDS = (
 )
 
 
+#: W51: the cases above that F6 also reads as a device-scope doubt (ssot._device_not_collected passes over the record).
+_SCOPE_DOUBTED = frozenset({"devices_not_a_list", "row_not_an_object", "row_host_not_text"})
+
+
 @pytest.mark.parametrize("case, mutate, witness, failure", _UNREADABLE_RECORDS,
                          ids=[c[0] for c in _UNREADABLE_RECORDS])
 def test_a_record_that_cannot_complete_the_roster_is_a_gap_never_a_clean_index(case, mutate, witness, failure,
@@ -478,6 +482,18 @@ def test_a_record_that_cannot_complete_the_roster_is_a_gap_never_a_clean_index(c
     absence is claimed; the same address over _base()'s readable record is published / not resolved."""
     snap = _base()
     mutate(snap)
+    if case in _SCOPE_DOUBTED:
+        # W51 (F6 x G17): a blind-spot list that cannot be read, or a row of it the host join cannot read, also
+        # leaves the owner's device scope in doubt for every device (F6), so r1's own routing-neighbour rows are
+        # unverified, citing that record, and name no peer at all. The address index's coverage gap stands, read
+        # from its owner directly.
+        rn = _page(snap, "r1", doc_validator)["routing_neighbors"]
+        assert (rn["state"], rn["items"]) == (UV, []), (case, rn)
+        assert witness in _refs(rn, "witness"), (case, rn["refs"])
+        complete, gaps = ui._address_coverage(ui._Ctx(snap))
+        assert not complete, case
+        assert witness in {ui.json_pointer(*toks) for gap in gaps for role, toks in gap if role == "witness"}, gaps
+        return
     owner, absent = _peers(snap, doc_validator)["ospf"]
     _assert_gaps(owner, 1, OWNER_TAIL, {"/interfaces/r2/Gi1/svi_ip"} | ({witness} if witness else set()))
     _assert_gaps(absent, 1, ABSENT_TAIL, {witness} if witness else set())

@@ -103,7 +103,8 @@ def test_findings_schema_carries_the_cross_layer_rows():
     d = ui.ui_projection_schema()["$defs"]
     findings = d["Findings"]
     assert findings["additionalProperties"] is False
-    assert findings["required"] == ["total", "headline_axis_index", "rows", "cross_layer"]
+    # W51: the combined schema carries G21's facets and G24's cross_layer, in merge order
+    assert findings["required"] == ["total", "headline_axis_index", "rows", "facets", "cross_layer"]
     assert findings["properties"]["cross_layer"] == {"$ref": "#/$defs/CrossLayerRowList"}
     row = d["CrossLayerRow"]
     assert row["additionalProperties"] is False and set(row["required"]) == set(row["properties"])
