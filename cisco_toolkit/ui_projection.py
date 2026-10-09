@@ -709,8 +709,12 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "inventory rows and their reconciled count unverified, with a witness to that row or value. A host no "
         "readable roster names is unverified, with a witness to each roster row or roster it cannot read, while any "
         "is present. "
-        "A selection is null when its source list could not be read (selection_sources says why), and [] when it "
-        "was read and names nothing. A VLAN row's selections.gateways is a fact list instead: it carries its own "
+        "Pointer-only selections are null when their source could not be read (selection_sources says why), and [] "
+        "when it was read and names nothing. STP observation selections instead carry their own FactList state and "
+        "original record pointers. Their flags are stored parser output, not a new election: even False beside a "
+        "parsed root address does not independently prove a non-root device or complete capture, because the parser "
+        "does not retain bridge_address. An empty selection establishes neither root absence nor collection success. "
+        "A VLAN row's selections.gateways is a fact list instead: it carries its own "
         "state and reason, and a row of its source the join cannot read makes it unverified. A cross-layer row's "
         "host joins the devices-map record and the health_scores row of exactly that name. The deduction the row "
         "drives on that device is the one deduction reference the health row publishes to the cross-layer row, and "
@@ -4320,17 +4324,103 @@ def _stp_vlan_key(value: Any) -> Optional[int]:
     return None
 
 
-def _stp_root_index(ctx: _Ctx) -> Dict[int, List[str]]:
-    """VLAN id -> ``/stp_roots/<host>/<vid>`` for every non-MST record whose key is a VLAN id (the owner's rule)."""
-    out: Dict[int, List[str]] = {}
+def _stp_root_index(ctx: _Ctx) -> Dict[int, List[Tuple[str, Any, Any]]]:
+    """VLAN id -> stored host/key/record, retaining aliases and the owner's non-MST selection rule."""
+    out: Dict[int, List[Tuple[str, Any, Any]]] = {}
     roots = ctx.s.get("stp_roots")
     for host in sorted(k for k in roots if _is_text(k) and k) if isinstance(roots, dict) else ():
         recs = roots[host]
         for key in recs if isinstance(recs, dict) else ():
             vid = _stp_vlan_key(key)
             if vid is not None and not (isinstance(recs[key], dict) and recs[key].get("is_mst")):
-                out.setdefault(vid, []).append(json_pointer("stp_roots", host, key))
-    return {vid: sorted(ptrs) for vid, ptrs in out.items()}
+                out.setdefault(vid, []).append((host, key, recs[key]))
+    return {vid: sorted(rows, key=lambda row: json_pointer("stp_roots", row[0], row[1]))
+            for vid, rows in out.items()}
+
+
+def _stp_observed_flag(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
+    if type(raw) is not bool:
+        return _UV, "unverified: the stored STP is_root flag is not a boolean"
+    if raw is False:
+        address = row.raw.get("root_address", _MISSING)
+        if address is _MISSING or (_is_text(address) and not address.strip()):
+            return _NC, ("not collected: the root address was not parsed; False is the spanning-tree parser's "
+                         "default here, not an observed non-root result")
+        if not _is_text(address):
+            return _UV, "unverified: the stored root address cannot qualify the parser's False flag"
+    return None
+
+
+def _stp_observed_address(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
+    if _is_text(raw) and not raw.strip():
+        return _NC, "not collected: the spanning-tree root address was not parsed"
+    return None
+
+
+def _stp_observed_priority(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
+    return (_NC, "not collected: the spanning-tree root priority was not parsed") if raw is None else None
+
+
+def _stp_observation(ctx: _Ctx, host: str, key: Any, raw: Any) -> Dict[str, Any]:
+    toks = ("stp_roots", host, key)
+    held = _secs_fail(ctx, ("stp_roots",))
+    extra = []
+    # W51 (F6 x G15): the device scope is read only through its doubt-aware door: a blind spot is not collected, and
+    # a scope that cannot say this device is not a blind spot leaves its observation unverified, with the witnesses
+    scope = ctx.device_scope("stp_roots", host) if held is None else None
+    if scope is not None:
+        held, extra = (scope[0], scope[1]), list(scope[2])
+    if held is None and isinstance(raw, dict) and "is_mst" in raw and type(raw["is_mst"]) is not bool:
+        held = (_UV, "unverified: the stored STP namespace marker is not a boolean; this may be an MST instance")
+        extra = [("witness", toks + ("is_mst",))]
+    row = (_Row(*held, toks, raw, ("stp_roots",), extra) if held is not None
+           else _list_row(toks, raw, ("stp_roots",)))
+    out: Dict[str, Any] = {"host": host, "pointer": json_pointer(*toks)}
+    for field, slot, pre in (("is_root", "flag", _stp_observed_flag),
+                              ("root_address", "text", _stp_observed_address),
+                              ("root_priority", "count", _stp_observed_priority)):
+        missing = ("not collected: the stored STP record carries no is_root flag" if field == "is_root" else
+                   f"not collected: the spanning-tree {field.replace('_', ' ')} was not parsed")
+        fact = _cell(ctx, row, field, slot, "build.build_stp_roots:stp_roots{}{}." + field, pre=pre, missing=missing,
+                     caveats=("row_selection_by_exact_key",))
+        # Unique integer VLAN keys are admitted by the existing owner rule. Their pointers address the JSON
+        # serialization; _get intentionally only traverses string-keyed dicts. The caller has already refused
+        # every serialized-pointer collision, and this literal field's presence is known from this exact record.
+        if type(key) is int and isinstance(raw, dict) and field in raw:
+            fact["refs"].insert(0, {"pointer": json_pointer(*toks, field), "role": "subject"})
+        if type(key) is int and ("witness", toks + ("is_mst",)) in row.extra:
+            fact["refs"].append({"pointer": json_pointer(*toks, "is_mst"), "role": "witness"})
+        out[field] = fact
+    return out
+
+
+def _stp_observation_selection(ctx: _Ctx, source: Dict[str, Any], selected: Sequence[Tuple[str, Any, Any]],
+                               valid_vlan: bool, vlan_toks: Tuple[Any, ...], collision: bool,
+                               unreadable_maps: Sequence[Tuple[str, Sequence[Any]]],
+                               uncertain_namespaces: Sequence[str]) -> Dict[str, Any]:
+    state, reason = source["state"], source.get("reason")
+    extras = list(unreadable_maps)
+    rows = [] if collision or not valid_vlan else [_stp_observation(ctx, *entry) for entry in selected]
+    bad_rows = [row["pointer"] for row, entry in zip(rows, selected) if not isinstance(entry[2], dict)]
+    if state != AU and not collision:
+        if not valid_vlan:
+            state, reason = _UV, "unverified: this VLAN row has no readable VLAN selector for STP observations"
+            extras.append(("witness", vlan_toks))
+        elif unreadable_maps or bad_rows or uncertain_namespaces:
+            state, reason = _UV, ("unverified: stored STP host maps, selected records or namespace markers cannot be read; "
+                                  "the retained observations do not establish a complete selection")
+        elif state in (_PUB, _CBE) and not rows:
+            state, reason = _CBE, ("collected but empty: the readable STP map has no selected non-MST record for "
+                                   "this VLAN; this proves neither root absence nor complete capture")
+    result = _listing(ctx, state, reason, ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", rows,
+                      sections=("stp_roots",), extra=extras, caveats=("row_selection_by_exact_key",))
+    # These are known selected stored records, including a unique integer key before JSON serialization.
+    result["refs"].extend({"pointer": pointer, "role": "witness"} for pointer in bad_rows)
+    if not collision:
+        # A truthy malformed marker was excluded by the unchanged owner eligibility rule. Retain its
+        # uncertainty without admitting an MST-instance record as a definite VLAN observation.
+        result["refs"].extend({"pointer": pointer, "role": "witness"} for pointer in uncertain_namespaces)
+    return result
 
 
 def _source(ctx: _Ctx, toks: Tuple[str, ...], sections: Sequence[str], basis: str,
@@ -5133,9 +5223,23 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                      for host, per_host in (source_roots.items() if isinstance(source_roots, dict) else ())
                      if _is_text(host) and host and isinstance(per_host, dict)
                      for key in per_host if _stp_vlan_key(key) is not None]
-    if ok_roots and len(set(root_pointers)) != len(root_pointers):
+    root_collision = len(set(root_pointers)) != len(root_pointers)
+    if ok_roots and root_collision:
         src_roots.update(state=_UV, reason="unverified: STP map keys collide when serialized as RFC 6901 pointers")
         ok_roots = False
+    unreadable_root_maps = [("witness", ("stp_roots", host) if _is_text(host) else ("stp_roots",))
+                            for host, records in (source_roots.items() if isinstance(source_roots, dict) else ())
+                            if not _is_text(host) or not host or not isinstance(records, dict)]
+    uncertain_namespaces: Dict[int, List[str]] = {}
+    for host, records in (source_roots.items() if isinstance(source_roots, dict) else ()):
+        if not _is_text(host) or not host or not isinstance(records, dict):
+            continue
+        for key, record in records.items():
+            vid = _stp_vlan_key(key)
+            if (vid is not None and isinstance(record, dict) and "is_mst" in record
+                    and type(record["is_mst"]) is not bool):
+                uncertain_namespaces.setdefault(vid, []).extend(
+                    (json_pointer("stp_roots", host, key), json_pointer("stp_roots", host, key, "is_mst")))
     src_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",), "excel.write_l3_forwarding_sheet:l3_forwarding[]")[0]
     src_ep, ok_ep = _source(ctx, ("endpoint_identity",), ("endpoint_identity",),
                             "analyze.compute_endpoint_identity:endpoint_identity[]")
@@ -5178,7 +5282,10 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
             item[field] = _cell(ctx, row, field, slot, _B_VLAN + field, vocab=vocab,
                                 sections=toks + VLAN_FIELD_BASIS[field], pre=check, empty=empty,
                                 published_caveats=pub_cav)
-        item["selections"] = {"stp_roots": (list(roots.get(vid, ())) if ok else []) if ok_roots else None,
+        item["selections"] = {"stp_roots": _stp_observation_selection(
+                                  ctx, src_roots, roots.get(vid, ()) if ok else (), ok, toks + (i,),
+                                  root_collision, unreadable_root_maps,
+                                  sorted(uncertain_namespaces.get(vid, ())) if ok else ()),
                               "gateways": gw_list,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
@@ -7821,8 +7928,12 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                "coverage": _ref("DeviceCoverageRollup")},
                                  _DEVICE_ROW_CELLS)
     defs["VlanGatewayRow"] = _row_def("VlanGatewayRow", _indexed(), _VLAN_GATEWAY_CELLS)
+    defs["StpRootObservation"] = _row_def("StpRootObservation", {"host": _str(), "pointer": _ref("Pointer")},
+                                          (("is_root", "FlagFact"), ("root_address", "TextFact"),
+                                           ("root_priority", "CountFact")))
+    defs["StpRootObservationList"] = _list_def("StpRootObservationList", _ref("StpRootObservation"))
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
-                                     {"stp_roots": _nullable({"type": "array", "items": _ref("Pointer")}),
+                                     {"stp_roots": _ref("StpRootObservationList"),
                                       "gateways": _ref("VlanGatewayRowList"),
                                       "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),

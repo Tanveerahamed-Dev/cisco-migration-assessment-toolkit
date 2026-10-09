@@ -42,11 +42,14 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W51 contract train: the combined G41 + G17 + G16 + G05 + G21 + G24 schema delta
-# (W37-W42) on top of #629 + #628 (W28 pins 6aa9a264.../a3021b67...): compact
-# ensure_ascii JSON plus LF, in owner key order. Re-pinned once on the combined
-# schema; reviewed delta in the W51 pull request (18 definitions added, 9 changed,
-# none removed or reordered, keyword profile unchanged). Per-slice notes:
+# W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
+# facts, pins 16b80957.../bca688bd...), #629 + #628 (W28 trust inputs, pins
+# 6aa9a264.../a3021b67...) and the G41 + G17 + G16 + G05 + G21 + G24 deltas
+# (W37-W42): compact ensure_ascii JSON plus LF, in owner key order. Re-pinned once
+# on the combined schema; every parent's extract reproduces its own committed pins.
+# Reviewed delta in the W51 pull request (against predicted main: 20 definitions
+# added, 9 changed, none removed or reordered, keyword profile unchanged). Per-slice
+# notes: docs/w34-stp-root-facts-validation-2026-10-09.md,
 # docs/w37-snapshot-identity-validation-2026-10-09.md,
 # docs/w38-peer-host-validation-2026-10-09.md,
 # docs/w39-gateway-detail-validation-2026-10-09.md,
@@ -57,8 +60,8 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "1fea93051f73933872dac61f41a184647916031acf564a39a107cc461bb40569",
-    "list": "ae6537f5115c39f3bb892ef7ee56d53358a0267cb51b8842fc15d2a46754850c",
+    "view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
+    "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

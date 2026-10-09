@@ -1687,10 +1687,18 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
         assert all(it["pointer"] == _ptr("l3_forwarding", it["index"]) for it in gateways["items"])
         if not readable("l3_forwarding"):
             assert gateways["state"] not in (PUB, CBE) and gateways["reason"]
+        # Membership reads the original row key even when a source failure withholds its displayed VLAN fact.
+        stored_vid = (snap.get("vlan_cutover") or [])[row["index"]]["vlan"]
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
-                      if stp_topology._election_priority(k) == vid
+                      if stp_topology._election_priority(k) == stored_vid
                       and not (isinstance(rec, dict) and rec.get("is_mst")))
-        assert sel["stp_roots"] == (want if readable("stp_roots") else None)
+        observed = sel["stp_roots"]
+        # Known stored pointers can remain as witnesses under a failed source; their facts cannot publish.
+        assert [row["pointer"] for row in observed["items"]] == want
+        if not readable("stp_roots"):
+            assert observed["state"] == srcs["stp_roots"]["state"] and observed["reason"]
+            assert all(fact["state"] != PUB for item in observed["items"]
+                       for field, fact in item.items() if field in ("is_root", "root_address", "root_priority"))
     deps = snap.get("endpoint_dependencies") or {}
     shared = deps.get("shared_ip") or []
     dual = deps.get("dual_homed") or []
@@ -2146,7 +2154,9 @@ def test_i20_selections_carry_their_source_state(snaps, payloads):
     assert vl["selection_sources"]["gateways"]["state"] == NC
     assert vl["rows"]["items"]
     for row in vl["rows"]["items"]:
-        assert row["selections"]["stp_roots"] is None
+        assert row["selections"]["stp_roots"]["state"] == NC
+        assert row["selections"]["stp_roots"]["items"] == []
+        assert row["selections"]["stp_roots"]["reason"]
         # G16: the gateway fact list says why it is empty instead of a null, never a clean 'no gateway'
         gateways = row["selections"]["gateways"]
         assert gateways["state"] == NC and gateways["items"] == [] and gateways["reason"].startswith("not collected")
