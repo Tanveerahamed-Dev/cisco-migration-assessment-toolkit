@@ -1301,9 +1301,11 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # observation rules; ipaddress canonicalizes those evidence joins. Decision rollups admit only the
     # existing public vocabulary, stored-row folds, capture-flag precedence and VLAN membership owners.
     # Coverage joins/folds are admitted by their exact public names; neither a module-wide analyze or
-    # coverage_matrix import nor private/other owner imports are admitted.
+    # coverage_matrix import nor private/other owner imports are admitted. The G21 finding facets admit the
+    # owner's public category vocabulary and its stored-row facet fold, by exact name, beside the severity owner.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
+               "cisco_toolkit.analyze:PUNCH_CATEGORIES", "cisco_toolkit.analyze:compute_punchlist_facets",
                "cisco_toolkit.analyze:compute_device_findings", "cisco_toolkit.analyze:device_config_capture",
                "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",

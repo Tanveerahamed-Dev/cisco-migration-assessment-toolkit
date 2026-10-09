@@ -8070,6 +8070,10 @@ _PUNCH_EVIDENCE_POLICY: Dict[str, frozenset] = {
     "Platform capacity": frozenset({"row"}),
     "Compound risk": frozenset({"row"}),
 }
+# The closed punch-list category vocabulary, in the evidence policy's order (G21 facet keys). Every category
+# the producer can emit must enter _PUNCH_EVIDENCE_POLICY, and tests/test_punchlist_evidence_refs.py holds its
+# keys equal to the set derived from the producer's AST, so this tuple is that set, never a second hand list.
+PUNCH_CATEGORIES: Tuple[str, ...] = tuple(_PUNCH_EVIDENCE_POLICY)
 
 # The PUBLISHED snapshot section each category's fold reads its input rows from (top-level snapshot key).
 # It backs the `row_requires_ref` rule BY CONSTRUCTION: when a non-absence row ends with no addressable ref
@@ -8368,6 +8372,42 @@ def compute_device_findings(punchlist: Any, hosts: Any) -> dict:
             if previous is None or _PUNCH_RANK.get(severity, 0) > _PUNCH_RANK.get(previous, 0):
                 device["worst"] = severity
     return {"problem": None, "per_device": per_device}
+
+
+def compute_punchlist_facets(punchlist: Any) -> dict:
+    """Pure, unpersisted severity and category partition of the stored punch-list rows (G21 facets).
+
+    Each facet is a complete partition or nothing. Every row must be a record carrying a value of the
+    facet's closed owner vocabulary (PUNCH_SEVERITIES, PUNCH_CATEGORIES), so each row lands in exactly one
+    bucket and the bucket sizes sum to the row count. A facet that cannot place a row returns its problem
+    and no buckets. The other facet keeps its own verdict, so a legacy category spelling does not withhold
+    the severity counts. Every vocabulary key is present, in owner order, with the original row indices.
+    An empty bucket means no stored row carries that value. It does not claim that the evidence behind the
+    punch list was complete; the projection owns those capture and phase gates. Device counts are
+    compute_device_findings' partition and are not restated here.
+    """
+    facets = (("severity", PUNCH_SEVERITIES), ("category", PUNCH_CATEGORIES))
+
+    def refused(reason: str) -> dict:
+        return {"n_rows": None, **{facet: {"problem": reason, "indices": {}} for facet, _keys in facets}}
+
+    if not isinstance(punchlist, list):
+        return refused("punch-list is not a complete list")
+    for index, row in enumerate(punchlist):
+        if not isinstance(row, dict):
+            return refused(f"punch-list row {index} is not a record")
+    folded: Dict[str, Any] = {"n_rows": len(punchlist)}
+    for facet, keys in facets:
+        buckets: Dict[str, List[int]] = {key: [] for key in keys}
+        problem = None
+        for index, row in enumerate(punchlist):
+            value = row.get(facet)
+            if not isinstance(value, str) or value not in buckets:
+                problem = f"punch-list row {index} has a {facet} outside the owner's closed vocabulary"
+                break
+            buckets[value].append(index)
+        folded[facet] = {"problem": problem, "indices": {} if problem else buckets}
+    return folded
 
 
 def compute_migration_punchlist(cross_layer: List[dict],

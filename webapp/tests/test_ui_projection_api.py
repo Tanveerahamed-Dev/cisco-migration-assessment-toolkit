@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-                   "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5"}
+    prospective = {"view": "4643eba4c8eaf44fd4c3b9905da2b8439f0c5375cf944a24be40e0f7fd27c580",
+                   "list": "3fdc738d246a42ad3789bd9ede7353b9ddc4c0bdcd8dcd522bdd55aaf7845f16"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1450,6 +1450,63 @@ def test_native_w13_coverage_metadata_list_matches_stock_and_retains_withheld_va
         item["dimension"].update(state="unverified", reason="synthetic withheld")
     else:
         item["dimension"].update(state="unverified", value=None)
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+@pytest.mark.parametrize("mutation", ["missing_facets", "extra_facet", "short_severity", "long_category",
+                                      "foreign_category", "foreign_severity", "device_key_type", "bool_count",
+                                      "negative_count", "oversized_count", "withheld_value", "missing_reason",
+                                      "extra_bucket_field", "unknown_caveat"])
+def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_refusals(client, sample, mutation):
+    """G21 facets ride the real, unpaged findings view; native acceptance and every refusal match stock."""
+    from backend import ui_projection_api as api
+    sid = seed(client, sample)
+    body = client.get(url(sid, "findings"), params={"limit": 2}).json()
+    facets = body["payload"]["facets"]
+    assert facets == owner.project(sample)["findings"]["facets"]
+    assert "/facets" not in api.LIST_CATALOG["findings"]                 # whole owner facets, never pages
+    assert [bucket["k"] for bucket in facets["severity"]] == list(owner.SEVERITIES)
+    assert [bucket["k"] for bucket in facets["category"]] == list(owner.FINDING_CATEGORIES)
+    # the stored sample has configless devices: positive counts publish as lower bounds, zeros stay withheld
+    assert {bucket["n"]["state"] for bucket in facets["severity"]} == {"published", "not_collected"}
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    severity, category, device = facets["severity"], facets["category"], facets["device"]
+    count = next(bucket["n"] for bucket in severity if bucket["n"]["state"] == "published")
+    held = next(bucket["n"] for bucket in severity + category if bucket["n"]["state"] != "published")
+    if mutation == "missing_facets":
+        del body["payload"]["facets"]
+    elif mutation == "extra_facet":
+        facets["wave"] = []
+    elif mutation == "short_severity":
+        severity.pop()
+    elif mutation == "long_category":
+        category.append(deepcopy(category[0]))
+    elif mutation == "foreign_category":
+        category[0]["k"] = "Legacy name"
+    elif mutation == "foreign_severity":
+        severity[0]["k"] = "Severe"
+    elif mutation == "device_key_type":
+        device[0]["k"] = 7
+    elif mutation == "bool_count":
+        count["value"] = True
+    elif mutation == "negative_count":
+        count["value"] = -1
+    elif mutation == "oversized_count":
+        count["value"] = 2**53
+    elif mutation == "withheld_value":
+        count.update(state="not_collected", reason="synthetic withheld")
+    elif mutation == "missing_reason":
+        del held["reason"]
+    elif mutation == "extra_bucket_field":
+        severity[0]["pointer"] = "/punchlist"
+    else:
+        count["caveats"] = ["unregistered_scope"]
     assert not native.is_valid(body) and not stock.is_valid(body)
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 

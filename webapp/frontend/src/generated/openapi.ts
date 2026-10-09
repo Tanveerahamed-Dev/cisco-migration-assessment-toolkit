@@ -1349,6 +1349,12 @@ export interface components {
             readonly reached: boolean | null;
             readonly total: components["schemas"]["UiProjection1_WithheldFact"];
         };
+        /** CategoryFacetRow */
+        readonly UiProjection1_CategoryFacetRow: {
+            /** @enum {string} */
+            readonly k: "Cross-layer" | "Security" | "Config hygiene" | "L3" | "L1" | "Protocol" | "VTP" | "IPv6 Routing" | "STP" | "Health" | "Addressing" | "FHRP" | "Trunk" | "Link L1" | "Inventory" | "False-health" | "Coverage" | "Timing/PTP" | "Multicast/Media" | "Operational logs" | "QoS" | "Software exposure" | "Platform capacity" | "Compound risk";
+            readonly n: components["schemas"]["UiProjection1_CountFact"];
+        };
         /** Census */
         readonly UiProjection1_Census: {
             /** @constant */
@@ -1752,6 +1758,11 @@ export interface components {
             /** @constant */
             readonly schema: "ui_projection/1";
             readonly vocab: components["schemas"]["UiProjection1_Vocab"];
+        };
+        /** DeviceFacetRow */
+        readonly UiProjection1_DeviceFacetRow: {
+            readonly k: string;
+            readonly n: components["schemas"]["UiProjection1_CountFact"];
         };
         /** DeviceFindingsRollup */
         readonly UiProjection1_DeviceFindingsRollup: {
@@ -2477,6 +2488,43 @@ export interface components {
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
             readonly value: null;
         };
+        /** FindingFacets */
+        readonly UiProjection1_FindingFacets: {
+            readonly category: [
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"],
+                components["schemas"]["UiProjection1_CategoryFacetRow"]
+            ];
+            readonly device: readonly components["schemas"]["UiProjection1_DeviceFacetRow"][];
+            readonly severity: [
+                components["schemas"]["UiProjection1_SeverityFacetRow"],
+                components["schemas"]["UiProjection1_SeverityFacetRow"],
+                components["schemas"]["UiProjection1_SeverityFacetRow"],
+                components["schemas"]["UiProjection1_SeverityFacetRow"],
+                components["schemas"]["UiProjection1_SeverityFacetRow"]
+            ];
+        };
         /** FindingRow */
         readonly UiProjection1_FindingRow: {
             readonly category: components["schemas"]["UiProjection1_TextFact"];
@@ -2531,6 +2579,7 @@ export interface components {
         };
         /** Findings */
         readonly UiProjection1_Findings: {
+            readonly facets: components["schemas"]["UiProjection1_FindingFacets"];
             readonly headline_axis_index: number | null;
             readonly rows: components["schemas"]["UiProjection1_FindingRowList"];
             readonly total: components["schemas"]["UiProjection1_CountFact"];
@@ -4036,6 +4085,12 @@ export interface components {
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
             readonly value: null;
+        };
+        /** SeverityFacetRow */
+        readonly UiProjection1_SeverityFacetRow: {
+            /** @enum {string} */
+            readonly k: "Critical" | "High" | "Medium" | "Low" | "Info";
+            readonly n: components["schemas"]["UiProjection1_CountFact"];
         };
         /** SeverityFact */
         readonly UiProjection1_SeverityFact: {
@@ -6436,6 +6491,11 @@ export interface components {
                 readonly basis: string;
                 readonly tokens: readonly ("sections" | "intermediate" | "non_section" | "unknown")[];
             };
+            /** VocabPunchCategory */
+            readonly punch_category: {
+                readonly basis: string;
+                readonly tokens: readonly ("Cross-layer" | "Security" | "Config hygiene" | "L3" | "L1" | "Protocol" | "VTP" | "IPv6 Routing" | "STP" | "Health" | "Addressing" | "FHRP" | "Trunk" | "Link L1" | "Inventory" | "False-health" | "Coverage" | "Timing/PTP" | "Multicast/Media" | "Operational logs" | "QoS" | "Software exposure" | "Platform capacity" | "Compound risk")[];
+            };
             /** VocabRefRole */
             readonly ref_role: {
                 readonly basis: string;
@@ -8510,6 +8570,7 @@ export interface components {
             ];
             /** Findings */
             readonly payload: {
+                readonly facets: components["schemas"]["UiProjection1_FindingFacets"];
                 readonly headline_axis_index: number | null;
                 readonly rows: components["schemas"]["UiProjection1_Page_FindingRowList"] & {
                     /** @constant */
