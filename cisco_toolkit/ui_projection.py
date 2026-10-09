@@ -10,7 +10,8 @@ Slice 1 covers two screens:
 * ``overview`` -- the canonical headline facts (:data:`ssot.CANONICAL_FACTS`), the fleet-health
   scoring state, the executive-brief axes (and the registered axes the brief does not carry), each
   axis with how many devices it could not assess out of how many, read from its producer
-  (:data:`AXIS_UNASSESSED`; not_collected, never 0, where the producer stores no such count), the
+  (:data:`AXIS_UNASSESSED`; not_collected, never 0, where the producer stores no such count, where it covers one
+  layer of several, or where a listed collection blind spot leaves a zero unproven), the
   top-gating list, the posture statement, and the lifecycle band partition in its canonical order;
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
   unknown-evidence summary, the SSOT self-verification, and the projection's own stated limitations;
@@ -250,6 +251,14 @@ AXIS_UNASSESSED: Mapping[str, Tuple[str, str, str, str, str, Union[str, bool]]] 
 #: The counters whose producer omits an entry no device holds (a Counter): there, a missing could-not-assess entry is
 #: a zero only when the per-device rows confirm that no device carries the value. Held by a test against the producer.
 AXIS_UNASSESSED_SPARSE: FrozenSet[str] = frozenset({"platform_health.summary.bands"})
+#: Axis label -> the further layers its producer assesses beyond the layer its registered count covers: ``(path of the
+#: producer's stored count of the devices that layer could assess, the layer's name)``. While such a count is below the
+#: axis's device count (or cannot be read), the registered count is not the axis's: it is withheld as not_collected,
+#: its value and the layer's gap named in the reason. A test scans every registered producer's real summary for its
+#: per-layer coverage counts and holds each one to this table or to the registered count it complements.
+AXIS_UNASSESSED_LAYERS: Mapping[str, Tuple[Tuple[str, str], ...]] = MappingProxyType({
+    "Software risk": (("software_risk.summary.n_version_known", "release-train layer (a captured software version)"),),
+})
 #: The axis whose count an owner computes live: ``ssot.fleet_avg_health``'s ``n_rows`` minus ``n_scored``, the brief's
 #: own unscored health rows (the scored-row predicate the brief averages over), out of ``n_rows``.
 AXIS_UNASSESSED_LIVE: Tuple[str, ...] = ("Fleet health",)
@@ -450,17 +459,24 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "devices an axis could not assess: each axis's unassessed n, out of of, is read from that axis's producer "
         "through a table this projection owns (AXIS_UNASSESSED), held against the producers by tests, never from "
         "the headline text. Hardware lifecycle counts the devices with no authoritative lifecycle band; Operational "
-        "logs, the devices whose log buffer was not collected; QoS posture, the devices with no full running-config; "
-        "Software risk, the devices with no running-config, which is only its configuration layer (a device whose "
-        "software version is not captured is counted apart, by n_version_known, and not here); Platform capacity, "
-        "its Unknown band (capacity output absent or unrecognised; that counter omits a band no device holds, so "
-        "a zero is published only when the per-device rows confirm it); Asset risk register, its Unassessed band; "
-        "Fleet health, ssot.fleet_avg_health's health rows minus its scored rows. Each is out of that producer's "
-        "own device count, so the counts cover different device universes and are never added across axes. A "
-        "device an axis assessed only in part (a dossier axis marked na, a device with a configuration but no "
-        "version) is not counted. A count is unverified when it exceeds its denominator, or when its producer's "
-        "per-device rows disagree with it or cannot be read; these checks are this projection's. An axis whose "
-        "producer stores no such count is not_collected, never 0.",
+        "logs, the devices whose log buffer was not collected (a captured buffer counts as assessed even when no "
+        "line in it was recognised: its producer stores no count of those); QoS posture, the devices with no full "
+        "running-config; Software risk, the devices with no running-config, which is only its configuration layer; "
+        "Platform capacity, its Unknown band (capacity output absent or unrecognised; that counter omits a band no "
+        "device holds, so a zero is published only when the per-device rows confirm it); Asset risk register, its "
+        "Unassessed band; Fleet health, ssot.fleet_avg_health's health rows minus its scored rows. Each is out of "
+        "that producer's own device count, so the counts cover different device universes and are never added "
+        "across axes; none of those universes holds an inventory device the collection never reached "
+        "(fleet_lists_exclude_blind_devices). A count that covers one layer of an axis whose producer assesses "
+        "another (AXIS_UNASSESSED_LAYERS: Software risk's release-train layer, read from n_version_known) is that "
+        "axis's count only while the other layer's stored count shows every device assessed; otherwise it is "
+        "withheld as not_collected, its value and the other layer's gap named in the reason, with a witness ref to "
+        "that layer's count. A device a dossier axis marked na is not counted. A count is unverified when it, or a "
+        "further layer's count, exceeds its denominator, or when its producer's per-device rows disagree with it "
+        "or cannot be read; these checks are this projection's. A count follows its row: when a failed phase makes "
+        "the row's fact analysis_unavailable (the brief itself, or any input the row's basis names, which for an "
+        "unregistered label is every brief input), both cells are analysis_unavailable with the same failure "
+        "records. An axis whose producer stores no such count is not_collected, never 0.",
         ["/overview/axes", "/overview/absent_axes"]),
     _limitation(
         "reconcile_checks_only_with_raw_basis", "ssot.reconcile",
@@ -610,9 +626,13 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "or structural-link row is computed over the scanned model without it, so even a 'no impact' row or a small "
         "pairs-cut count was never checked against that evidence. While any blind spot is listed, a published list "
         "carries this caveat, with a witness ref to each blind-spot row, and an empty one is not_collected, never "
-        "'nothing found'.",
-        ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total", "/topology/structural_links",
-         "/topology/failure_impact"]),
+        "'nothing found'. An executive axis's count of the devices it could not assess, and its denominator, are "
+        "likewise taken over its producer's own devices, which hold only the devices whose evidence that producer "
+        "was given: a device the collection never reached is in neither. While any blind spot is listed, each "
+        "published count and denominator carries this caveat with the same witness refs, and a zero count, a "
+        "count over no device, or an empty denominator is not_collected, never 'none left unassessed'.",
+        ["/overview/axes", "/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total",
+         "/topology/structural_links", "/topology/failure_impact"]),
     _limitation(
         "findings_without_running_config", "analyze.compute_migration_punchlist",
         "A device in the devices map with no security row (no captured running-config) contributes no "
@@ -1892,6 +1912,15 @@ _R_AXIS_UNREGISTERED = ("not collected: this projection registers no producer co
                         "could not assess, so nothing is claimed for it; it is never shown as 0")
 _R_COVERED_NONE = ("collected but empty: the producer covered no device, so no device was left unassessed and none "
                    "was assessed (not a blind spot)")
+#: While collection_completeness lists a blind spot (fleet_lists_exclude_blind_devices): a zero count, a count over no
+#: device, and an empty denominator are not clean results, because no producer universe holds an unreached device.
+_R_AXIS_BLIND_N = ("not collected: collection_completeness lists {k} device(s) as partial or not collected, and this "
+                   "axis's producer counts only the devices whose evidence it was given (a device the collection never "
+                   "reached is in neither this count nor its denominator), so its count cannot show that every "
+                   "inventory device was assessed; it is never shown as 0")
+_R_AXIS_BLIND_OF = ("not collected: collection_completeness lists {k} device(s) as partial or not collected, and this "
+                    "axis's producer covered no device: its device count holds only the devices whose evidence it was "
+                    "given, so an empty count is not a clean result; it is never shown as 0")
 #: One could-not-assess entry: ``(producer, count, denominator, rows, field, value)`` (see :data:`AXIS_UNASSESSED`).
 _UnassessedSpec = Tuple[str, str, str, str, str, Union[str, bool]]
 
@@ -1923,8 +1952,9 @@ def _missing_unassessed(ctx: _Ctx, spec: _UnassessedSpec, of: Dict[str, Any], ca
     witness: List[Tuple[str, Sequence[Any]]] = [("witness", n_toks[:-1]), ("witness", rows_toks)]
     if parent_path not in AXIS_UNASSESSED_SPARSE:
         return _envelope(_NC, None, json_pointer(*n_toks), ctx.refs(witness[:1]), basis,
-                         f"not collected: {parent_path} stores no {leaf} (a snapshot that predates this count), so how "
-                         "many devices this axis could not assess is not known; it is never shown as 0")
+                         f"not collected: {parent_path} stores no {leaf} (for example a snapshot that predates this "
+                         "count, or a summary edited after it was written), so how many devices this axis could not "
+                         "assess is not known; it is never shown as 0")
     if doubt:
         return _envelope(_UV, None, json_pointer(*n_toks), ctx.refs(witness + doubt[1]), basis, doubt[0])
     if readable and marked:
@@ -1943,10 +1973,11 @@ def _missing_unassessed(ctx: _Ctx, spec: _UnassessedSpec, of: Dict[str, Any], ca
                      "is not known; it is never shown as 0")
 
 
-def _stored_unassessed(ctx: _Ctx, spec: _UnassessedSpec, cav: Tuple[str, ...]) -> Dict[str, Any]:
+def _stored_unassessed(ctx: _Ctx, label: str, spec: _UnassessedSpec, cav: Tuple[str, ...]) -> Dict[str, Any]:
     """The producer's stored count and denominator, each through :func:`_scalar` (failure, blind spot, type and
-    reconcile rules), then held against each other and against the producer's per-device rows: any disagreement
-    withholds both as unverified, and a zero over a zero denominator is no measurement."""
+    reconcile rules), then held against each other, against a further layer's stored count
+    (:data:`AXIS_UNASSESSED_LAYERS`) and against the producer's per-device rows: any disagreement withholds both as
+    unverified, and a zero over a zero denominator is no measurement."""
     owner, n_path, of_path, rows_path, field, mark = spec
     n_toks, of_toks = _tokens(n_path), _tokens(of_path)
     rows = _unassessed_rows(ctx, rows_path, field, mark)
@@ -1954,10 +1985,19 @@ def _stored_unassessed(ctx: _Ctx, spec: _UnassessedSpec, cav: Tuple[str, ...]) -
     n_raw = _get(ctx.s, n_toks)
     n_ok, n_val = _count(n_raw)
     of_ok, of_val = _count(_get(ctx.s, of_toks))
+    over: List[Tuple[str, int]] = []                # a further layer's count above the device count
+    for layer_path, _layer in AXIS_UNASSESSED_LAYERS.get(label, ()):
+        layer_ok, layer_val = _count(_get(ctx.s, _tokens(layer_path)))
+        if layer_ok and of_ok and layer_val > of_val:
+            over.append((layer_path, layer_val))
     doubt: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = None
     if n_ok and of_ok and n_val > of_val:
         doubt = (f"unverified: the producer's count of devices this axis could not assess ({n_val}) exceeds its own "
                  f"device count ({of_val})", [("witness", n_toks), ("witness", of_toks)])
+    elif over:
+        doubt = (f"unverified: the producer's count of the devices a further layer of this axis assessed "
+                 f"({over[0][0]}: {over[0][1]}) exceeds its own device count ({of_val})",
+                 [("witness", _tokens(over[0][0])), ("witness", of_toks)])
     elif readable is False:
         doubt = (f"unverified: {rows_path} cannot be read as per-device records each carrying {field}, so the "
                  "stored count cannot be checked against its raw basis", [("witness", _tokens(rows_path))])
@@ -2009,36 +2049,143 @@ def _fleet_unassessed(ctx: _Ctx, cav: Tuple[str, ...]) -> Dict[str, Any]:
     return {"n": n, "of": of}
 
 
-def _axis_unassessed(ctx: _Ctx, label: Optional[str], toks: Tuple[Any, ...]) -> Dict[str, Any]:
+def _failed_unassessed(ctx: _Ctx, label: Optional[str], basis: Sequence[str]) -> Dict[str, Any]:
+    """Both cells of a row whose fact a failed phase makes analysis_unavailable (the brief itself, or an input the row's
+    basis names): the same verdict and the same failure records as the fact beside them, whatever the label."""
+    sections = ("executive_brief",) + tuple(basis)
+    reason = ctx.unavailable_reason(sections)
+    failure = ctx.failure_entries(sections, True)
+    spec = AXIS_UNASSESSED.get(label) if label is not None else None
+    cells: List[Tuple[str, Optional[Tuple[str, ...]]]]
+    if spec is not None:
+        cells = [(f"{spec[0]}:{spec[1]}", _tokens(spec[1])), (f"{spec[0]}:{spec[2]}", _tokens(spec[2]))]
+    elif label is not None and label in AXIS_UNASSESSED_LIVE:
+        cells = [(_B_FLEET_UNSCORED, None), ("ssot.fleet_avg_health:n_rows", None)]
+    else:
+        name = _B_AXIS_ABSENT if label is not None and label in AXIS_UNASSESSED_ABSENT else _B_AXIS_TABLE
+        cells = [(name, None), (name, None)]
+    out: Dict[str, Any] = {}
+    for key, (name, subject) in zip(("n", "of"), cells):
+        entries = (([("subject", subject)] if subject else []) + [("basis", (s,)) for s in basis] + list(failure))
+        out[key] = _envelope(AU, None, json_pointer(*subject) if subject else None, ctx.refs(entries), name, reason,
+                             owner_token=ctx.abst(".".join(subject)) if subject else None)
+    return out
+
+
+def _layer_gaps(ctx: _Ctx, label: Optional[str], n: Dict[str, Any],
+                of: Dict[str, Any]) -> List[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
+    """``(reason, witness entries)`` for each further layer of the axis (:data:`AXIS_UNASSESSED_LAYERS`) whose stored
+    count does not show every one of the producer's devices assessed, or cannot be read over a published device count:
+    the registered count then covers one layer only, and the producer stores none that spans every layer."""
+    out: List[Tuple[str, List[Tuple[str, Sequence[Any]]]]] = []
+    for layer_path, layer in (AXIS_UNASSESSED_LAYERS.get(label, ()) if label is not None else ()):
+        layer_toks = _tokens(layer_path)
+        layer_ok, layer_val = _count(_get(ctx.s, layer_toks))
+        if layer_ok and of["state"] == _PUB and layer_val == of["value"]:
+            continue
+        held = f" ({n['value']})" if n["state"] == _PUB else ""
+        if layer_ok and of["state"] == _PUB and layer_val < of["value"]:
+            why = (f"not collected: this count{held} covers one layer of the axis only; its {layer} could not assess "
+                   f"{of['value'] - layer_val} of the {of['value']} device(s) ({layer_path} is {layer_val}), and the "
+                   "producer stores no count of the devices it could not assess in every layer, so how many devices "
+                   "this axis could not assess is not known; it is never shown as 0")
+        else:
+            why = (f"not collected: this count{held} covers one layer of the axis only, and {layer_path} is not a "
+                   f"readable count over a published device count, so whether its {layer} assessed every device is "
+                   "not known; it is never shown as 0")
+        out.append((why, [("witness", layer_toks)]))
+    return out
+
+
+def _withheld_count(ctx: _Ctx, fact: Dict[str, Any], holds: Sequence[Tuple[str, Sequence[Tuple[str, Sequence[Any]]]]],
+                    owner_token: Optional[str]) -> Dict[str, Any]:
+    """`fact` withheld as not_collected for every reason in `holds`, with its refs and each hold's witness refs; the
+    owner's own token for the stored value stays in ``engine_state``."""
+    refs = [dict(ref) for ref in fact["refs"]]
+    for ref in ctx.refs([entry for _why, wit in holds for entry in wit]):
+        if ref not in refs:
+            refs.append(ref)
+    return _envelope(_NC, None, fact["subject"], refs, fact["basis"], "; ".join(why for why, _wit in holds),
+                     owner_token=owner_token)
+
+
+def _caveated_count(ctx: _Ctx, fact: Dict[str, Any], caveat: str,
+                    witness: Sequence[Tuple[str, Sequence[Any]]]) -> Dict[str, Any]:
+    """A published `fact` that also carries `caveat`, with `witness` refs added."""
+    out = dict(fact)
+    refs = [dict(ref) for ref in fact["refs"]]
+    for ref in ctx.refs(witness):
+        if ref not in refs:
+            refs.append(ref)
+    out["refs"] = refs
+    kept = set(fact.get("caveats", ())) | {caveat}
+    out["caveats"] = [c for c in _ALL_LIMITATION_IDS if c in kept]
+    return out
+
+
+def _qualify_unassessed(ctx: _Ctx, label: str, block: Dict[str, Any],
+                        owner_tokens: Tuple[Optional[str], Optional[str]]) -> Dict[str, Any]:
+    """Two qualifications no producer count carries itself. A further layer the count does not cover
+    (:data:`AXIS_UNASSESSED_LAYERS`) withholds ``n``. A listed collection blind spot (the fleet-list qualification,
+    :func:`_fleet_qualify`) puts its caveat and a witness ref to each blind-spot row on a published count or denominator
+    and withholds a zero count, a count over no device and an empty denominator: no producer universe holds an
+    unreached device, so none of them is a clean result."""
+    n, of = block["n"], block["of"]
+    blind = _fleet_qualify(ctx)
+    n_blind = len(ctx.blind_rows())
+    holds: List[Tuple[str, Sequence[Tuple[str, Sequence[Any]]]]] = []
+    if n["state"] == _PUB:                       # a count over no device has no layer left unassessed
+        holds.extend(_layer_gaps(ctx, label, n, of))
+    if n["state"] in (_PUB, _CBE):
+        if blind and (holds or n["state"] == _CBE or n["value"] == 0):
+            holds.extend((_R_AXIS_BLIND_N.format(k=n_blind), wit) for _cid, _why, wit in blind)
+    if holds:
+        n = _withheld_count(ctx, n, holds, owner_tokens[0])
+    elif blind and n["state"] == _PUB:
+        for cid, _why, wit in blind:
+            n = _caveated_count(ctx, n, cid, wit)
+    if blind and (of["state"] == _CBE or (of["state"] == _PUB and of["value"] == 0)):
+        of = _withheld_count(ctx, of, [(_R_AXIS_BLIND_OF.format(k=n_blind), wit) for _cid, _why, wit in blind],
+                             owner_tokens[1])
+    elif blind and of["state"] == _PUB:
+        for cid, _why, wit in blind:
+            of = _caveated_count(ctx, of, cid, wit)
+    return {"n": n, "of": of}
+
+
+def _axis_unassessed(ctx: _Ctx, label: Optional[str], toks: Tuple[Any, ...], basis: Sequence[str],
+                     base: str) -> Dict[str, Any]:
     """G05: how many devices this axis could not assess (``n``), out of how many (``of``), read from the axis's producer
-    (:data:`AXIS_UNASSESSED`, :data:`AXIS_UNASSESSED_LIVE`), never from its headline. An axis whose producer stores no
-    such count (:data:`AXIS_UNASSESSED_ABSENT`) or an unregistered label is not_collected, never 0; a row with no
-    readable label is unverified."""
+    (:data:`AXIS_UNASSESSED`, :data:`AXIS_UNASSESSED_LIVE`), never from its headline, then qualified by the further
+    layers it does not cover and by the collection blind spots no producer universe holds
+    (:func:`_qualify_unassessed`). `basis` and `base` are the row's own: a failed input that makes the row's fact
+    analysis_unavailable makes both cells so too. An axis whose producer stores no such count
+    (:data:`AXIS_UNASSESSED_ABSENT`) or an unregistered label is not_collected, never 0; a row with no readable label
+    is unverified."""
+    if base == AU or _item_basis_state(ctx, basis)[0] == AU:
+        return _failed_unassessed(ctx, label, basis)              # a failed input always wins, row and block alike
     cav = _brief_caveats(ctx, "axis_basis_owned_by_projection")
     if label is not None and label in AXIS_UNASSESSED_LIVE:
-        return _fleet_unassessed(ctx, cav)
+        return _qualify_unassessed(ctx, label, _fleet_unassessed(ctx, cav), (None, None))
     spec = AXIS_UNASSESSED.get(label) if label is not None else None
     if spec is not None:
-        return _stored_unassessed(ctx, spec, cav)
-    basis = _B_AXIS_TABLE
+        return _qualify_unassessed(ctx, label, _stored_unassessed(ctx, label, spec, cav),
+                                   (ctx.abst(spec[1]), ctx.abst(spec[2])))
+    name = _B_AXIS_TABLE
     if label is None:
         state, reason, entries = _UV, _R_AXIS_NO_LABEL, [("witness", toks)]
     else:
         why = AXIS_UNASSESSED_ABSENT.get(label)
-        sections = AXIS_BASIS.get(label, ())
-        state, entries = _NC, [("basis", (s,)) for s in sections]
+        state, entries = _NC, [("basis", (s,)) for s in basis]
         if why:
-            basis = _B_AXIS_ABSENT
+            name = _B_AXIS_ABSENT
             reason = (f"not collected: {why}; how many devices this axis could not assess is not stored, so it is "
                       "never shown as 0")
         else:
             reason = _R_AXIS_UNREGISTERED
-        if _item_basis_state(ctx, sections)[0] == AU:
-            state, reason = AU, ctx.unavailable_reason(sections)    # a failed input always wins
-            entries += ctx.failure_entries(sections, True)
     refs = ctx.refs(entries)
-    return {"n": _envelope(state, None, None, refs, basis, reason),
-            "of": _envelope(state, None, None, [dict(ref) for ref in refs], basis, reason)}
+    return {"n": _envelope(state, None, None, refs, name, reason),
+            "of": _envelope(state, None, None, [dict(ref) for ref in refs], name, reason)}
 
 
 def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
@@ -2068,7 +2215,7 @@ def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
                          reason or _state_reason(ctx, state, "axis", basis),
                          caveats=cav if state == _PUB else ())
         items.append({"index": i, "axis": label, "basis_sections": list(basis), "fact": fact,
-                      "unassessed": _axis_unassessed(ctx, label, toks)})
+                      "unassessed": _axis_unassessed(ctx, label, toks, basis, base)})
     present = {it["axis"] for it in items}
     contradiction = None
     missing_always = [lab for lab in ALWAYS_EMITTED_AXES if lab not in present]
@@ -6056,7 +6203,8 @@ def ui_projection_schema() -> Dict[str, Any]:
 
 __all__ = [
     "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "AXIS_UNASSESSED",
-    "AXIS_UNASSESSED_ABSENT", "AXIS_UNASSESSED_LIVE", "AXIS_UNASSESSED_SPARSE", "BRIEF_INPUTS", "CC_STATUSES",
+    "AXIS_UNASSESSED_ABSENT", "AXIS_UNASSESSED_LAYERS", "AXIS_UNASSESSED_LIVE", "AXIS_UNASSESSED_SPARSE",
+    "BRIEF_INPUTS", "CC_STATUSES",
     "CENSUS_KINDS", "COVERAGE_STATES", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
     "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
     "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",

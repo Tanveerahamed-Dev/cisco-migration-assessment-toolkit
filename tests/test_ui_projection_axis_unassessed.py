@@ -8,13 +8,19 @@ brief's headline text. Coverage honesty is the point:
 * a count missing from a summary its producer wrote is not_collected, except a sparse counter's entry, which is a zero
   only when the producer's per-device rows confirm it;
 * a count its own denominator or per-device rows contradict, or whose rows cannot be read, is unverified;
-* a zero over a zero denominator is collected_but_empty, never a measurement.
+* a zero over a zero denominator is collected_but_empty, never a measurement;
+* a count that covers one layer of an axis whose producer assesses another (``AXIS_UNASSESSED_LAYERS``) is withheld
+  while that layer's stored count shows a gap, its value and the gap named in the reason;
+* while collection_completeness lists a blind spot, no producer universe holds the unreached device: a published
+  count or denominator carries ``fleet_lists_exclude_blind_devices`` with a witness to each blind-spot row, and a zero
+  is not_collected;
+* a failed input withholds the block exactly as it withholds the row's fact.
 
 The fixtures come from the engine's own code: the shipped engine-built sample fleet, the golden snapshot's producer
 sections with the brief recomputed by the real ``analyze.compute_executive_brief``, and the real producers called on
-small inputs (the patterns of tests/test_dossier_input_state.py, tests/test_device_dossiers.py and
-tests/test_platform_health.py). Expectations are read from the snapshot and its owners, never from cached sample
-literals. Single-field edits of the sample probe one rule each.
+small inputs (the patterns of tests/test_dossier_input_state.py, tests/test_device_dossiers.py,
+tests/test_platform_health.py and tests/test_collection_completeness.py). Expectations are read from the snapshot and
+its owners, never from cached sample literals. Single-field edits of the sample probe one rule each.
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ import copy
 import inspect
 import json
 import pathlib
+import re
 import types
 
 import pytest
@@ -46,6 +53,17 @@ PLAIN_CONFIG = "\n".join([
 PRODUCERS = {"lifecycle_risk": "compute_lifecycle_risk", "syslog_intelligence": "compute_syslog_intelligence",
              "qos_audit": "compute_qos_audit", "software_risk": "compute_software_risk",
              "platform_health": "compute_platform_health", "device_dossiers": "compute_device_dossiers"}
+BLIND = "fleet_lists_exclude_blind_devices"
+LOG = "Syslog logging: enabled\nLog Buffer (8192 bytes):\n"
+CPU_OK = {"five_sec": 70, "interrupt": 0, "one_min": 65, "five_min": 59}
+#: A summary key counting the devices one layer of an axis could assess (its evidence captured): the class the
+#: further-layer registry must account for. A negated key ('n_not_collected', 'n_config_not_assessable') is the
+#: registered count's own form, not another layer.
+COVERAGE_KEY = re.compile(r"n_(?:[a-z0-9]+_)*(?:known|assessable|collected)")
+#: Reviewed: the coverage key that is the registered count's own complement, per producer section. Its uncovered
+#: devices all sit inside the registered count (held below on the real producers), so it is no further layer.
+COMPLEMENTS = {"syslog_intelligence": "n_collected", "qos_audit": "n_assessable",
+               "software_risk": "n_config_assessable", "platform_health": "n_collected"}
 
 _MISSING = object()
 
@@ -117,12 +135,24 @@ def _marked(rows, field, mark):
     return sum(1 for row in rows if type(row[field]) is type(mark) and row[field] == mark)
 
 
+def _layer_gaps(snap, label):
+    """The further layers whose stored count shows a device they could not assess, or cannot be read: ``[(pointer,
+    stored count or None, device count)]``, read independently from the snapshot."""
+    of = _dotted(snap, uip.AXIS_UNASSESSED[label][2])
+    out = []
+    for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ()):
+        known = _dotted(snap, path)
+        readable = type(known) is int and type(of) is int
+        if not readable or known != of:
+            out.append((_ptr(path), known if readable else None, of))
+    return out
+
+
 def _producer_snapshot():
     """The six registered producers, run for real on two to three devices, each with at least one device the axis
     could not assess. Platform capacity holds a device whose capacity output was collected but not recognised, so
-    its could-not-assess count (the Unknown band) exceeds its not-collected count."""
-    log = "Syslog logging: enabled\nLog Buffer (8192 bytes):\n"
-    cpu_ok = {"five_sec": 70, "interrupt": 0, "one_min": 65, "five_min": 59}
+    its could-not-assess count (the Unknown band) exceeds its not-collected count. Software risk's release-train layer
+    sees every device's version, so its configuration-layer count is the axis's."""
     health = [{"switch": "dark", "score": None, "band": "Insufficient Data", "role": "access", "criticality": 1.0,
                "deductions": []},
               {"switch": "lit", "score": 96, "band": "Excellent", "role": "access", "criticality": 1.0,
@@ -131,13 +161,16 @@ def _producer_snapshot():
         "health_scores": health,
         "lifecycle_risk": analyze.compute_lifecycle_risk({"dark": {"model": "", "sw_version": ""},
                                                           "lit": {"model": "", "sw_version": ""}}),
-        "syslog_intelligence": analyze.compute_syslog_intelligence({"dark": "", "lit": log}),
+        "syslog_intelligence": analyze.compute_syslog_intelligence({"dark": "", "lit": LOG}),
         "qos_audit": analyze.compute_qos_audit({"lit": PLAIN_CONFIG}, all_hosts=["dark", "lit"]),
-        "software_risk": analyze.compute_software_risk({"lit": PLAIN_CONFIG}, all_hosts=["dark", "lit"]),
+        "software_risk": analyze.compute_software_risk({"lit": PLAIN_CONFIG},
+                                                       {"dark": {"sw_version": "17.9.4"},
+                                                        "lit": {"sw_version": "17.12.1"}},
+                                                       all_hosts=["dark", "lit"]),
         "platform_health": analyze.compute_platform_health({
             "dark": {"cpu": {}, "memory": {}, "system": {}},
             "mute": {"cpu": {}, "memory": {}, "system": {"uptime": "1d"}},
-            "lit": {"cpu": cpu_ok, "memory": {}, "system": {}}}),
+            "lit": {"cpu": CPU_OK, "memory": {}, "system": {}}}),
         "device_dossiers": analyze.compute_device_dossiers(health_scores=copy.deepcopy(health)),
     }
 
@@ -167,6 +200,38 @@ def test_registry_partitions_every_brief_axis_exactly_once():
     assert uip.AXIS_UNASSESSED_SPARSE and uip.AXIS_UNASSESSED_SPARSE <= parents
     for label, why in uip.AXIS_UNASSESSED_ABSENT.items():
         assert why and why == why.strip(), label
+    assert isinstance(uip.AXIS_UNASSESSED_LAYERS, types.MappingProxyType)
+    with pytest.raises(TypeError):
+        uip.AXIS_UNASSESSED_LAYERS["x"] = ()
+    assert set(uip.AXIS_UNASSESSED_LAYERS) <= set(uip.AXIS_UNASSESSED)
+    for label, layers in uip.AXIS_UNASSESSED_LAYERS.items():
+        assert isinstance(layers, tuple) and layers, label
+        for path, layer in layers:
+            assert path.split(".")[0] == uip.AXIS_UNASSESSED[label][1].split(".")[0], (label, path)
+            assert path != uip.AXIS_UNASSESSED[label][1] and layer and layer == layer.strip(), (label, path)
+
+
+def test_every_per_layer_coverage_count_is_a_registered_layer_or_the_counts_complement():
+    """The class guard for AXIS_UNASSESSED_LAYERS: every count a registered producer's REAL summary keeps of the devices
+    one layer could assess is either a registered further layer of that axis or the registered count's own
+    complement, and a complement leaves no device outside the registered count."""
+    snap = _producer_snapshot()
+    seen = set()
+    for label, spec in uip.AXIS_UNASSESSED.items():
+        _owner, n_path, of_path, _rows_path, _field, _mark = spec
+        section = n_path.split(".")[0]
+        summary = snap[section]["summary"]
+        keys = {key for key in summary if COVERAGE_KEY.fullmatch(key) and "not_" not in key}
+        layers = {path.rsplit(".", 1)[1] for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ())}
+        complement = COMPLEMENTS.get(section)
+        assert keys == layers | ({complement} if complement else set()), (label, sorted(keys))
+        for path, _layer in uip.AXIS_UNASSESSED_LAYERS.get(label, ()):
+            assert type(_dotted(snap, path)) is int, (label, path)        # the real producer writes it
+        if complement:
+            uncovered = _dotted(snap, of_path) - summary[complement]
+            assert 0 <= uncovered <= _expected_count(snap, spec), (label, complement)
+        seen |= keys
+    assert "n_version_known" in seen                    # the guard reaches the one further layer that exists today
 
 
 @pytest.mark.parametrize("label", sorted(uip.AXIS_UNASSESSED))
@@ -241,9 +306,12 @@ def _golden_with_brief():
 @pytest.mark.parametrize("source", ["sample", "golden"])
 def test_engine_built_snapshots_publish_the_stored_counts(source):
     """The shipped engine-built sample (its stored brief) and the golden producer sections (brief recomputed): every
-    registered axis publishes its producer's stored count and denominator, which agree with the producer's own rows;
-    Fleet health is the owner's unscored rows; every other axis is not_collected, never 0."""
+    registered axis publishes its producer's stored count and denominator, which agree with the producer's own rows,
+    unless a further layer of the axis shows a gap, which withholds the count and names it; Fleet health is the
+    owner's unscored rows; every other axis is not_collected, never 0. Neither snapshot lists a blind spot."""
     snap = _sample() if source == "sample" else _golden_with_brief()
+    blind = _dotted(snap, "collection_completeness.devices")
+    assert blind is _MISSING or blind == []
     overview = uip.project_overview(snap)
     seen = 0
     for item in overview["axes"]["items"]:
@@ -255,11 +323,21 @@ def test_engine_built_snapshots_publish_the_stored_counts(source):
             rows = _dotted(snap, rows_path)
             want_n, want_of = _expected_count(snap, spec), _dotted(snap, of_path)
             assert want_n == _marked(rows, field, mark) and want_of == len(rows), label   # the raw basis agrees
-            assert _sv(block["n"]) == (PUB, want_n), (label, block["n"])
             assert _sv(block["of"]) == (PUB, want_of), (label, block["of"])
+            gaps = _layer_gaps(snap, label)
+            if gaps:                                    # one layer's count is not the axis's: withheld, named
+                assert _sv(block["n"]) == (NC, None), (label, block["n"])
+                assert NEVER_ZERO in block["n"]["reason"] and f"({want_n})" in block["n"]["reason"]
+                for pointer, known, of in gaps:
+                    if known is not None:
+                        assert {"pointer": pointer, "role": "witness"} in block["n"]["refs"]
+                        assert f"could not assess {of - known} of the {of} device(s)" in block["n"]["reason"]
+                assert block["n"]["engine_state"] == (CBE if want_n == 0 else PUB)   # the owner's own token
+            else:
+                assert _sv(block["n"]) == (PUB, want_n), (label, block["n"])
             if _dotted(snap, n_path) is not _MISSING:
                 assert _resolve(snap, block["n"]["subject"]) == want_n
-                if want_n == 0:                                           # a measured zero keeps the owner's token
+                if want_n == 0 and not gaps:                              # a measured zero keeps the owner's token
                     assert block["n"]["engine_state"] == CBE
                     assert "measured_zero_mapping" in block["n"]["caveats"]
             seen += 1
@@ -345,6 +423,7 @@ def test_a_missing_count_or_section_is_not_collected_never_zero():
     block = _unassessed(snap, "Software risk")
     assert _sv(block["n"]) == (NC, None)
     assert "predates" in block["n"]["reason"] and NEVER_ZERO in block["n"]["reason"]
+    assert "for example" in block["n"]["reason"] and "edited" in block["n"]["reason"]   # a cause it cannot know
     assert block["n"]["subject"] == "/software_risk/summary/n_config_not_assessable"
     assert _sv(block["of"]) == (PUB, sample["software_risk"]["summary"]["n_devices"])
     snap = copy.deepcopy(sample)
@@ -415,8 +494,19 @@ def test_a_contradicted_count_is_unverified_never_published():
             assert _sv(block[key]) == (UV, None), (words, key, block[key])
             assert words in block[key]["reason"]
             assert {"pointer": "/software_risk/per_device", "role": "witness"} in block[key]["refs"]
-    # no raw basis at all: the stored summary is published as it stands, with no row witness
-    block = projected(lambda sr: sr.pop("per_device"))
+    # a further layer's count above the device count contradicts the summary as well
+    block = projected(lambda sr: sr["summary"].update(n_version_known=summary["n_devices"] + 1))
+    for key in ("n", "of"):
+        assert _sv(block[key]) == (UV, None) and "further layer" in block[key]["reason"], key
+        assert {"pointer": "/software_risk/summary/n_version_known", "role": "witness"} in block[key]["refs"]
+
+    # no raw basis at all: the stored summary is published as it stands, with no row witness (every version is
+    # captured here, so the configuration layer's count is the axis's)
+    def no_rows(sr):
+        sr.pop("per_device")
+        sr["summary"]["n_version_known"] = sr["summary"]["n_devices"]
+
+    block = projected(no_rows)
     assert _sv(block["n"]) == (PUB, summary["n_config_not_assessable"])
     assert _sv(block["of"]) == (PUB, summary["n_devices"])
     assert all(ref["pointer"] != "/software_risk/per_device" for ref in block["n"]["refs"])
@@ -453,3 +543,205 @@ def test_an_unreadable_or_unregistered_axis_label_claims_nothing():
         assert _sv(new[key]) == (NC, None) and NEVER_ZERO in new[key]["reason"]
         assert _sv(broken[key]) == (UV, None) and "no readable label" in broken[key]["reason"]
         assert {"pointer": "/executive_brief/axes/1", "role": "witness"} in broken[key]["refs"]
+
+
+# --------------------------------------------------------------------------------------------------
+# a further layer the count does not cover (Software risk's release-train layer)
+# --------------------------------------------------------------------------------------------------
+def _software_only(configs, versions, hosts=("acc1", "acc2")):
+    """The real software-risk producer over `hosts`, with the brief recomputed by its real producer."""
+    snap = {"software_risk": analyze.compute_software_risk(
+        {h: PLAIN_CONFIG for h in configs}, {h: {"model": "", "sw_version": versions.get(h, "")} for h in hosts},
+        all_hosts=list(hosts))}
+    return _rebrief(snap)
+
+
+def test_a_count_that_covers_one_layer_is_withheld_while_another_layer_has_a_gap():
+    """Every configuration captured and no software version: the producer's configuration-layer count is 0, yet its
+    release-train layer assessed nothing. The axis is never 'could not assess 0'; the reason names both stored counts."""
+    snap = _software_only(configs=("acc1", "acc2"), versions={})
+    summary = snap["software_risk"]["summary"]
+    assert summary["n_config_not_assessable"] == 0 and summary["n_version_known"] == 0      # the real producer
+    assert summary["n_devices"] == 2
+    block = _unassessed(snap, "Software risk")
+    n = block["n"]
+    assert _sv(n) == (NC, None), n
+    assert "this count (0) covers one layer of the axis only" in n["reason"]
+    assert "release-train layer" in n["reason"] and "could not assess 2 of the 2 device(s)" in n["reason"]
+    assert "software_risk.summary.n_version_known is 0" in n["reason"] and NEVER_ZERO in n["reason"]
+    assert {"pointer": "/software_risk/summary/n_version_known", "role": "witness"} in n["refs"]
+    assert n["subject"] == "/software_risk/summary/n_config_not_assessable"
+    assert n["engine_state"] == CBE                                    # the owner's own stored zero
+    assert _sv(block["of"]) == (PUB, 2)
+
+    # one version captured: still a gap, of one device; a positive configuration-layer count is withheld too
+    partial = _software_only(configs=("acc1",), versions={"acc1": "17.12.1"})
+    n = _unassessed(partial, "Software risk")["n"]
+    assert partial["software_risk"]["summary"]["n_config_not_assessable"] == 1
+    assert _sv(n) == (NC, None) and "this count (1)" in n["reason"]
+    assert "could not assess 1 of the 2 device(s)" in n["reason"] and n["engine_state"] == PUB
+
+    # an unreadable layer count cannot show the layer complete
+    unread = copy.deepcopy(snap)
+    del unread["software_risk"]["summary"]["n_version_known"]
+    n = _unassessed(unread, "Software risk")["n"]
+    assert _sv(n) == (NC, None) and "is not a readable count" in n["reason"] and NEVER_ZERO in n["reason"]
+
+    # control: every version captured, so the configuration layer's zero is the axis's measured zero
+    full = _software_only(configs=("acc1", "acc2"), versions={"acc1": "17.12.1", "acc2": "17.9.4"})
+    assert full["software_risk"]["summary"]["n_version_known"] == 2
+    n = _unassessed(full, "Software risk")["n"]
+    assert _sv(n) == (PUB, 0) and "measured_zero_mapping" in n["caveats"]
+    assert all(ref["pointer"] != "/software_risk/summary/n_version_known" for ref in n["refs"])
+
+
+# --------------------------------------------------------------------------------------------------
+# a collection blind spot: no producer universe holds the device the collection never reached
+# --------------------------------------------------------------------------------------------------
+ESSENTIAL = ("interface status", "interface switchport", "version", "cdp neighbors detail")
+
+
+def _captures(root, host, names):
+    """Capture files for `host`, keyed by the full show command as the real all_cmd_to_files is."""
+    folder = root / host
+    folder.mkdir()
+    out = {}
+    for name in names:
+        path = folder / f"show_{name.replace(' ', '_')}.txt"
+        path.write_text("data\n", encoding="utf-8")
+        out[f"show {name}"] = str(path)
+    return out
+
+
+def _blind_fleet(root, third):
+    """Three inventory devices. `third` is 'unreached' (no capture at all: the producers never see it, as when
+    COLLECT_PARSE skips a device whose collection returned nothing), 'partial' (reached, its CDP/LLDP capture
+    missing, so the producers do see it) or 'complete'. Every producer is the real one, and every device it sees
+    is fully assessable, so each stored could-not-assess count is 0 apart from the lifecycle band (no model)."""
+    acf = {h: _captures(root, h, ESSENTIAL) for h in ("acc1", "acc2")}
+    seen = ["acc1", "acc2"]
+    if third == "partial":
+        acf["edge"] = _captures(root, "edge", ESSENTIAL[:3])
+        seen.append("edge")
+    elif third == "complete":
+        acf["edge"] = _captures(root, "edge", ESSENTIAL)
+        seen.append("edge")
+    health = [{"switch": h, "score": 96, "band": "Excellent", "role": "access", "criticality": 1.0, "deductions": []}
+              for h in seen]
+    snap = {
+        "collection_completeness": analyze.compute_collection_completeness(["acc1", "acc2", "edge"], acf),
+        "health_scores": health,
+        "lifecycle_risk": analyze.compute_lifecycle_risk({h: {"model": "", "sw_version": ""} for h in seen}),
+        "syslog_intelligence": analyze.compute_syslog_intelligence({h: LOG for h in seen}),
+        "qos_audit": analyze.compute_qos_audit({h: PLAIN_CONFIG for h in seen}),
+        "software_risk": analyze.compute_software_risk({h: PLAIN_CONFIG for h in seen},
+                                                       {h: {"sw_version": "17.12.1"} for h in seen}),
+        "platform_health": analyze.compute_platform_health(
+            {h: {"cpu": CPU_OK, "memory": {}, "system": {}} for h in seen}),
+        "device_dossiers": analyze.compute_device_dossiers(health_scores=copy.deepcopy(health)),
+    }
+    return _rebrief(snap)
+
+
+@pytest.mark.parametrize("third", ["unreached", "partial"])
+def test_a_blind_spot_never_hides_behind_a_zero(tmp_path, third):
+    snap = _blind_fleet(tmp_path, third)
+    rows = snap["collection_completeness"]["devices"]
+    want_status = "not collected" if third == "unreached" else "partial"
+    assert [(r["host"], r["status"]) for r in rows] == [("edge", want_status)]          # the real producer
+    witness = {"pointer": "/collection_completeness/devices/0", "role": "witness"}
+    logs = snap["syslog_intelligence"]["summary"]
+    assert logs["n_not_collected"] == 0 and logs["n_devices"] == (2 if third == "unreached" else 3)
+    overview = uip.project_overview(snap)
+    checked = set()
+    for item in overview["axes"]["items"]:
+        label = item["axis"]
+        if label not in uip.AXIS_UNASSESSED and label not in uip.AXIS_UNASSESSED_LIVE:
+            continue
+        checked.add(label)
+        for key in ("n", "of"):
+            fact = item["unassessed"][key]
+            assert _sv(fact) != (PUB, 0), (label, key, fact)
+            assert witness in fact["refs"], (label, key)
+            if fact["state"] == PUB:
+                assert BLIND in fact["caveats"], (label, key)
+            else:
+                assert fact["state"] == NC and NEVER_ZERO in fact["reason"], (label, key, fact)
+                assert "collection_completeness lists 1 device(s) as partial or not collected" in fact["reason"]
+    assert checked == set(uip.AXIS_UNASSESSED) | set(uip.AXIS_UNASSESSED_LIVE)
+    # the reviewer's case: logs from every device the producer saw, none missing, a device never reached
+    logs_block = _item(overview, "Operational logs")["unassessed"]
+    assert logs_block["n"]["state"] == NC and logs_block["n"]["engine_state"] == CBE   # the owner's stored zero
+    assert logs_block["n"]["subject"] == "/syslog_intelligence/summary/n_not_collected"
+    assert _sv(logs_block["of"]) == (PUB, logs["n_devices"])
+    # a positive count stays published, as a count over the producer's own devices, with the caveat
+    lifecycle = _item(overview, "Hardware lifecycle (EoL)")["unassessed"]["n"]
+    assert _sv(lifecycle) == (PUB, snap["lifecycle_risk"]["summary"]["n_unknown"]) and lifecycle["value"] >= 2
+    assert BLIND in lifecycle["caveats"] and "axis_basis_owned_by_projection" in lifecycle["caveats"]
+    # the whole payload stays valid, and the caveat is addressed to the axes
+    Draft202012Validator(uip.ui_projection_schema()).validate(uip.project(snap))
+    assert "/overview/axes" in {lim["id"]: lim for lim in uip.LIMITATIONS}[BLIND]["applies_to"]
+
+
+def test_with_no_blind_spot_the_same_zero_is_a_measurement(tmp_path):
+    """Control for the test above: the same fleet with every inventory device collected publishes the zero."""
+    snap = _blind_fleet(tmp_path, "complete")
+    assert snap["collection_completeness"]["devices"] == []
+    overview = uip.project_overview(snap)
+    logs_block = _item(overview, "Operational logs")["unassessed"]
+    assert _sv(logs_block["n"]) == (PUB, 0) and "measured_zero_mapping" in logs_block["n"]["caveats"]
+    for item in overview["axes"]["items"]:
+        for key in ("n", "of"):
+            assert BLIND not in item["unassessed"][key].get("caveats", ()), (item["axis"], key)
+
+
+def test_a_count_over_no_device_beside_a_blind_spot_is_not_a_clean_result():
+    """Every inventory device unreached: the producers cover none. Their 0 of 0 is collected_but_empty only while no
+    blind spot is listed; here both cells are not_collected."""
+    snap = {"collection_completeness": analyze.compute_collection_completeness(["acc1", "acc2"], {}),
+            "qos_audit": analyze.compute_qos_audit(),
+            "executive_brief": {"axes": [{"axis": "QoS posture", "severity": "Info", "headline": "h",
+                                          "detail": "d"}]}}
+    block = _unassessed(snap, "QoS posture")
+    for key in ("n", "of"):
+        assert _sv(block[key]) == (NC, None), (key, block[key])
+        assert "collection_completeness lists 2 device(s)" in block[key]["reason"]
+        for i in (0, 1):
+            assert {"pointer": f"/collection_completeness/devices/{i}", "role": "witness"} in block[key]["refs"]
+    assert "covered no device" in block["of"]["reason"]
+    # control: with no blind spot listed, the same producer output is a zero over a zero denominator
+    clean = copy.deepcopy(snap)
+    clean["collection_completeness"] = analyze.compute_collection_completeness([], {})
+    block = _unassessed(clean, "QoS posture")
+    assert _sv(block["of"]) == (PUB, 0) and _sv(block["n"]) == (CBE, None)
+
+
+# --------------------------------------------------------------------------------------------------
+# a failed input: the block and the row's fact give one verdict
+# --------------------------------------------------------------------------------------------------
+def test_a_failed_input_withholds_the_block_exactly_as_it_withholds_the_row():
+    qos_phase = next(lab for lab, secs in ssot.PHASE_SECTIONS.items() if "qos_audit" in secs)
+    snap = {"executive_brief": {"axes": [{"axis": "Brand-new axis", "severity": "Low", "headline": "h",
+                                          "detail": "d"}]},
+            "assessment_integrity": {"failed_phases": [qos_phase]}}
+    item = uip.project_overview(snap)["axes"]["items"][0]
+    assert item["fact"]["state"] == AU                       # an unregistered label fails closed to every input
+    for key in ("n", "of"):
+        assert _sv(item["unassessed"][key]) == (AU, None), (key, item["unassessed"][key])
+        assert {"pointer": "/assessment_integrity/failed_phases/0", "role": "failure_record"} in \
+            item["unassessed"][key]["refs"]
+    # a failed brief: every row's fact is unavailable, and so is every count beside it, while the producer's own
+    # token stays visible on a count its producer did write
+    brief_phase = next(lab for lab, secs in ssot.PHASE_SECTIONS.items() if "executive_brief" in secs)
+    sample = _sample()
+    sample["assessment_integrity"] = {"failed_phases": [brief_phase]}
+    overview = uip.project_overview(sample)
+    assert overview["axes"]["items"]
+    for item in overview["axes"]["items"]:
+        assert item["fact"]["state"] == AU, item["axis"]
+        for key in ("n", "of"):
+            assert _sv(item["unassessed"][key]) == (AU, None), (item["axis"], key)
+            assert {"pointer": "/assessment_integrity/failed_phases/0", "role": "failure_record"} in \
+                item["unassessed"][key]["refs"], (item["axis"], key)
+    lifecycle = _item(overview, "Hardware lifecycle (EoL)")["unassessed"]["n"]
+    assert lifecycle["engine_state"] == PUB and lifecycle["subject"] == "/lifecycle_risk/summary/n_unknown"
