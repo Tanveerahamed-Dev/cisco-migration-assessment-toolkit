@@ -45,8 +45,10 @@ jobs:
         run: python .github/scripts/verify_repository_privacy.py
 
   test:
-    # Execute Linux legs on the pinned image; keep the historical protected-check display names.
-    name: Tests · py${{ matrix.python-version }} · ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}
+    # Execute every leg on a pinned image; keep the historical protected-check display names
+    # (ubuntu-24.04 shows as ubuntu-latest, windows-2025 as windows-latest). A renamed context
+    # would leave a required check that never reports and wedge every merge.
+    name: Tests · py${{ matrix.python-version }} · ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os == 'windows-2025' && 'windows-latest' || matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -54,7 +56,7 @@ jobs:
         os: [ubuntu-24.04]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
-          - os: windows-latest
+          - os: windows-2025
             python-version: "3.12"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -472,7 +474,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_projection_performance }}
     strategy:
       matrix:
-        os: [windows-latest]
+        os: [windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:

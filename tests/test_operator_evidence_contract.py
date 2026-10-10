@@ -113,16 +113,21 @@ _V1_FROZEN_CORPUS = {
 #: cutover_operator_evidence/1 on the LIVE corpus as the pre-W50 engine computed it (measured at e7c00e12), each an
 #: explicit pair: the corpus SHA-256 the digests were measured on, then the digests. A regeneration updates the pair
 #: together; a code change with the corpus unchanged fails (module docstring).
+#: W52 / G14: the committed golden and sample now carry G14's hosted-regenerated vlan_carriage section, so both pairs
+#: were re-measured together with the pure functions on those committed bytes, after the frozen-corpus pins were
+#: confirmed on the same tree. The previous pairs (golden c4f6a549.../9da4d736.../56b1c51c..., sample
+#: dbc229cf.../ab1f6d46.../0c81ec19...) still reproduce exactly when this tree's code reads the previous corpus bytes,
+#: so no code moved a stored-receipt digest; operator_evidence is unchanged and only the corpus moved comparison.
 _V1_LIVE = {
     "golden": {
-        "corpus_sha256": "c4f6a549299bd6494b9b0377a7a5be773d2322b3ace3b785701d2a57e7cc4643",
+        "corpus_sha256": "fc8cf44f3d83a854f5d7523e127086faa138e4483a7553c28cbecfba1be180a3",
         "operator_evidence": "9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557",
-        "comparison": "56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2",
+        "comparison": "c1a2e269ec27d51c6f6e2a2ac3f4510b34951684c62cdda704c9b422ef9bc268",
     },
     "sample": {
-        "corpus_sha256": "dbc229cfdcd676bb07e99bdace7e26ea429de087715ebf1727064b4e373a26c1",
+        "corpus_sha256": "d015e974606ca78d623f1e9547df82e9a316708506be3438f59151342a22026a",
         "operator_evidence": "ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32",
-        "comparison": "0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744",
+        "comparison": "06acd1342e4347ae367443ace56e01a0d39c8b7edabeffecd037dd66c0c8543c",
     },
 }
 

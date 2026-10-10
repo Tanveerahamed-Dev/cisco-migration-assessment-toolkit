@@ -42,8 +42,6 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W52: exact main-DDAC pair is an unqualified bootstrap for the combined G14/W51 schema.
-# Both literal owners must be replaced only after independent review of fresh hosted schema output.
 # W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
 # facts, pins 16b80957.../bca688bd...), #629 + #628 (W28 trust inputs, pins
 # 6aa9a264.../a3021b67...; #629 at f6323759 carries both, pins 0553957c.../3ee0af7f...)
@@ -60,11 +58,16 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # docs/w41-punch-facets-validation-2026-10-09.md,
 # docs/w42-cross-layer-validation-2026-10-09.md
 # (prior: docs/w28-trust-inputs-validation-2026-10-08.md).
+# W52 / G14 (Claude takeover of #631): that W51 schema plus the G14 stored cable/VLAN
+# carriage delta (9 Carriage* definitions, VlanSelections.carriage, the stored_vlan_carriage_scope
+# limitation id, four unranked carriage vocabularies, Trust limitations 32 -> 33). Recomputed
+# statically on the merged schema with this module's own _native_schema_hash; the same method
+# reproduces every parent's committed pins. Hosted CI must confirm.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
-    "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058",
+    "view": "414419ba7a1a44ec1310a66b66a1a170f9d5ad4a700b0e59f25d9034a557b1df",
+    "list": "0f6d3e3d54e969f0a1322a3db24f5c1209d0eba6340ff6f077fd4de0985b2b72",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

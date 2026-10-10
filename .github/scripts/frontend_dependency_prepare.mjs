@@ -18,6 +18,14 @@ const INPUTS = [PLAN, PACKAGE, LOCK, ".github/scripts/frontend_dependency_prepar
   ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/workflows/webapp-ci.yml"];
 const REGISTRY = "https://registry.npmjs.org/";
 const MAX_FILE = 16 * 1024 * 1024;
+const MAX_REGISTRY = 2 * 1024 * 1024;
+const MAX_CHANGES = 32;
+// The closed member set main() may write under its fresh output directory. It mirrors the receiver's census
+// (frontend_artifact_receive.py :: candidate); any other name is refused before a byte is written.
+const FIXED_MEMBERS = new Set(["preparation.json", "npm-version.stdout.log", "npm-version.stderr.log",
+  "npm-lock-only.stdout.log", "npm-lock-only.stderr.log", "selected-metadata.json", "dependency-diff.json",
+  "candidate.patch", "patch.stderr.log", "candidate/package.json", "candidate/package-lock.json"]);
+const METADATA_MEMBER = /^metadata\/(?:0[1-9]|[12][0-9]|3[0-2])\.json$/;
 const NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const GROUPS = ["dependencies", "devDependencies"];
@@ -82,6 +90,35 @@ export function strictJson(bytes) {
     return result;
   };
   const result = value(0); ws(); need(at === text.length, "Trailing JSON content"); return result;
+}
+
+/** The registry-evidence member for the plan's 1-based change index (the plan admits at most 32 changes). */
+export function metadataMember(index) {
+  need(Number.isInteger(index) && index >= 1 && index <= MAX_CHANGES, "Registry metadata index outside the plan bound");
+  return `metadata/${String(index).padStart(2, "0")}.json`;
+}
+/** A declared output member name, or a refusal: fixed names plus metadata/01.json to metadata/32.json. */
+export function outputMember(name) {
+  need(typeof name === "string" && (FIXED_MEMBERS.has(name) || METADATA_MEMBER.test(name)), "Undeclared preparation output member");
+  return name;
+}
+/**
+ * The only network bytes this helper writes are exact-version registry documents, kept verbatim because the
+ * receiver re-admits the raw member against its receipt digest and independently selected registry metadata.
+ * They are admitted BEFORE any byte reaches disk: HTTP 200, at most 2 MiB, one strict (bounded, UTF-8,
+ * duplicate-key-free) JSON object. A refused response is recorded by status, size and digest only.
+ *
+ * CodeQL js/http-to-file-access (alert #78, the writeSync in writeOrdinary) reports this intended evidence
+ * flow. The destination is never derived from the response: it is a fixed member name (outputMember) under a
+ * fresh 0700 directory outside the checkout, opened O_CREAT|O_EXCL|O_NOFOLLOW. The bytes are never executed,
+ * installed or imported; they reach review only through frontend_artifact_receive.py's re-admission.
+ */
+export function registryEvidence(status, bytes) {
+  need(bytes instanceof Uint8Array && bytes.length <= MAX_REGISTRY, "Registry response is not a byte buffer within its bound");
+  need(status === 200, "Exact requested registry version is unavailable");
+  const document = strictJson(bytes);
+  need(object(document), "Registry response is not a JSON object");
+  return document;
 }
 
 export function registryUrl(value) {
@@ -258,10 +295,10 @@ async function main() {
     selected_source: null, metadata: [], source_preserved: false, candidate_admitted: false,
     qualification: false, dependency_validation: false, independent_custody: false, review_required: true,
     limits: "Scratch-only resolution; no candidate package code/install/test/build execution. npm is not a complete transport-origin sandbox. Registry source admission is not vulnerability or compatibility approval." };
-  const receiptPath = join(output, "preparation.json"); let saved = false;
+  const receiptPath = join(output, outputMember("preparation.json")); let saved = false;
   const save = () => { writeOrdinary(receiptPath, jsonBytes(receipt), saved); saved = true; };
   save(); const originals = new Map(); let scratch = null;
-  const emit = (name, bytes) => writeOrdinary(join(output, name), bytes);
+  const emit = (name, bytes) => writeOrdinary(join(output, outputMember(name)), bytes);
   try {
     const head = git("rev-parse", "HEAD").toString().trim();
     need(/^[0-9a-f]{40}$/.test(head) && head === process.env.GITHUB_SHA, "Checkout does not match exact workflow source");
@@ -306,11 +343,14 @@ async function main() {
       const url = `${REGISTRY}${encodeURIComponent(change.name)}/${encodeURIComponent(change.version)}`;
       const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30000), headers: { accept: "application/json" } });
       need(response.body !== null, "Registry response has no body"); const pieces = []; let size = 0;
-      for await (const chunk of response.body) { size += chunk.length; need(size <= 2 * 1024 * 1024, "Registry response exceeds bound"); pieces.push(chunk); }
-      const bytes = Buffer.concat(pieces); const file = `metadata/${String(index + 1).padStart(2, "0")}.json`;
-      emit(file, bytes); receipt.metadata.push({ requested: change, url, status: response.status, file, bytes: size, sha256: hash(bytes) }); save();
-      need(response.status === 200, "Exact requested registry version is unavailable");
-      metadata.set(change.name, admitMetadata(strictJson(bytes), change));
+      for await (const chunk of response.body) { size += chunk.length; need(size <= MAX_REGISTRY, "Registry response exceeds bound"); pieces.push(chunk); }
+      const bytes = Buffer.concat(pieces); const file = metadataMember(index + 1);
+      // Account for the response first (status, size, digest); its bytes reach disk only once admitted.
+      const observation = { requested: change, url, status: response.status, file: null, bytes: size, sha256: hash(bytes) };
+      receipt.metadata.push(observation); save();
+      const document = registryEvidence(response.status, bytes);
+      emit(file, bytes); observation.file = file; save();
+      metadata.set(change.name, admitMetadata(document, change));
     }
     emit("selected-metadata.json", jsonBytes(Object.fromEntries(metadata)));
     command("npm-lock-only", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--engine-strict",

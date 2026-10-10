@@ -1,9 +1,12 @@
-"""The engine-output handoff workflow stays manual, read-only, source-bound, closed and nonpromoting.
+"""The engine-output handoff workflows stay manual, read-only, source-bound, closed and nonpromoting.
 
-It is a dispatch-only path that regenerates tracked engine outputs for review. These guards keep it
-from ever running on a pull request or push, gaining a token or write permission, running anything
-beyond the repository's own regeneration commands, or uploading after a failure; and they derive the
-handoff's closed output set from the producers' own write targets rather than trusting a list.
+The producer is a dispatch-only path that regenerates tracked engine outputs for review. These guards
+keep it from ever running on a pull request or push, gaining a token or write permission, running
+anything beyond the repository's own regeneration commands, or uploading after a failure; and they
+derive the handoff's closed output set from the producers' own write targets rather than trusting a
+list. The receipt is the only place the receiver runs: dispatch-only, read-only (`actions: read` for
+the artifact, `contents: read`), its token confined to the one receiver step, its inputs passed only
+through the environment, and its review data uploaded only on success.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from test_release_supply_chain import _RUNNER_JOBS, _RunnerWorkflowLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_FILE = ROOT / ".github" / "workflows" / "engine-output-handoff.yml"
+RECEIPT_FILE = ROOT / ".github" / "workflows" / "engine-output-receipt.yml"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -36,11 +40,16 @@ def _load():
 
 handoff = _load()
 GATE, UPGRADE, INSTALL, CONTROLS, BEFORE, GOLDEN, SAMPLE, CAPTURE, PRESERVE = handoff.REQUIRED_STEPS
+RECEIVE, KEEP_RECEIPT = handoff.RECEIPT_STEPS
 
 
 def document():
     # The supply-chain contract's reader keeps GitHub's textual `on` and refuses duplicate keys.
     return yaml.load(WORKFLOW_FILE.read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
+
+
+def receipt_document():
+    return yaml.load(RECEIPT_FILE.read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
 
 
 def named(steps, name):
@@ -214,6 +223,158 @@ def test_wiring_guard_detects_trigger_privilege_scope_and_order_regressions(muta
         assert_wiring(doc)
 
 
+RECEIVER_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "HANDOFF_RUN_ID": "${{ inputs.producer_run_id }}",
+    "HANDOFF_SOURCE_COMMIT": "${{ inputs.source_commit }}",
+    "ALLOW_GOLDEN_SHRINK_INPUT": "${{ inputs.allow_golden_shrink }}",
+    "VERIFY_IMPORT_INPUT": "${{ inputs.verify_import }}",
+}
+
+
+def assert_receipt_wiring(doc):
+    assert RECEIPT_FILE.relative_to(ROOT).as_posix() == handoff.RECEIPT_WORKFLOW
+    assert set(doc) == {"name", "on", "permissions", "concurrency", "jobs"}
+    # Dispatch only: never pull_request, pull_request_target, push, schedule or workflow_run.
+    assert set(doc["on"]) == {"workflow_dispatch"}
+    inputs = doc["on"]["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"producer_run_id", "source_commit", "allow_golden_shrink", "verify_import"}
+    for name in ("producer_run_id", "source_commit"):
+        assert inputs[name] == {"description": inputs[name]["description"], "required": True, "type": "string"}
+    for name in ("allow_golden_shrink", "verify_import"):
+        assert inputs[name] == {"description": inputs[name]["description"], "required": False,
+                                "default": False, "type": "boolean"}
+    # Read-only: the Actions API selects and downloads the producer artifact; nothing is written back.
+    assert doc["permissions"] == {"actions": "read", "contents": "read"}
+    assert doc["concurrency"] == {"group": "engine-output-receipt-${{ github.ref }}", "cancel-in-progress": False}
+    assert set(doc["jobs"]) == set(_RUNNER_JOBS[RECEIPT_FILE.name]) == {"receive"}
+
+    job = doc["jobs"]["receive"]
+    assert set(job) == {"name", "runs-on", "timeout-minutes", "env", "steps"}
+    assert job["name"] == handoff.RECEIPT_JOB_NAME
+    assert [job["runs-on"]] == list(handoff.RUNNER_LABELS) == ["ubuntu-24.04"]
+    assert job["env"] == {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "TZ": handoff.CANONICAL_TZ}
+    steps = job["steps"]
+    assert [step["name"] for step in steps if "name" in step] == list(handoff.RECEIPT_STEPS)
+    assert {step["uses"] for step in steps if "uses" in step} == {CHECKOUT, PYTHON, UPLOAD}
+    for step in steps:
+        assert not {"if", "continue-on-error", "working-directory", "shell"} & set(step), step
+        assert "${{" not in step.get("run", ""), "inputs reach the receiver only through env"
+    receive = named(steps, RECEIVE)
+    # The token exists for the receiver step alone; no secret is ever named.
+    for step in steps:
+        if step is not receive:
+            assert "github.token" not in repr(step) and "GH_TOKEN" not in repr(step), step
+        assert "secrets." not in repr(step), step
+    text = RECEIPT_FILE.read_text(encoding="utf-8")
+    assert text.count("github.token") == 1 and "secrets." not in text and "GITHUB_TOKEN" not in text
+
+    checkout = [step for step in steps if step.get("uses") == CHECKOUT]
+    # Full history: the producer's source is the dispatched commit or one of its ancestors.
+    assert len(checkout) == 1 and checkout[0] == {
+        "uses": CHECKOUT, "with": {"ref": "${{ github.sha }}", "fetch-depth": 0, "persist-credentials": False}}
+    python = [step for step in steps if step.get("uses") == PYTHON]
+    assert len(python) == 1 and python[0] == {"uses": PYTHON, "with": {"python-version": "3.12"}}
+    # The command line carries no path, run, source or dry-run option: every input is environment.
+    assert receive == {"name": RECEIVE, "env": RECEIVER_ENV,
+                       "run": "python -I -B .github/scripts/engine_output_handoff.py receive"}
+    # Success-only upload (no `if`): a refused receipt never leaves importable review data.
+    assert named(steps, KEEP_RECEIPT) == {
+        "name": KEEP_RECEIPT, "uses": UPLOAD, "with": {
+            "name": handoff.RECEIPT_PREFIX + "-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "${{ runner.temp }}/" + handoff.RECEIPT_DIRECTORY + "/",
+            "if-no-files-found": "error", "retention-days": 14,
+        },
+    }
+    order = [steps.index(step) for step in (checkout[0], python[0], receive, named(steps, KEEP_RECEIPT))]
+    assert order == list(range(len(steps)))
+
+
+def test_receipt_workflow_is_manual_read_only_hosted_and_success_only():
+    assert_receipt_wiring(receipt_document())
+
+
+@pytest.mark.parametrize("mutation", [
+    "pull-request", "push", "schedule", "workflow-run", "write-contents", "write-actions", "extra-permission",
+    "job-permission", "token-in-another-step", "secret-env", "input-in-shell", "cli-run-id", "dry-run",
+    "upload-always", "upload-on-failure", "continue-on-error", "retained-credentials", "floating-ref",
+    "shallow-history", "extra-step", "other-python", "floating-image", "reordered", "optional-run-id",
+    "optional-source", "default-shrink", "default-verify", "no-error-on-empty", "dropped-receive",
+    "working-directory",
+])
+def test_receipt_wiring_guard_detects_trigger_privilege_input_and_upload_regressions(mutation):
+    doc = copy.deepcopy(receipt_document())
+    job = doc["jobs"]["receive"]
+    steps = job["steps"]
+    inputs = doc["on"]["workflow_dispatch"]["inputs"]
+    receive = named(steps, RECEIVE)
+    python = next(step for step in steps if step.get("uses") == PYTHON)
+    checkout = next(step for step in steps if step.get("uses") == CHECKOUT)
+    if mutation == "pull-request":
+        doc["on"]["pull_request"] = None
+    elif mutation == "push":
+        doc["on"]["push"] = {"branches": ["main"]}
+    elif mutation == "schedule":
+        doc["on"]["schedule"] = [{"cron": "0 3 * * *"}]
+    elif mutation == "workflow-run":
+        doc["on"]["workflow_run"] = {"workflows": ["engine-output-handoff"]}
+    elif mutation == "write-contents":
+        doc["permissions"]["contents"] = "write"
+    elif mutation == "write-actions":
+        doc["permissions"]["actions"] = "write"
+    elif mutation == "extra-permission":
+        doc["permissions"]["pull-requests"] = "read"
+    elif mutation == "job-permission":
+        job["permissions"] = {"contents": "write"}
+    elif mutation == "token-in-another-step":
+        python["env"] = {"GH_TOKEN": "${{ github.token }}"}
+    elif mutation == "secret-env":
+        receive["env"]["EXTRA"] = "${{ secrets.ACTIONS_PAT }}"
+    elif mutation == "input-in-shell":
+        receive["run"] = "python -I -B .github/scripts/engine_output_handoff.py receive '${{ inputs.source_commit }}'"
+    elif mutation == "cli-run-id":
+        receive["run"] = 'python -I -B .github/scripts/engine_output_handoff.py receive --run-id "$HANDOFF_RUN_ID"'
+    elif mutation == "dry-run":
+        receive["run"] = "python -I -B .github/scripts/engine_output_handoff.py receive --dry-run"
+    elif mutation == "upload-always":
+        named(steps, KEEP_RECEIPT)["if"] = "${{ always() }}"
+    elif mutation == "upload-on-failure":
+        named(steps, KEEP_RECEIPT)["if"] = "${{ failure() }}"
+    elif mutation == "continue-on-error":
+        receive["continue-on-error"] = True
+    elif mutation == "retained-credentials":
+        checkout["with"]["persist-credentials"] = True
+    elif mutation == "floating-ref":
+        checkout["with"]["ref"] = "${{ inputs.source_commit }}"
+    elif mutation == "shallow-history":
+        checkout["with"]["fetch-depth"] = 1
+    elif mutation == "extra-step":
+        steps.insert(-1, {"name": "Apply the outputs", "run": "git push"})
+    elif mutation == "other-python":
+        python["with"]["python-version"] = "3.13"
+    elif mutation == "floating-image":
+        job["runs-on"] = "ubuntu-latest"
+    elif mutation == "reordered":
+        a, b = steps.index(receive), steps.index(named(steps, KEEP_RECEIPT))
+        steps[a], steps[b] = steps[b], steps[a]
+    elif mutation == "optional-run-id":
+        inputs["producer_run_id"]["required"] = False
+    elif mutation == "optional-source":
+        inputs["source_commit"]["required"] = False
+    elif mutation == "default-shrink":
+        inputs["allow_golden_shrink"]["default"] = True
+    elif mutation == "default-verify":
+        inputs["verify_import"]["default"] = True
+    elif mutation == "no-error-on-empty":
+        named(steps, KEEP_RECEIPT)["with"]["if-no-files-found"] = "warn"
+    elif mutation == "dropped-receive":
+        steps.remove(receive)
+    else:
+        receive["working-directory"] = "webapp"
+    with pytest.raises(AssertionError):
+        assert_receipt_wiring(doc)
+
+
 def _golden_harness_targets() -> set[str]:
     """Every golden name tests/test_pipeline_golden.py hands its one writer, `_golden`, read from its AST."""
     tree = ast.parse((ROOT / "tests" / "test_pipeline_golden.py").read_text(encoding="utf-8"))
@@ -310,9 +471,14 @@ def test_installer_profile_is_a_fixed_non_code_set_for_the_tracked_project():
 
 def test_handoff_doc_and_registry_name_the_owner():
     doc = (ROOT / "docs" / "engine-output-handoff.md").read_text(encoding="utf-8")
-    for token in (handoff.WORKFLOW, ".github/scripts/engine_output_handoff.py", "receive --run-id",
-                  *handoff.OUTPUT_PATHS):
+    for token in (handoff.WORKFLOW, handoff.RECEIPT_WORKFLOW, ".github/scripts/engine_output_handoff.py",
+                  "producer_run_id", "source_commit", "verify_import", "git hash-object", *handoff.OUTPUT_PATHS):
         assert token in doc, token
+    # The steps never route a receipt through a workstation: no local receiver, path or dry run.
+    steps = doc.split("\n## Steps\n", 1)[1].split("\n## ", 1)[0]
+    for forbidden in ("engine_output_handoff.py receive", "--run-id", "--dry-run", "--source-commit", "py -3.12"):
+        assert forbidden not in steps, forbidden
     registry = (ROOT / "docs" / "ssot.md").read_text(encoding="utf-8")
     assert "docs/engine-output-handoff.md" in registry
     assert ".github/scripts/engine_output_handoff.py :: OUTPUT_PATHS" in registry
+    assert handoff.RECEIPT_WORKFLOW in registry

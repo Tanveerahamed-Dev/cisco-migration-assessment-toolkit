@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "webapp" / "frontend"
@@ -117,7 +118,7 @@ def test_hosted_frontend_jobs_pin_node_and_guard_before_installing():
     workflows = {
         ".github/workflows/ci.yml": ("dependency-audit", "package"),
         ".github/workflows/release.yml": ("release",),
-        ".github/workflows/webapp-ci.yml": ("frontend", "e2e", "visual"),
+        ".github/workflows/webapp-ci.yml": ("frontend", "e2e", "real-backend-e2e", "visual"),
     }
     for relative_path, jobs in workflows.items():
         path = ROOT / relative_path
@@ -233,3 +234,72 @@ def test_dependency_audit_audits_every_tracked_npm_lockfile_with_the_same_flags(
             install_run = installs[0]["run"]
             guard = install_run.find("npm run verify:node")
             assert 0 <= guard < install_run.find("npm ci"), f"{directory} installs before its Node guard"
+
+
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+SEMVER_MAJOR_IGNORE = {"dependency-name": "*", "update-types": ["version-update:semver-major"]}
+
+
+def _dependabot_npm_gaps(config, directories):
+    """Every way Dependabot's npm version updates miss a tracked npm lockfile or leave the shared policy.
+
+    The policy is the one every npm entry shares: weekly, one group covering every package, and every
+    semver-major update ignored (majors are planned migrations). Package-specific owner deferrals are
+    deliberately not pinned here; they come and go with owner decisions.
+    """
+    gaps = []
+    updates = [update for update in config.get("updates", []) if update.get("package-ecosystem") == "npm"]
+    configured = [str(update.get("directory", "")).strip("/") or "." for update in updates]
+    for directory in sorted({entry for entry in configured if configured.count(entry) > 1}):
+        gaps.append(f"duplicate npm entry for {directory}")
+    for directory in sorted(set(directories) - set(configured)):
+        gaps.append(f"tracked npm lockfile in {directory} has no npm version-update entry")
+    for directory in sorted(set(configured) - set(directories)):
+        gaps.append(f"npm version-update entry for {directory}, which holds no tracked npm lockfile")
+    for update, directory in zip(updates, configured):
+        if update.get("schedule") != {"interval": "weekly"}:
+            gaps.append(f"{directory} is not scheduled weekly")
+        if SEMVER_MAJOR_IGNORE not in (update.get("ignore") or []):
+            gaps.append(f"{directory} would receive semver-major proposals")
+        if [group.get("patterns") for group in (update.get("groups") or {}).values()] != [["*"]]:
+            gaps.append(f"{directory} does not group every package into one proposal")
+    return gaps
+
+
+def _dependabot_config():
+    return yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+
+
+def test_dependabot_proposes_npm_updates_for_every_tracked_npm_lockfile():
+    # Version-update coverage, like audit coverage, is derived from git: a hand-kept directory list
+    # silently leaves a newly tracked npm project without proposals.
+    directories = _tracked_npm_package_dirs()
+    assert directories, "git ls-files found no tracked npm lockfile"
+    assert _dependabot_npm_gaps(_dependabot_config(), directories) == []
+
+
+def _drop_npm_entry(config, directory):
+    config["updates"] = [update for update in config["updates"] if update.get("directory") != directory]
+
+
+def _npm_entry(config, directory):
+    return next(update for update in config["updates"] if update.get("directory") == directory)
+
+
+DEPENDABOT_DRIFT = {
+    "missing_directory": lambda config: _drop_npm_entry(config, "/atlas-scope"),
+    "duplicate_directory": lambda config: config["updates"].append(_npm_entry(config, "/master-reference")),
+    "untracked_directory": lambda config: config["updates"].append(
+        {**_npm_entry(config, "/webapp/frontend"), "directory": "/no-such-npm-project"}
+    ),
+    "major_proposals": lambda config: _npm_entry(config, "/webapp/frontend")["ignore"].remove(SEMVER_MAJOR_IGNORE),
+    "monthly_schedule": lambda config: _npm_entry(config, "/master-reference").update(schedule={"interval": "monthly"}),
+    "ungrouped": lambda config: _npm_entry(config, "/atlas-scope").pop("groups"),
+}
+
+
+@pytest.mark.parametrize("drift", sorted(DEPENDABOT_DRIFT))
+def test_dependabot_npm_contract_rejects_coverage_and_policy_drift(drift):
+    config = _dependabot_config()
+    DEPENDABOT_DRIFT[drift](config)
+    assert _dependabot_npm_gaps(config, _tracked_npm_package_dirs()), f"{drift} was not detected"
