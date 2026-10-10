@@ -140,7 +140,7 @@ describe("receipt exports carry bound evidence only", () => {
       <Route path="/campaigns/:id" element={<CampaignPage />} /></Routes></MemoryRouter>);
 
     const trendFile = downloaded(await screen.findByRole("button", { name: "Export Trend JSON" }));
-    expect(trendFile.name).toBe("atlas-campaign-3-trend-receipts.json");
+    expect(trendFile.name).toBe("atlas-campaign-3.trend-comparisons.json");
     expect(trendFileProblems(trendFile.file)).toEqual([]);
     const pairs = (trendFile.file as { adjacent_comparisons: Array<{ comparison: CompareResponse }> }).adjacent_comparisons;
     expect(pairs.map((p) => p.comparison.comparison_receipt?.receipt_sha256)).toEqual(["sha256:receipt-0", "sha256:receipt-1"]);

@@ -984,7 +984,7 @@ export function Inspector({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `atlas-scope-${stem}.json`;
+    a.download = `atlas-scope-${stem}.scope-record.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();

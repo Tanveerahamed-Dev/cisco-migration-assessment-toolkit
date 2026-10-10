@@ -117,27 +117,58 @@ _FORBIDDEN_PARTS = {
 }
 # Client-bearing artifact NAME classes (W65): the ONE owner both privacy gates consume.
 #
-# Every name shape the engine, AssessHub or Atlas writes whose bytes can carry client evidence
-# (hostnames, addresses, configuration, inventory, engagement identity), with the producer that
-# writes it. Rows are ``(key, match, pattern, producer)``. Matching is case-insensitive, and
-# ``match`` is one of:
+# Every name shape whose bytes can carry client evidence (hostnames, addresses, configuration,
+# inventory, engagement identity) when the engine, AssessHub, Atlas or an operator puts it in a
+# repository or archive tree, with the producer or source of each. Rows are
+# ``(key, match, pattern, producer)``. Names are normalised before matching (NFKC, format
+# characters removed, trailing dots and whitespace of every path component stripped, casefolded;
+# see ``_client_name_path``), and ``match`` is one of:
 #
-# * ``suffix``: the path ends with ``pattern``;
+# * ``suffix``: the normalised path ends with ``pattern``;
 # * ``leaf``: the basename equals ``pattern``;
 # * ``leaf-prefix``: the basename starts with ``pattern``;
+# * ``contains``: the basename contains ``pattern`` (configuration names such as
+#   ``CORE-1-running-config``, which carry no reliable extension);
 # * ``capture``: a raw command capture, whose basename starts with ``pattern`` and ends with
-#   ``.txt``. The committed-tree gate exempts ``tests/`` (reviewed synthetic fixtures, the same
-#   exception as the ``!tests/**`` negations in ``.gitignore``); archives never ship ``tests/``.
+#   ``.txt``.
+#
+# Raw captures. The owner of record of the raw-capture rule is
+# ``webapp/backend/redaction_verify.py :: is_uncoverable_capture`` (restated by
+# ``cisco_toolkit.html._is_raw_capture``): inside a collection root EVERY file is a capture unless
+# its suffix is a structured serialisation. That is a directory-context rule, and outside a
+# collection a name gate cannot apply it (``.txt``, ``.out`` and extension-less names are ordinary
+# repository files too). This table is its NAME-identifiable projection: the collectors' command
+# names (``capture``), configuration names (``contains``), and the configuration, packet-capture
+# and command-output extensions the owner and the Atlas bundle gate already treat as evidence.
+# ``tests/test_client_artifact_census.py`` reconciles the projection against the owner both ways and
+# names the extensions that stay context-only. Collection folders rewritten in place are census
+# rows of their own (``operator-path``), because their name set is the owner's open class.
+#
+# Exits outside the Python write census, named here so they are not mistaken for gaps:
+# ``portable/make_stick.ps1`` writes the database backups ``release-backups/pre-update-<run>.db``
+# and ``rollback-preserved-<run>.db`` through ``.<leaf>.partial`` (the ``database`` and
+# ``database-backup-partial`` classes; a literal tie in the census test keeps them there);
+# ``atlas-scope/tools/compile-all.mjs`` writes ``fabric.json`` and its siblings from a real snapshot,
+# refuses an output inside the repository, and shares those names with tracked synthetic samples,
+# so no name class can cover it; AssessHub and Atlas Scope browser downloads are tied by the census
+# test to this table (``Content-Disposition`` names and the SPA's download names).
+#
+# Synthetic capture fixtures. The repository gate exempts a ``CLIENT_FIXTURE_EXEMPTIBLE_CLASSES``
+# match only for an exact path listed with its content digest in ``CLIENT_FIXTURE_MANIFEST``; archives
+# never ship ``tests/`` and get no exemption.
 #
 # Before W65 each gate kept its own hand-written suffix list, and the ``.protocol-assurance.json``,
 # ``.comparison.json``, ``.trend-comparisons.json`` and ``.phase_timings.json`` sidecars (every one
 # of them names client devices) were in neither. Consumers: ``_privacy_violations`` below (wheel
 # and sdist members) and ``.github/scripts/verify_repository_privacy.py`` (the committed tree). That
 # gate is stdlib-only and runs before any install, so it restates ``(key, match, pattern)``, the
-# exceptions and the matcher. ``tests/test_client_artifact_census.py`` pins the restatement equal,
-# requires ``.gitignore`` to ignore every class, and classifies every engine write site
+# exceptions, the fixture rule and the matcher; ``tests/test_client_artifact_census.py`` pins the
+# restatement equal (data and a differential corpus), requires ``.gitignore`` to carry the generated
+# case-insensitive block for every class, and classifies every write site
 # (``tests/client_artifact_census.py``) against this table, so a new sidecar fails CI until it is
-# named here or declared non-client there.
+# named here or declared non-client there. Two older gates keep their own lists and must keep their
+# extra shapes when they migrate: ``tools/audit_wheel.py`` (collection and evidence directory
+# segments) and ``portable/release_contract.py :: _forbidden_client_artifact`` (``.zip``).
 CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
     # Documents and workbooks.
     ("word-document", "suffix", ".docx",
@@ -146,40 +177,50 @@ CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
     ("workbook", "suffix", ".xlsx",
      "COLLECT_PARSE_V3_23_0 _stage_finalize._save_workbook; html.write_diff_workbook and "
      "html.write_campaign_workbook"),
+    ("macro-workbook", "suffix", ".xlsm",
+     "operator inventory imports (cisco_toolkit.external_import); also refused by the Atlas bundle"),
+    ("tabular-export", "suffix", ".csv",
+     "operator inventory and endpoint exports; the four retained official-source CSVs are the "
+     "reviewed exceptions"),
     # Engine JSON sidecars of one run.
     ("snapshot", "suffix", ".snapshot.json", "COLLECT_PARSE_V3_23_0 _stage_finalize._publish_snapshot"),
     ("protocol-assurance-export", "suffix", ".protocol-assurance.json",
-     "COLLECT_PARSE_V3_23_0 _stage_finalize: uncapped per-device protocol evidence"),
+     "COLLECT_PARSE_V3_23_0 _stage_finalize and the AssessHub export: per-device protocol evidence"),
     ("pre-change-certificate", "suffix", ".precert.json", "COLLECT_PARSE_V3_23_0 main (--compare)"),
     ("readiness-certificate", "suffix", ".precert-readiness.json", "precert.main"),
     ("comparison-receipt", "suffix", ".comparison.json",
-     "COLLECT_PARSE_V3_23_0 main (--compare): the full receipt, embedding the certificate"),
+     "COLLECT_PARSE_V3_23_0 main (--compare) and the AssessHub receipt downloads: the full receipt, "
+     "embedding the certificate"),
     ("trend-comparisons", "suffix", ".trend-comparisons.json",
-     "COLLECT_PARSE_V3_23_0 main (--trend): every adjacent comparison receipt"),
+     "COLLECT_PARSE_V3_23_0 main (--trend) and the AssessHub trend download"),
     ("phase-timings", "suffix", ".phase_timings.json",
      "COLLECT_PARSE_V3_23_0 _stage_finalize: phase labels name devices ('interface rows (<host>)')"),
     ("run-manifest", "suffix", ".run_manifest.json", "COLLECT_PARSE_V3_23_0 _stage_finalize"),
     ("incomplete-marker", "suffix", ".incomplete.json", "COLLECT_PARSE_V3_23_0 _write_incomplete_marker"),
     ("redaction-receipt", "suffix", ".redaction.json",
      "webapp.backend.ingest._promote_verified_delivery"),
+    ("scope-record-export", "suffix", ".scope-record.json",
+     "Atlas Scope Inspector record download (atlas-scope/src/panels/Inspector.tsx)"),
     # Rendered views.
     ("explorer", "suffix", "_explorer.html", "html.write_html_explorer via COLLECT_PARSE_V3_23_0 main"),
     ("topology-mermaid", "leaf", "topology.mmd", "excel.write_topology_diagram"),
     ("topology-graphviz", "leaf", "topology.dot", "excel.write_topology_diagram"),
     # Logs, databases and local state.
-    ("engine-log", "suffix", ".log", "COLLECT_PARSE_V3_23_0 setup_logging (engine_log_path)"),
-    ("database", "suffix", ".db", "webapp.backend.storage.Store: assesshub.db and its backups"),
+    ("engine-log", "suffix", ".log",
+     "COLLECT_PARSE_V3_23_0 setup_logging (engine_log_path); collected logs such as show_tech-support.log"),
+    ("database", "suffix", ".db",
+     "webapp.backend.storage.Store (assesshub.db and its backups); portable/make_stick.ps1 backups"),
     ("database-sqlite", "suffix", ".sqlite", "AssessHub database (alternative extension)"),
     ("database-sqlite3", "suffix", ".sqlite3", "AssessHub database (alternative extension)"),
     ("database-wal", "suffix", ".db-wal", "SQLite write-ahead companion of a client database"),
     ("database-shm", "suffix", ".db-shm", "SQLite shared-memory companion of a client database"),
     ("database-journal", "suffix", ".db-journal", "SQLite rollback journal of a client database"),
     ("database-backup-partial", "suffix", ".db.partial",
-     "webapp.backend.storage.Store._boot_hardening backup staging"),
+     "webapp.backend.storage.Store._boot_hardening and portable/make_stick.ps1 backup staging"),
     ("engagement-gate-state", "leaf", "engagement-state.json",
      "gate_state.save_store: engagement identity, approvers and reasons"),
     ("query-log", "leaf", "query_log.jsonl", "recall.log_query: real queries can name client tokens"),
-    # Collection inputs and evidence.
+    # Collection inputs and evidence (the name-identifiable projection of the raw-capture owner).
     ("devices-inventory", "leaf", "devices.json",
      "operator inventory with credentials; webapp.backend.ingest writes one per job"),
     ("collection-device-info", "leaf", "device_info.json", "COLLECT_PARSE_V3_23_0 collect"),
@@ -194,6 +235,20 @@ CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
     ("capture-ers", "capture", "ers_", "rest_collect (ISE ERS) and COMMANDS_* offline names"),
     ("capture-dataservice", "capture", "dataservice_",
      "rest_collect (vManage) and COMMANDS_* offline names"),
+    ("config-name-running", "contains", "running-config",
+     "saved running configurations; also refused by the Atlas bundle gate"),
+    ("config-name-startup", "contains", "startup-config",
+     "saved startup configurations; also refused by the Atlas bundle gate"),
+    ("config-name-confg", "contains", "-confg", "IOS archive and TFTP configuration names (<host>-confg)"),
+    ("config-file-cfg", "suffix", ".cfg",
+     "configuration backups (html._is_raw_capture documents backup-config.cfg); bundle gate"),
+    ("config-file-conf", "suffix", ".conf", "configuration files in a collection; bundle gate"),
+    ("config-file-config", "suffix", ".config", "configuration files in a collection; bundle gate"),
+    ("command-output", "suffix", ".out", "saved command output (html._is_raw_capture documents .out)"),
+    ("packet-capture-pcap", "suffix", ".pcap", "packet captures; bundle gate"),
+    ("packet-capture-pcapng", "suffix", ".pcapng", "packet captures; bundle gate"),
+    ("packet-capture-cap", "suffix", ".cap", "packet captures; bundle gate"),
+    ("event-trace-etl", "suffix", ".etl", "Windows event traces; bundle gate"),
     # Field-redaction markers (they quote the run's own refusal and gap reasons).
     ("unsafe-marker", "leaf", "DO-NOT-SEND-NOT-REDACTED.txt",
      "webapp.backend.ingest._mark_output_unsafe"),
@@ -212,30 +267,53 @@ CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
      "COLLECT_PARSE_V3_23_0 _verify_bound_receipt_surface"),
     ("redaction-staging", "suffix", ".redacting", "html.redact_collection_dir"),
 )
-CLIENT_ARTIFACT_MATCHES = ("suffix", "leaf", "leaf-prefix", "capture")
-#: Exact paths that match a class but are reviewed synthetic product assets that must ship.
+CLIENT_ARTIFACT_MATCHES = ("suffix", "leaf", "leaf-prefix", "contains", "capture")
+#: Exact paths that match a class but are reviewed public or synthetic product files.
 CLIENT_ARTIFACT_EXCEPTIONS = frozenset({
     "cisco_toolkit/blast_radius_explorer.html",       # the explorer template: no fleet embedded
     "webapp/sample_data/sample_fleet.snapshot.json",  # the engine-built synthetic sample fleet
+    "setup.cfg",                                      # packaging config the sdist build generates
+    # The retained official public sources (reference-data/official-sources/manifest.json).
+    "reference-data/official-sources/iana/service-names-port-numbers.csv",
+    "reference-data/official-sources/ieee/oui.csv",
+    "reference-data/official-sources/ieee/mam.csv",
+    "reference-data/official-sources/ieee/oui36.csv",
 })
-#: The committed tree's reviewed synthetic capture fixtures live here (repository gate only).
-CLIENT_CAPTURE_FIXTURE_ROOT = "tests/"
+#: Classes a reviewed synthetic collection fixture may legitimately use (repository gate only).
+CLIENT_FIXTURE_EXEMPTIBLE_CLASSES = frozenset({
+    "capture-show", "capture-get-system", "capture-aws", "capture-moquery", "capture-api",
+    "capture-ers", "capture-dataservice", "collection-device-info", "collection-command-index",
+    "collection-capture-meta", "config-name-running", "config-name-startup", "config-name-confg",
+    "config-file-cfg", "config-file-conf", "config-file-config", "command-output",
+})
+#: The digest-pinned list of reviewed synthetic fixtures (``<sha256>  <path>`` lines, LF-normalised
+#: bytes). Only the repository gate reads it; an absent manifest exempts nothing.
+CLIENT_FIXTURE_MANIFEST = ".github/privacy/synthetic_capture_fixtures.sha256"
+_CLIENT_NAME_STRIP = " .\t\r\n\x0b\x0c"
 _CLIENT_ARTIFACT_FOLDED = tuple(
     (key, match, pattern.casefold()) for key, match, pattern, _producer in CLIENT_ARTIFACT_NAME_CLASSES
 )
 
 
-def client_artifact_class(relative: str, *, capture_fixture_root: str | None = None) -> str | None:
+def _client_name_path(relative: str) -> str:
+    """The comparison form of a path: NFKC, no format characters, components right-stripped of
+    dots and whitespace (the trailing characters Windows drops), casefolded."""
+    text = unicodedata.normalize("NFKC", relative.replace("\\", "/"))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return "/".join(part.rstrip(_CLIENT_NAME_STRIP) for part in text.split("/")).casefold()
+
+
+def client_artifact_class(relative: str) -> str | None:
     """Return the ``CLIENT_ARTIFACT_NAME_CLASSES`` key ``relative`` falls in, else ``None``.
 
-    ``relative`` is a POSIX path relative to the repository or archive root. Only the
-    repository gate passes ``capture_fixture_root``; archive members get no fixture exception.
+    ``relative`` is a path relative to the repository or archive root. Exceptions compare the
+    exact path; classes compare the normalised form, so case, width, trailing-dot and invisible
+    character variants of a client name still match.
     """
     if relative in CLIENT_ARTIFACT_EXCEPTIONS:
         return None
-    folded = relative.replace("\\", "/").casefold()
+    folded = _client_name_path(relative)
     leaf = folded.rsplit("/", 1)[-1]
-    fixture_root = capture_fixture_root.casefold() if capture_fixture_root else None
     for key, match, pattern in _CLIENT_ARTIFACT_FOLDED:
         if match == "suffix":
             hit = folded.endswith(pattern)
@@ -243,12 +321,10 @@ def client_artifact_class(relative: str, *, capture_fixture_root: str | None = N
             hit = leaf == pattern
         elif match == "leaf-prefix":
             hit = leaf.startswith(pattern)
+        elif match == "contains":
+            hit = pattern in leaf
         elif match == "capture":
-            hit = (
-                leaf.startswith(pattern)
-                and leaf.endswith(".txt")
-                and not (fixture_root and folded.startswith(fixture_root))
-            )
+            hit = leaf.startswith(pattern) and leaf.endswith(".txt")
         else:
             raise ValueError(f"unknown client-artifact match {match!r} for {key!r}")
         if hit:

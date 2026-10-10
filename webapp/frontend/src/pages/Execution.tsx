@@ -688,7 +688,7 @@ export default function ExecutionPage() {
         <ComparisonDecision
           value={latestComparison}
           impactsView={latestStored?.impacts_view}
-          exportFilename={`execution-${eid}-comparison-receipt-${latestStored?.id || "latest"}.json`}
+          exportFilename={`execution-${eid}-receipt-${latestStored?.id || "latest"}.comparison.json`}
         />
       ) : comparisonPolicy ? (
         <section aria-label="Canonical post-change cutover decision" data-testid="execution-canonical-gate-missing"

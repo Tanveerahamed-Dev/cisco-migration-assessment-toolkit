@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import unicodedata
 from datetime import date
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -29,14 +30,16 @@ _DENIED_PATHS = (
 )
 # Client-bearing artifact NAME classes (W65). The owner is
 # `cisco_toolkit/distribution_verify.py :: CLIENT_ARTIFACT_NAME_CLASSES`, which also carries each
-# class's producer. This gate is stdlib-only and runs before any install, so it restates the
-# `(key, match, pattern)` triples, the exceptions and the matcher, and
-# `tests/test_client_artifact_census.py` pins the restatement equal to the owner. Edit the owner
-# first. Matching is case-insensitive; see the owner for the four match kinds.
+# class's producer, the raw-capture reconciliation and the match kinds. This gate is stdlib-only
+# and runs before any install, so it restates the `(key, match, pattern)` triples, the exceptions,
+# the fixture rule and the matcher; `tests/test_client_artifact_census.py` pins the restatement
+# equal to the owner, over the data and a differential corpus. Edit the owner first.
 _CLIENT_ARTIFACT_NAME_CLASSES = (
     ("word-document", "suffix", ".docx"),
     ("presentation", "suffix", ".pptx"),
     ("workbook", "suffix", ".xlsx"),
+    ("macro-workbook", "suffix", ".xlsm"),
+    ("tabular-export", "suffix", ".csv"),
     ("snapshot", "suffix", ".snapshot.json"),
     ("protocol-assurance-export", "suffix", ".protocol-assurance.json"),
     ("pre-change-certificate", "suffix", ".precert.json"),
@@ -47,6 +50,7 @@ _CLIENT_ARTIFACT_NAME_CLASSES = (
     ("run-manifest", "suffix", ".run_manifest.json"),
     ("incomplete-marker", "suffix", ".incomplete.json"),
     ("redaction-receipt", "suffix", ".redaction.json"),
+    ("scope-record-export", "suffix", ".scope-record.json"),
     ("explorer", "suffix", "_explorer.html"),
     ("topology-mermaid", "leaf", "topology.mmd"),
     ("topology-graphviz", "leaf", "topology.dot"),
@@ -71,6 +75,17 @@ _CLIENT_ARTIFACT_NAME_CLASSES = (
     ("capture-api", "capture", "api_"),
     ("capture-ers", "capture", "ers_"),
     ("capture-dataservice", "capture", "dataservice_"),
+    ("config-name-running", "contains", "running-config"),
+    ("config-name-startup", "contains", "startup-config"),
+    ("config-name-confg", "contains", "-confg"),
+    ("config-file-cfg", "suffix", ".cfg"),
+    ("config-file-conf", "suffix", ".conf"),
+    ("config-file-config", "suffix", ".config"),
+    ("command-output", "suffix", ".out"),
+    ("packet-capture-pcap", "suffix", ".pcap"),
+    ("packet-capture-pcapng", "suffix", ".pcapng"),
+    ("packet-capture-cap", "suffix", ".cap"),
+    ("event-trace-etl", "suffix", ".etl"),
     ("unsafe-marker", "leaf", "DO-NOT-SEND-NOT-REDACTED.txt"),
     ("incomplete-set-marker", "leaf", "INCOMPLETE-SET.txt"),
     ("incomplete-set-fallback", "leaf", "INCOMPLETE-SET-ATLAS.txt"),
@@ -82,9 +97,34 @@ _CLIENT_ARTIFACT_NAME_CLASSES = (
 )
 _CLIENT_ARTIFACT_EXCEPTIONS = frozenset({
     "cisco_toolkit/blast_radius_explorer.html",
+    "reference-data/official-sources/iana/service-names-port-numbers.csv",
+    "reference-data/official-sources/ieee/mam.csv",
+    "reference-data/official-sources/ieee/oui.csv",
+    "reference-data/official-sources/ieee/oui36.csv",
+    "setup.cfg",
     "webapp/sample_data/sample_fleet.snapshot.json",
 })
-_CLIENT_CAPTURE_FIXTURE_ROOT = "tests/"
+_CLIENT_FIXTURE_EXEMPTIBLE_CLASSES = frozenset({
+    "capture-api",
+    "capture-aws",
+    "capture-dataservice",
+    "capture-ers",
+    "capture-get-system",
+    "capture-moquery",
+    "capture-show",
+    "collection-capture-meta",
+    "collection-command-index",
+    "collection-device-info",
+    "command-output",
+    "config-file-cfg",
+    "config-file-conf",
+    "config-file-config",
+    "config-name-confg",
+    "config-name-running",
+    "config-name-startup",
+})
+_CLIENT_FIXTURE_MANIFEST = PurePosixPath(".github/privacy/synthetic_capture_fixtures.sha256")
+_CLIENT_NAME_STRIP = " .\t\r\n\x0b\x0c"
 _KNOWN_HOST_HASHES = PurePosixPath(
     ".github/privacy/known_client_hostname_sha256.txt"
 )
@@ -459,13 +499,19 @@ _HOST_TOKEN = re.compile(
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
+def _client_name_path(relative: str) -> str:
+    """Restated `cisco_toolkit.distribution_verify._client_name_path`."""
+    text = unicodedata.normalize("NFKC", relative.replace("\\", "/"))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return "/".join(part.rstrip(_CLIENT_NAME_STRIP) for part in text.split("/")).casefold()
+
+
 def _client_artifact_class(relative: str) -> str | None:
-    """Restated `cisco_toolkit.distribution_verify.client_artifact_class`, with the fixture root."""
+    """Restated `cisco_toolkit.distribution_verify.client_artifact_class`."""
     if relative in _CLIENT_ARTIFACT_EXCEPTIONS:
         return None
-    folded = relative.replace("\\", "/").casefold()
+    folded = _client_name_path(relative)
     leaf = folded.rsplit("/", 1)[-1]
-    fixture_root = _CLIENT_CAPTURE_FIXTURE_ROOT.casefold()
     for key, match, pattern in _CLIENT_ARTIFACT_NAME_CLASSES:
         pattern = pattern.casefold()
         if match == "suffix":
@@ -474,16 +520,54 @@ def _client_artifact_class(relative: str) -> str | None:
             hit = leaf == pattern
         elif match == "leaf-prefix":
             hit = leaf.startswith(pattern)
+        elif match == "contains":
+            hit = pattern in leaf
         elif match == "capture":
-            hit = (
-                leaf.startswith(pattern)
-                and leaf.endswith(".txt")
-                and not folded.startswith(fixture_root)
-            )
+            hit = leaf.startswith(pattern) and leaf.endswith(".txt")
         else:
             raise ValueError(f"unknown client-artifact match {match!r} for {key!r}")
         if hit:
             return key
+    return None
+
+
+def _fixture_digest(data: bytes) -> str:
+    """Content digest of a reviewed fixture over LF-normalised bytes (checkout-EOL independent)."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _parse_capture_fixture_manifest(data: bytes) -> dict[str, str]:
+    """`<sha256>  <path>` lines; every path an exact `tests/fixtures/` path, listed once."""
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError(f"invalid capture fixture manifest: {_CLIENT_FIXTURE_MANIFEST}") from exc
+    entries: dict[str, str] = {}
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([0-9a-f]{64})  (tests/fixtures/[^\s\\]+)", line)
+        if match is None or match.group(2) in entries:
+            raise ValueError(
+                f"invalid capture fixture manifest entry at {_CLIENT_FIXTURE_MANIFEST}:{lineno}"
+            )
+        entries[match.group(2)] = match.group(1)
+    return entries
+
+
+def _capture_fixture_manifest(root: Path) -> dict[str, str]:
+    path = root.joinpath(*_CLIENT_FIXTURE_MANIFEST.parts)
+    if not os.path.lexists(path):
+        return {}
+    return _parse_capture_fixture_manifest(_read_bounded(path, _MAX_CONFIG_BYTES))
+
+
+def _fixture_exemption(relative: str, artifact_class: str | None,
+                       manifest: dict[str, str]) -> str | None:
+    """The pinned digest when `relative` is a reviewed synthetic fixture of an exemptible class."""
+    if artifact_class in _CLIENT_FIXTURE_EXEMPTIBLE_CLASSES and relative in manifest:
+        return manifest[relative]
     return None
 
 
@@ -1211,6 +1295,7 @@ def _inspect_index_blobs(
     fallback_hostname_hashes: set[str],
     fallback_authoritative_binaries: dict[str, tuple[str, int]],
     fallback_official_contracts: dict[str, dict],
+    fallback_fixture_manifest: dict[str, str] | None = None,
 ) -> tuple[list[str], dict[str, tuple[str, str]]]:
     """Inspect the immutable staged bytes that the next commit would contain."""
     entries, violations = _git_index_entries(root)
@@ -1270,6 +1355,17 @@ def _inspect_index_blobs(
                 _MAX_CONFIG_BYTES,
             )
         )
+    fixture_manifest = dict(fallback_fixture_manifest or {})
+    if _CLIENT_FIXTURE_MANIFEST.as_posix() in entries:
+        fixture_manifest = _parse_capture_fixture_manifest(
+            _indexed_required_blob(
+                root,
+                _CLIENT_FIXTURE_MANIFEST,
+                entries,
+                sizes,
+                _MAX_CONFIG_BYTES,
+            )
+        )
 
     marker_patterns = _client_marker_patterns()
     for relative, (mode, object_id) in sorted(entries.items()):
@@ -1283,10 +1379,11 @@ def _inspect_index_blobs(
             violations.append(f"denied indexed path: {relative}")
             continue
         artifact_class = _client_artifact_class(relative)
-        if artifact_class == "snapshot":
+        fixture_digest = _fixture_exemption(relative, artifact_class, fixture_manifest)
+        if fixture_digest is None and artifact_class == "snapshot":
             violations.append(f"non-synthetic snapshot is indexed: {relative}")
             continue
-        if artifact_class is not None:
+        if fixture_digest is None and artifact_class is not None:
             violations.append(
                 "client-bearing artifact type is indexed: "
                 f"{relative} ({artifact_class})"
@@ -1313,6 +1410,11 @@ def _inspect_index_blobs(
             )
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             violations.append(f"indexed file is unreadable: {relative} ({exc})")
+            continue
+        if fixture_digest is not None and _fixture_digest(data) != fixture_digest:
+            violations.append(
+                f"indexed capture fixture differs from its reviewed digest: {relative}"
+            )
             continue
 
         if relative in official_contracts:
@@ -1395,12 +1497,14 @@ def inspect_tracked_tree(
                 _MAX_CONFIG_BYTES,
             )
         )
+        fixture_manifest = _capture_fixture_manifest(root)
         if include_index:
             index_violations, index_entries = _inspect_index_blobs(
                 root,
                 fallback_hostname_hashes=known_hostname_hashes,
                 fallback_authoritative_binaries=authoritative_binaries,
                 fallback_official_contracts=official_contracts,
+                fallback_fixture_manifest=fixture_manifest,
             )
             violations.extend(index_violations)
             nonregular_modes = {
@@ -1456,10 +1560,11 @@ def inspect_tracked_tree(
             violations.append(f"denied tracked path: {relative}")
             continue
         artifact_class = _client_artifact_class(relative)
-        if artifact_class == "snapshot":
+        fixture_digest = _fixture_exemption(relative, artifact_class, fixture_manifest)
+        if fixture_digest is None and artifact_class == "snapshot":
             violations.append(f"non-synthetic snapshot is tracked: {relative}")
             continue
-        if artifact_class is not None:
+        if fixture_digest is None and artifact_class is not None:
             violations.append(
                 f"client-bearing artifact type is tracked: {relative} ({artifact_class})"
             )
@@ -1518,6 +1623,11 @@ def inspect_tracked_tree(
             data = _read_bounded(disk_path, _MAX_TEXT_BYTES)
         except (OSError, ValueError) as exc:
             violations.append(f"candidate file is unreadable: {relative} ({exc})")
+            continue
+        if fixture_digest is not None and _fixture_digest(data) != fixture_digest:
+            violations.append(
+                f"tracked capture fixture differs from its reviewed digest: {relative}"
+            )
             continue
         try:
             text = data.decode("utf-8", errors="strict").casefold()
