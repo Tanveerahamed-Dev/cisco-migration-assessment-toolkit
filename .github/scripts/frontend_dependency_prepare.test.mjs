@@ -1,7 +1,8 @@
 /** Pure synthetic policy controls. Hosted only; no network, npm resolution or package execution. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { admitCandidate, admitLock, admitMetadata, dependencyDiff, planManifest, registryUrl, strictJson } from "./frontend_dependency_prepare.mjs";
+import { admitCandidate, admitLock, admitMetadata, dependencyDiff, metadataMember, outputMember, planManifest, registryEvidence,
+  registryUrl, strictJson } from "./frontend_dependency_prepare.mjs";
 
 if (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")
   throw new Error("Preparation guard tests require GitHub-hosted execution");
@@ -144,6 +145,29 @@ test("refused direct drift still has a nonpromoting complete graph observation",
   assert.equal(diff.status, "UNAPPROVED_GRAPH_OBSERVATION");
   assert.equal(diff.direct.find((row) => row.name === "three").after, "0.186.1");
   assert.ok(diff.changed_packages.some((row) => row.path === "node_modules/three"));
+});
+test("output members are a closed census: fixed names and metadata/01.json to metadata/32.json only", () => {
+  for (const name of ["preparation.json", "npm-version.stdout.log", "npm-lock-only.stderr.log", "selected-metadata.json",
+    "dependency-diff.json", "candidate.patch", "patch.stderr.log", "candidate/package.json", "candidate/package-lock.json",
+    "metadata/01.json", "metadata/32.json"]) assert.equal(outputMember(name), name);
+  for (const name of ["metadata/00.json", "metadata/33.json", "metadata/1.json", "metadata/01.json.tgz", "../preparation.json",
+    "metadata/../preparation.json", "/tmp/preparation.json", "candidate/node_modules/x.js", "candidate\\package.json",
+    "preparation.json\0", "", 1]) assert.throws(() => outputMember(name), /Undeclared preparation output member/);
+  assert.equal(metadataMember(1), "metadata/01.json"); assert.equal(metadataMember(32), "metadata/32.json");
+  for (const index of [0, 33, 1.5, "1", -1]) assert.throws(() => metadataMember(index), /outside the plan bound/);
+  for (let index = 1; index <= 32; index += 1) assert.equal(outputMember(metadataMember(index)), metadataMember(index));
+});
+test("registry evidence is admitted before it is written: 200, bounded, one strict JSON object", () => {
+  const body = Buffer.from('{"name":"react","version":"2.0.0"}');
+  assert.equal(registryEvidence(200, body).version, "2.0.0");
+  assert.throws(() => registryEvidence(404, body), /unavailable/);
+  assert.throws(() => registryEvidence(301, body), /unavailable/);
+  for (const text of ["<html>not json</html>", '["an","array"]', '"text"', "null", '{"a":1,"a":2}', '{"a":1}tail'])
+    assert.throws(() => registryEvidence(200, Buffer.from(text)));
+  assert.throws(() => registryEvidence(200, Buffer.from([0xff, 0xfe, 0x7b, 0x7d])));
+  assert.equal(registryEvidence(200, Buffer.concat([body, Buffer.alloc(2 * 1024 * 1024 - body.length, 0x20)])).name, "react");
+  assert.throws(() => registryEvidence(200, Buffer.alloc(2 * 1024 * 1024 + 1, 0x20)), /byte buffer within its bound/);
+  assert.throws(() => registryEvidence(200, '{"name":"react"}'), /byte buffer within its bound/);
 });
 test("strict JSON preserves ordinary values and rejects escaped duplicate keys", () => {
   assert.equal(strictJson(Buffer.from('{"name":"ok","nested":[1,true,null]}')).name, "ok");

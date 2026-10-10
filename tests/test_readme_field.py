@@ -358,10 +358,11 @@ def test_the_scope_section_is_exactly_its_own_section():
 def test_the_scope_section_names_the_link_the_cockpit_really_renders():
     """The engineer is told which link to click; the SPA owns its text (pages/Snapshot.tsx
     AtlasScopeLink), and the guide must quote it exactly or the engineer looks for a link that
-    is not there."""
+    is not there. The link renders through ScopeEntryLink (components/ScopePreview.tsx), the one
+    Scope link, whose children are the link text."""
     spa = (ROOT / "webapp" / "frontend" / "src" / "pages" / "Snapshot.tsx").read_text(encoding="utf-8")
     component = spa.split("function AtlasScopeLink", 1)[1].split("\n}\n", 1)[0]
-    rendered = re.search(r">\s*(?:\S+\s+)?(Open in Atlas Scope)\s*</a>", component)
+    rendered = re.search(r">\s*(?:\S+\s+)?(Open in Atlas Scope)\s*</(?:a|ScopeEntryLink)>", component)
     assert rendered, "AtlasScopeLink no longer renders its link text where this test reads it"
     assert f'"{rendered.group(1)}"' in _scope_section()
 
