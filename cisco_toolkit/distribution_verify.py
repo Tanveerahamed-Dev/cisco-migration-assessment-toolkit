@@ -115,16 +115,153 @@ _FORBIDDEN_PARTS = {
     "research_lane",
     "tests",
 }
-_FORBIDDEN_SUFFIXES = (
-    ".db",
-    ".sqlite",
-    ".sqlite3",
-    ".docx",
-    ".pptx",
-    ".xlsx",
-    ".precert.json",
-    ".precert-readiness.json",
+# Client-bearing artifact NAME classes (W65): the ONE owner both privacy gates consume.
+#
+# Every name shape the engine, AssessHub or Atlas writes whose bytes can carry client evidence
+# (hostnames, addresses, configuration, inventory, engagement identity), with the producer that
+# writes it. Rows are ``(key, match, pattern, producer)``. Matching is case-insensitive, and
+# ``match`` is one of:
+#
+# * ``suffix``: the path ends with ``pattern``;
+# * ``leaf``: the basename equals ``pattern``;
+# * ``leaf-prefix``: the basename starts with ``pattern``;
+# * ``capture``: a raw command capture, whose basename starts with ``pattern`` and ends with
+#   ``.txt``. The committed-tree gate exempts ``tests/`` (reviewed synthetic fixtures, the same
+#   exception as the ``!tests/**`` negations in ``.gitignore``); archives never ship ``tests/``.
+#
+# Before W65 each gate kept its own hand-written suffix list, and the ``.protocol-assurance.json``,
+# ``.comparison.json``, ``.trend-comparisons.json`` and ``.phase_timings.json`` sidecars (every one
+# of them names client devices) were in neither. Consumers: ``_privacy_violations`` below (wheel
+# and sdist members) and ``.github/scripts/verify_repository_privacy.py`` (the committed tree). That
+# gate is stdlib-only and runs before any install, so it restates ``(key, match, pattern)``, the
+# exceptions and the matcher. ``tests/test_client_artifact_census.py`` pins the restatement equal,
+# requires ``.gitignore`` to ignore every class, and classifies every engine write site
+# (``tests/client_artifact_census.py``) against this table, so a new sidecar fails CI until it is
+# named here or declared non-client there.
+CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
+    # Documents and workbooks.
+    ("word-document", "suffix", ".docx",
+     "docmeta.ARTIFACT_SPECS DOCX writers (engine CLI and AssessHub) and their *_redacted copies"),
+    ("presentation", "suffix", ".pptx", "deck.write_executive_deck_pptx"),
+    ("workbook", "suffix", ".xlsx",
+     "COLLECT_PARSE_V3_23_0 _stage_finalize._save_workbook; html.write_diff_workbook and "
+     "html.write_campaign_workbook"),
+    # Engine JSON sidecars of one run.
+    ("snapshot", "suffix", ".snapshot.json", "COLLECT_PARSE_V3_23_0 _stage_finalize._publish_snapshot"),
+    ("protocol-assurance-export", "suffix", ".protocol-assurance.json",
+     "COLLECT_PARSE_V3_23_0 _stage_finalize: uncapped per-device protocol evidence"),
+    ("pre-change-certificate", "suffix", ".precert.json", "COLLECT_PARSE_V3_23_0 main (--compare)"),
+    ("readiness-certificate", "suffix", ".precert-readiness.json", "precert.main"),
+    ("comparison-receipt", "suffix", ".comparison.json",
+     "COLLECT_PARSE_V3_23_0 main (--compare): the full receipt, embedding the certificate"),
+    ("trend-comparisons", "suffix", ".trend-comparisons.json",
+     "COLLECT_PARSE_V3_23_0 main (--trend): every adjacent comparison receipt"),
+    ("phase-timings", "suffix", ".phase_timings.json",
+     "COLLECT_PARSE_V3_23_0 _stage_finalize: phase labels name devices ('interface rows (<host>)')"),
+    ("run-manifest", "suffix", ".run_manifest.json", "COLLECT_PARSE_V3_23_0 _stage_finalize"),
+    ("incomplete-marker", "suffix", ".incomplete.json", "COLLECT_PARSE_V3_23_0 _write_incomplete_marker"),
+    ("redaction-receipt", "suffix", ".redaction.json",
+     "webapp.backend.ingest._promote_verified_delivery"),
+    # Rendered views.
+    ("explorer", "suffix", "_explorer.html", "html.write_html_explorer via COLLECT_PARSE_V3_23_0 main"),
+    ("topology-mermaid", "leaf", "topology.mmd", "excel.write_topology_diagram"),
+    ("topology-graphviz", "leaf", "topology.dot", "excel.write_topology_diagram"),
+    # Logs, databases and local state.
+    ("engine-log", "suffix", ".log", "COLLECT_PARSE_V3_23_0 setup_logging (engine_log_path)"),
+    ("database", "suffix", ".db", "webapp.backend.storage.Store: assesshub.db and its backups"),
+    ("database-sqlite", "suffix", ".sqlite", "AssessHub database (alternative extension)"),
+    ("database-sqlite3", "suffix", ".sqlite3", "AssessHub database (alternative extension)"),
+    ("database-wal", "suffix", ".db-wal", "SQLite write-ahead companion of a client database"),
+    ("database-shm", "suffix", ".db-shm", "SQLite shared-memory companion of a client database"),
+    ("database-journal", "suffix", ".db-journal", "SQLite rollback journal of a client database"),
+    ("database-backup-partial", "suffix", ".db.partial",
+     "webapp.backend.storage.Store._boot_hardening backup staging"),
+    ("engagement-gate-state", "leaf", "engagement-state.json",
+     "gate_state.save_store: engagement identity, approvers and reasons"),
+    ("query-log", "leaf", "query_log.jsonl", "recall.log_query: real queries can name client tokens"),
+    # Collection inputs and evidence.
+    ("devices-inventory", "leaf", "devices.json",
+     "operator inventory with credentials; webapp.backend.ingest writes one per job"),
+    ("collection-device-info", "leaf", "device_info.json", "COLLECT_PARSE_V3_23_0 collect"),
+    ("collection-command-index", "leaf", "command_index.json", "COLLECT_PARSE_V3_23_0 collect"),
+    ("collection-capture-meta", "suffix", "_capture_meta.json",
+     "COLLECT_PARSE_V3_23_0 collect (capture_integrity.CAPTURE_META_FILENAME)"),
+    ("capture-show", "capture", "show_", "COLLECT_PARSE_V3_23_0 collect (COMMANDS_* show commands)"),
+    ("capture-get-system", "capture", "get_system_", "COLLECT_PARSE_V3_23_0 collect (FortiGate)"),
+    ("capture-aws", "capture", "aws_", "COLLECT_PARSE_V3_23_0 collect (cloud CLI)"),
+    ("capture-moquery", "capture", "moquery_", "rest_collect (APIC) and COMMANDS_* offline names"),
+    ("capture-api", "capture", "api_", "rest_collect (FMC, ISE) and COMMANDS_* offline names"),
+    ("capture-ers", "capture", "ers_", "rest_collect (ISE ERS) and COMMANDS_* offline names"),
+    ("capture-dataservice", "capture", "dataservice_",
+     "rest_collect (vManage) and COMMANDS_* offline names"),
+    # Field-redaction markers (they quote the run's own refusal and gap reasons).
+    ("unsafe-marker", "leaf", "DO-NOT-SEND-NOT-REDACTED.txt",
+     "webapp.backend.ingest._mark_output_unsafe"),
+    ("incomplete-set-marker", "leaf", "INCOMPLETE-SET.txt",
+     "webapp.backend.ingest._mark_output_incomplete"),
+    ("incomplete-set-fallback", "leaf", "INCOMPLETE-SET-ATLAS.txt",
+     "webapp.backend.ingest._mark_output_incomplete"),
+    # Same-directory staging a crash can leave behind, holding a client artifact's bytes.
+    ("atomic-staging", "suffix", ".tmp",
+     "COLLECT_PARSE_V3_23_0 _write_json_atomic, gate_state.save_store, webapp.backend.ingest"),
+    ("receipt-staging-html", "suffix", ".tmp.html",
+     "COLLECT_PARSE_V3_23_0 _atomic_receipt_refresh (staged explorer)"),
+    ("receipt-previous-html", "suffix", ".previous.html",
+     "COLLECT_PARSE_V3_23_0 _atomic_receipt_refresh (displaced explorer)"),
+    ("receipt-authority-probe", "leaf-prefix", ".protocol-receipt-authority-",
+     "COLLECT_PARSE_V3_23_0 _verify_bound_receipt_surface"),
+    ("redaction-staging", "suffix", ".redacting", "html.redact_collection_dir"),
 )
+CLIENT_ARTIFACT_MATCHES = ("suffix", "leaf", "leaf-prefix", "capture")
+#: Exact paths that match a class but are reviewed synthetic product assets that must ship.
+CLIENT_ARTIFACT_EXCEPTIONS = frozenset({
+    "cisco_toolkit/blast_radius_explorer.html",       # the explorer template: no fleet embedded
+    "webapp/sample_data/sample_fleet.snapshot.json",  # the engine-built synthetic sample fleet
+})
+#: The committed tree's reviewed synthetic capture fixtures live here (repository gate only).
+CLIENT_CAPTURE_FIXTURE_ROOT = "tests/"
+_CLIENT_ARTIFACT_FOLDED = tuple(
+    (key, match, pattern.casefold()) for key, match, pattern, _producer in CLIENT_ARTIFACT_NAME_CLASSES
+)
+
+
+def client_artifact_class(relative: str, *, capture_fixture_root: str | None = None) -> str | None:
+    """Return the ``CLIENT_ARTIFACT_NAME_CLASSES`` key ``relative`` falls in, else ``None``.
+
+    ``relative`` is a POSIX path relative to the repository or archive root. Only the
+    repository gate passes ``capture_fixture_root``; archive members get no fixture exception.
+    """
+    if relative in CLIENT_ARTIFACT_EXCEPTIONS:
+        return None
+    folded = relative.replace("\\", "/").casefold()
+    leaf = folded.rsplit("/", 1)[-1]
+    fixture_root = capture_fixture_root.casefold() if capture_fixture_root else None
+    for key, match, pattern in _CLIENT_ARTIFACT_FOLDED:
+        if match == "suffix":
+            hit = folded.endswith(pattern)
+        elif match == "leaf":
+            hit = leaf == pattern
+        elif match == "leaf-prefix":
+            hit = leaf.startswith(pattern)
+        elif match == "capture":
+            hit = (
+                leaf.startswith(pattern)
+                and leaf.endswith(".txt")
+                and not (fixture_root and folded.startswith(fixture_root))
+            )
+        else:
+            raise ValueError(f"unknown client-artifact match {match!r} for {key!r}")
+        if hit:
+            return key
+    return None
+
+
+# The suffix classes, kept under the historical name for the proof's
+# ``privacy_boundary.forbidden_suffixes_applied`` measurement.
+_FORBIDDEN_SUFFIXES = tuple(
+    pattern for _key, match, pattern, _producer in CLIENT_ARTIFACT_NAME_CLASSES if match == "suffix"
+)
+_SAMPLE_SNAPSHOT = "webapp/sample_data/sample_fleet.snapshot.json"
 _EXPECTED_CONSOLE_SCRIPTS = {
     "assesshub": "webapp.backend.serve:main",
     "cisco-assess": "COLLECT_PARSE_V3_23_0:main",
@@ -1496,13 +1633,10 @@ def _privacy_violations(names: set[str], *, allow_sample_snapshot: bool = True) 
         if any(part in _FORBIDDEN_PARTS for part in path.parts):
             violations.append(name)
             continue
-        lowered = name.lower()
-        if lowered.endswith(_FORBIDDEN_SUFFIXES):
+        if client_artifact_class(name) is not None:
             violations.append(name)
             continue
-        if lowered.endswith(".snapshot.json") and not (
-            allow_sample_snapshot and name == "webapp/sample_data/sample_fleet.snapshot.json"
-        ):
+        if not allow_sample_snapshot and name == _SAMPLE_SNAPSHOT:
             violations.append(name)
     return violations
 
@@ -3073,6 +3207,7 @@ def verify_archives(
                 "sdist_member_names_checked": len(sdist_names),
                 "forbidden_path_parts_applied": len(_FORBIDDEN_PARTS),
                 "forbidden_suffixes_applied": len(_FORBIDDEN_SUFFIXES),
+                "client_artifact_name_classes_applied": len(CLIENT_ARTIFACT_NAME_CLASSES),
             },
             # The coverage set the headline verdict is settled against: the bytes
             # that really ship, both archives, with the build-generated members

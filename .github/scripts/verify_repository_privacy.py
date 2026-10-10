@@ -27,17 +27,64 @@ _DENIED_PATHS = (
     re.compile(r"^docs/universality-gap-audit-raw\.json$", re.IGNORECASE),
     re.compile(r"^docs/wave-(?:findings|triage)-.+\.md$", re.IGNORECASE),
 )
-_DENIED_SUFFIXES = (
-    ".docx",
-    ".pptx",
-    ".xlsx",
-    ".precert.json",
-    ".precert-readiness.json",
+# Client-bearing artifact NAME classes (W65). The owner is
+# `cisco_toolkit/distribution_verify.py :: CLIENT_ARTIFACT_NAME_CLASSES`, which also carries each
+# class's producer. This gate is stdlib-only and runs before any install, so it restates the
+# `(key, match, pattern)` triples, the exceptions and the matcher, and
+# `tests/test_client_artifact_census.py` pins the restatement equal to the owner. Edit the owner
+# first. Matching is case-insensitive; see the owner for the four match kinds.
+_CLIENT_ARTIFACT_NAME_CLASSES = (
+    ("word-document", "suffix", ".docx"),
+    ("presentation", "suffix", ".pptx"),
+    ("workbook", "suffix", ".xlsx"),
+    ("snapshot", "suffix", ".snapshot.json"),
+    ("protocol-assurance-export", "suffix", ".protocol-assurance.json"),
+    ("pre-change-certificate", "suffix", ".precert.json"),
+    ("readiness-certificate", "suffix", ".precert-readiness.json"),
+    ("comparison-receipt", "suffix", ".comparison.json"),
+    ("trend-comparisons", "suffix", ".trend-comparisons.json"),
+    ("phase-timings", "suffix", ".phase_timings.json"),
+    ("run-manifest", "suffix", ".run_manifest.json"),
+    ("incomplete-marker", "suffix", ".incomplete.json"),
+    ("redaction-receipt", "suffix", ".redaction.json"),
+    ("explorer", "suffix", "_explorer.html"),
+    ("topology-mermaid", "leaf", "topology.mmd"),
+    ("topology-graphviz", "leaf", "topology.dot"),
+    ("engine-log", "suffix", ".log"),
+    ("database", "suffix", ".db"),
+    ("database-sqlite", "suffix", ".sqlite"),
+    ("database-sqlite3", "suffix", ".sqlite3"),
+    ("database-wal", "suffix", ".db-wal"),
+    ("database-shm", "suffix", ".db-shm"),
+    ("database-journal", "suffix", ".db-journal"),
+    ("database-backup-partial", "suffix", ".db.partial"),
+    ("engagement-gate-state", "leaf", "engagement-state.json"),
+    ("query-log", "leaf", "query_log.jsonl"),
+    ("devices-inventory", "leaf", "devices.json"),
+    ("collection-device-info", "leaf", "device_info.json"),
+    ("collection-command-index", "leaf", "command_index.json"),
+    ("collection-capture-meta", "suffix", "_capture_meta.json"),
+    ("capture-show", "capture", "show_"),
+    ("capture-get-system", "capture", "get_system_"),
+    ("capture-aws", "capture", "aws_"),
+    ("capture-moquery", "capture", "moquery_"),
+    ("capture-api", "capture", "api_"),
+    ("capture-ers", "capture", "ers_"),
+    ("capture-dataservice", "capture", "dataservice_"),
+    ("unsafe-marker", "leaf", "DO-NOT-SEND-NOT-REDACTED.txt"),
+    ("incomplete-set-marker", "leaf", "INCOMPLETE-SET.txt"),
+    ("incomplete-set-fallback", "leaf", "INCOMPLETE-SET-ATLAS.txt"),
+    ("atomic-staging", "suffix", ".tmp"),
+    ("receipt-staging-html", "suffix", ".tmp.html"),
+    ("receipt-previous-html", "suffix", ".previous.html"),
+    ("receipt-authority-probe", "leaf-prefix", ".protocol-receipt-authority-"),
+    ("redaction-staging", "suffix", ".redacting"),
 )
-_ALLOWED_SNAPSHOTS = {
-    "tests/golden/snapshot.json",
+_CLIENT_ARTIFACT_EXCEPTIONS = frozenset({
+    "cisco_toolkit/blast_radius_explorer.html",
     "webapp/sample_data/sample_fleet.snapshot.json",
-}
+})
+_CLIENT_CAPTURE_FIXTURE_ROOT = "tests/"
 _KNOWN_HOST_HASHES = PurePosixPath(
     ".github/privacy/known_client_hostname_sha256.txt"
 )
@@ -410,6 +457,34 @@ _HOST_TOKEN = re.compile(
     r"(?<![A-Za-z0-9-])[A-Za-z0-9][A-Za-z0-9-]{2,}(?![A-Za-z0-9-])"
 )
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _client_artifact_class(relative: str) -> str | None:
+    """Restated `cisco_toolkit.distribution_verify.client_artifact_class`, with the fixture root."""
+    if relative in _CLIENT_ARTIFACT_EXCEPTIONS:
+        return None
+    folded = relative.replace("\\", "/").casefold()
+    leaf = folded.rsplit("/", 1)[-1]
+    fixture_root = _CLIENT_CAPTURE_FIXTURE_ROOT.casefold()
+    for key, match, pattern in _CLIENT_ARTIFACT_NAME_CLASSES:
+        pattern = pattern.casefold()
+        if match == "suffix":
+            hit = folded.endswith(pattern)
+        elif match == "leaf":
+            hit = leaf == pattern
+        elif match == "leaf-prefix":
+            hit = leaf.startswith(pattern)
+        elif match == "capture":
+            hit = (
+                leaf.startswith(pattern)
+                and leaf.endswith(".txt")
+                and not folded.startswith(fixture_root)
+            )
+        else:
+            raise ValueError(f"unknown client-artifact match {match!r} for {key!r}")
+        if hit:
+            return key
+    return None
 
 
 def _metadata_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -1207,17 +1282,15 @@ def _inspect_index_blobs(
         if any(pattern.search(relative) for pattern in _DENIED_PATHS):
             violations.append(f"denied indexed path: {relative}")
             continue
-        lowered = relative.casefold()
-        if lowered.endswith(_DENIED_SUFFIXES):
-            violations.append(
-                f"client-bearing artifact type is indexed: {relative}"
-            )
-            continue
-        if (
-            lowered.endswith(".snapshot.json")
-            and relative not in _ALLOWED_SNAPSHOTS
-        ):
+        artifact_class = _client_artifact_class(relative)
+        if artifact_class == "snapshot":
             violations.append(f"non-synthetic snapshot is indexed: {relative}")
+            continue
+        if artifact_class is not None:
+            violations.append(
+                "client-bearing artifact type is indexed: "
+                f"{relative} ({artifact_class})"
+            )
             continue
         if file_size > _MAX_TEXT_BYTES:
             kind = (
@@ -1382,12 +1455,14 @@ def inspect_tracked_tree(
         if any(pattern.search(relative) for pattern in _DENIED_PATHS):
             violations.append(f"denied tracked path: {relative}")
             continue
-        lowered = relative.casefold()
-        if lowered.endswith(_DENIED_SUFFIXES):
-            violations.append(f"client-bearing artifact type is tracked: {relative}")
-            continue
-        if lowered.endswith(".snapshot.json") and relative not in _ALLOWED_SNAPSHOTS:
+        artifact_class = _client_artifact_class(relative)
+        if artifact_class == "snapshot":
             violations.append(f"non-synthetic snapshot is tracked: {relative}")
+            continue
+        if artifact_class is not None:
+            violations.append(
+                f"client-bearing artifact type is tracked: {relative} ({artifact_class})"
+            )
             continue
 
         if relative in official_public_sources:

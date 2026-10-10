@@ -9,6 +9,20 @@ The current set contains 253 canonical private-estate hostnames plus three
 observed inventory/reporting variants. Public fixtures use deterministic
 `MERIDIAN-*` aliases and reserved `example.net` domains.
 
+Client-bearing artifact names are refused by class. The one owner is
+`cisco_toolkit/distribution_verify.py :: CLIENT_ARTIFACT_NAME_CLASSES`: every
+name shape the engine, AssessHub or Atlas writes whose bytes can carry client
+evidence (office deliverables, the engine JSON sidecars, explorer and topology
+views, logs, databases, local state, collection captures and sidecars,
+field-redaction markers, and crash-left staging names), each with its producer.
+The wheel/sdist audit consumes it directly. This guard is stdlib-only and runs
+before any install, so it restates the classes and the matcher;
+`tests/test_client_artifact_census.py` pins the restatement equal, requires
+`.gitignore` to ignore every class, and classifies every engine write site
+(`python tests/client_artifact_census.py`) so that a new sidecar fails CI until
+it is registered or declared non-client. Reviewed synthetic capture fixtures are
+allowed under `tests/` only.
+
 The guard inspects both tracked files and non-ignored untracked files—the exact
 set that could enter the next commit. Ordinary files must be bounded, strict
 UTF-8 text; opaque/binary content is refused even when it contains no NUL byte.

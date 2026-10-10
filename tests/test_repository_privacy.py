@@ -273,6 +273,49 @@ def test_guard_rejects_other_snapshots_and_office_artifacts(tmp_path):
     assert any("report.xlsx" in item for item in violations)
 
 
+def test_guard_rejects_engine_sidecars_in_both_index_and_worktree_scans(tmp_path):
+    """W65: the sidecars both gates used to miss, plus one of each other match kind.
+
+    Every name class comes from `cisco_toolkit.distribution_verify.CLIENT_ARTIFACT_NAME_CLASSES`;
+    `tests/test_client_artifact_census.py` checks the full registry. This drives the real scan
+    loops, so a class the matcher knows but a loop skips still fails.
+    """
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    sidecars = {
+        "out/Acme.protocol-assurance.json": "protocol-assurance-export",
+        "out/Acme.comparison.json": "comparison-receipt",
+        "out/Acme.trend-comparisons.json": "trend-comparisons",
+        "out/Acme.phase_timings.json": "phase-timings",
+        "out/Acme.run_manifest.json": "run-manifest",
+        "out/Acme.incomplete.json": "incomplete-marker",
+        "out/topology.mmd": "topology-mermaid",
+        "out/assesshub.db": "database",
+        "out/.protocol-receipt-authority-1.html": "receipt-authority-probe",
+        "collection/CORE-1/show_version.txt": "capture-show",
+    }
+    for relative in sidecars:
+        _track(root, relative, "{}\n")
+    violations = module.inspect_tracked_tree(root)
+    for relative, key in sidecars.items():
+        for scope in ("indexed", "tracked"):
+            expected = f"client-bearing artifact type is {scope}: {relative} ({key})"
+            assert expected in violations, (expected, violations)
+
+
+def test_guard_allows_capture_fixtures_only_under_tests(tmp_path):
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    _track(root, "tests/fixtures/show_version.txt", "Cisco IOS Software\n")
+    _track(root, "docs/show_version.txt", "Cisco IOS Software\n")
+    violations = module.inspect_tracked_tree(root)
+    assert not any("tests/fixtures/show_version.txt" in item for item in violations)
+    assert (
+        "client-bearing artifact type is tracked: docs/show_version.txt (capture-show)"
+        in violations
+    )
+
+
 def test_guard_rejects_hashed_private_hostname_without_storing_it(tmp_path):
     module = _privacy_module()
     root = _repo(tmp_path)

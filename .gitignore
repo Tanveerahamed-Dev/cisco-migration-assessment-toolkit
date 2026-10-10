@@ -81,6 +81,35 @@ show_*.txt
 *.precert.json
 *.precert-readiness.json
 
+# W65: every client-bearing artifact name class is owned by
+# cisco_toolkit/distribution_verify.py :: CLIENT_ARTIFACT_NAME_CLASSES, and
+# tests/test_client_artifact_census.py requires this file to ignore each class.
+# These are the classes no rule above already covered: the remaining engine
+# JSON sidecars, client databases and their SQLite companions, local state,
+# field-redaction markers, and the same-directory staging names a crash leaves.
+*.protocol-assurance.json
+*.comparison.json
+*.trend-comparisons.json
+*.incomplete.json
+*.redaction.json
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.partial
+engagement-state.json
+query_log.jsonl
+DO-NOT-SEND-NOT-REDACTED.txt
+INCOMPLETE-SET.txt
+INCOMPLETE-SET-ATLAS.txt
+*.tmp
+*.tmp.html
+*.previous.html
+.protocol-receipt-authority-*
+*.redacting
+
 # Raw-collection metadata and non-CLI controller/cloud captures do not share the
 # `show_` prefix. Cover both producer filenames and conventional evidence roots.
 *_capture_meta.json
