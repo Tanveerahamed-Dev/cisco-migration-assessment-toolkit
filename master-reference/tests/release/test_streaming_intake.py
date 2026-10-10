@@ -993,9 +993,11 @@ def test_a_refused_streamed_document_keeps_the_one_shot_message_and_leaves_no_fi
         release_pipeline._streamed_json_artifact(tmp_path / "masked", "index.json", index, "role")
 
 
+# Every secret shape is assembled at run time, so this file never carries a
+# literal match for the compiler's own forbidden-content scan of the tree.
 _SECRETS = (
-    "-----BEGIN RSA PRIVATE KEY-----",
-    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN " + "RSA PRIVATE KEY-----",
+    "-----BEGIN " + "PRIVATE KEY-----",
     "AKIA" + "A" * 16,
     "ASIA" + "Z9" * 8,
     "ghp_" + "a" * 36,
