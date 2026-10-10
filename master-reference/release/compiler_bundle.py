@@ -39,6 +39,7 @@ from compiler.binary_review import (
     receipt_set_digest as binary_review_receipt_set_digest,
 )
 from compiler.compiler import RECORD_GROUPS
+from compiler.packing import effective_chunk_size
 from compiler.policy import CENSUS_DEPTH_IDENTITY
 from compiler.schema_validation import (
     CensusDepthValidationError,
@@ -1810,8 +1811,11 @@ def load_compiler_bundle(
             raise ReleaseInputError(f"compiler group is malformed: {group_name}")
         chunks = group["chunks"]
         group_census = census_groups.setdefault(group_name, {"chunks": 0, "bytes": 0})
-        effective_chunk_size = 1 if group_name == "source_text" else chunk_size
-        full_chunks, final_chunk_size = divmod(group["record_count"], effective_chunk_size)
+        # Canonical records per chunk come from the one packing owner
+        # (``compiler/packing.py``). Output packed under an earlier rule, such
+        # as ``symbols`` at the shared 2,000 per chunk, is refused here.
+        group_chunk_size = effective_chunk_size(group_name, chunk_size)
+        full_chunks, final_chunk_size = divmod(group["record_count"], group_chunk_size)
         expected_chunk_count = full_chunks + (1 if final_chunk_size else 0)
         if group["chunk_count"] != len(chunks) or len(chunks) != expected_chunk_count:
             raise ReleaseInputError(f"compiler chunk packing is not canonical: {group_name}")
@@ -1830,9 +1834,9 @@ def load_compiler_bundle(
                     f"compiler chunk owner path is not canonical: group={group_name}; index={expected_index}"
                 )
             expected_record_count = (
-                effective_chunk_size
+                group_chunk_size
                 if expected_index + 1 < expected_chunk_count
-                else group["record_count"] - (effective_chunk_size * (expected_chunk_count - 1))
+                else group["record_count"] - (group_chunk_size * (expected_chunk_count - 1))
             )
             if chunk_receipt["record_count"] != expected_record_count:
                 raise ReleaseInputError(f"compiler chunk packing is not canonical: {group_name}")

@@ -172,8 +172,8 @@ jobs:
       # W64a one-time A/B proof for the round-2 head, removed again by the
       # follow-up that re-derives the ceiling from this run's measurement
       # (docs/w64a-streaming-intake-2026-10-10.md). It extracts this head's
-      # master-reference/ with git archive, overlays the pre-W64a version
-      # (2ac65468) of every production file W64a changes, rebuilds the family
+      # master-reference/ with git archive, overlays main's version (2c927d02:
+      # W64c packing, no W64a) of every production file W64a changes, rebuilds the family
       # from the same compiler output, and requires every member to be
       # byte-identical to the streamed build's. The checkout is not touched.
       - name: Prove the streamed family equals the pre-W64a build (W64a, temporary)
@@ -183,7 +183,7 @@ jobs:
           mkdir -p "$legacy"
           git archive --format=tar HEAD master-reference | tar -x -C "$legacy"
           for file in master-reference/atlas_privacy.py master-reference/release/compiler_bundle.py master-reference/release/model.py master-reference/release/pipeline.py master-reference/release/pdf_report.py; do
-            git show "2ac654684767effb894282817c6cf85a54931a58:$file" > "$legacy/$file"
+            git show "2c927d0209e4c4928c3f29d8747d648f930ddade:$file" > "$legacy/$file"
           done
           status=0
           (cd "$legacy/master-reference" && /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" python -m cli build --repo-root "$GITHUB_WORKSPACE" --compiler-output "$RUNNER_TEMP/atlas-compiler" --output "$RUNNER_TEMP/atlas-release-pre-w64a") || status=$?

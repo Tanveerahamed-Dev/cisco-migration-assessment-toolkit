@@ -36,35 +36,35 @@ validates every chunk of every group in sorted order, with every check unchanged
 only decides what the returned bundle keeps:
 
 - **Validator groups.** The groups the cross-group validators read are held in full during
-  validation, whether the caller retains them or not (`_VALIDATION_RECORD_GROUPS`, line 312). These
+  validation, whether the caller retains them or not (`_VALIDATION_RECORD_GROUPS`, line 313). These
   are `files`, `symbols`, `structural_entities`, `routes`, `components`, `binaries`, `claims`,
   `consequential_claim_facets` and the two graph groups.
-- **Guarded reads.** The validators read them through `_ValidatorRecords` (line 1372), which raises
+- **Guarded reads.** The validators read them through `_ValidatorRecords` (line 1373), which raises
   on any group it does not hold, so a group that is not held can never read as empty. A test scans
   every literal validator read against the held set.
 - **`lines`** is reduced to one mapping tuple per record: path, line, semantic entity, mapping
   basis, file id and explanation depth, each exactly as `item.get` returned it. Repeated strings
-  share one object (lines 1915-1926).
+  share one object (lines 1919-1930).
 - **`source_text`** is reduced to one custody tuple per record: path, source basis, blob, digest and
   byte count. It also keeps the full records of the fixed validator paths, which are the
   consequential-claim contract, its content paths and the binary-review receipt
-  (`_SOURCE_TEXT_VALIDATION_PATHS`, line 329; lines 1927-1942). Those records are passed to the
-  two validators that read them explicitly, as `validator_source_texts` (lines 2046 and 2055). They
+  (`_SOURCE_TEXT_VALIDATION_PATHS`, line 330; lines 1931-1946). Those records are passed to the
+  two validators that read them explicitly, as `validator_source_texts` (lines 2050 and 2059). They
   never stand in for the whole group under its name.
-- **Stable IDs.** Every stable ID of every group enters one global set (lines 1909-1912).
+- **Stable IDs.** Every stable ID of every group enters one global set (lines 1913-1916).
 - **One chunk at a time.** Each chunk's bytes and parse are released before the next chunk is
-  read (line 1945).
+  read (line 1949).
 - **Unretained groups.** A group that is not retained raises if it is read through
-  `bundle.records`. It never reads as empty: `RetainedRecords`, line 1394.
-- **`CompilerBundle.iter_records(group)`** (line 1464) re-reads a group from disk through
+  `bundle.records`. It never reads as empty: `RetainedRecords`, line 1395.
+- **`CompilerBundle.iter_records(group)`** (line 1465) re-reads a group from disk through
   `_receipt_json`. That re-checks the canonical path with no symlink component, the bytes, the
   SHA-256 and the canonical JSON bytes, against the intake snapshot.
 - **The intake snapshot** is read-only (`MappingProxyType`). It holds `chunk_receipts`,
   `input_receipts` (every validated input except the manifest) and the exact manifest bytes,
-  `manifest_raw` (lines 2197-2220).
+  `manifest_raw` (lines 2201-2224).
 - **New refusal.** A ledger that declares `parsing.line_records` different from the `lines` group's
   `record_count` is refused: "compiler completeness line-record count differs from the line group"
-  (line 1755). The PDF renders that value. This predates W64a.
+  (line 1756). The PDF renders that value. This predates W64a.
 
 **Pipeline (`release/pipeline.py`).** `build_release` loads with `RELEASE_RETAINED_GROUPS`
 (line 91), the groups the builders read:
@@ -147,20 +147,20 @@ Line numbers refer to this head.
 
 | Invariant | Where it holds |
 |---|---|
-| Exhaustive privacy scan of every chunk byte, refusing rather than sampling | `compiler_bundle.py:1846-1869`, unchanged except that the decoded text is now a temporary instead of a local |
-| Exhaustive privacy scan of every identity-depth blob | `compiler_bundle.py:518-581`, `2019` |
-| Receipt check before parsing: path, bytes, SHA-256, canonical bytes | `_receipt_json`, `compiler_bundle.py:1527-1569` |
-| Re-reads re-verify the receipt | `iter_records` (`compiler_bundle.py:1464`); preservation `VerifiedFile.read` (`model.py:205`) at `pipeline.py:1640`, again at every archive write (`model.py:287`), and every written member re-read (`model.py:300`) |
-| Per-chunk `records_digest` | `compiler_bundle.py:1903` |
-| Group digest and strictly ascending IDs | `compiler_bundle.py:1946-1951` |
-| Global ID uniqueness across all 23 groups, retained or not | set at 1909-1912; refused at 1987, after the graph checks, with the same message as before |
-| Canonical packing | `compiler_bundle.py:1811-1838` (owned by W64c for its chunk-size change; W64a reads no chunk size of its own) |
-| Envelope, key fence, tracked schema | `compiler_bundle.py:1870-1890` |
-| Structural denominators | `compiler_bundle.py:1744-1767` |
-| `source_text` custody, for every record | `compiler_bundle.py:2028-2038`, over the custody tuples |
-| Structural roots | `compiler_bundle.py:2057-2123` |
-| GUI dossiers | `compiler_bundle.py:2125-2144` |
-| Line mapping | `compiler_bundle.py:2146-2179`, over the mapping tuples |
+| Exhaustive privacy scan of every chunk byte, refusing rather than sampling | `compiler_bundle.py:1850-1873`, unchanged except that the decoded text is now a temporary instead of a local |
+| Exhaustive privacy scan of every identity-depth blob | `compiler_bundle.py:519-582`, `2023` |
+| Receipt check before parsing: path, bytes, SHA-256, canonical bytes | `_receipt_json`, `compiler_bundle.py:1528-1570` |
+| Re-reads re-verify the receipt | `iter_records` (`compiler_bundle.py:1465`); preservation `VerifiedFile.read` (`model.py:205`) at `pipeline.py:1640`, again at every archive write (`model.py:287`), and every written member re-read (`model.py:300`) |
+| Per-chunk `records_digest` | `compiler_bundle.py:1907` |
+| Group digest and strictly ascending IDs | `compiler_bundle.py:1950-1955` |
+| Global ID uniqueness across all 23 groups, retained or not | set at 1913-1916; refused at 1991, after the graph checks, with the same message as before |
+| Canonical packing | `compiler_bundle.py:1812-1842`, through `compiler/packing.py :: effective_chunk_size` (W64c, the one owner of per-group caps; W64a reads no chunk size of its own) |
+| Envelope, key fence, tracked schema | `compiler_bundle.py:1874-1894` |
+| Structural denominators | `compiler_bundle.py:1745-1768` |
+| `source_text` custody, for every record | `compiler_bundle.py:2032-2042`, over the custody tuples |
+| Structural roots | `compiler_bundle.py:2061-2127` |
+| GUI dossiers | `compiler_bundle.py:2129-2148` |
+| Line mapping | `compiler_bundle.py:2150-2183`, over the mapping tuples |
 | Exact source before, after and at the end | `pipeline.py:1772`, `2210`, `2303` |
 | Full validation before the output directory exists | load at `pipeline.py:1765`, preservation verify pass at `2040`, `prepare_output` at `2045` |
 | Preservation allowlist equals the validated inputs | `pipeline.py:1630`, now over the intake snapshot |
@@ -174,12 +174,12 @@ Line numbers refer to this head.
   asserted it.
 - The per-record `"compiler {group} record lacks a stable id"` branch of the uniqueness loop could
   not be reached. Every ID is first proven a non-empty string by its chunk's check (lines
-  1891-1902), so it was removed along with the loop.
+  1895-1906), so it was removed along with the loop.
 
 **Stricter for a caller that retains a subset of groups:**
 
 - **Uniqueness** now spans every group. Before, it spanned only the retained ones.
-- **Graph validation** (`_validate_graph_projection`, line 584, and the Graphify local-identity
+- **Graph validation** (`_validate_graph_projection`, line 585, and the Graphify local-identity
   scan) now always reads the real `graph_nodes` and `graph_edges` records. Before, a caller that
   did not retain them was validated against `[]`.
 - **Unchanged for the default "retain all" callers:** continuity, `verify-claim-review` and the
@@ -251,8 +251,8 @@ equals the pre-W64a build". It ran the pre-W64a `cli build` on the same compiler
 required `diff -r` of the two families to be empty. The 3 GiB commit removed it.
 
 Round 2 re-adds it in the shape the independent review asked for. It extracts this head's
-`master-reference/` with `git archive` and overlays only the pre-W64a version (`2ac65468`) of each
-production file W64a changes:
+`master-reference/` with `git archive` and overlays only main's version (`2c927d02`: W64c's packing,
+no W64a) of each production file W64a changes:
 
 - `atlas_privacy.py`
 - `release/compiler_bundle.py`
@@ -303,7 +303,7 @@ measured bound:
 
 - 5.81 GiB + 10.9 x (C − 2.01 GiB) ≤ 12.9 GiB, W63's budget;
 - so C is about 2.66 GiB: `_MAX_COMPILER_CHUNK_BYTES = 2720 * 1024 * 1024` (2,852,126,720 B,
-  line 151).
+  line 152).
 
 It holds even without the round-2 streaming of the index. Today's 2,176,891,984-byte census is
 76.3 % of it. Because round 2 removes the 8x term, the ceiling may be re-derived upward, but only

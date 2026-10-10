@@ -57,6 +57,7 @@ if str(MASTER_REFERENCE) not in sys.path:
 import release.compiler_bundle as compiler_bundle  # noqa: E402
 import release.pipeline as release_pipeline  # noqa: E402
 from atlas_privacy import FORBIDDEN_CONTENT_RULES, ForbiddenContentScan, forbidden_byte_findings  # noqa: E402
+from compiler.packing import effective_chunk_size  # noqa: E402
 from release.compiler_bundle import REQUIRED_GROUPS, load_compiler_bundle  # noqa: E402
 from release.model import (  # noqa: E402
     ReleaseInputError,
@@ -252,6 +253,7 @@ def _write_rechunked_compiler(
     """Re-pack a canonical compiler output at another chunk size.
 
     The ledgers are copied unchanged; ``replacements`` swaps whole groups.
+    Records per chunk come from the one packing owner, ``compiler/packing.py``.
     Every chunk and the manifest stay canonical, so the result is accepted.
     """
 
@@ -265,7 +267,7 @@ def _write_rechunked_compiler(
         if rows is None:
             rows = _group_records(source, group_name)
         rows = sorted(rows, key=lambda row: str(row["id"]))
-        size = 1 if group_name == "source_text" else chunk_size
+        size = effective_chunk_size(group_name, chunk_size)
         chunks: list[dict[str, Any]] = []
         slices = [rows[start : start + size] for start in range(0, len(rows), size)]
         for index, chunk_rows in enumerate(slices):

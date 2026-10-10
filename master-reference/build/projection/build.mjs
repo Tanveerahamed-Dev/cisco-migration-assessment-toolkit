@@ -249,6 +249,26 @@ const COMPILER_JSON_MAX_BYTES = 32 * 1024 * 1024;
 const COMPILER_JSON_MAX_DEPTH = 128;
 const COMPILER_JSON_MAX_VALUES = 2_000_000;
 const COMPILER_JSON_MAX_STRING_BYTES = 8 * 1024 * 1024;
+// Canonical compiler chunk packing. The one owner is
+// master-reference/compiler/packing.py :: GROUP_CHUNK_RECORD_CAPS; this is its
+// restatement, and tests/compiler/test_chunk_packing.py requires the two to be
+// equal. A group named here packs at most this many records per chunk (the
+// lower of the cap and the manifest's shared chunk_size); every other group
+// packs at chunk_size. Output packed under an earlier rule (symbols at 2,000
+// per chunk) is refused as a malformed group descriptor.
+export const COMPILER_GROUP_CHUNK_RECORD_CAPS = Object.freeze({
+  source_text: 1,
+  symbols: 500,
+});
+
+export function compilerEffectiveChunkSize(group, chunkSize) {
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) return Number.NaN;
+  const cap = Object.hasOwn(COMPILER_GROUP_CHUNK_RECORD_CAPS, group)
+    ? COMPILER_GROUP_CHUNK_RECORD_CAPS[group]
+    : undefined;
+  return cap === undefined ? chunkSize : Math.min(chunkSize, cap);
+}
+
 const COMPILER_FLOAT_TOKEN_PATHS = new WeakMap();
 const ATLAS_STABLE_ID_PATTERN = /^urn:atlas:[a-z-]+:[0-9a-f]{24}$/;
 const CONSEQUENTIAL_CLAIM_FACET_RECORD_KEYS = Object.freeze(
@@ -2253,7 +2273,7 @@ async function loadGroup(
   const descriptor = manifest.groups?.[group];
   if (!descriptor) throw new Error(`compiler manifest is missing required group: ${group}`);
   const records = [];
-  const effectiveChunkSize = group === "source_text" ? 1 : manifest.chunk_size;
+  const effectiveChunkSize = compilerEffectiveChunkSize(group, manifest.chunk_size);
   const expectedChunkCount =
     Number.isSafeInteger(descriptor?.record_count) &&
     Number.isSafeInteger(effectiveChunkSize) &&
