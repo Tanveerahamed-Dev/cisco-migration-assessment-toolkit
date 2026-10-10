@@ -93,7 +93,7 @@ jobs:
         run: python -I -B tools/graphify_guarded.py --probe
       # The default suite includes webapp/tests, whose /scope pins run the REAL Atlas Scope compiler and
       # bundler; ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1 makes a missing node/npm ci fail those pins, never skip.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
@@ -164,7 +164,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
@@ -296,7 +296,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
