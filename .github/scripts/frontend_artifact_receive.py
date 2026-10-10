@@ -35,7 +35,9 @@ REPO_ID = 1259432553
 WORKFLOW_ID = 292173399
 WORKFLOW = ".github/workflows/webapp-ci.yml"
 JOB_NAME = "Frontend test + type-check + build"
-ADMISSION_BLOB = "1f178d00cb24ae06e9d4583b48155582963ae074"
+# Re-pinned 2026-10-09 (W55) for the closed output-member census and admit-before-write registry evidence;
+# the exported admission functions this receiver bridges to are unchanged.
+ADMISSION_BLOB = "76ab9aeb399554b697091417f04cb9e940a99cad"
 PREP = ".github/scripts/frontend_dependency_prepare.mjs"
 PREP_TEST = ".github/scripts/frontend_dependency_prepare.test.mjs"
 BRIDGE = ".github/scripts/frontend_candidate_admit.mjs"

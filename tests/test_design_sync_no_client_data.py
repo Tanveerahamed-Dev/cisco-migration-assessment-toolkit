@@ -71,12 +71,25 @@ _BARREL_HELPER_EXPORTS = frozenset(
 # render every worst-case blast radius through them -- and the reviewed 21-card visual contract
 # (webapp/frontend/visual-e2e/design-cards.visual.spec.ts, with its hosted windows-2025 pixel baselines) covers them
 # there. Promoting either to a card would need its own hosted-captured baselines and a new visual contract.
+# ScopePreviewTag, WithScopePreview and ScopeEntryLink (W62, src/components/ScopePreview.tsx) are the Atlas Scope
+# preview qualifier, the wrapper that places it beside a non-link entry to Scope (the embedded 3-D investigation
+# heading) and the one link to Scope (the snapshot header's and Tools page's Open in Atlas Scope links). They exist
+# only to sit beside those page-level entries, whose links appear only when the server reports a usable Scope build,
+# so a standalone card would show a qualifier detached from the entry it qualifies. Their words and the link's
+# aria-describedby tie (the qualifier, then the server's detail) are pinned by src/components/ScopePreview.test.tsx.
+# src/scopeEntries.test.ts derives every Scope entry site from the TypeScript program and checks each one: a link must
+# be ScopeEntryLink, any other entry must name one of these qualifiers through aria-describedby, and programmatic
+# navigation to Scope is refused. Promoting any of them to a card would need its own hosted-captured baselines and a
+# new visual contract.
 _DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
     "ComparisonDecision",
     "ImpactLowerBoundTag",
     "ImpactValue",
     "ObservedL2TrialInput",
+    "ScopeEntryLink",
+    "ScopePreviewTag",
     "Topology3D",
+    "WithScopePreview",
 })
 
 _BARREL_EXPORT_BLOCK = re.compile(

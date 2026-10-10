@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { comparisonExportDocument, downloadJsonDocument } from "../receiptExport";
 import type {
   CompareResponse,
   CutoverGate,
@@ -134,18 +135,11 @@ function safeFilename(value: string) {
 }
 
 function downloadCompleteJson(value: CompareResponse, filename: string) {
-  // Export the complete API response, never the capped arrays rendered below. The detached receipt
-  // and its digest stay beside every decision input for portable/offline reconciliation.
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
-  const href = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = href;
-  anchor.download = safeFilename(filename);
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(href);
+  // Export the complete comparison, never the capped arrays rendered below. The detached receipt
+  // and its digest stay beside every decision input for portable/offline reconciliation. The
+  // display-only impacts_view this component may render (an execution receipt, a trend pair) is a
+  // separate prop and never part of the file (receiptExport.ts).
+  downloadJsonDocument(comparisonExportDocument(value), safeFilename(filename));
 }
 
 const COMPLETE_EXPORT_NOTE = "Complete JSON export includes all received rows.";

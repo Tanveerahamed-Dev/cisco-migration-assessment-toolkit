@@ -60,6 +60,7 @@ import { IconClose } from "../ui/icons";
 import { CoverageStatement, IconButton, NotObserved } from "../ui/primitives";
 import { CoverageBar } from "./CoverageBar";
 import { returnFocus } from "./focus-return";
+import { PreviewLabel } from "./PreviewLabel";
 import "./chrome.css";
 
 /** The claim-strength vocabulary, with the token each badge is drawn in (design brief §6.4). */
@@ -255,6 +256,9 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
   return (
     <footer ref={barRef} id="status-bar" className="app__status sb" style={datasetLine ? { flexWrap: "wrap" } : undefined}>
       {datasetLine ? <DatasetBanner /> : null}
+      {/* Atlas Scope is a labelled preview (PreviewLabel.tsx). A direct child of the bar, never inside
+          `.sb__rest`, so no width scrolls it out of view; it wraps instead, like the coverage group. */}
+      <PreviewLabel />
       <div className="sb__group" role="group" aria-label="Collection coverage">
         <span className="sb__key">coverage</span>
         {denominator(

@@ -40,6 +40,49 @@ updates:
       - dependency-name: "vite"
         versions: ["8.3.x"]
 
+  # Atlas Scope ships inside the Atlas bundle (atlas-scope/dist-hub); its lock is audited by the
+  # required Dependency audit job but had no version-update proposals. Same policy as the
+  # AssessHub frontend: majors are planned migrations, and the 2026-10-08 owner deferrals apply
+  # where this project carries the package. three/@types/three are NOT deferred here: this lock
+  # already pins 0.186.0, so a 0.186.x ignore would only suppress patch releases of the adopted line.
+  # Proposals edit atlas-scope/package.json and its lock, so they belong to the Atlas Scope holder.
+  - package-ecosystem: npm
+    directory: /atlas-scope
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      atlas-scope:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # 2026-10-08 owner deferral: Playwright 1.63 browser/visual-baseline changes are reviewed separately.
+      - dependency-name: "@playwright/test"
+        versions: ["1.63.x"]
+      # 2026-10-08 owner deferral: Vite 8.3.x pending separate review; later lines remain eligible.
+      - dependency-name: "vite"
+        versions: ["8.3.x"]
+
+  # The Master Reference toolchain (Vinext, Wrangler, Miniflare) has exact pins and identity-scoped
+  # overrides bound by its source/lock and release SBOM contracts, so every proposal is review input
+  # that must re-pass those contracts; it is never merged on a green bump alone. It carries neither
+  # three nor Playwright, so only the Vite deferral applies.
+  - package-ecosystem: npm
+    directory: /master-reference
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      master-reference:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # 2026-10-08 owner deferral: Vite 8.3.x pending separate review; later lines remain eligible.
+      - dependency-name: "vite"
+        versions: ["8.3.x"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
