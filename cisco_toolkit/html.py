@@ -4207,11 +4207,14 @@ _REDACT_SWEEP_VOID_NEXT = {
 #: ... or preceded DIRECTLY by one of these: an IOS route-map 'set|match community <BGP community>', a
 #: Junos BGP 'policy-options community' / 'then|from community', and the PUBLIC / key-ID compounds
 #: 'ntp trusted-key <id>', 'ssh-key ssh-rsa <public key>', 'public-key'; the syslog SSH2 'using crypto
-#: cipher <name>' and the IKEv2 'Auth sign: PSK'.
+#: cipher <name>' and the IKEv2 'Auth sign: PSK'. Round 4: the engine's own security check ID 'weak-user-pw'
+#: after 'check' (the punch-list evidence cite 'core1 security check weak-user-pw (fail; ...)', which R9 of
+#: tests/test_punchlist_evidence_refs.py pins byte-identical across redaction).
 _REDACT_SWEEP_VOID_PREV = {"community": frozenset({"set", "match", "policy-options", "then", "from"}),
                            "key": frozenset({"trusted-", "public-", "ssh-", "host-"}),
                            "cipher": frozenset({"crypto"}),
-                           "psk": frozenset({"sign", "verify"})}
+                           "psk": frozenset({"sign", "verify"}),
+                           "weak-user-pw": frozenset({"check"})}
 #: Token characters the allowlist comparison ignores at either end (quotes, brackets, ':', ';', ...).
 _REDACT_SWEEP_EDGE = "\"'`()[]{}<>;:,."
 #: ... and the ones a replacement KEEPS around the placeholder, so a swept JSON, quoted or bracketed

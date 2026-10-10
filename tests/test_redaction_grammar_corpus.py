@@ -1048,3 +1048,18 @@ def test_a_dangling_authorization_scheme_owns_the_next_lines_first_token():
                  "Authorization scheme in use: Bearer\nhostname next",
                  "Authorization: Bearer <redacted>\nhostname next"):
         assert redact(text) == text and not _refused(text), text
+
+
+def test_engine_evidence_cites_survive_redaction():
+    """Hosted CI found that the sweep read the engine's security check ID 'weak-user-pw' (an ASA-style '-pw'
+    compound) as a credential keyword, so `redact_snapshot` rewrote the punch-list evidence cite 'core1 security
+    check weak-user-pw (fail)' -- which tests/test_punchlist_evidence_refs.py pins byte-identical across
+    redaction (R9). The exact ID after 'check' is structure (`_REDACT_SWEEP_VOID_PREV`); the same compound in a
+    configuration line is still a keyword."""
+    redact = html._redact_config_values
+    for line in ("core1 security check weak-user-pw (fail; matched line not retained in the snapshot)",
+                 "core1 security check weak-user-pw (fail: line looked for and not present)",
+                 "core1 security check weak-user-pw (fail)"):
+        assert redact(line) == line and not _refused(line), line
+    assert redact("username ops weak-user-pw Fake99wup") == "username ops weak-user-pw <redacted>"
+    assert _refused("username ops weak-user-pw Fake99wup")

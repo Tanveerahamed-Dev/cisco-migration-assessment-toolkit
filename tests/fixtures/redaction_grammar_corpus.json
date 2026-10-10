@@ -18228,6 +18228,18 @@
    "line": "openssl enc -aes-256-cbc -in a.bin -out b.bin",
    "source": "w60-review-r4:openssl-cipher",
    "main_6390b66c": "openssl enc -aes-256-cbc -in a.bin -out b.bin"
+  },
+  {
+   "platform": "engine",
+   "line": "core1 security check weak-user-pw (fail; matched line not retained in the snapshot)",
+   "source": "w60-review-r4:evidence-cite",
+   "main_6390b66c": "core1 security check weak-user-pw (fail; matched line not retained in the snapshot)"
+  },
+  {
+   "platform": "engine",
+   "line": "core1 security check weak-user-pw (fail: line looked for and not present)",
+   "source": "w60-review-r4:evidence-cite",
+   "main_6390b66c": "core1 security check weak-user-pw (fail: line looked for and not present)"
   }
  ],
  "over_redacted": [

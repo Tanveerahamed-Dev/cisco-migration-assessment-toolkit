@@ -238,6 +238,16 @@ The compiler re-encodes every JSON value as UTF-8, and three corpus rows carry a
 surrogate escape (`\udca0`, `\udc96`). The file now spells each such character `{{U+DCxx}}`, and the test
 module's loader (`_restore_surrogates`) restores it, so every row is exactly the string it was.
 
+**An over-redaction from rounds 1-3 that hosted CI found.** In job `114153703476`, the py3.11 suite failed one
+test: `tests/test_punchlist_evidence_refs.py::test_redaction_leaves_every_evidence_pointer_byte_identical`. The
+`-pw` compound keyword rule (ASA `radius-common-pw`) read the engine's own security check ID `weak-user-pw` as a
+credential keyword. `redact_snapshot` then rewrote the evidence cite `core1 security check weak-user-pw (fail)`
+to `... (<redacted>)`, and R9 of that test pins evidence pointers byte-identical across redaction. The exact ID
+directly after `check` is now structure (`_REDACT_SWEEP_VOID_PREV`, restated in the verifier). In a
+configuration line the same compound is still a keyword. Across the golden and sample `--redact` views, exactly
+three leaves each change against round 3: the two punch-list cites and one health-score deduction cite, all back
+to main's text. Two must-keep rows pin the cites.
+
 ## The defect (unchanged history)
 
 The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced
@@ -389,11 +399,12 @@ evidence-retention branch (W58r2) digests it at import time.
   running git-archived 6390b66c (not a frozen copy of its code). The 1,018 carried values were
   re-captured from a fresh archive and match byte for byte.
 - **Round 4 (`w60-review-r4`):** 29 must-redact rows (16 net-snmp vectors, 4 positional lines, 8 scheme
-  wraps, 1 encode_keychange), 20 must-keep negative controls and 2 over-redacted rows. The negative controls
+  wraps, 1 encode_keychange), 22 must-keep negative controls (20 look-alike lines and the two engine evidence
+  cites) and 2 over-redacted rows. The negative controls
   are look-alike lines: another tool's `-A`/`-X`/`-c` (curl, ssh, iptables, tar, ping), a daemon's
   `-c FILE`, `proxy-arp`, a noAuthNoPriv `trapsess`, an empty-key `usmUser`, a USM MIB walk, `smuxpeer`
   without a password, `WWW-Authenticate: Basic`, OAuth `token_type`, and scheme prose. The totals are now
-  1,451 must-redact, 166 must-keep, 32 over-redacted and 14 qualifier-shaped rows. main 6390b66c leaves
+  1,451 must-redact, 168 must-keep, 32 over-redacted and 14 qualifier-shaped rows. main 6390b66c leaves
   every round-4 secret in place.
 
 **Measured on the final code** (production functions only, in scratch folders):

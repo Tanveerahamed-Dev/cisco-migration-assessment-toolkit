@@ -525,7 +525,8 @@ _SWEEP_VOID_NEXT = {
 _SWEEP_VOID_PREV = {"community": frozenset({"set", "match", "policy-options", "then", "from"}),
                     "key": frozenset({"trusted-", "public-", "ssh-", "host-"}),
                     "cipher": frozenset({"crypto"}),
-                    "psk": frozenset({"sign", "verify"})}
+                    "psk": frozenset({"sign", "verify"}),
+                    "weak-user-pw": frozenset({"check"})}
 _SWEEP_EDGE = "\"'`()[]{}<>;:,."
 _SWEEP_KEEP = "\"'`()[]{};:,."
 _SWEEP_ALLOW = frozenset({
