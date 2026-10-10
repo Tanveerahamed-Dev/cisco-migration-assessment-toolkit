@@ -16,7 +16,9 @@ import {
 } from "../../app/atlas/GraphSelection.mjs";
 import {
   buildProjection,
+  COMPILER_GROUP_CHUNK_RECORD_CAPS,
   COMPILER_RECORD_KEYS_BY_GROUP,
+  compilerEffectiveChunkSize,
   generatedModuleSpecifierLiteral,
   isPythonStripEmpty,
   javascriptStringLiteral,
@@ -610,9 +612,16 @@ async function mutateCompilerGroup(input, group, mutate, { reconcileCount = true
   }
   envelope.record_count = envelope.records.length;
   envelope.records_digest = digestObject(envelope.records.map((record) => record.id));
-  const partitions = group === "source_text"
-    ? envelope.records.map((record) => [record])
-    : [envelope.records];
+  // Partition at the canonical records per chunk (build.mjs restates the
+  // compiler/packing.py owner). An emptied group other than source_text keeps
+  // one declared empty chunk, which the empty-chunk refusal test relies on.
+  const partitionSize = compilerEffectiveChunkSize(group, manifest.chunk_size);
+  assert.ok(Number.isSafeInteger(partitionSize) && partitionSize > 0, "fixture chunk_size must stay valid");
+  const partitions = [];
+  for (let index = 0; index < envelope.records.length; index += partitionSize) {
+    partitions.push(envelope.records.slice(index, index + partitionSize));
+  }
+  if (partitions.length === 0 && group !== "source_text") partitions.push([]);
   const chunks = [];
   for (const [index, partition] of partitions.entries()) {
     const chunkEnvelope = {
@@ -660,7 +669,7 @@ async function rewriteCompilerPacking(input, chunkSize, targetGroup, mutateParti
       const envelope = JSON.parse(await readFile(join(input, ...chunk.path.split("/")), "utf8"));
       records.push(...envelope.records);
     }
-    const effectiveChunkSize = group === "source_text" ? 1 : chunkSize;
+    const effectiveChunkSize = compilerEffectiveChunkSize(group, chunkSize);
     let partitions = [];
     for (let index = 0; index < records.length; index += effectiveChunkSize) {
       partitions.push(records.slice(index, index + effectiveChunkSize));
@@ -3782,6 +3791,76 @@ test("projection enforces canonical compiler chunk packing and stable-ID order",
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  }
+});
+
+test("compiler chunk packing caps symbols at 500 and source_text at 1 and leaves every other group unchanged", () => {
+  assert.ok(Object.isFrozen(COMPILER_GROUP_CHUNK_RECORD_CAPS));
+  const groups = Object.keys(COMPILER_RECORD_KEYS_BY_GROUP);
+  for (const group of Object.keys(COMPILER_GROUP_CHUNK_RECORD_CAPS)) {
+    assert.ok(groups.includes(group), `${group} is a compiler record group`);
+  }
+  assert.equal(compilerEffectiveChunkSize("symbols", 2_000), 500);
+  assert.equal(compilerEffectiveChunkSize("symbols", 100_000), 500);
+  assert.equal(compilerEffectiveChunkSize("symbols", 500), 500);
+  assert.equal(compilerEffectiveChunkSize("symbols", 3), 3);
+  assert.equal(compilerEffectiveChunkSize("source_text", 2_000), 1);
+  assert.equal(compilerEffectiveChunkSize("source_text", 1), 1);
+  const uncapped = groups.filter((group) => !Object.hasOwn(COMPILER_GROUP_CHUNK_RECORD_CAPS, group));
+  assert.equal(uncapped.length, groups.length - Object.keys(COMPILER_GROUP_CHUNK_RECORD_CAPS).length);
+  for (const group of uncapped) {
+    for (const chunkSize of [1, 3, 500, 501, 2_000, 100_000]) {
+      assert.equal(compilerEffectiveChunkSize(group, chunkSize), chunkSize, `${group} at ${chunkSize}`);
+    }
+  }
+  // Inherited object keys are not caps.
+  assert.equal(compilerEffectiveChunkSize("constructor", 2_000), 2_000);
+  assert.equal(compilerEffectiveChunkSize("__proto__", 2_000), 2_000);
+  // A malformed shared size never yields a usable packing, even for a capped group.
+  for (const chunkSize of [0, -1, 1.5, "2000", null, undefined, Number.NaN, 2 ** 53, true]) {
+    for (const group of ["symbols", "source_text", "files"]) {
+      assert.ok(Number.isNaN(compilerEffectiveChunkSize(group, chunkSize)), `${group} at ${String(chunkSize)}`);
+    }
+  }
+});
+
+test("projection accepts symbols packed at the cap and refuses the former shared-size packing", async () => {
+  const cap = COMPILER_GROUP_CHUNK_RECORD_CAPS.symbols;
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-symbol-packing-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    await mutateCompilerGroup(input, "symbols", (envelope) => {
+      const template = envelope.records[0];
+      for (let index = envelope.records.length; index <= cap; index += 1) {
+        const id = stableId("symbol", `w64c-packing-${index}`);
+        envelope.records.push({
+          ...structuredClone(template),
+          id,
+          stable_urn: id,
+          name: `w64c_packing_${index}`,
+          qualified_name: `w64c_packing_${index}`,
+        });
+      }
+    });
+    const packed = JSON.parse(await readFile(join(input, "manifest.json"), "utf8"));
+    assert.ok(cap < packed.chunk_size, "the symbols cap must bind below the shared chunk size");
+    assert.equal(packed.groups.symbols.record_count, cap + 1);
+    assert.deepEqual(packed.groups.symbols.chunks.map((chunk) => chunk.record_count), [cap, 1]);
+    const accepted = await buildProjection({ input, output: join(scratch, "projection-capped") });
+    assert.equal(accepted.groupCounts.symbols, cap + 1);
+
+    // The former rule packed symbols at the shared chunk_size: one chunk here.
+    await rewriteCompilerPacking(input, packed.chunk_size, "symbols", (partitions) => [partitions.flat()]);
+    const former = JSON.parse(await readFile(join(input, "manifest.json"), "utf8"));
+    assert.deepEqual(former.groups.symbols.chunks.map((chunk) => chunk.record_count), [cap + 1]);
+    const output = join(scratch, "projection-former");
+    await assert.rejects(
+      buildProjection({ input, output }),
+      /compiler group descriptor is malformed: symbols/,
+    );
+    await assert.rejects(readFile(join(output, "projection-manifest.json")));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 
