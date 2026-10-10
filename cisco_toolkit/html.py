@@ -4407,19 +4407,54 @@ _REDACT_BANNER_RE = re.compile(_g(
 _REDACT_ARGV_CMD_RE = re.compile(_g(
     r"(?<![\w.-])(?:[\w.~/-]{0,128}/)?(?P<cmd>curl|sshpass|mysql|mysqldump|mysqladmin|mysqlimport"
     r"|snmp(?:bulk)?(?:walk|get|getnext|set|trap|inform|table|delta|status|df|netstat|test|usm|vacm)"
+    # net-snmp-create-v3-user(1) / net-snmp-config --create-snmpv3-user: '-a AUTHPASS -x PRIVPASS';
+    # encode_keychange(1): '-O OLDPASS -N NEWPASS' (round 4)
+    r"|net-snmp-create-v3-user|net-snmp-config|encode_keychange"
     r"|ipmitool|smbclient|net{H}use)"
     r"(?={h}|\Z)"), re.IGNORECASE)
 #: ``userpct``: 'user%PASSWORD' (smbclient); ``netuse``: Windows 'net use <share> <PASSWORD> /user:<u>' --
 #: every operand that is not the share, a drive letter, an option or '*' is the password.
+#: ``protocol`` (net-snmp '-a' / '-x', round 4): the operand is a USM protocol name
+#: (`_REDACT_SNMP_PROTOCOLS`) or, fail safe, a value -- the old 'net-snmp-config --create-snmpv3-user'
+#: syntax spelled '-a AUTHPASS' / '-x PRIVPASS'.
 _REDACT_ARGV_OPTIONS = {
     "curl": (("-u", "userinfo"), ("--user", "userinfo"), ("-U", "userinfo"), ("--proxy-user", "userinfo")),
     "sshpass": (("-p", "value"),),
     "mysql": (("-p", "attached"),),
-    "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value")),
+    # snmpcmd(1): '-c COMMUNITY', '-A AUTHPASS', '-X PRIVPASS', and the USM keys '-3m|-3M|-3k|-3K 0xHEXKEY'
+    "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
+             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+    "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
     "net": (),
 }
+#: NET-SNMP ARGUMENT VECTORS, recognised by STRUCTURE rather than by the name of what carries them (round
+#: 4). net-snmp's SNMPCMD_ARGS (snmpcmd(1)) appear on tool command lines and inside configuration
+#: directives (snmpd.conf(5) 'trapsess [SNMPCMD_ARGS] HOST', 'proxy [-Cn CONTEXTNAME] [SNMPCMD_ARGS] HOST
+#: OID'). A line that holds one of net-snmp's own option+operand pairs -- the version '-v 1|2c|3', the
+#: security level '-l noAuthNoPriv|authNoPriv|authPriv', a USM protocol '-a MD5|SHA[-N]' / '-x DES|AES[-N]'
+#: or a USM key option '-3m|-3M|-3k|-3K' -- is an SNMP argument vector from its first token, whatever
+#: directive, wrapper or log record carries it, and every '-c'/'-A'/'-X'/'-3?' operand on it is a value.
+_REDACT_SNMP_PROTOCOLS = frozenset({
+    "md5", "sha", "sha1", "sha-1", "sha224", "sha-224", "sha256", "sha-256", "sha384", "sha-384", "sha512",
+    "sha-512", "des", "3des", "aes", "aes128", "aes-128", "aes192", "aes-192", "aes256", "aes-256", "aes192c",
+    "aes-192c", "aes256c", "aes-256c"})
+_REDACT_SNMP_ARGV_SHAPE_RE = re.compile(_g(
+    r"(?<!{S})(?:(?:-v{h}*(?:1|2c|3)|-l{h}*(?i:noauthnopriv|authnopriv|authpriv)|-[ax]{h}*(?i:"
+    + "|".join(sorted(map(re.escape, _REDACT_SNMP_PROTOCOLS), key=lambda p: (-len(p), p)))
+    + r"))(?!{S})|-3[mMkK])"))
+#: ... and, for a vector that names no version (snmp.conf defaults), the snmpd.conf(5) directives that take
+#: SNMPCMD_ARGS, at the line start ('informsess' is not a net-snmp directive -- 'trapsess -Ci' sends an
+#: inform -- but a review named it, so it is read the same way).
+_REDACT_SNMP_DIRECTIVE_RE = re.compile(_g(r"(?:trapsess|informsess|proxy)(?={H})"), re.IGNORECASE)
+#: net-snmp POSITIONAL credentials (closed, by field index after the directive word at the line start):
+#: the persistent 'usmUser' line (snmplib/snmpusm.c usm_save_user: status, storage type, engine ID, name,
+#: security name, clone-from, auth protocol, AUTH KEY, priv protocol, PRIV KEY, public string) and
+#: snmpd.conf(5) 'smuxpeer OID PASS'. A field is a bare token or a "quoted" string (read_config.c saves a
+#: printable octet string quoted, blanks included).
+_REDACT_SNMP_POSITIONAL = {"usmuser": (7, 9), "smuxpeer": (1,)}
+_REDACT_SNMP_FIELD_RE = re.compile(_g(r"\"[^\"\r\n]*\"|{S}+"))
 #: 'echo user:PASSWORD | chpasswd' and a PostgreSQL .pgpass line 'host:port:database:user:PASSWORD' (exactly
 #: five fields, a host with a letter, a dot or '*': a MAC address or a time is no .pgpass line).
 _REDACT_CHPASSWD_RE = re.compile(_g(
@@ -4479,7 +4514,9 @@ _REDACT_SWEEP_PREFILTER = re.compile(
     r"cookie|trap|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
     r"groupname:|com2sec|_pw|-pw|credential|pkcs12|----|://|<|sink|cleartext|=\s*des|ldap|lte|pin|"
     r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw|"
-    r"rootpw|bindpw|authtok|chpasswd|ipmitool|smbclient|net\s+use|:(?:\d{1,5}|\*):|pw")   # the CASEFOLDED line
+    r"rootpw|bindpw|authtok|chpasswd|ipmitool|smbclient|net\s+use|:(?:\d{1,5}|\*):|pw|"
+    # round 4: net-snmp argument vectors, directives and positional lines (`_REDACT_SNMP_ARGV_SHAPE_RE`)
+    + _g(r"informsess|proxy|smuxpeer|usmuser|-v{h}*(?:1|2c|3)|-x{h}*(?:3?des|aes)|-3[mk]"))   # CASEFOLDED
 _REDACT_SWEEP_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{24}")    # ... or a run long enough to be high-entropy
 _REDACT_SURROGATE_RIGHT_RE = re.compile(
     re.escape(_REDACT_PLACEHOLDER) + "[\udc80-\udcff]+(?=" + re.escape(_REDACT_PLACEHOLDER) + "|[ \t\x0b\x0c"
@@ -4521,6 +4558,13 @@ _REDACT_DANGLE_HINT_RE = re.compile(r"pass|secret|communit|key|psk|auth|priv|-pw
 #: crossed the line end). The continuation then skips the same words on the next line.
 #: A quoted credential field name that ends its line with ':' -- JSON allows the value on the next line.
 _REDACT_NAME_OPEN_RE = re.compile(_g(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*\Z"""))
+#: An HTTP credential header whose authorization SCHEME ends the line ('Authorization: Bearer' / '<token>',
+#: '"X-Auth-Token": "Basic' / ...; round 4): the scheme owns ONE token (`_REDACT_SWEEP_SCHEMES`), and a wrap
+#: moved it to the next non-blank line, whose first token is then that credential, whatever it spells.
+_REDACT_SCHEME_OPEN_RE = re.compile(_g(
+    r"(?<![A-Za-z0-9_-])(?:(?:proxy-)?authorization|x-[a-z0-9-]{0,64}?(?:token|api-?key|auth[a-z0-9-]{0,32}"
+    r"|secret|password))[\"']?{h}*:{h}*[\"']?(?:" + "|".join(sorted(_REDACT_SWEEP_SCHEMES)) + r"){h}*\Z"),
+    re.IGNORECASE)
 _REDACT_SNMP_HOST_OPEN_RE = re.compile(_g(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
 #: CONFIGURATION COMMAND WORDS (closed, round 3). After an AMBIGUOUS key ID ('ntp server 192.0.2.1 key 1'
 #: followed by more lines) the continuation does not take the first word of the next configuration line
@@ -5085,6 +5129,8 @@ def _redact_dangle(line: str):
         found = _REDACT_NAME_OPEN_RE.search(_redact_sweep_masked(line))
         if found is not None and _redact_credential_name(found.group("k"), True):
             return ("value", [], False)
+    if ":" in line and _REDACT_SCHEME_OPEN_RE.search(_redact_sweep_masked(line)):
+        return ("scheme", [], False)                         # 'Authorization: Bearer' / '<token>'
     dangle = _redact_dangle_tail(line)
     return None if dangle is None else ("value", dangle[0], dangle[1])
 
@@ -5184,7 +5230,17 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
     leading qualifiers (`_REDACT_DANGLE_QUALIFIERS`, or for an 'snmp-server host' clause its addresses and
     words; and the rest of a key size the wrap cut, 'aes 1' / '28'), the first token -- unless it is the
     placeholder or a value-required keyword that starts a clause of its own (a key ID 'key 1' followed by
-    'key-string 7 X'). One token, as origin/main's '\\s+' took one: the rest of the line is its own."""
+    'key-string 7 X'). One token, as origin/main's '\\s+' took one: the rest of the line is its own.
+    After a dangling authorization scheme (kind ``"scheme"``, round 4) the first blank-delimited token is
+    the credential, whatever it spells."""
+    if kind == "scheme":
+        for m in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(line, start):
+            if not m.group(0).strip(_REDACT_SWEEP_EDGE):
+                continue                                     # punctuation alone ('"')
+            if _REDACT_PLACEHOLDER in m.group(0) and _redact_sweep_token_ok(m.group(0)):
+                return None
+            return _redact_core_span(line, m.start(), m.end())
+        return None
     masked = _redact_sweep_masked(line)
     size_cut = len(tail) >= 2 and tail[-2] in _REDACT_SWEEP_SIZE_WORDS and tail[-1].isdigit()
     after_vrf = kind == "snmp-host" and tail[-1:] == ["vrf"]
@@ -5414,7 +5470,7 @@ def _redact_sweep_xml(line: str) -> str:
 def _redact_argv_kind(name: str) -> str:
     """The `_REDACT_ARGV_OPTIONS` entry of a matched command name."""
     folded = name.casefold()
-    return ("snmp" if folded.startswith("snmp") else "mysql" if folded.startswith("mysql")
+    return ("snmp" if "snmp" in folded else "mysql" if folded.startswith("mysql")
             else "net" if folded.startswith("net") else folded)
 
 
@@ -5440,6 +5496,40 @@ def _redact_shell_spans(line: str):
     return spans
 
 
+def _redact_argv_runs(line: str):
+    """``(kind, start)`` of every shell-argument run on ``line``: each command of the closed list
+    (`_REDACT_ARGV_CMD_RE`) from its end, and a net-snmp argument vector -- by its shape
+    (`_REDACT_SNMP_ARGV_SHAPE_RE`) from the line start, or after an SNMPCMD_ARGS directive that starts the
+    line (`_REDACT_SNMP_DIRECTIVE_RE`)."""
+    runs = [(_redact_argv_kind(m.group("cmd")), m.end()) for m in _REDACT_ARGV_CMD_RE.finditer(line)]
+    if "-" in line:
+        directive = _REDACT_SNMP_DIRECTIVE_RE.match(line, _REDACT_LEAD_RE.match(line).end())
+        if directive is not None:
+            runs.append(("snmp", directive.end()))
+        elif _REDACT_SNMP_ARGV_SHAPE_RE.search(line):
+            runs.append(("snmp", 0))
+    return runs
+
+
+def _redact_snmp_positional_spans(line: str):
+    """The credential fields of a net-snmp positional line (`_REDACT_SNMP_POSITIONAL`), by field index: any
+    field there is the value, fail safe, except an empty string ('""') or the placeholder."""
+    lead = _REDACT_LEAD_RE.match(line).end()
+    first = _REDACT_SNMP_FIELD_RE.match(line, lead)
+    slots = _REDACT_SNMP_POSITIONAL.get(first.group(0).casefold()) if first else None
+    if not slots:
+        return []
+    fields = list(_REDACT_SNMP_FIELD_RE.finditer(line, first.end()))
+    spans = []
+    for index in slots:
+        if index < len(fields):
+            a, b = _redact_core_span(line, fields[index].start(), fields[index].end())
+            core = line[a:b]
+            if core != _REDACT_PLACEHOLDER and core.strip(_REDACT_SWEEP_KEEP):
+                spans.append((a, b))
+    return spans
+
+
 def _redact_argv_spans(line: str):
     """The credential operands of the closed shell-argument list (`_REDACT_ARGV_OPTIONS`)."""
     spans = []
@@ -5452,14 +5542,15 @@ def _redact_argv_spans(line: str):
             if sep < 0:
                 return
             a, core = a + sep + 1, core[sep + 1:]
+        if kind == "protocol" and core.casefold() in _REDACT_SNMP_PROTOCOLS:
+            return                                           # '-a SHA', '-x AES': a protocol name
         if core and core != _REDACT_PLACEHOLDER and core.strip(_REDACT_SWEEP_KEEP):
             spans.append((start + a, start + a + len(core)))
 
-    for command in _REDACT_ARGV_CMD_RE.finditer(line):
-        kind_name = _redact_argv_kind(command.group("cmd"))
+    for kind_name, run in _redact_argv_runs(line):
         options = _REDACT_ARGV_OPTIONS[kind_name]
         expect = None
-        for token in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(line, command.end()):
+        for token in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(line, run):
             text = token.group(0)
             if kind_name == "net":
                 if not _redact_netuse_structural(text):
@@ -5539,6 +5630,7 @@ def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bo
         spans.extend(_redact_sweep_bad_tokens(masked, anchor, delim))
     if "-" in line or "net" in line.casefold():
         spans.extend(_redact_argv_spans(line))
+    spans.extend(_redact_snmp_positional_spans(line))
     if ":" in line:
         spans.extend(_redact_shell_spans(line))
     if spans:

@@ -654,17 +654,35 @@ _SWEEP_BANNER_RE = re.compile(_v(
 _SWEEP_ARGV_CMD_RE = re.compile(_v(
     r"(?<![\w.-])(?:[\w.~/-]{0,128}/)?(?P<cmd>curl|sshpass|mysql|mysqldump|mysqladmin|mysqlimport"
     r"|snmp(?:bulk)?(?:walk|get|getnext|set|trap|inform|table|delta|status|df|netstat|test|usm|vacm)"
+    # net-snmp-create-v3-user(1) / net-snmp-config --create-snmpv3-user: '-a AUTHPASS -x PRIVPASS';
+    # encode_keychange(1): '-O OLDPASS -N NEWPASS' (round 4)
+    r"|net-snmp-create-v3-user|net-snmp-config|encode_keychange"
     r"|ipmitool|smbclient|net{H}use)"
     r"(?={h}|\Z)"), re.IGNORECASE)
 _SWEEP_ARGV_OPTIONS = {
     "curl": (("-u", "userinfo"), ("--user", "userinfo"), ("-U", "userinfo"), ("--proxy-user", "userinfo")),
     "sshpass": (("-p", "value"),),
     "mysql": (("-p", "attached"),),
-    "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value")),
+    "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
+             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+    "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
     "net": (),
 }
+#: net-snmp argument vectors by STRUCTURE, SNMPCMD_ARGS directives, and net-snmp positional credentials
+#: (the producer's ``_REDACT_SNMP_*`` rules, restated; round 4).
+_SWEEP_SNMP_PROTOCOLS = frozenset({
+    "md5", "sha", "sha1", "sha-1", "sha224", "sha-224", "sha256", "sha-256", "sha384", "sha-384", "sha512",
+    "sha-512", "des", "3des", "aes", "aes128", "aes-128", "aes192", "aes-192", "aes256", "aes-256", "aes192c",
+    "aes-192c", "aes256c", "aes-256c"})
+_SWEEP_SNMP_ARGV_SHAPE_RE = re.compile(_v(
+    r"(?<!{S})(?:(?:-v{h}*(?:1|2c|3)|-l{h}*(?i:noauthnopriv|authnopriv|authpriv)|-[ax]{h}*(?i:"
+    + "|".join(sorted(map(re.escape, _SWEEP_SNMP_PROTOCOLS), key=lambda p: (-len(p), p)))
+    + r"))(?!{S})|-3[mMkK])"))
+_SWEEP_SNMP_DIRECTIVE_RE = re.compile(_v(r"(?:trapsess|informsess|proxy)(?={H})"), re.IGNORECASE)
+_SWEEP_SNMP_POSITIONAL = {"usmuser": (7, 9), "smuxpeer": (1,)}
+_SWEEP_SNMP_FIELD_RE = re.compile(_v(r"\"[^\"\r\n]*\"|{S}+"))
 _SWEEP_CHPASSWD_RE = re.compile(_v(
     r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
 _SWEEP_PGPASS_RE = re.compile(_v(
@@ -721,6 +739,12 @@ _SWEEP_DANGLE_QUALIFIERS = frozenset({
 _SWEEP_SIZE_WORDS = frozenset({"aes", "des", "3des", "aes-cbc"})
 _SWEEP_DANGLE_HINT_RE = re.compile(r"pass|secret|communit|key|psk|auth|priv|-pw|snmp-server")
 _SWEEP_NAME_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*\Z"""))
+#: A credential header whose authorization scheme ends the line (the producer's ``_REDACT_SCHEME_OPEN_RE``):
+#: the next non-blank line's first token must be the placeholder.
+_SWEEP_SCHEME_OPEN_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9_-])(?:(?:proxy-)?authorization|x-[a-z0-9-]{0,64}?(?:token|api-?key|auth[a-z0-9-]{0,32}"
+    r"|secret|password))[\"']?{h}*:{h}*[\"']?(?:" + "|".join(sorted(_SWEEP_SCHEMES)) + r"){h}*\Z"),
+    re.IGNORECASE)
 _SWEEP_SNMP_HOST_OPEN_RE = re.compile(_v(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
 #: Closed configuration command words (the producer's ``_REDACT_COMMAND_WORDS``) and clause-trailing
 #: words (``_REDACT_CONT_TRAILERS``): exact words, never a shape -- any other word is a wrapped value.
@@ -809,7 +833,9 @@ _SWEEP_PREFILTER = re.compile(
     r"cookie|trap|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
     r"groupname:|com2sec|_pw|-pw|credential|pkcs12|----|://|<|sink|cleartext|=\s*des|ldap|lte|pin|"
     r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw|"
-    r"rootpw|bindpw|authtok|chpasswd|ipmitool|smbclient|net\s+use|:(?:\d{1,5}|\*):|pw")   # the CASEFOLDED line
+    r"rootpw|bindpw|authtok|chpasswd|ipmitool|smbclient|net\s+use|:(?:\d{1,5}|\*):|pw|"
+    # round 4: net-snmp argument vectors, directives and positional lines (`_SWEEP_SNMP_ARGV_SHAPE_RE`)
+    + _v(r"informsess|proxy|smuxpeer|usmuser|-v{h}*(?:1|2c|3)|-x{h}*(?:3?des|aes)|-3[mk]"))   # CASEFOLDED
 _SWEEP_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{24}")    # ... or a run long enough to be high-entropy
 
 #: Compatibility for readers that fingerprint "the verifier grammar" (the D10 evidence-retention branch
@@ -822,7 +848,8 @@ _INLINE_SECRET_RES = tuple(
        _SWEEP_DIGEST_LABEL_RE, _SWEEP_PUBKEY_LABEL_RE, _PEM_BEGIN_RE, _PEM_END_RE, _PUTTY_PRIVATE_RE,
        _TABLE_END_RE, _FORTI_CONFIG_RE, _FORTI_END_RE, _FORTI_SET_NAME_RE, _CHAP_HEADER_RE, _JSON_OPEN_RE,
        _XML_OPEN_RE, _YAML_OPEN_RE]
-    + [header[0] for header in _TABLE_HEADERS])
+    + [header[0] for header in _TABLE_HEADERS]
+    + [_SWEEP_SNMP_ARGV_SHAPE_RE, _SWEEP_SNMP_DIRECTIVE_RE, _SWEEP_SNMP_FIELD_RE, _SWEEP_SCHEME_OPEN_RE])
 
 
 def _cred_token(line: str, pos: int) -> tuple[str, int] | None:
@@ -1129,6 +1156,8 @@ def _sweep_dangle(line: str) -> tuple[str, list[str], bool] | None:
         found = _SWEEP_NAME_OPEN_RE.search(_sweep_masked(line))
         if found is not None and _sweep_credential_name(found.group("k"), True):
             return ("value", [], False)
+    if ":" in line and _SWEEP_SCHEME_OPEN_RE.search(_sweep_masked(line)):
+        return ("scheme", [], False)
     dangle = _sweep_dangle_tail(line)
     return None if dangle is None else ("value", dangle[0], dangle[1])
 
@@ -1217,7 +1246,14 @@ def _sweep_starts_clause(line: str, masked: str, start: int, end: int) -> bool:
 
 def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], start: int = 0,
                                           key_id: bool = False) -> bool:
-    """The first value token a dangling clause continues into must be the placeholder."""
+    """The first value token a dangling clause continues into must be the placeholder (after a dangling
+    authorization scheme: the first blank-delimited token, whatever it spells)."""
+    if kind == "scheme":
+        for match in _SWEEP_ROW_TOKEN_RE.finditer(line, start):
+            if not match.group(0).strip(_SWEEP_EDGE):
+                continue
+            return not (_PLACEHOLDER in match.group(0) and _sweep_token_ok(match.group(0)))
+        return False
     masked = _sweep_masked(line)
     size_cut = len(tail) >= 2 and tail[-2] in _SWEEP_SIZE_WORDS and tail[-1].isdigit()
     after_vrf = kind == "snmp-host" and tail[-1:] == ["vrf"]
@@ -1404,7 +1440,7 @@ def _sweep_xml_findings(line: str) -> list[str]:
 
 def _sweep_argv_kind(name: str) -> str:
     folded = name.casefold()
-    return ("snmp" if folded.startswith("snmp") else "mysql" if folded.startswith("mysql")
+    return ("snmp" if "snmp" in folded else "mysql" if folded.startswith("mysql")
             else "net" if folded.startswith("net") else folded)
 
 
@@ -1426,6 +1462,35 @@ def _sweep_shell_violation(line: str) -> bool:
     return False
 
 
+def _sweep_argv_runs(line: str) -> list[tuple[str, int]]:
+    """``(kind, start)`` of every shell-argument run: each listed command from its end, and a net-snmp
+    argument vector by its shape (from the line start) or after an SNMPCMD_ARGS directive at the line start."""
+    runs = [(_sweep_argv_kind(m.group("cmd")), m.end()) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
+    if "-" in line:
+        directive = _SWEEP_SNMP_DIRECTIVE_RE.match(line, _SWEEP_LEAD_RE.match(line).end())
+        if directive is not None:
+            runs.append(("snmp", directive.end()))
+        elif _SWEEP_SNMP_ARGV_SHAPE_RE.search(line):
+            runs.append(("snmp", 0))
+    return runs
+
+
+def _sweep_positional_violation(line: str) -> bool:
+    """A net-snmp positional credential field ('usmUser' keys, 'smuxpeer' password) that is neither empty
+    ('""') nor the placeholder."""
+    first = _SWEEP_SNMP_FIELD_RE.match(line, _SWEEP_LEAD_RE.match(line).end())
+    slots = _SWEEP_SNMP_POSITIONAL.get(first.group(0).casefold()) if first else None
+    if not slots:
+        return False
+    fields = _SWEEP_SNMP_FIELD_RE.findall(line, first.end())
+    for index in slots:
+        if index < len(fields):
+            core = fields[index].strip(_SWEEP_KEEP)
+            if core and core != _PLACEHOLDER:
+                return True
+    return False
+
+
 def _sweep_argv_violation(line: str) -> bool:
     """A credential operand of the closed shell-argument list that is not the placeholder."""
     def bad(text: str, kind: str) -> bool:
@@ -1435,13 +1500,14 @@ def _sweep_argv_violation(line: str) -> bool:
             if sep not in core:
                 return False
             core = core.partition(sep)[2].strip(_SWEEP_KEEP)
+        if kind == "protocol" and core.casefold() in _SWEEP_SNMP_PROTOCOLS:
+            return False
         return bool(core) and core != _PLACEHOLDER
 
-    for command in _SWEEP_ARGV_CMD_RE.finditer(line):
-        kind_name = _sweep_argv_kind(command.group("cmd"))
+    for kind_name, run in _sweep_argv_runs(line):
         options = _SWEEP_ARGV_OPTIONS[kind_name]
         expect = None
-        for token in _SWEEP_ROW_TOKEN_RE.finditer(line, command.end()):
+        for token in _SWEEP_ROW_TOKEN_RE.finditer(line, run):
             text = token.group(0)
             if kind_name == "net":
                 if not _sweep_netuse_structural(text) and bad(text, "value"):
@@ -1856,6 +1922,8 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
                 kinds.append("credential residue after a credential keyword")
             if ("-" in line or "net" in low) and _sweep_argv_violation(line):
                 kinds.append("credential value (shell argument)")
+            if _sweep_positional_violation(line):
+                kinds.append("credential value (net-snmp positional field)")
             if ":" in line and _sweep_shell_violation(line):
                 kinds.append("credential value (shell argument)")
             if _sweep_entropy(line):
