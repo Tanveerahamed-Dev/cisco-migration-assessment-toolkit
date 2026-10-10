@@ -263,8 +263,10 @@ _RELEASE = (
 )
 
 #: A stem suffix: starts with "." or "_", has a name part, and ends with an extension. A bare
-#: extension such as ".txt" is not a suffix literal (it carries no artifact identity).
-_SUFFIX_LITERAL = re.compile(r"^[._][A-Za-z0-9_-]+(?:[.-][A-Za-z0-9_-]+)*\.[A-Za-z0-9]+$")
+#: extension such as ".txt" is not a suffix literal (it carries no artifact identity). Only "."
+#: separates segments: "-" is a name character, so no input has two ways to match (CodeQL flagged
+#: an earlier "[.-]" separator, which overlapped the name class, as exponential backtracking).
+_SUFFIX_LITERAL = re.compile(r"^[._][A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9]+$")
 
 #: Suffix literals under SCANNED_ROOTS that are not client artifact names, with the reason.
 NON_CLIENT_SUFFIX_LITERALS: Mapping[str, str] = {
