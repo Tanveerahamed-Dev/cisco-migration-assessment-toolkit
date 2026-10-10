@@ -1239,7 +1239,7 @@ def test_the_closed_schema_carries_the_gateway_fact_list(sample):
     lim = next(lim for lim in ui.LIMITATIONS if lim["id"] == CAVEAT)
     assert lim["applies_to"] == ("/inventory/vlans/rows",)
     for phrase in ("single-gateway flag", "never 'no tracking'", "not that the gateway is healthy",
-                   "at most 6 objects", "VLAN carriage per cable is not stored", "SVI named VlanN",
+                   "at most 6 objects", "does not use stored per-cable carriage to narrow them", "SVI named VlanN",
                    "counts gateways by VLAN id", "fhrp_detail[].track", "HSRP detail's standby router",
                    f"at most {CAP} witnesses per gap"):
         assert phrase in lim["text"], phrase

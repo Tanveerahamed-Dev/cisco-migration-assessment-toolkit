@@ -5,15 +5,17 @@ snapshot section moves the tracked engine outputs in OUTPUT_PATHS. This one file
 set and both ends of the handoff, and every end runs only on a GitHub-hosted runner:
 
 * ``before`` / ``after`` run inside the manual producer workflow WORKFLOW, around the repository's
-  own regeneration commands (GOLDEN_COMMAND, SAMPLE_COMMAND). They bind the exact dispatched source
-  commit (its every tracked byte and mode, with no hidden index state), refuse any produced set
-  other than OUTPUT_PATHS, and write ``manifest.json`` plus ``files/<path>`` for exactly one
+  own regeneration commands (GOLDEN_COMMAND, SAMPLE_COMMAND), after the mandatory refutation controls
+  (CONTROL_COMMAND). They bind the exact dispatched source commit (its every tracked byte and mode,
+  with no hidden index state or content filter), record a physical ledger of every non-output source
+  file and the fixed installer-data profile (the only untracked files admitted), refuse any produced
+  set other than OUTPUT_PATHS, and write ``manifest.json`` plus ``files/<path>`` for exactly one
   uploaded artifact.
 * ``receive`` runs inside the manual receipt workflow RECEIPT_WORKFLOW and refuses to run anywhere
   else. It selects that producer run, job and artifact through the read-only Actions API; checks
   their identities, the archive digest, every raw ZIP member span, a closed member set, the
-  manifest's source binding and every member hash; executes the canonical marker policy only from
-  admitted Git bytes; and writes ``receipt.json`` plus ``files/<path>`` as review data outside the
+  manifest's source binding (its source ledger joined to Git) and every member hash; executes the
+  canonical marker policy only from admitted Git bytes, with no TOML capability; and writes ``receipt.json`` plus ``files/<path>`` as review data outside the
   checkout. It never writes to the repository. With ``verify_import`` it instead proves that the
   dispatched commit carries exactly the admitted bytes.
 
@@ -49,8 +51,8 @@ WORKFLOW = ".github/workflows/engine-output-handoff.yml"
 JOB_NAME = "Regenerate engine outputs for review (manual)"
 RUNNER_LABELS = ("ubuntu-24.04",)
 ARTIFACT_PREFIX = "engine-output-handoff"
-MANIFEST_SCHEMA = "engine_output_handoff/1"
-SOURCE_SCHEMA = "engine_output_source/1"
+MANIFEST_SCHEMA = "engine_output_handoff/2"
+SOURCE_SCHEMA = "engine_output_source/2"
 STATUS = "GENERATED_INPUT_FOR_REVIEW_ONLY"
 # The engine stamps local time into some outputs (the sample's collected_at offset); the producer
 # runs under one canonical zone so that stamp is a property of the handoff, not of a runner image.
@@ -73,12 +75,18 @@ GOLDEN_COMMAND = (
     " tests/test_pipeline_golden.py::test_excel_sheet_schema_matches_golden"
 )
 SAMPLE_COMMAND = "python webapp/sample_data/build_sample.py"
+# The mandatory source/policy refutation controls the producer runs before it binds the source.
+CONTROL_COMMAND = (
+    "python -m pytest -p no:cacheprovider tests/test_engine_output_handoff.py"
+    " tests/test_engine_output_handoff_workflow_contract.py"
+)
 # Every named step of the producer job, in order. The receiver requires each to have succeeded;
 # the workflow contract test requires this tuple to equal the workflow's named steps.
 REQUIRED_STEPS = (
     "Require the dispatched commit to be the expected source",
     "Upgrade the installer",
     "Install complete runtime and test dependencies",
+    "Refute source and policy admission defects before generation",
     "Bind the exact source before regeneration",
     "Regenerate the golden snapshot and workbook sheet schema",
     "Regenerate the engine-built sample fleet",
@@ -112,9 +120,17 @@ ALLOWED_DIRECTORIES = frozenset(
     if parent.as_posix() != "."
 )
 MANIFEST_KEYS = frozenset({"schema", "source_commit", "tree", "files", "changed_from_source",
-                           "producer", "allow_golden_shrink", "status", "release_authority"})
+                           "producer", "allow_golden_shrink", "status", "release_authority", "source_inputs",
+                           "installer_inputs"})
 PRODUCER_KEYS = frozenset({"workflow", "run_id", "run_attempt", "runner_os", "python", "tz"})
 FILE_KEYS = frozenset({"path", "sha256", "bytes"})
+# Source-derived setuptools editable-install profile. These are captured installer
+# data, not Git-authenticated program source. Unexpected files refuse admission.
+INSTALLER_ROOT = "cisco_migration_assessment_toolkit.egg-info/"
+INSTALLER_PATHS = frozenset(INSTALLER_ROOT + name for name in (
+    "PKG-INFO", "SOURCES.txt", "dependency_links.txt", "entry_points.txt", "requires.txt", "top_level.txt",
+))
+
 
 # The canonical client-marker policy and its exact import closure, executed only from admitted Git
 # bytes (bound_marker_policy). These tables equal the reviewed frontend receiver's
@@ -318,12 +334,14 @@ def _fresh_external_directory(path: Path, *inside: Path) -> None:
 
 
 def git(root: Path, *args: str, ok: tuple[int, ...] = (0,), maximum: int = MAX_GIT_BYTES,
-        want_code: bool = False):
+        want_code: bool = False, input_data: bytes | None = None):
     """Run git against `root` only; any exit outside `ok` is a refusal. Returns stdout, or the exit code."""
     result = subprocess.run(
-        ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotepath=off",
+        ["git", "--no-replace-objects", "--no-optional-locks", "-c", "core.fsmonitor=false",
+         "-c", "core.untrackedCache=false", "-c", "core.quotepath=off",
          "-C", str(root), *args],
-        capture_output=True, timeout=600, check=False,
+        capture_output=True, timeout=600, check=False, input=input_data,
+        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
     )
     need(result.returncode in ok,
          f"git {args[0]} failed: {result.stderr.decode('utf-8', 'replace').strip()[:400]}")
@@ -389,6 +407,120 @@ def require_clean_tracked_tree(root: Path) -> None:
          + ", ".join(entry[3:] for entry in _nul_paths(status)[:12]))
 
 
+def _source_path(raw: bytes) -> str:
+    path = raw.decode("utf-8", "strict")
+    need(path and not path.startswith("/") and "\\" not in path and ":" not in path
+         and all(part not in ("", ".", "..") for part in path.split("/"))
+         and not any(ord(char) < 32 or ord(char) == 127 for char in path),
+         "tracked source path is unsafe")
+    return path
+
+
+def source_tree(root: Path, head: str) -> dict[str, tuple[str, str]]:
+    need(type(head) is str and HEX40.fullmatch(head), "source tree requires an exact commit identity")
+    need(git(root, "rev-parse", "--show-object-format").strip() == b"sha1",
+         "the source profile requires SHA-1 Git object identities")
+    tree = {}
+    raw = git(root, "ls-tree", "-r", "-z", head)
+    need(not raw or raw.endswith(b"\0"), "source tree is not NUL terminated")
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        header, name = record.split(b"\t", 1)
+        mode, kind, oid = header.decode("ascii").split(" ")
+        path = _source_path(name)
+        need(mode in {"100644", "100755"} and kind == "blob" and HEX40.fullmatch(oid)
+             and path not in tree, "source tree has a nonregular or duplicate entry")
+        tree[path] = (mode, oid)
+    return tree
+
+
+def source_index(root: Path, head: str) -> dict[str, tuple[str, str]]:
+    """Admit stage-zero entries/flags/attributes before status or physical reads."""
+    tree = source_tree(root, head)
+    index = {}
+    raw = git(root, "ls-files", "--stage", "-z")
+    need(not raw or raw.endswith(b"\0"), "source index is not NUL terminated")
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        header, name = record.split(b"\t", 1)
+        mode, oid, stage = header.decode("ascii").split(" ")
+        path = _source_path(name)
+        need(stage == "0" and path not in index, "source index has an unmerged or duplicate entry")
+        index[path] = (mode, oid)
+    need(index == tree, "the tracked working tree or index is not clean; regeneration staged changes")
+    flags = {}
+    raw = git(root, "ls-files", "-v", "-z")
+    need(not raw or raw.endswith(b"\0"), "source index flags are not NUL terminated")
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        need(len(record) > 2 and record[1:2] == b" ", "source index flag is unreadable")
+        path = _source_path(record[2:])
+        need(path not in flags and record[:1] == b"H",
+             "source index carries hidden or non-cached flags: the Git index hides working-tree state "
+             "(assume-unchanged, skip-worktree or another non-cached flag)")
+        flags[path] = record[:1]
+    need(set(flags) == set(tree), "source index flag census differs")
+    paths = b"".join(path.encode("utf-8") + b"\0" for path in sorted(tree))
+    raw = git(root, "check-attr", "-z", "--stdin", "filter", input_data=paths)
+    fields = raw.split(b"\0")
+    need(fields[-1:] == [b""] and (len(fields) - 1) % 3 == 0,
+         "source filter inventory is malformed")
+    observed = set()
+    for i in range(0, len(fields) - 1, 3):
+        path = _source_path(fields[i])
+        need(path in tree and path not in observed and fields[i + 1] == b"filter"
+             and fields[i + 2] in {b"unspecified", b"unset"},
+             "source has an unsupported filter or ambiguous attribute")
+        observed.add(path)
+    need(observed == set(tree), "source filter census differs")
+    return tree
+
+
+def source_inputs(root: Path, head: str) -> dict:
+    """Read every non-output tracked file, including files hidden from stat/diff caches."""
+    records = {}
+    for path, (mode, oid) in sorted(source_index(root, head).items()):
+        if path in OUTPUT_PATHS:
+            continue
+        target = _ordinary_parents(root, path)
+        data = read_regular(target, MAX_GIT_BYTES)
+        if os.name != "nt":
+            need(bool(target.lstat().st_mode & 0o111) == (mode == "100755"),
+                 f"{path}: source executable mode differs from Git")
+        blob = hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+        need(blob == oid, f"{path}: physical source bytes differ from immutable Git")
+        records[path] = {"mode": mode, "blob": oid, "bytes": len(data), "sha256": digest(data)}
+    return records
+
+
+def committed_source_inputs(root: Path, head: str) -> dict:
+    """Immutable counterpart of the producer's physical non-output ledger."""
+    records = {}
+    for path, (mode, oid) in sorted(source_tree(root, head).items()):
+        if path not in OUTPUT_PATHS:
+            data = git(root, "cat-file", "blob", oid)
+            records[path] = {"mode": mode, "blob": oid, "bytes": len(data), "sha256": digest(data)}
+    return records
+
+
+def validate_source_ledger(value: object) -> None:
+    need(type(value) is dict, "source input ledger is not an object")
+    for path, row in value.items():
+        need(type(path) is str, "source input ledger path is not text")
+        _source_path(path.encode("utf-8"))
+        need(path not in OUTPUT_PATHS and type(row) is dict
+             and set(row) == {"mode", "blob", "bytes", "sha256"},
+             "source input ledger record is not closed")
+        need(type(row["mode"]) is str and row["mode"] in {"100644", "100755"}
+             and type(row["blob"]) is str and HEX40.fullmatch(row["blob"])
+             and type(row["bytes"]) is int and 0 <= row["bytes"] <= MAX_GIT_BYTES
+             and type(row["sha256"]) is str and HEX64.fullmatch(row["sha256"]),
+             "source input ledger mode, identity or size is invalid")
+
+
 def committed_output(root: Path, commit: str, path: str, maximum: int = MAX_MEMBER_BYTES) -> bytes:
     """One ordinary committed file's bytes, bound to the blob name its tree records."""
     need(HEX40.fullmatch(commit), f"unsupported commit {commit!r}")
@@ -408,6 +540,38 @@ def committed_output(root: Path, commit: str, path: str, maximum: int = MAX_MEMB
 def untracked_census(root: Path) -> list[str]:
     """Every untracked file, ignored ones included (no standard excludes)."""
     return sorted(_nul_paths(git(root, "ls-files", "-z", "--others")))
+
+
+def installer_inputs(root: Path) -> dict:
+    """Bind the complete untracked census to the finite non-code installer profile."""
+    paths = untracked_census(root)
+    need(set(paths) <= INSTALLER_PATHS, "producer checkout carries unadmitted untracked or ignored inputs")
+    records = {}
+    total = 0
+    for path in paths:
+        target = _ordinary_parents(root, path)
+        mode = stat.S_IMODE(target.lstat().st_mode)
+        need(not mode & 0o111, "installer metadata is executable")
+        data = read_regular(target, MAX_API_BYTES)
+        need(stat.S_IMODE(target.lstat().st_mode) == mode, "installer metadata mode changed during capture")
+        total += len(data)
+        need(total <= MAX_API_BYTES, "installer metadata exceeds its aggregate bound")
+        records[path] = {"mode": mode, "bytes": len(data), "sha256": digest(data)}
+    return records
+
+
+def validate_installer_ledger(value: object) -> None:
+    need(type(value) is dict and set(value) <= INSTALLER_PATHS, "installer input ledger has an unsupported census")
+    total = 0
+    for row in value.values():
+        need(type(row) is dict and set(row) == {"mode", "bytes", "sha256"},
+             "installer input ledger record is not closed")
+        need(type(row["mode"]) is int and 0 <= row["mode"] <= 0o777 and not row["mode"] & 0o111
+             and type(row["bytes"]) is int and 0 <= row["bytes"] <= MAX_API_BYTES
+             and type(row["sha256"]) is str and HEX64.fullmatch(row["sha256"]),
+             "installer input ledger mode, size or digest is invalid")
+        total += row["bytes"]
+    need(total <= MAX_API_BYTES, "installer input ledger exceeds its aggregate bound")
 
 
 def _compiled_python(paths: list[str]) -> list[str]:
@@ -495,7 +659,11 @@ def bind_checkout(root: Path, commit: str, *, regenerated: tuple[str, ...] = ())
         try:
             actual = _worktree_blob(root, path, mode)
         except (HandoffRefusal, OSError) as error:
-            mismatched.append(str(error) if isinstance(error, HandoffRefusal) else f"{path}: unreadable ({error.strerror})")
+            message = str(error) if isinstance(error, HandoffRefusal) else f"{path}: unreadable ({error.strerror})"
+            if path in regenerated:
+                # A regenerated output may change bytes, never its kind or mode; name it as the output it is.
+                message = message.replace(f"{path}: executable mode", f"{path}: output executable mode", 1)
+            mismatched.append(message)
             continue
         if path not in regenerated and actual != blob:
             mismatched.append(f"{path}: bytes differ from the bound commit")
@@ -507,16 +675,36 @@ def bind_checkout(root: Path, commit: str, *, regenerated: tuple[str, ...] = ())
 # --------------------------------------------------------------------------- content policy
 
 
-@contextlib.contextmanager
-def bound_marker_policy(root: Path, commit: str):
-    """The canonical marker policy, executed from the admitted Git bytes of its closure at `commit`.
+class MarkerOnlyToml:
+    """The marker-only policy's answer to its owner's unused ``import tomllib``: no TOML module, parser or data.
 
-    The import system never supplies it: no sys.path entry, existing canonical module, working-tree
-    file or bytecode cache is consulted. Standard-library imports behave normally; the four project
-    modules see only each other through their reviewed relative imports. This binds the policy's
-    source; it is not a Python sandbox. Yields `_marker_patterns_for`.
+    Marker rules need no TOML capability, so no real tomllib (standard library from 3.11), installed tomli
+    backport, cached module or project-local module ever executes; Python 3.10 needs no backport either.
+    Attribute access, truthiness and calls refuse. Identity/type inspection is not a sandbox claim.
     """
-    admitted = {path: committed_output(root, commit, path) for _suffix, path in MARKER_CLOSURE}
+    __slots__ = ()
+
+    def __getattribute__(self, _name):
+        raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+    def __bool__(self):
+        raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+    def __call__(self, *_args, **_kwargs):
+        raise HandoffRefusal("TOML capability is unavailable in the marker-only policy loader")
+
+
+@contextlib.contextmanager
+def _executed_marker_policy(root: Path, admitted: dict[str, bytes]):
+    """Execute the admitted bytes of the four-file marker closure in a fresh private namespace.
+
+    The import system never supplies the policy: no sys.path entry, existing canonical module, working-tree
+    file or bytecode cache is consulted. The four project modules see only each other through their reviewed
+    relative imports; only distribution_verify's exact ``import tomllib`` receives the capability-denial object
+    (before any standard-library admission, so no dotted, from- or backport import reaches TOML code); every
+    other absolute import must be standard library. This binds the policy's source; it is not a Python
+    sandbox. Yields `_marker_patterns_for`.
+    """
     prefix = "_engine_handoff_marker_" + secrets.token_hex(16)
     need(not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules),
          "the private marker-policy namespace is not fresh")
@@ -524,12 +712,13 @@ def bound_marker_policy(root: Path, commit: str):
     loaded: set[str] = set()
     owned: list[str] = []
     original_import = builtins.__import__
+    marker_only_toml = MarkerOnlyToml()
 
     def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+        caller_name = globals.get("__name__") if type(globals) is dict else None
+        caller = next((key for key, module in modules.items()
+                       if module.__name__ == caller_name and module.__dict__ is globals), None)
         if level:
-            caller_name = globals.get("__name__") if type(globals) is dict else None
-            caller = next((key for key, module in modules.items()
-                           if module.__name__ == caller_name and module.__dict__ is globals), None)
             need(level == 1 and caller in MARKER_IMPORTS and name in MARKER_IMPORTS[caller]
                  and name in loaded and type(fromlist) in (tuple, list) and bool(fromlist)
                  and frozenset(fromlist) == MARKER_IMPORTS[caller][name],
@@ -537,6 +726,11 @@ def bound_marker_policy(root: Path, commit: str):
             module = modules[name]
             need(all(item in module.__dict__ for item in fromlist), "a bound marker-policy export is missing")
             return module
+        if type(name) is str and name.split(".", 1)[0] in ("tomllib", "tomli"):
+            need(name == "tomllib" and type(level) is int and level == 0 and caller == "distribution_verify"
+                 and (fromlist is None or type(fromlist) is tuple and not fromlist),
+                 "TOML import is outside the marker-only dependency boundary")
+            return marker_only_toml
         need(type(name) is str and name.split(".", 1)[0] in sys.stdlib_module_names,
              f"marker-policy import {name!r} is not standard library; no project or installed fallback")
         return original_import(name, globals, locals, fromlist, 0)
@@ -563,14 +757,47 @@ def bound_marker_policy(root: Path, commit: str):
             loaded.add(suffix)
             if suffix:
                 setattr(modules[""], suffix, module)
-        policy = modules["distribution_verify"].__dict__.get("_marker_patterns_for")
-        need(callable(policy), "the canonical marker policy is missing")
-        yield policy
+        policy = modules["distribution_verify"].__dict__
+        need(all(callable(policy.get(name)) for name in ("_marker_patterns_for", "_client_marker_patterns")),
+             "the canonical marker policy is missing")
+        yield policy["_marker_patterns_for"]
     finally:
         # Only this invocation's private names are removed; canonical cisco_toolkit modules, sys.path
         # and unrelated modules are never touched.
         for name in reversed(owned):
             sys.modules.pop(name, None)
+
+
+@contextlib.contextmanager
+def bound_marker_policy(root: Path, commit: str):
+    """The canonical marker policy, executed from the admitted Git bytes of its closure at `commit`.
+
+    The working tree is never read (see :func:`_executed_marker_policy`). Yields `_marker_patterns_for`.
+    """
+    admitted = {path: committed_output(root, commit, path) for _suffix, path in MARKER_CLOSURE}
+    with _executed_marker_policy(root, admitted) as policy:
+        yield policy
+
+
+def marker_patterns_for(root: Path):
+    """The canonical marker policy of this checkout's HEAD, refused unless its physical closure equals Git.
+
+    The index must pass :func:`source_index` (stage zero, no hidden flag, no content filter) and each closure
+    file's physical bytes must equal its committed blob; those admitted bytes are then executed exactly as
+    :func:`bound_marker_policy` executes Git's. Returns `_marker_patterns_for`; the private namespace is gone
+    when it returns, and the function keeps its own module globals.
+    """
+    head = commit_of(root, "HEAD")
+    entries = source_index(root, head)
+    admitted = {}
+    for _suffix, path in MARKER_CLOSURE:
+        need(path in entries and entries[path][0] == "100644", "canonical marker closure is not committed")
+        data = read_regular(_ordinary_parents(root, path), MAX_GIT_BYTES)
+        need(data == git(root, "cat-file", "blob", entries[path][1]),
+             "canonical marker closure bytes differ from immutable Git")
+        admitted[path] = data
+    with _executed_marker_policy(root, admitted) as policy:
+        return policy
 
 
 @contextlib.contextmanager
@@ -616,15 +843,28 @@ def producer_environment(environ=None) -> dict:
 def bind_source(root: Path, expected: str) -> dict:
     head = commit_of(root, "HEAD")
     need(head == expected, "the checkout is not the expected source commit")
+    # Stage-zero entries, hidden flags and content filters are refused before `git status` can run a filter.
+    source_index(root, head)
     require_clean_tracked_tree(root)
     bind_checkout(root, head)
+    inputs = source_inputs(root, head)
     outputs = {}
     for path in OUTPUT_PATHS:
         committed = committed_output(root, head, path)
-        on_disk = read_regular(_ordinary_parents(root, path), MAX_MEMBER_BYTES)
+        on_disk = read_output(root, path)
         need(on_disk == committed, f"{path}: checkout bytes differ from the committed source")
         outputs[path] = {"sha256": digest(committed), "bytes": len(committed)}
-    return {"source_commit": head, "tree": tree_of(root, head), "outputs": outputs}
+    return {"source_commit": head, "tree": tree_of(root, head), "outputs": outputs, "inputs": inputs}
+
+
+def read_output(root: Path, path: str) -> bytes:
+    """An allowed output may change bytes, never become an executable or indirect input."""
+    need(path in OUTPUT_PATHS, "unadmitted output path")
+    target = _ordinary_parents(root, path)
+    data = read_regular(target, MAX_MEMBER_BYTES)
+    if os.name != "nt":
+        need(not target.lstat().st_mode & 0o111, f"{path}: output executable mode differs from 100644")
+    return data
 
 
 def phase_before(root: Path, state: Path, environ=None) -> dict:
@@ -634,17 +874,21 @@ def phase_before(root: Path, state: Path, environ=None) -> dict:
     bound = bind_source(root, env["expected"])
     census = untracked_census(root)
     shadowing = _compiled_python(census)
-    need(not shadowing, "untracked compiled Python in the checkout could shadow the bound source: "
-         + ", ".join(shadowing[:12]))
-    record = {"schema": SOURCE_SCHEMA, **bound, "untracked": census}
+    need(not shadowing, "producer checkout carries unadmitted untracked compiled Python that could shadow the "
+         "bound source: " + ", ".join(shadowing[:12]))
+    # Every other untracked or ignored file must belong to the fixed installer-data profile.
+    metadata = installer_inputs(root)
+    need(sorted(metadata) == census, "the untracked census changed while the installer profile was read")
+    record = {"schema": SOURCE_SCHEMA, **bound, "producer_context": env, "untracked": census,
+              "installer_inputs": metadata}
     state.mkdir()
     write_new(state / "source-before.json", canonical_json(record))
     return record
 
 
 def _tracked_changes(root: Path) -> tuple[list[str], list[str]]:
-    staged = _nul_paths(git(root, "diff", "--cached", "--no-renames", "--name-only", "-z", "HEAD", "--"))
-    worktree = _nul_paths(git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD", "--"))
+    staged = _nul_paths(git(root, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", "HEAD", "--"))
+    worktree = _nul_paths(git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", "HEAD", "--"))
     return sorted(staged), sorted(worktree)
 
 
@@ -652,17 +896,21 @@ def _closed_effect(root: Path, before: dict) -> list[str]:
     """The regeneration's whole effect on the checkout is a change to OUTPUT_PATHS, nothing else."""
     need(commit_of(root, "HEAD") == before["source_commit"], "HEAD moved during regeneration")
     need(tree_of(root, before["source_commit"]) == before["tree"], "the source tree changed during regeneration")
+    source_index(root, before["source_commit"])
     staged, changed = _tracked_changes(root)
     need(not staged, "regeneration staged changes: " + ", ".join(staged[:12]))
     extra = sorted(set(changed) - set(OUTPUT_PATHS))
     need(not extra, "regeneration changed tracked files outside the closed output set: " + ", ".join(extra[:12]))
     # git diff trusts the index; every other tracked input's bytes and mode are re-read here.
     bind_checkout(root, before["source_commit"], regenerated=OUTPUT_PATHS)
+    need(source_inputs(root, before["source_commit"]) == before["inputs"],
+         "physical source input ledger changed during regeneration")
     census = untracked_census(root)
     appeared = sorted(set(census) - set(before["untracked"]))
     vanished = sorted(set(before["untracked"]) - set(census))
     need(not appeared and not vanished, "regeneration changed the untracked file set: appeared "
          + ", ".join(appeared[:12]) + "; vanished " + ", ".join(vanished[:12]))
+    need(installer_inputs(root) == before["installer_inputs"], "installer metadata bytes or modes changed")
     return changed
 
 
@@ -677,9 +925,14 @@ def phase_after(root: Path, state: Path, output: Path, environ=None, patterns_fo
          "the state directory is not the fresh before-phase record")
     before = strict_json(read_regular(state / "source-before.json", MAX_API_BYTES), "source-before.json")
     need(isinstance(before, dict) and before.get("schema") == SOURCE_SCHEMA
-         and set(before) == {"schema", "source_commit", "tree", "outputs", "untracked"},
+         and set(before) == {"schema", "source_commit", "tree", "outputs", "untracked", "inputs", "installer_inputs",
+                            "producer_context"},
          "the before-phase record has an unsupported shape")
     need(before["source_commit"] == context["expected"], "the before-phase record names another source")
+    need(before["producer_context"] == context, "the producer run, attempt or interpreter changed between phases")
+    validate_source_ledger(before["inputs"])
+    validate_installer_ledger(before["installer_inputs"])
+    need(before["untracked"] == sorted(before["installer_inputs"]), "installer metadata and untracked census differ")
     need(output.is_absolute() and _outside(output, root) and _outside(output, state),
          "the handoff output must be absolute and outside the checkout and state")
     need(not os.path.lexists(output), "the handoff output directory must be fresh")
@@ -688,7 +941,7 @@ def phase_after(root: Path, state: Path, output: Path, environ=None, patterns_fo
     produced = {}
     with _marker_policy(root, before["source_commit"], patterns_for) as policy:
         for path in OUTPUT_PATHS:
-            data = read_regular(_ordinary_parents(root, path), MAX_MEMBER_BYTES)
+            data = read_output(root, path)
             check_output_bytes(path, data, policy)
             produced[path] = data
     need(sum(len(data) for data in produced.values()) <= MAX_TOTAL_BYTES, "the output set exceeds its bound")
@@ -704,12 +957,14 @@ def phase_after(root: Path, state: Path, output: Path, environ=None, patterns_fo
     # The source and every produced file are still exactly what was captured.
     need(_closed_effect(root, before) == changed, "the checkout changed during capture")
     for path in OUTPUT_PATHS:
-        need(read_regular(_ordinary_parents(root, path), MAX_MEMBER_BYTES) == produced[path],
+        need(read_output(root, path) == produced[path],
              f"{path} changed during capture")
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "source_commit": before["source_commit"],
         "tree": before["tree"],
+        "source_inputs": before["inputs"],
+        "installer_inputs": before["installer_inputs"],
         "files": [{"path": path, "sha256": digest(produced[path]), "bytes": len(produced[path])}
                   for path in OUTPUT_PATHS],
         "changed_from_source": differs,
@@ -928,12 +1183,15 @@ def require_closed_members(files: dict[str, bytes]) -> None:
 
 
 def admit_manifest(manifest: object, *, source_commit: str, tree: str, run_id: int, run_attempt: int,
-                   allow_golden_shrink: bool) -> dict:
+                   allow_golden_shrink: bool, expected_inputs: dict) -> dict:
     need(isinstance(manifest, dict) and set(manifest) == MANIFEST_KEYS, "the manifest keys are not the closed set")
     need(manifest["schema"] == MANIFEST_SCHEMA, "unknown manifest schema")
     need(manifest["status"] == STATUS and manifest["release_authority"] is False, "the manifest claims promotion")
     need(manifest["source_commit"] == source_commit, "the manifest's source commit is not the expected source commit")
     need(manifest["tree"] == tree, "the manifest's tree is not the source commit's tree")
+    validate_source_ledger(manifest["source_inputs"])
+    need(manifest["source_inputs"] == expected_inputs, "the manifest source input ledger differs from Git")
+    validate_installer_ledger(manifest["installer_inputs"])
     producer = manifest["producer"]
     need(isinstance(producer, dict) and set(producer) == PRODUCER_KEYS, "the producer record keys are not closed")
     need(producer["workflow"] == WORKFLOW and producer["run_id"] == str(run_id)
@@ -1142,6 +1400,7 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
     need(head == context["github_sha"], "the checkout is not the dispatched receiver commit")
     output = context["output"]
     _fresh_external_directory(output, root)
+    source_index(root, head)
     require_clean_tracked_tree(root)
     bind_checkout(root, head)
     verify_import = context["verify_import"]
@@ -1167,7 +1426,8 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
     require_closed_members(files)
     manifest = strict_json(files[MANIFEST_NAME], MANIFEST_NAME)
     rows = admit_manifest(manifest, source_commit=source, tree=tree, run_id=run_id, run_attempt=attempt,
-                          allow_golden_shrink=context["allow_golden_shrink"])
+                          allow_golden_shrink=context["allow_golden_shrink"],
+                          expected_inputs=committed_source_inputs(root, source))
     with _marker_policy(root, head, patterns_for) as policy:
         admitted = admit_outputs(files, rows, policy)
     at_source = {path: committed_output(root, source, path) for path in OUTPUT_PATHS}

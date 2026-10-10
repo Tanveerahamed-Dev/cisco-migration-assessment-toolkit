@@ -4,7 +4,8 @@ name: engine-output-handoff
 # tests/golden/sheet_schema.json and webapp/sample_data/sample_fleet.snapshot.json) for one exact
 # dispatched commit. It runs the repository's own regeneration commands and nothing else, refuses
 # any produced set other than that closed set, and uploads one source-bound artifact. It never
-# writes to the repository. The hosted, dispatch-only `.github/workflows/engine-output-receipt.yml`
+# writes to the repository. Mandatory source/policy refutation controls run before the source is
+# bound. The hosted, dispatch-only `.github/workflows/engine-output-receipt.yml`
 # admits that artifact as review data; a person applies the admitted bytes with Git, reviews and
 # commits them, the receipt's `verify_import` mode binds that commit to those bytes, and the ordinary
 # hosted gates on that commit decide. See docs/engine-output-handoff.md.
@@ -68,6 +69,8 @@ jobs:
         run: python -m pip install --upgrade pip
       - name: Install complete runtime and test dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Refute source and policy admission defects before generation
+        run: python -m pytest -p no:cacheprovider tests/test_engine_output_handoff.py tests/test_engine_output_handoff_workflow_contract.py
       - name: Bind the exact source before regeneration
         env:
           EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}

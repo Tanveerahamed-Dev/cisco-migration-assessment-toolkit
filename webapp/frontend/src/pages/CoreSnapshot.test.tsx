@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, vlanCarriageFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
   deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture, findingFacetsFixture } from "../test/projectionFixtures";
 
 function Harness() {
@@ -360,6 +360,32 @@ describe("Core snapshot route", () => {
     const link = await screen.findByRole("link", { name: "edge/a~b ↗" });
     expect(new URL(link.getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
     expect(screen.getAllByText("Synthetic input was not collected").length).toBeGreaterThan(0);
+  });
+  it("renders supplied cable members under an uncertain list without inventing carriage at a missing end", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false }));
+      throw new Error(`Unexpected raw-source or recomputation request: ${url}`);
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    expect(screen.getByText("Synthetic supplied carriage census remains incomplete")).toBeInTheDocument();
+    const regions = screen.getAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"));
+    expect(regions.map((node) => node.getAttribute("aria-label"))).toEqual(["Cable carriage source row 2", "Cable carriage source row 0"]);
+    expect(within(regions[0]).getAllByText("forwarding")).toHaveLength(2);
+    const missing = within(regions[1]);
+    expect(missing.getAllByText("one_end_only")).toHaveLength(2);
+    expect(missing.getAllByText("Synthetic missing B-end evidence; no blocked or forwarding claim").length).toBeGreaterThan(0);
+    expect(missing.queryByText("forwarding")).not.toBeInTheDocument();
+    expect(missing.queryByText("stp_blocked")).not.toBeInTheDocument();
+    expect(missing.getByRole("group", { name: "Cable 0 member 0" })).toHaveTextContent("synthetic-b");
+    fireEvent.click(within(regions[0]).getByRole("button", { name: "Qualifications for relation" }));
+    const drawer = screen.getByRole("dialog");
+    expect(drawer).toHaveTextContent("not simultaneous forwarding or data-plane delivery");
+    expect(drawer).toHaveTextContent("/vlan_carriage/rows/2/relation");
+    expect(drawer).toHaveTextContent("/cable_map/cables/2");
+    expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
   });
   describe.each([
     { view: "inventory", path: "/snapshots/1?view=inventory", label: "Finding severity for edge/a~b" },

@@ -256,7 +256,24 @@ function Inventory({ document }: { document: ViewDocument<"inventory"> }) {
           endpoint_count: row.endpoint_count, endpoint_mix: row.endpoint_mix, wave: row.wave, scenario: row.scenario,
           domain: row.app_domain, criticality: row.criticality, dependencies: row.dependencies, window: row.cutover_window,
           rollback_owner: row.rollback_owner, root_claimants: row.stp_root_claimants, root_identities: row.stp_root_identities }} />
-          <Pointer pointer={row.pointer} /></details></article>} /></>}
+          <Pointer pointer={row.pointer} /></details>
+        <details><summary>Cable carriage and end evidence</summary>
+          <ListState label="VLAN cable carriage" source={row.selections.carriage} />
+          {row.selections.carriage.items.map((cable) => <section key={cable.pointer}
+            className="projection-list-item" aria-label={`Cable carriage source row ${cable.index}`}>
+            <FactGrid facts={{ cable: cable.ends, relation: cable.relation, end_evidence: cable.evidence_shape,
+              evidence_basis: cable.basis }} />
+            <Pointer pointer={cable.cable_pointer} />
+            <ListState label={`Member evidence for cable row ${cable.index}`} source={cable.members} />
+            {cable.members.items.map((member) => <div key={member.pointer} role="group"
+              aria-label={`Cable ${cable.index} member ${member.index}`}>
+              <FactGrid facts={{ member_relation: member.relation, end_evidence: member.evidence_shape,
+                evidence_basis: member.basis, a_host: member.a.host, a_port: member.a.port,
+                a_signal: member.a.signal, a_basis: member.a.basis, b_host: member.b.host,
+                b_port: member.b.port, b_signal: member.b.signal, b_basis: member.b.basis }} />
+              <Pointer pointer={member.pointer} /></div>)}
+            <Pointer pointer={cable.pointer} /></section>)}
+        </details></article>} /></>}
     {tab === "endpoints" && <><Panel title="Endpoint inventory"><FactView label="Engine endpoint total" fact={p.endpoints.total} /></Panel>
       <ProjectionList title="Endpoints" reference={reference} document={document} initial={p.endpoints.rows} renderRow={(row) => <article>
         <FactGrid facts={{ host: row.host, port: row.port, mac: row.mac, vlan: row.vlan, ip: row.ip, class: row.endpoint_class,
