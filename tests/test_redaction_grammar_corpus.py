@@ -17,8 +17,10 @@ git-archived main (not a frozen copy of its code). `test_never_weaker_than_main_
 every secret main removed stays removed. Round 3 adds every case the round-2 review reported (its R1
 class: a credential keyword INSIDE a wrapped value read as a clause start; its R3 class: a clause ending
 in a qualifier-shaped value) and the R1 pin matrix -- each dangling clause x {neutral, camelCase-keyword,
-numbered-keyword, keyword+punctuation} value. docs/w60-redaction-grammar-2026-10-09.md records the rules,
-the measured over-redaction and the residual limits.
+numbered-keyword, keyword+punctuation} value. Round 4 adds the final review's three residual classes: net-snmp
+argument vectors read by STRUCTURE (snmpd.conf(5) 'trapsess'/'proxy', snmpcmd(1) options), the persistent
+'usmUser' keys and 'smuxpeer' password by position, and an authorization scheme that ends its line.
+docs/w60-redaction-grammar-2026-10-09.md records the rules, the measured over-redaction and the residual limits.
 """
 import json
 import os
@@ -93,6 +95,14 @@ ROUND3_REPORTED = (
     "</snmp-server>",
     "echo 'root:LinuxRootPwQ' | chpasswd", "Authorization: Bearer ro",
 )
+#: Round 4: the final review's residual classes (net-snmp SNMPCMD_ARGS directives, a wrapped authorization
+#: credential, short positional USM keys), each in the corpus by line.
+ROUND4_REPORTED = (
+    "trapsess -v 3 -u trapops -l authPriv -a SHA -A Ns9tsAaQ -x AES -X Ns9tsXxQ 192.0.2.10:162",
+    "informsess -v 2c -c Ns9isCommQ 192.0.2.12", "Authorization: Bearer\nNs9wrapTokQ",
+    "usmUser 1 3 0x80001f8880aa01 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.2 0x0a1b2c3d .1.3.6.1.6.3.10.1.2.2 "
+    "0x4e5f6071 \"\"",
+)
 _TAIL_PROBE = " Leak99tail"
 #: A listed secret that is a credential-shaped token (letters and a digit, no blank): the context probes
 #: ('community read ', 'password 7') are about ONE row and can recur in another row's legitimate text.
@@ -157,12 +167,14 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
     review3 = _sources(MUST_REDACT + QUALIFIER_SHAPED, "w60-review-r3")
     assert len(review3) == 381, len(review3)
     every_line = {row["line"] for row in EVERY_ROW}
-    missing = [line for line in ROUND3_REPORTED if line not in every_line]
+    missing = [line for line in ROUND3_REPORTED + ROUND4_REPORTED if line not in every_line]
     assert missing == [], missing
     assert len(_sources(MUST_REDACT, "w60-r3-matrix")) >= 190, "the R1 pin matrix fell out of the corpus"
     sources = {source.split(":")[0] for row in MUST_REDACT for source in row["source"].split()}
     assert {"w60-builder", "w60-review", "w58r2-review", "w60-review-r2", "w60-r2-wrap", "w60-review-r3",
-            "w60-r3-matrix"} <= sources, sources
+            "w60-r3-matrix", "w60-review-r4"} <= sources, sources
+    # round 4: the negative controls (look-alike lines the new rules must leave byte-identical) are kept rows
+    assert len(_sources(MUST_KEEP, "w60-review-r4")) >= 15, "the round-4 negative controls fell out"
     platforms = {row["platform"] for row in MUST_REDACT}
     for platform in ("ios", "nxos", "asa", "aireos", "iosxr", "eos", "junos", "fortigate", "huawei", "panos",
                      "net-snmp", "rest", "yaml", "pem", "csv", "shell", "wrap"):
@@ -415,6 +427,8 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_TABLE_CRED_COLUMNS": "_TABLE_CRED_COLUMNS", "_REDACT_TABLE_ALSO_COLUMNS": "_TABLE_ALSO_COLUMNS",
         "_REDACT_WRAP_ENC": "_CRED_WRAP_ENC", "_REDACT_CLAUSE_END": "_CRED_CLAUSE_END",
         "_REDACT_KEY_ENDS": "_CRED_KEY_ENDS", "_REDACT_CLAUSE_LEAD": "_CRED_CLAUSE_LEAD",
+        # round 4
+        "_REDACT_SNMP_PROTOCOLS": "_SWEEP_SNMP_PROTOCOLS", "_REDACT_SNMP_POSITIONAL": "_SWEEP_SNMP_POSITIONAL",
         # the credential field-name vocabulary's OWNER (docs/ssot.md) and its restatement
         "_REDACT_SECRET_KEYS": "_SECRET_KEYS",
     }
@@ -463,6 +477,10 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_SWEEP_NAME_OPERAND_RE": "_SWEEP_NAME_OPERAND_RE",
         "_REDACT_SWEEP_PREFILTER": "_SWEEP_PREFILTER", "_REDACT_SWEEP_RUN_RE": "_SWEEP_RUN_RE",
         "_REDACT_LINE_PREFILTER": "_CRED_PREFILTER_RE", "_REDACT_TYPE_DIGIT_RE": "_CRED_TYPE_DIGIT_RE",
+        # round 4
+        "_REDACT_SNMP_ARGV_SHAPE_RE": "_SWEEP_SNMP_ARGV_SHAPE_RE",
+        "_REDACT_SNMP_DIRECTIVE_RE": "_SWEEP_SNMP_DIRECTIVE_RE",
+        "_REDACT_SNMP_FIELD_RE": "_SWEEP_SNMP_FIELD_RE", "_REDACT_SCHEME_OPEN_RE": "_SWEEP_SCHEME_OPEN_RE",
     }
     for producer, verifier in patterns.items():
         p, v = getattr(html, producer), getattr(rv, verifier)
@@ -929,3 +947,86 @@ def test_fail_closed_disagreements_now_agree():
         out = redact(text)
         assert secret not in out, out
         assert _refused(text) and not _refused(out), out
+
+
+# ---- round 4: the final review's residual classes ----
+def test_net_snmp_argument_vectors_are_read_by_structure():
+    """(P2) snmpd.conf(5) 'trapsess [SNMPCMD_ARGS] HOST' and 'proxy ... [SNMPCMD_ARGS] HOST OID' carried
+    '-c'/'-A'/'-X' that the closed tool list never reached, and the verifier certified them. A line holding one of
+    net-snmp's own option+operand pairs ('-v 1|2c|3', '-l <level>', '-a|-x <USM protocol>', '-3m|-3M|-3k|-3K')
+    is an SNMP argument vector from its first token, whatever directive, wrapper or log record carries it; the
+    SNMPCMD_ARGS directives at the line start cover a vector that names no version. '-3?' key operands are
+    values, and an '-a'/'-x' operand is a protocol name or -- fail safe -- a value."""
+    redact = html._redact_config_values
+    for line, secrets in (
+            ("trapsess -v 2c -c Fake99tsc 192.0.2.10", ("Fake99tsc",)),
+            ("trapsess -v 3 -u ops -l authPriv -a SHA -A Fake99tsA -x AES -X Fake99tsX 192.0.2.10:162",
+             ("Fake99tsA", "Fake99tsX")),
+            ("trapsess -c Fake99nov 192.0.2.11", ("Fake99nov",)),                # the directive, no version
+            ("informsess -v 2c -c Fake99isc 192.0.2.12", ("Fake99isc",)),
+            ("proxy -Cn ctx1 -v 3 -u pxu -l authPriv -a SHA-256 -A Fake99pxA -x AES-256 -X Fake99pxX 192.0.2.13 "
+             ".1.3.6.1.2.1.2", ("Fake99pxA", "Fake99pxX")),
+            ("trapsess -v3 -u ops -lauthPriv -aSHA -AFake99atA -xAES -XFake99atX 192.0.2.14",
+             ("Fake99atA", "Fake99atX")),
+            ("trapsess -v 3 -u ops -l authPriv -3m 0xFake99m -3K 0xFake99k 192.0.2.15", ("0xFake99m", "0xFake99k")),
+            ("trapsess -v 3 -u ops -l authNoPriv -a Fake99misA 192.0.2.16", ("Fake99misA",)),
+            ("net-snmp-create-v3-user -ro -a Fake99cuA -x Fake99cuX -X DES opsuser", ("Fake99cuA", "Fake99cuX")),
+            ("encode_keychange -t sha1 -O Fake99old -N Fake99new", ("Fake99old", "Fake99new")),
+            ("check_wrapper.sh -H 192.0.2.17 -v 2c -c Fake99wrp", ("Fake99wrp",))):
+        out = redact(line)
+        assert not any(secret in out for secret in secrets), out
+        assert _refused(line) and not _refused(out) and redact(out) == out, out
+    assert redact("trapsess -v 3 -u ops -l authPriv -a SHA -A Fake99a -x AES -X Fake99x 192.0.2.10") == \
+        "trapsess -v 3 -u ops -l authPriv -a SHA -A <redacted> -x AES -X <redacted> 192.0.2.10"
+    # look-alike lines: another tool's '-A'/'-X'/'-c', a '-v' without an SNMP version, a daemon's config file
+    for line in ("curl -v -X POST https://192.0.2.1/api/v1/status", "ssh -v -A -X ops@192.0.2.1",
+                 "iptables -A INPUT -p udp --dport 161 -j ACCEPT", "ping -c 5 -v 192.0.2.1",
+                 "/usr/sbin/snmpd -f -Lo -c /etc/snmp/snmpd.conf", " ip proxy-arp",
+                 "trapsess -v 3 -u trapops -l noAuthNoPriv 192.0.2.10", "net-snmp-config --version"):
+        assert redact(line) == line, line
+        assert not _refused(line), line
+
+
+def test_net_snmp_positional_credentials():
+    """(P3) The persistent 'usmUser' line stores localized keys as lowercase hex, which the entropy rule never
+    reads (no upper case), so a key survived at any length; snmpd.conf(5) 'smuxpeer OID PASS' had no rule. Both
+    are values BY POSITION (snmplib/snmpusm.c usm_save_user: status, storage type, engine ID, name, security name,
+    clone-from, auth protocol, AUTH KEY, priv protocol, PRIV KEY, public string)."""
+    redact = html._redact_config_values
+    usm = ("usmUser 1 3 0x80001f88804a3f5a2b6c7d8e9f 0x6e736f7073 0x6e736f7073 NULL .1.3.6.1.6.3.10.1.1.3 "
+           "0x9f8e7d6c5b4a39281706f5e4d3c2b1a0 .1.3.6.1.6.3.10.1.2.4 0x00112233445566778899aabbccddeeff \"\"")
+    assert html._redact_high_entropy_spans(usm, False) == []       # the entropy rule alone misses both keys
+    assert redact(usm) == ("usmUser 1 3 0x80001f88804a3f5a2b6c7d8e9f 0x6e736f7073 0x6e736f7073 NULL "
+                           ".1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"")
+    quoted = ("usmUser 1 3 0x80001f8880aa02 \"ns ops\" \"ns ops\" NULL .1.3.6.1.6.3.10.1.1.2 \"Fake 99 q\" "
+              ".1.3.6.1.6.3.10.1.2.2 \"Fake99qx\" \"\"")
+    assert redact(quoted).endswith(".1.3.6.1.6.3.10.1.1.2 \"<redacted>\" .1.3.6.1.6.3.10.1.2.2 \"<redacted>\" \"\"")
+    for line in (usm, quoted, "smuxpeer .1.3.6.1.4.1.674.10892.1 Fake99smux"):
+        out = redact(line)
+        assert _refused(line) and not _refused(out) and redact(out) == out, out
+    for line in ("usmUser 1 3 0x80001f8880aa03 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.1 \"\" "
+                 ".1.3.6.1.6.3.10.1.2.1 \"\" \"\"", "smuxpeer .1.3.6.1.4.1.674.10892.1",
+                 "usmUserStatus.\"ops\" = INTEGER: active(1)"):
+        assert redact(line) == line and not _refused(line), line
+
+
+def test_a_dangling_authorization_scheme_owns_the_next_lines_first_token():
+    """(P3) The scheme rule was same-line only, so 'Authorization: Bearer' / '<token>' (a terminal or paste
+    wrap) kept the token. A credential header whose scheme ends its line DANGLES: the next non-blank line's
+    first blank-delimited token is the credential, whatever it spells; the verifier demands the placeholder there."""
+    redact = html._redact_config_values
+    for text, secret in (("Authorization: Bearer\nFake99wtok\nhostname next", "Fake99wtok"),
+                         ("Authorization: Bearer\n\n  Fake99wind rest\nhostname next", "Fake99wind"),
+                         ('"Authorization": "Bearer\nFake99wjs",\nhostname next', "Fake99wjs"),
+                         ("Proxy-Authorization: Basic\r\nFake99wb==\r\nhostname next", "Fake99wb"),
+                         ("X-Auth-Token: Bearer\rFake99wx\rhostname next", "Fake99wx"),
+                         ("Authorization: Bearer\nro\nhostname next", None)):
+        out = redact(text)
+        assert (secret is None or secret not in out) and out.endswith("hostname next"), out
+        assert out.splitlines()[-2].strip().startswith("<redacted>"), out
+        assert _refused(text) and not _refused(out) and redact(out) == out, out
+    assert _refused("Authorization: Bearer\nFake99later"), "the verifier must demand the wrapped credential"
+    for text in ("WWW-Authenticate: Basic\nContent-Length: 0", '"token_type": "Bearer",\n"expires_in": 3600',
+                 "Authorization scheme in use: Bearer\nhostname next",
+                 "Authorization: Bearer <redacted>\nhostname next"):
+        assert redact(text) == text and not _refused(text), text

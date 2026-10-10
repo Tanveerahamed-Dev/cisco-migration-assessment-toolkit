@@ -1,5 +1,5 @@
 {
- "about": "W60 adversarial redaction corpus (round 3). Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the first placeholder unless flags carry 'notail' (that placeholder is not governed by a credential keyword: URL userinfo, a whole high-entropy token or crypt hash, a table/CSV/chap column, a wrapped value, a private-key body). qualifier_shaped: the same, except that each secret is spelled like a word the line also uses as structure, so it is checked by its whole-word count, which must drop. must_keep: left byte-identical and certified. over_redacted: lines with no credential that the fail-safe rules rewrite, pinned with a note. main_6390b66c on every row: origin/main 6390b66c's own _redact_config_values output for the line, captured by running git-archived 6390b66c (not a frozen copy of its code); every secret main removed must stay removed (the parity differential).",
+ "about": "W60 adversarial redaction corpus (round 4). Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the first placeholder unless flags carry 'notail' (that placeholder is not governed by a credential keyword: URL userinfo, a whole high-entropy token or crypt hash, a table/CSV/chap column, a wrapped value, a private-key body). qualifier_shaped: the same, except that each secret is spelled like a word the line also uses as structure, so it is checked by its whole-word count, which must drop. must_keep: left byte-identical and certified. over_redacted: lines with no credential that the fail-safe rules rewrite, pinned with a note. main_6390b66c on every row: origin/main 6390b66c's own _redact_config_values output for the line, captured by running git-archived 6390b66c (not a frozen copy of its code); every secret main removed must stay removed (the parity differential).",
  "main_ref": "6390b66c1e91e675ebcb52464d60af6f552c9271",
  "must_redact": [
   {
@@ -16843,6 +16843,393 @@
    ],
    "source": "w60-r3-matrix:punct:48",
    "main_6390b66c": " password 7\n<redacted>"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 2c -c Ns9tsCommQ 192.0.2.10",
+   "expect": "trapsess -v 2c -c <redacted> 192.0.2.10",
+   "secrets": [
+    "Ns9tsCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:trapsess-v2c",
+   "main_6390b66c": "trapsess -v 2c -c Ns9tsCommQ 192.0.2.10"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -Ci -v 2c -c Ns9tsInfQ 192.0.2.10:162",
+   "expect": "trapsess -Ci -v 2c -c <redacted> 192.0.2.10:162",
+   "secrets": [
+    "Ns9tsInfQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:trapsess-inform",
+   "main_6390b66c": "trapsess -Ci -v 2c -c Ns9tsInfQ 192.0.2.10:162"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u trapops -l authPriv -a SHA -A Ns9tsAaQ -x AES -X Ns9tsXxQ 192.0.2.10:162",
+   "expect": "trapsess -v 3 -u trapops -l authPriv -a SHA -A <redacted> -x AES -X <redacted> 192.0.2.10:162",
+   "secrets": [
+    "Ns9tsAaQ",
+    "Ns9tsXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:trapsess-v3",
+   "main_6390b66c": "trapsess -v 3 -u trapops -l authPriv -a SHA -A Ns9tsAaQ -x AES -X Ns9tsXxQ 192.0.2.10:162"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -c Ns9tsNoVerQ 192.0.2.11",
+   "expect": "trapsess -c <redacted> 192.0.2.11",
+   "secrets": [
+    "Ns9tsNoVerQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:trapsess-default-version",
+   "main_6390b66c": "trapsess -c Ns9tsNoVerQ 192.0.2.11"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "informsess -v 2c -c Ns9isCommQ 192.0.2.12",
+   "expect": "informsess -v 2c -c <redacted> 192.0.2.12",
+   "secrets": [
+    "Ns9isCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:informsess-v2c",
+   "main_6390b66c": "informsess -v 2c -c Ns9isCommQ 192.0.2.12"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "informsess -v 3 -u infops -l authNoPriv -a MD5 -A Ns9isAaQ 192.0.2.12",
+   "expect": "informsess -v 3 -u infops -l authNoPriv -a MD5 -A <redacted> 192.0.2.12",
+   "secrets": [
+    "Ns9isAaQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:informsess-v3",
+   "main_6390b66c": "informsess -v 3 -u infops -l authNoPriv -a MD5 -A Ns9isAaQ 192.0.2.12"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "proxy -v 1 -c Ns9pxCommQ 192.0.2.13 .1.3.6.1.2.1.1",
+   "expect": "proxy -v 1 -c <redacted> 192.0.2.13 .1.3.6.1.2.1.1",
+   "secrets": [
+    "Ns9pxCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:proxy-v1",
+   "main_6390b66c": "proxy -v 1 -c Ns9pxCommQ 192.0.2.13 .1.3.6.1.2.1.1"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "proxy -Cn ctx1 -v 3 -u pxops -l authPriv -a SHA-256 -A Ns9pxAaQ -x AES-256 -X Ns9pxXxQ 192.0.2.13 .1.3.6.1.2.1.2",
+   "expect": "proxy -Cn ctx1 -v 3 -u pxops -l authPriv -a SHA-256 -A <redacted> -x AES-256 -X <redacted> 192.0.2.13 .1.3.6.1.2.1.2",
+   "secrets": [
+    "Ns9pxAaQ",
+    "Ns9pxXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:proxy-v3",
+   "main_6390b66c": "proxy -Cn ctx1 -v 3 -u pxops -l authPriv -a SHA-256 -A Ns9pxAaQ -x AES-256 -X Ns9pxXxQ 192.0.2.13 .1.3.6.1.2.1.2"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "TRAPSESS -v2c -cNs9attCommQ 192.0.2.14",
+   "expect": "TRAPSESS -v2c -c<redacted> 192.0.2.14",
+   "secrets": [
+    "Ns9attCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:attached-community",
+   "main_6390b66c": "TRAPSESS -v2c -cNs9attCommQ 192.0.2.14"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v3 -u ops -lauthPriv -aSHA -ANs9attAaQ -xAES -XNs9attXxQ 192.0.2.14",
+   "expect": "trapsess -v3 -u ops -lauthPriv -aSHA -A<redacted> -xAES -X<redacted> 192.0.2.14",
+   "secrets": [
+    "Ns9attAaQ",
+    "Ns9attXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:attached-passphrases",
+   "main_6390b66c": "trapsess -v3 -u ops -lauthPriv -aSHA -ANs9attAaQ -xAES -XNs9attXxQ 192.0.2.14"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u ops -l authPriv -3m 0xNs9mkQ -3K 0xNs9kkQ 192.0.2.15",
+   "expect": "trapsess -v 3 -u ops -l authPriv -3m <redacted> -3K <redacted> 192.0.2.15",
+   "secrets": [
+    "0xNs9mkQ",
+    "0xNs9kkQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:usm-key-options",
+   "main_6390b66c": "trapsess -v 3 -u ops -l authPriv -3m 0xNs9mkQ -3K 0xNs9kkQ 192.0.2.15"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u ops -l authNoPriv -a Ns9misAQ 192.0.2.16",
+   "expect": "trapsess -v 3 -u ops -l authNoPriv -a <redacted> 192.0.2.16",
+   "secrets": [
+    "Ns9misAQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:a-carries-a-value",
+   "main_6390b66c": "trapsess -v 3 -u ops -l authNoPriv -a Ns9misAQ 192.0.2.16"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "net-snmp-create-v3-user -ro -a Ns9cuAaQ -x Ns9cuXxQ -X DES opsuser",
+   "expect": "net-snmp-create-v3-user -ro -a <redacted> -x <redacted> -X <redacted> opsuser",
+   "secrets": [
+    "Ns9cuAaQ",
+    "Ns9cuXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:create-v3-user",
+   "main_6390b66c": "net-snmp-create-v3-user -ro -a Ns9cuAaQ -x Ns9cuXxQ -X DES opsuser"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "net-snmp-config --create-snmpv3-user -ro -A Ns9ncAaQ -X Ns9ncXxQ -a SHA -x AES opsuser",
+   "expect": "net-snmp-config --create-snmpv3-user -ro -A <redacted> -X <redacted> -a SHA -x AES opsuser",
+   "secrets": [
+    "Ns9ncAaQ",
+    "Ns9ncXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:config-create-user",
+   "main_6390b66c": "net-snmp-config --create-snmpv3-user -ro -A Ns9ncAaQ -X Ns9ncXxQ -a SHA -x AES opsuser"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "check_wrapper.sh -H 192.0.2.17 -v 2c -c Ns9wrapCommQ",
+   "expect": "check_wrapper.sh -H 192.0.2.17 -v 2c -c <redacted>",
+   "secrets": [
+    "Ns9wrapCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:unlisted-wrapper",
+   "main_6390b66c": "check_wrapper.sh -H 192.0.2.17 -v 2c -c Ns9wrapCommQ"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "snmpps -v 2c -c Ns9psCommQ 192.0.2.19",
+   "expect": "snmpps -v 2c -c <redacted> 192.0.2.19",
+   "secrets": [
+    "Ns9psCommQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:unlisted-tool",
+   "main_6390b66c": "snmpps -v 2c -c Ns9psCommQ 192.0.2.19"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "encode_keychange -t sha1 -O Ns9oldQ -N Ns9newQ -E 0x80001f8880aa04",
+   "expect": "encode_keychange -t sha1 -O <redacted> -N <redacted> -E 0x80001f8880aa04",
+   "secrets": [
+    "Ns9oldQ",
+    "Ns9newQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:encode-keychange",
+   "main_6390b66c": "encode_keychange -t sha1 -O Ns9oldQ -N Ns9newQ -E 0x80001f8880aa04"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "usmUser 1 3 0x80001f8880aa01 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.2 0x0a1b2c3d .1.3.6.1.6.3.10.1.2.2 0x4e5f6071 \"\"",
+   "expect": "usmUser 1 3 0x80001f8880aa01 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.2 <redacted> .1.3.6.1.6.3.10.1.2.2 <redacted> \"\"",
+   "secrets": [
+    "0x0a1b2c3d",
+    "0x4e5f6071"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:usmuser-short-keys",
+   "main_6390b66c": "usmUser 1 3 0x80001f8880aa01 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.2 0x0a1b2c3d .1.3.6.1.6.3.10.1.2.2 0x4e5f6071 \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "usmUser 1 3 0x80001f88804a3f5a2b6c7d8e9f 0x6e736f7073 0x6e736f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x9f8e7d6c5b4a39281706f5e4d3c2b1a0 .1.3.6.1.6.3.10.1.2.4 0x00112233445566778899aabbccddeeff \"\"",
+   "expect": "usmUser 1 3 0x80001f88804a3f5a2b6c7d8e9f 0x6e736f7073 0x6e736f7073 NULL .1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"",
+   "secrets": [
+    "0x9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+    "0x00112233445566778899aabbccddeeff"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:usmuser-lowercase-hex-keys",
+   "main_6390b66c": "usmUser 1 3 0x80001f88804a3f5a2b6c7d8e9f 0x6e736f7073 0x6e736f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x9f8e7d6c5b4a39281706f5e4d3c2b1a0 .1.3.6.1.6.3.10.1.2.4 0x00112233445566778899aabbccddeeff \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "usmUser 1 3 0x80001f8880aa02 \"ns ops\" \"ns ops\" NULL .1.3.6.1.6.3.10.1.1.2 \"Ns9 quoted Q\" .1.3.6.1.6.3.10.1.2.2 \"Ns9qXxQ\" \"\"",
+   "expect": "usmUser 1 3 0x80001f8880aa02 \"ns ops\" \"ns ops\" NULL .1.3.6.1.6.3.10.1.1.2 \"<redacted>\" .1.3.6.1.6.3.10.1.2.2 \"<redacted>\" \"\"",
+   "secrets": [
+    "Ns9 quoted Q",
+    "Ns9qXxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:usmuser-quoted-keys",
+   "main_6390b66c": "usmUser 1 3 0x80001f8880aa02 \"ns ops\" \"ns ops\" NULL .1.3.6.1.6.3.10.1.1.2 \"Ns9 quoted Q\" .1.3.6.1.6.3.10.1.2.2 \"Ns9qXxQ\" \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "smuxpeer .1.3.6.1.4.1.674.10892.1 Ns9smuxQ",
+   "expect": "smuxpeer .1.3.6.1.4.1.674.10892.1 <redacted>",
+   "secrets": [
+    "Ns9smuxQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:smuxpeer",
+   "main_6390b66c": "smuxpeer .1.3.6.1.4.1.674.10892.1 Ns9smuxQ"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: Bearer\nNs9wrapTokQ",
+   "expect": "Authorization: Bearer\n<redacted>",
+   "secrets": [
+    "Ns9wrapTokQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:bearer-wrap",
+   "main_6390b66c": "Authorization: Bearer\nNs9wrapTokQ"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: Bearer\n  Ns9wrapIndQ rest",
+   "expect": "Authorization: Bearer\n  <redacted> rest",
+   "secrets": [
+    "Ns9wrapIndQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:bearer-wrap-indented",
+   "main_6390b66c": "Authorization: Bearer\n  Ns9wrapIndQ rest"
+  },
+  {
+   "platform": "wrap",
+   "line": "\"Authorization\": \"Bearer\nNs9jsonTokQ\",",
+   "expect": "\"Authorization\": \"Bearer\n<redacted>\",",
+   "secrets": [
+    "Ns9jsonTokQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:bearer-wrap-json",
+   "main_6390b66c": "\"Authorization\": \"Bearer\nNs9jsonTokQ\","
+  },
+  {
+   "platform": "wrap",
+   "line": "Proxy-Authorization: Basic\nNs9basicQ==",
+   "expect": "Proxy-Authorization: Basic\n<redacted>",
+   "secrets": [
+    "Ns9basicQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:basic-wrap",
+   "main_6390b66c": "Proxy-Authorization: Basic\nNs9basicQ=="
+  },
+  {
+   "platform": "wrap",
+   "line": "X-Auth-Token: Bearer\nNs9xatQ",
+   "expect": "X-Auth-Token: Bearer\n<redacted>",
+   "secrets": [
+    "Ns9xatQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:x-header-wrap",
+   "main_6390b66c": "X-Auth-Token: Bearer\nNs9xatQ"
+  },
+  {
+   "platform": "wrap",
+   "line": "curl -s -H 'Authorization: Bearer\nNs9curlTokQ' https://192.0.2.21/api/v1/devices",
+   "expect": "curl -s -H 'Authorization: Bearer\n<redacted>' https://192.0.2.21/api/v1/devices",
+   "secrets": [
+    "Ns9curlTokQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:curl-header-wrap",
+   "main_6390b66c": "curl -s -H 'Authorization: Bearer\nNs9curlTokQ' https://192.0.2.21/api/v1/devices"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: Bearer\n\nNs9blankQ",
+   "expect": "Authorization: Bearer\n\n<redacted>",
+   "secrets": [
+    "Ns9blankQ"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:bearer-wrap-blank-line",
+   "main_6390b66c": "Authorization: Bearer\n\nNs9blankQ"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: Bearer\nview",
+   "expect": "Authorization: Bearer\n<redacted>",
+   "secrets": [
+    "view"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4:bearer-wrap-structure-shaped",
+   "main_6390b66c": "Authorization: Bearer\nview"
   }
  ],
  "must_keep": [
@@ -17721,6 +18108,126 @@
    "line": "Syslog logging: enabled (0 messages dropped, 3 messages rate-limited, 0 flushes, 0 overruns, xml disabled, filtering disabled)\n    Console logging: disabled\n    Monitor logging: level debugging, 0 messages logged, xml disabled,\n    Buffer logging:  level debugging, 2048 messages logged, xml disabled,\n    Trap logging: level informational, 2101 message lines logged\n        Logging to 198.51.100.140  (udp port 514, audit disabled,\n              link up),\n              2101 message lines logged,\n              0 message lines rate-limited,\n              0 message lines dropped-by-MD,\n              xml disabled, sequence number disabled\n              filtering disabled\n*Oct  9 09:58:00.123: %SYS-5-CONFIG_I: Configured from console by ops on vty0 (198.51.100.150)\n*Oct  9 09:59:10.456: %SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: ops] [Source: 198.51.100.150] [localport: 22] at 09:59:10 UTC Fri Oct 9 2026\n*Oct  9 10:00:00.789: %DOT1X-5-FAIL: Authentication failed for client (0011.2233.4455) on Interface Gi1/0/12 AuditSessionID 0A0A0A0100000ABC12345678\n*Oct  9 10:00:01.000: %MAB-5-SUCCESS: Authentication successful for client (0011.2233.4466) on Interface Gi1/0/13 AuditSessionID 0A0A0A0100000ABD23456789\n*Oct  9 10:00:02.000: %SSH-5-SSH2_USERAUTH: User 'ops' authentication for SSH2 Session from 198.51.100.150 (tty = 0) using crypto cipher 'aes256-gcm', hmac 'hmac-sha2-256' Succeeded\n*Oct  9 10:00:03.000: %SNMP-3-AUTHFAIL: Authentication failure for SNMP request from host 198.51.100.141",
    "source": "w60-review-r2:show:show_logging",
    "main_6390b66c": "Syslog logging: enabled (0 messages dropped, 3 messages rate-limited, 0 flushes, 0 overruns, xml disabled, filtering disabled)\n    Console logging: disabled\n    Monitor logging: level debugging, 0 messages logged, xml disabled,\n    Buffer logging:  level debugging, 2048 messages logged, xml disabled,\n    Trap logging: level informational, 2101 message lines logged\n        Logging to 198.51.100.140  (udp port 514, audit disabled,\n              link up),\n              2101 message lines logged,\n              0 message lines rate-limited,\n              0 message lines dropped-by-MD,\n              xml disabled, sequence number disabled\n              filtering disabled\n*Oct  9 09:58:00.123: %SYS-5-CONFIG_I: Configured from console by ops on vty0 (198.51.100.150)\n*Oct  9 09:59:10.456: %SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: ops] [Source: 198.51.100.150] [localport: 22] at 09:59:10 UTC Fri Oct 9 2026\n*Oct  9 10:00:00.789: %DOT1X-5-FAIL: Authentication failed for client (0011.2233.4455) on Interface Gi1/0/12 AuditSessionID 0A0A0A0100000ABC12345678\n*Oct  9 10:00:01.000: %MAB-5-SUCCESS: Authentication successful for client (0011.2233.4466) on Interface Gi1/0/13 AuditSessionID 0A0A0A0100000ABD23456789\n*Oct  9 10:00:02.000: %SSH-5-SSH2_USERAUTH: User 'ops' authentication for SSH2 Session from 198.51.100.150 (tty = 0) using crypto cipher 'aes256-gcm', hmac 'hmac-sha2-256' Succeeded\n*Oct  9 10:00:03.000: %SNMP-3-AUTHFAIL: Authentication failure for SNMP request from host 198.51.100.141"
+  },
+  {
+   "platform": "shell",
+   "line": "curl -v -X POST https://192.0.2.1/api/v1/status",
+   "source": "w60-review-r4:curl-method",
+   "main_6390b66c": "curl -v -X POST https://192.0.2.1/api/v1/status"
+  },
+  {
+   "platform": "shell",
+   "line": "ssh -v -A -X ops@192.0.2.1",
+   "source": "w60-review-r4:ssh-flags",
+   "main_6390b66c": "ssh -v -A -X ops@192.0.2.1"
+  },
+  {
+   "platform": "shell",
+   "line": "iptables -A INPUT -p udp --dport 161 -j ACCEPT",
+   "source": "w60-review-r4:iptables-append",
+   "main_6390b66c": "iptables -A INPUT -p udp --dport 161 -j ACCEPT"
+  },
+  {
+   "platform": "shell",
+   "line": "tar -X exclude.lst -cvf backup.tar /etc",
+   "source": "w60-review-r4:tar-exclude",
+   "main_6390b66c": "tar -X exclude.lst -cvf backup.tar /etc"
+  },
+  {
+   "platform": "shell",
+   "line": "ping -c 5 -v 192.0.2.1",
+   "source": "w60-review-r4:ping-count",
+   "main_6390b66c": "ping -c 5 -v 192.0.2.1"
+  },
+  {
+   "platform": "shell",
+   "line": "/usr/sbin/snmpd -f -Lo -c /etc/snmp/snmpd.conf -p /run/snmpd.pid",
+   "source": "w60-review-r4:snmpd-config-file",
+   "main_6390b66c": "/usr/sbin/snmpd -f -Lo -c /etc/snmp/snmpd.conf -p /run/snmpd.pid"
+  },
+  {
+   "platform": "ios",
+   "line": " ip proxy-arp",
+   "source": "w60-review-r4:proxy-arp",
+   "main_6390b66c": " ip proxy-arp"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u trapops -l noAuthNoPriv 192.0.2.10",
+   "source": "w60-review-r4:trapsess-noauth",
+   "main_6390b66c": "trapsess -v 3 -u trapops -l noAuthNoPriv 192.0.2.10"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "proxy -v 3 -u pxops -l authNoPriv -a SHA 192.0.2.13 .1.3.6.1.2.1.2",
+   "source": "w60-review-r4:proxy-no-pass",
+   "main_6390b66c": "proxy -v 3 -u pxops -l authNoPriv -a SHA 192.0.2.13 .1.3.6.1.2.1.2"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "usmUser 1 3 0x80001f8880aa03 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.1 \"\" .1.3.6.1.6.3.10.1.2.1 \"\" \"\"",
+   "source": "w60-review-r4:usmuser-noauth",
+   "main_6390b66c": "usmUser 1 3 0x80001f8880aa03 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.1 \"\" .1.3.6.1.6.3.10.1.2.1 \"\" \"\""
+  },
+  {
+   "platform": "show",
+   "line": "usmUserStatus.\"ops\" = INTEGER: active(1)",
+   "source": "w60-review-r4:usm-mib-walk",
+   "main_6390b66c": "usmUserStatus.\"ops\" = INTEGER: active(1)"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "smuxpeer .1.3.6.1.4.1.674.10892.1",
+   "source": "w60-review-r4:smuxpeer-no-pass",
+   "main_6390b66c": "smuxpeer .1.3.6.1.4.1.674.10892.1"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "smuxsocket 127.0.0.1",
+   "source": "w60-review-r4:smuxsocket",
+   "main_6390b66c": "smuxsocket 127.0.0.1"
+  },
+  {
+   "platform": "api",
+   "line": "WWW-Authenticate: Basic\nContent-Length: 0",
+   "source": "w60-review-r4:www-authenticate",
+   "main_6390b66c": "WWW-Authenticate: Basic\nContent-Length: 0"
+  },
+  {
+   "platform": "api",
+   "line": "\"token_type\": \"Bearer\",\n\"expires_in\": 3600",
+   "source": "w60-review-r4:oauth-token-type",
+   "main_6390b66c": "\"token_type\": \"Bearer\",\n\"expires_in\": 3600"
+  },
+  {
+   "platform": "show",
+   "line": "Authorization scheme in use: Bearer\nhostname next",
+   "source": "w60-review-r4:scheme-prose",
+   "main_6390b66c": "Authorization scheme in use: Bearer\nhostname next"
+  },
+  {
+   "platform": "shell",
+   "line": "net-snmp-config --version",
+   "source": "w60-review-r4:net-snmp-config-version",
+   "main_6390b66c": "net-snmp-config --version"
+  },
+  {
+   "platform": "shell",
+   "line": "net-snmp-create-v3-user -ro opsuser",
+   "source": "w60-review-r4:create-user-no-pass",
+   "main_6390b66c": "net-snmp-create-v3-user -ro opsuser"
+  },
+  {
+   "platform": "shell",
+   "line": "encode_keychange -t md5 -f -P",
+   "source": "w60-review-r4:encode-keychange-stdin",
+   "main_6390b66c": "encode_keychange -t md5 -f -P"
+  },
+  {
+   "platform": "shell",
+   "line": "openssl enc -aes-256-cbc -in a.bin -out b.bin",
+   "source": "w60-review-r4:openssl-cipher",
+   "main_6390b66c": "openssl enc -aes-256-cbc -in a.bin -out b.bin"
   }
  ],
  "over_redacted": [
@@ -17963,6 +18470,22 @@
    "note": "over-redaction accepted (fail-safe): a stateful or shape rule (wrap continuation, table or CSV column, high-entropy token) takes the token",
    "source": "w60-review-r2:show:show_platform_software_fed_hashes",
    "main_6390b66c": "Image                                         SHA256\ncat9k_iosxe.17.09.04a.SPA.bin                  4f1c2b9e7d6a5f3e2c1b0a99887766554433221100ffeeddccbbaa9988776655\nBoot loader digest 7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d\nCertificate fingerprint SHA1 0F:1E:2D:3C:4B:5A:69:78:87:96:A5:B4:C3:D2:E1:F0:0F:1E:2D:3C"
+  },
+  {
+   "platform": "shell",
+   "line": "lsof -v 1 -c snmpd",
+   "expect": "lsof -v 1 -c <redacted>",
+   "note": "over-redaction accepted (fail-safe): '-v 1' is net-snmp's version option, so the line reads as an SNMP argument vector and its '-c' operand is swept",
+   "source": "w60-review-r4:over",
+   "main_6390b66c": "lsof -v 1 -c snmpd"
+  },
+  {
+   "platform": "api",
+   "line": "Authorization: Basic\nHost: 192.0.2.30",
+   "expect": "Authorization: Basic\n<redacted>: 192.0.2.30",
+   "note": "over-redaction accepted (fail-safe): an authorization scheme that ends its line owns the next line's first token, whatever it spells",
+   "source": "w60-review-r4:over",
+   "main_6390b66c": "Authorization: Basic\nHost: 192.0.2.30"
   }
  ],
  "qualifier_shaped": [

@@ -1,4 +1,4 @@
-# W60: shareable redaction -- credential grammar, residual sweep and verifier (2026-10-09, round 3 2026-10-10)
+# W60: shareable redaction -- credential grammar, residual sweep and verifier (2026-10-09, rounds 3-4 2026-10-10)
 
 **This was a privacy defect in shipped redaction.** `Atlas.exe --redact-folder` (whose output is
 meant to be shareable), `--redact-collection` and AssessHub ingest scrub raw captures with
@@ -172,6 +172,46 @@ placeholder in a wrapped value or a cell. Its independent JSON-field and FortiGa
 Measured: of the review's 2,154 cases, the verifier now certifies no raw input that still holds its
 secret (round 2 certified 291).
 
+## Round 4: the final review's three residual classes
+
+The third fresh-corpus review of round 3 (`b07fff18`) found 0 regressions against main and 893 more secrets
+removed than main. It reported three classes that still leaked and certified. None of them is a regression.
+Round 4 closes each one in the existing owner and its restatement, with no new module or import.
+
+- **P2: net-snmp argument vectors, read by STRUCTURE.** snmpd.conf(5) defines `trapsess [SNMPCMD_ARGS] HOST`
+  (an inform is `trapsess -Ci`) and `proxy [-Cn CONTEXTNAME] [SNMPCMD_ARGS] HOST OID`
+  (<https://www.net-snmp.org/docs/man/snmpd.conf.html>). Their `-c`, `-A` and `-X` operands
+  (<https://www.net-snmp.org/docs/man/snmpcmd.html>) were outside the closed tool list, so they leaked and
+  the verifier certified them. A line is now an SNMP argument vector, from its first token, when it holds one
+  of net-snmp's own option and operand pairs: `-v 1|2c|3`, `-l noAuthNoPriv|authNoPriv|authPriv`,
+  `-a|-x <USM protocol>` (`_REDACT_SNMP_PROTOCOLS`) or `-3m|-3M|-3k|-3K`
+  (`_REDACT_SNMP_ARGV_SHAPE_RE`). It does not matter which directive, wrapper script or log record carries
+  it. When a vector names none of those options and relies on snmp.conf defaults, the SNMPCMD_ARGS
+  directives at the line start still mark it: `trapsess`, `proxy`, and the review's `informsess`
+  (`_REDACT_SNMP_DIRECTIVE_RE`). `informsess` is not a net-snmp directive; it is read the same way, fail safe.
+  - On a vector, the `-c`, `-A` and `-X` operands are values, and so are the `-3m|-3M|-3k|-3K` key operands.
+  - An `-a`/`-x` operand is kept when it is a protocol name, and otherwise redacted as a value, fail safe.
+    net-snmp-create-v3-user(1) spells `-a AUTHPASS -x PRIVPASS -X DES|AES`
+    (<https://www.net-snmp.org/docs/man/net-snmp-create-v3-user.html>).
+  - The closed command list gains `net-snmp-create-v3-user`, `net-snmp-config` and encode_keychange(1)
+    (`-O`/`-N` passphrases, <https://www.net-snmp.org/docs/man/encode_keychange.html>). snmptrapd.conf(5)
+    has no SNMPCMD_ARGS directive. Its `createUser` and `authCommunity` were already keyword lines.
+- **P3: net-snmp positional credentials.** net-snmp saves a printable octet string `"quoted"` and any other
+  as lowercase `0x` hex (snmplib/read_config.c `read_config_save_octet_string`). The entropy rule needs
+  upper case, so it never read a persisted localized key, whatever its length; the review's "32+ hex keys
+  are caught" did not hold for this format. The persistent `usmUser` line's AUTH KEY and PRIV KEY are now
+  values by field index (snmplib/snmpusm.c `usm_save_user`: status, storage type, engine ID, name, security
+  name, clone-from, auth protocol, auth key, priv protocol, priv key, public string). So is snmpd.conf(5)
+  `smuxpeer OID PASS` (`_REDACT_SNMP_POSITIONAL`). An empty `""` field is no value.
+- **P3: an authorization scheme that ends its line.** A credential header (`Authorization`,
+  `Proxy-Authorization`, an `X-...-Token|Api-Key|Auth...` header) whose scheme (`_REDACT_SWEEP_SCHEMES`)
+  ends the line now DANGLES (`_REDACT_SCHEME_OPEN_RE`). The next non-blank line's first blank-delimited token
+  is the credential, whatever it spells. The verifier demands the placeholder there.
+
+Every rule is restated in the verifier and pinned equal (`_REDACT_SNMP_PROTOCOLS`, `_REDACT_SNMP_POSITIONAL`,
+`_REDACT_ARGV_OPTIONS`, and the four new patterns). The verifier also adds the four patterns to
+`_INLINE_SECRET_RES`.
+
 ## The defect (unchanged history)
 
 The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced
@@ -322,6 +362,13 @@ evidence-retention branch (W58r2) digests it at import time.
 - **`main_6390b66c`** on every row: `origin/main`'s own `_redact_config_values` output, captured by
   running git-archived 6390b66c (not a frozen copy of its code). The 1,018 carried values were
   re-captured from a fresh archive and match byte for byte.
+- **Round 4 (`w60-review-r4`):** 29 must-redact rows (16 net-snmp vectors, 4 positional lines, 8 scheme
+  wraps, 1 encode_keychange), 20 must-keep negative controls and 2 over-redacted rows. The negative controls
+  are look-alike lines: another tool's `-A`/`-X`/`-c` (curl, ssh, iptables, tar, ping), a daemon's
+  `-c FILE`, `proxy-arp`, a noAuthNoPriv `trapsess`, an empty-key `usmUser`, a USM MIB walk, `smuxpeer`
+  without a password, `WWW-Authenticate: Basic`, OAuth `token_type`, and scheme prose. The totals are now
+  1,451 must-redact, 166 must-keep, 32 over-redacted and 14 qualifier-shaped rows. main 6390b66c leaves
+  every round-4 secret in place.
 
 **Measured on the final code** (production functions only, in scratch folders):
 
@@ -340,6 +387,23 @@ evidence-retention branch (W58r2) digests it at import time.
   or CRLF. 12,000 cases on the final code (plus about 44,000 on intermediate builds), 0 failures.
 - **Every assertion of the test module** was re-computed by hand-restated scratch checks, not by running
   the tests.
+- **Round 4, on the final code.**
+  - Corpus: 1,451/1,451 must-redact rows lose every listed secret, are refused raw and certified after
+    the scrub, and are idempotent. The whole corpus as one capture is a certified fixpoint with no
+    surviving strong secret. Every round-4 row also went through `redact_collection_dir` and
+    `verify_collection_secret_scrub` on scratch trees.
+  - Main parity: unchanged (every secret main removed stays removed).
+  - Vector matrix: 15,652 cases (11 carriers x 8 version/level/protocol forms x 7 secret options x 7
+    value shapes x attached/separate x LF/CRLF, wherever a route applies). 0 failures: the value is gone,
+    the raw text is refused, the output is certified and idempotent, and the next line survives.
+  - Scheme matrix: 15,876 cases (9 header spellings x 7 schemes x 14 token shapes x 6 continuation
+    forms x LF/CRLF/CR). Every token is gone, every raw text is refused, and every output is certified
+    and idempotent. In 3,024 cases the wrapped token is itself a value-required keyword (`key`, `secret`,
+    `password`, `community`). There the producer's raw-line fail safe also takes the next line's first
+    word (over-redaction, listed below).
+  - Differential against round 3 (`b07fff18`): 0 changed outputs over 17,780 string literals of every
+    redaction-related test file, 13 tracked capture files, and the engine's synthetic collection (96
+    files). `redact_snapshot` of the golden and sample snapshots is byte-identical to round 3.
 
 ## What changed downstream
 
@@ -391,8 +455,12 @@ evidence-retention branch (W58r2) digests it at import time.
    A secret spelled like a qualifier or a soft stop word is now redacted where it ends its clause (R3).
 2. **Kw-less positional values** outside the closed forms are caught only if high-entropy. The closed
    forms are the four show tables, the strict generic header, CSV, chap-secrets, `.pgpass`, the argv
-   list, and an expect `send` after a password prompt. Anything else, such as an unknown vendor table
-   whose header is not strict, or a free-form note without a prose anchor, is not.
+   list, net-snmp argument vectors, `usmUser` and `smuxpeer`, and an expect `send` after a password
+   prompt. Anything else, such as an unknown vendor table whose header is not strict, or a free-form note
+   without a prose anchor, is not. In particular:
+   - a non-net-snmp tool's own options (Nagios `check_snmp -C`, a vendor CLI);
+   - an SNMP vector with no version, level, protocol or key option, outside a listed tool or directive;
+   - a vector cut by a terminal wrap (an argv operand is read on its own line only).
 3. **High entropy is a heuristic.** These are missed:
    - a 24-31 character random token split by `/` into short segments;
    - a low-entropy pasted secret;
@@ -404,6 +472,11 @@ evidence-retention branch (W58r2) digests it at import time.
    - A qualifier that ends a wrapped clause, and the next line's first word after a clause that really
      ends in a qualifier.
    - The neighbour cell of a misaligned table row.
+   - On a line read as an SNMP vector, any `-c`/`-A`/`-X` operand: `-X DES` in net-snmp-create-v3-user,
+     or another tool's `-c` beside a stray `-v 1` (`lsof -v 1 -c snmpd`).
+   - After an authorization scheme that ends its line, the next line's first token, whatever it is
+     (`Authorization: Basic` / `Host: ...`). When that token is itself a value-required keyword, the next
+     line's first word as well (the producer's raw-line fail safe).
    - A base64-looking line after a PuTTY body.
    - `--no-collect` re-analysis of a scrubbed folder loses those values.
 5. **Terminal wraps.**
@@ -430,6 +503,9 @@ evidence-retention branch (W58r2) digests it at import time.
   hand-restated checks. It has never executed as a test.
 - **The other redaction test files** were checked only by the literal differential above, not
   re-computed assertion by assertion.
+- **Round 4's three new test functions** were re-computed once by executing their extracted statement bodies
+  as scratch code (no pytest, no import of the test module). The changed pins and corpus checks were
+  restated by hand.
 - **The full `--redact` pipeline** (HTML/XLSX/DOCX certification) was not run. Only `redact_snapshot`,
   the snapshot verifier and the raw-capture path were exercised by pure calls.
 - **Real client captures.** Every input here is synthetic. The round-2 review's corpora were re-run
