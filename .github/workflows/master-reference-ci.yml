@@ -17,6 +17,12 @@ jobs:
   verify:
     name: Exact-source compiler, reference, and release contracts
     runs-on: ubuntu-24.04
+    # A job-level block replaces the workflow-level one, so contents: read is
+    # restated. actions: read lets the capacity guard read the newest main
+    # capacity record (W64-0); it grants no write.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,16 +51,23 @@ jobs:
           master-reference/release
           master-reference/cli
           master-reference/tests
-      # GNU time (/usr/bin/time, apt package `time` on ubuntu-24.04) prints the
+      # GNU time (/usr/bin/time, apt package `time` on ubuntu-24.04) reports the
       # step's peak RSS as "Maximum resident set size (kbytes)" on success and
       # failure alike. The compiler and `cli build` each hold every compiler
       # record in memory, so their peaks are the measured basis for the release
-      # intake's chunk-census ceiling (W63; release/compiler_bundle.py).
+      # intake's chunk-census ceiling (W63; release/compiler_bundle.py). Each
+      # report is kept under $RUNNER_TEMP/atlas-capacity for the capacity guard
+      # (W64-0) and printed to the log; the step still exits with the command's
+      # own status.
       - name: Compile the exact tracked Git tree
         working-directory: master-reference
         run: |
           free -b
-          /usr/bin/time -v python -m compiler --repo-root .. --output "$RUNNER_TEMP/atlas-compiler"
+          mkdir -p "$RUNNER_TEMP/atlas-capacity"
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/compiler.time" python -m compiler --repo-root .. --output "$RUNNER_TEMP/atlas-compiler" || status=$?
+          if [ -f "$RUNNER_TEMP/atlas-capacity/compiler.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/compiler.time" >&2; fi
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
           find "$RUNNER_TEMP/atlas-compiler/chunks" -type f -name '*.json' -printf '%s\n' \
             | awk '{ n += 1; s += $1 } END { printf "compiler chunk census: chunks=%d bytes=%.0f\n", n, s }'
       - name: Validate every compiler envelope against tracked JSON Schemas
@@ -62,24 +75,95 @@ jobs:
         run: python -m compiler.schema_validation --input "$RUNNER_TEMP/atlas-compiler"
       - name: Build the exact-source lazy browser projection
         working-directory: master-reference
-        run: node build/projection/build.mjs --input "$RUNNER_TEMP/atlas-compiler" --output public/atlas-projection
+        run: |
+          mkdir -p "$RUNNER_TEMP/atlas-capacity"
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/projection.time" node build/projection/build.mjs --input "$RUNNER_TEMP/atlas-compiler" --output public/atlas-projection || status=$?
+          if [ -f "$RUNNER_TEMP/atlas-capacity/projection.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/projection.time" >&2; fi
+          exit "$status"
       - name: Type-check, build, and verify rendered and content contracts
         working-directory: master-reference
-        run: npm test
+        run: |
+          mkdir -p "$RUNNER_TEMP/atlas-capacity"
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/npm-test.time" npm test || status=$?
+          if [ -f "$RUNNER_TEMP/atlas-capacity/npm-test.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/npm-test.time" >&2; fi
+          exit "$status"
       - name: Lint correctness, accessibility, and framework contracts
         working-directory: master-reference
         run: npm run lint
       - name: Audit the complete build dependency graph
         working-directory: master-reference
         run: npm audit --audit-level=high
+      # stdout carries the success JSON with the release intake's chunk census;
+      # stderr carries a refusal's scanned_bytes and limit. Both are kept for
+      # the capacity guard and printed to the log after the command ends.
       - name: Build the deterministic source-bound artifact family and PDF
         working-directory: master-reference
-        run: >-
-          /usr/bin/time -v
-          python -m cli build
-          --repo-root ..
-          --compiler-output "$RUNNER_TEMP/atlas-compiler"
-          --output "$RUNNER_TEMP/atlas-release"
+        run: |
+          mkdir -p "$RUNNER_TEMP/atlas-capacity"
+          status=0
+          /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/cli-build.time" python -m cli build --repo-root .. --compiler-output "$RUNNER_TEMP/atlas-compiler" --output "$RUNNER_TEMP/atlas-release" > "$RUNNER_TEMP/atlas-capacity/cli-build.stdout" 2> "$RUNNER_TEMP/atlas-capacity/cli-build.stderr" || status=$?
+          cat "$RUNNER_TEMP/atlas-capacity/cli-build.stdout"
+          cat "$RUNNER_TEMP/atlas-capacity/cli-build.stderr" >&2
+          if [ -f "$RUNNER_TEMP/atlas-capacity/cli-build.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/cli-build.time" >&2; fi
+          exit "$status"
       - name: Reconcile every emitted artifact receipt
         working-directory: master-reference
         run: python -m cli verify-family --manifest "$RUNNER_TEMP/atlas-release/release-manifest.json"
+      # W64-0 trend input, advisory only: the newest readable capacity record
+      # from a main push run. A fork, the first run or an expired artifact
+      # leaves no baseline, and this step never fails on missing history.
+      - name: Fetch the latest main capacity record (advisory)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          baseline="$RUNNER_TEMP/atlas-capacity/baseline"
+          rm -rf "$baseline"
+          mkdir -p "$baseline"
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow master-reference-ci.yml --branch main --event push --status completed --limit 20 --json databaseId --jq '.[].databaseId' 2> /dev/null)" || runs=""
+          for run in $runs; do
+            if [ "$run" = "$GITHUB_RUN_ID" ]; then continue; fi
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name master-reference-capacity --dir "$baseline" > /dev/null 2>&1 && [ -f "$baseline/capacity.json" ]; then
+              echo "capacity baseline: main run $run"
+              exit 0
+            fi
+            rm -rf "$baseline"
+            mkdir -p "$baseline"
+          done
+          echo "capacity baseline: none (no readable main capacity record)"
+      # W64-0: measure every capacity wall against the limit its code owner
+      # declares; warn at 85 %, fail at 95 % (docs/w64-capacity-guard-2026-10-10.md).
+      # It runs after a failed step too, so a failing step's numbers are still
+      # reported, and an unmeasured wall fails closed. It is skipped only when
+      # the run is cancelled.
+      - name: Measure every capacity wall (warn at 85 %, fail at 95 %)
+        if: ${{ !cancelled() }}
+        working-directory: master-reference
+        run: >-
+          python -m cli.capacity
+          --compiler-output "$RUNNER_TEMP/atlas-compiler"
+          --cli-build-stdout "$RUNNER_TEMP/atlas-capacity/cli-build.stdout"
+          --cli-build-stderr "$RUNNER_TEMP/atlas-capacity/cli-build.stderr"
+          --dist dist
+          --projection-dir public/atlas-projection
+          --rss "compiler=$RUNNER_TEMP/atlas-capacity/compiler.time"
+          --rss "projection=$RUNNER_TEMP/atlas-capacity/projection.time"
+          --rss "npm_test=$RUNNER_TEMP/atlas-capacity/npm-test.time"
+          --rss "cli_build=$RUNNER_TEMP/atlas-capacity/cli-build.time"
+          --meminfo /proc/meminfo
+          --disk "runner_temp=$RUNNER_TEMP"
+          --disk "workspace=$GITHUB_WORKSPACE"
+          --baseline "$RUNNER_TEMP/atlas-capacity/baseline/capacity.json"
+          --output "$RUNNER_TEMP/atlas-capacity/capacity.json"
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: Keep the capacity record for the main trend
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: master-reference-capacity
+          path: ${{ runner.temp }}/atlas-capacity/capacity.json
+          if-no-files-found: ignore
+          retention-days: 90
+          overwrite: true
