@@ -53,9 +53,11 @@ jobs:
           master-reference/tests
       # GNU time (/usr/bin/time, apt package `time` on ubuntu-24.04) reports the
       # step's peak RSS as "Maximum resident set size (kbytes)" on success and
-      # failure alike. The compiler and `cli build` each hold every compiler
-      # record in memory, so their peaks are the measured basis for the release
-      # intake's chunk-census ceiling (W63; release/compiler_bundle.py). Each
+      # failure alike. The compiler holds every compiler record in memory;
+      # `cli build` validates every record but retains only the groups the
+      # release builders read and streams the rest (W64a). The `cli build` peak
+      # is the measured basis for the release intake's chunk-census ceiling
+      # (W63, W64a; release/compiler_bundle.py). Each
       # report is kept under $RUNNER_TEMP/atlas-capacity for the capacity guard
       # (W64-0) and printed to the log; the step still exits with the command's
       # own status.
@@ -167,3 +169,30 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
           overwrite: true
+      # W64a one-time A/B proof for the round-2 head, removed again by the
+      # follow-up that re-derives the ceiling from this run's measurement
+      # (docs/w64a-streaming-intake-2026-10-10.md). It extracts this head's
+      # master-reference/ with git archive, overlays the pre-W64a version
+      # (2ac65468) of every production file W64a changes, rebuilds the family
+      # from the same compiler output, and requires every member to be
+      # byte-identical to the streamed build's. The checkout is not touched.
+      - name: Prove the streamed family equals the pre-W64a build (W64a, temporary)
+        run: |
+          legacy="$RUNNER_TEMP/w64a-pre-streaming"
+          rm -rf "$legacy" "$RUNNER_TEMP/atlas-release-pre-w64a"
+          mkdir -p "$legacy"
+          git archive --format=tar HEAD master-reference | tar -x -C "$legacy"
+          for file in master-reference/atlas_privacy.py master-reference/release/compiler_bundle.py master-reference/release/model.py master-reference/release/pipeline.py master-reference/release/pdf_report.py; do
+            git show "2ac654684767effb894282817c6cf85a54931a58:$file" > "$legacy/$file"
+          done
+          status=0
+          (cd "$legacy/master-reference" && /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" python -m cli build --repo-root "$GITHUB_WORKSPACE" --compiler-output "$RUNNER_TEMP/atlas-compiler" --output "$RUNNER_TEMP/atlas-release-pre-w64a") || status=$?
+          if [ -f "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" >&2; fi
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          echo "peak RSS, streamed (W64a) build:"
+          grep "Maximum resident set size" "$RUNNER_TEMP/atlas-capacity/cli-build.time"
+          echo "peak RSS, pre-W64a build of the same compiler output:"
+          grep "Maximum resident set size" "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time"
+          sha256sum "$RUNNER_TEMP/atlas-release/release-manifest.json" "$RUNNER_TEMP/atlas-release-pre-w64a/release-manifest.json"
+          diff -r "$RUNNER_TEMP/atlas-release" "$RUNNER_TEMP/atlas-release-pre-w64a"
+          echo "W64a A/B: every release family member is byte-identical to the pre-W64a build"

@@ -10,6 +10,7 @@ import unicodedata
 from dataclasses import dataclass, field as dataclass_field
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping
 
 from atlas_privacy import collapsed_ascii_identity, generic_local_identity_rule
@@ -131,17 +132,23 @@ _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
 # W64a the release pipeline retains only the groups its builders read
 # (``release.pipeline.RELEASE_RETAINED_GROUPS``) and streams the rest.  On the
 # same 16 GB GitHub-hosted public Linux runner and the same compiler output
-# (run 38011273370, a 2,161,159,133-byte census) the streamed build peaked at
-# 6,093,292 KiB, 2.89 times the census, against 12,122,188 KiB for the
-# pre-W64a code, with a byte-identical release family.  3 GiB predicts about
-# 8.7 GiB if the whole peak scales with the census, and at most about
-# 12.7 GiB if every added byte were a retained ``symbols`` byte at about seven
-# times (parsed, then serialised again for the symbol index): both within
-# W63's 12.9 GiB budget that leaves room for the OS and runner.  Each run
-# prints the census and the step's peak RSS, so the next approach is measured
-# rather than discovered.  Records: ``docs/w63-compiler-census-headroom-2026-10-09.md``,
+# (run 38011273370, a 2,161,159,133-byte census) the first W64a head peaked at
+# 6,093,292 KiB against 12,122,188 KiB for the pre-W64a code, with a
+# byte-identical release family.  An independent review reconciled both peaks
+# with a model estimate of the marginal cost of one added retained ``symbols``
+# byte: about 2.27 bytes retained plus about 8 bytes for the one-shot symbol
+# index string (the encoder's accumulated text and its join, four bytes per
+# character because the index carries an astral character), about 10.3 to
+# 10.9 in all.  At 10.9 per byte, W63's 12.9 GiB budget (room for the OS and
+# runner) allows 5.81 GiB + 10.9 x (C - 2.01 GiB) <= 12.9 GiB, so C is about
+# 2.66 GiB: 2,720 MiB, a model estimate, not a measured bound.  The symbol
+# index is now streamed piece by piece, which removes the 8-byte term; the
+# ceiling may be re-derived upward only from a hosted peak-RSS measurement of
+# that head (W63's method).  Each run prints the census and the step's peak
+# RSS, so the next approach is measured rather than discovered.  Records:
+# ``docs/w63-compiler-census-headroom-2026-10-09.md``,
 # ``docs/w64a-streaming-intake-2026-10-10.md``.
-_MAX_COMPILER_CHUNK_BYTES = 3072 * 1024 * 1024
+_MAX_COMPILER_CHUNK_BYTES = 2720 * 1024 * 1024
 _GENERIC_AUTOMATION_USERS = frozenset({"actions", "agent", "build", "builder", "codex", "github", "root", "runner"})
 REQUIRED_GROUPS = frozenset(RECORD_GROUPS)
 _MANIFEST_KEYS = frozenset(
@@ -1008,6 +1015,7 @@ def _validate_consequential_claim_projection(
     consequential_gate: dict[str, Any],
     *,
     repository_root: Path | None,
+    validator_source_texts: list[dict[str, Any]],
 ) -> None:
     """Recompute the bounded census from exact source records.
 
@@ -1045,8 +1053,10 @@ def _validate_consequential_claim_projection(
                 or records.get("consequential_claim_facets") != []
             ):
                 raise ValueError
+            # Every source_text record on a validator path is supplied, so the
+            # contract path is among them exactly when it is a source path.
             source_paths = {
-                str(record.get("path") or "") for record in records.get("source_text", []) if isinstance(record, dict)
+                str(record.get("path") or "") for record in validator_source_texts if isinstance(record, dict)
             }
             file_paths = {
                 str(record.get("path") or "") for record in records.get("files", []) if isinstance(record, dict)
@@ -1062,7 +1072,7 @@ def _validate_consequential_claim_projection(
             return
 
         sources_by_path: dict[str, dict[str, Any]] = {}
-        for record in records.get("source_text", []):
+        for record in validator_source_texts:
             path = record.get("path")
             if path in required_paths:
                 if path in sources_by_path:
@@ -1155,6 +1165,7 @@ def _validate_binary_review_projection(
     *,
     repository_root: Path | None,
     source_commit: str,
+    validator_source_texts: list[dict[str, Any]],
 ) -> None:
     privacy = completeness.get("privacy")
     scan = privacy.get("binary_payload_scan") if isinstance(privacy, dict) else None
@@ -1309,7 +1320,7 @@ def _validate_binary_review_projection(
         raise ReleaseInputError("compiler incomplete binary-review evidence is inconsistent")
     receipt_file = files_by_path.get(BINARY_REVIEW_RECEIPT_PATH)
     receipt_sources = [
-        item for item in records.get("source_text", []) if item.get("path") == BINARY_REVIEW_RECEIPT_PATH
+        item for item in validator_source_texts if item.get("path") == BINARY_REVIEW_RECEIPT_PATH
     ]
     if (
         receipt_file is None
@@ -1358,6 +1369,28 @@ def _validate_binary_review_projection(
         )
 
 
+class _ValidatorRecords(dict):  # type: ignore[type-arg]
+    """The record groups ``load_compiler_bundle`` holds for its cross-group validators.
+
+    A plain ``dict`` of ``_VALIDATION_RECORD_GROUPS``, except that reading any
+    other name (``[]`` or ``.get``) raises: a validator can never read a group
+    that is not held as an empty one.
+    """
+
+    def _refuse(self, group: object) -> None:
+        raise ReleaseInputError(f"compiler validator read a record group it does not hold: {group}")
+
+    def __missing__(self, group: object) -> list[dict[str, Any]]:
+        self._refuse(group)
+        raise KeyError(group)
+
+    def get(self, group: object, default: Any = None) -> Any:  # type: ignore[override]
+        if dict.__contains__(self, group):
+            return dict.__getitem__(self, group)
+        self._refuse(group)
+        return default
+
+
 class RetainedRecords(dict):  # type: ignore[type-arg]
     """The retained record groups of a ``CompilerBundle``.
 
@@ -1403,8 +1436,16 @@ class CompilerBundle:
     chunk_census: dict[str, Any] | None = None
     # Intake-time snapshot of every group's chunk receipts, as validated:
     # ``(path, sha256, bytes)`` per chunk in canonical order.  ``iter_records``
-    # re-verifies against this immutable copy, not the mutable manifest dict.
-    chunk_receipts: Mapping[str, tuple[tuple[str, str, int], ...]] = dataclass_field(default_factory=dict)
+    # re-verifies against this read-only copy, not the mutable manifest dict.
+    chunk_receipts: Mapping[str, tuple[tuple[str, str, int], ...]] = dataclass_field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # Intake-time snapshot of every validated input except the manifest
+    # (ledgers and chunks): relative path -> ``(sha256, bytes)``, read-only.
+    # Preservation binds to it, not to the mutable manifest dict.
+    input_receipts: Mapping[str, tuple[str, int]] = dataclass_field(default_factory=lambda: MappingProxyType({}))
+    # The exact canonical manifest bytes intake validated.
+    manifest_raw: bytes = b""
 
     @property
     def source_commit(self) -> str:
@@ -1705,6 +1746,13 @@ def load_compiler_bundle(
         raise ReleaseInputError("compiler manifest record-group inventory is not canonical")
     if not isinstance(groups.get("lines"), dict) or groups["lines"].get("record_count") != structural_gate["expected"]:
         raise ReleaseInputError("compiler line-group denominator differs from structural mapping invariant")
+    # The PDF renders ``parsing.line_records`` when the ledger declares it, so a
+    # declared count must be the line group's own denominator.
+    parsing = completeness.get("parsing")
+    if isinstance(parsing, dict) and "line_records" in parsing:
+        line_records = parsing["line_records"]
+        if type(line_records) is not int or line_records != groups["lines"]["record_count"]:
+            raise ReleaseInputError("compiler completeness line-record count differs from the line group")
     if (
         not isinstance(groups.get("structural_entities"), dict)
         or groups["structural_entities"].get("record_count") != structural_root_gate["expected"]
@@ -1910,12 +1958,14 @@ def load_compiler_bundle(
         )
         del combined, combined_ids
 
-    # The validators read the held validator groups; ``source_text`` here is
-    # exactly its records on the fixed validator paths, in canonical order.
-    records: dict[str, list[dict[str, Any]]] = {
-        group_name: full_records[group_name] for group_name in sorted(_VALIDATION_RECORD_GROUPS)
-    }
-    records["source_text"] = source_text_validation_records
+    # The validators read only the held validator groups, through a mapping
+    # that raises on any other name, so a group that is not held can never
+    # read as empty.  ``source_text`` is not held under its own name: the two
+    # validators that need it receive its records on the fixed validator paths
+    # explicitly, and every other source_text check runs on the custody tuples.
+    records = _ValidatorRecords(
+        {group_name: full_records[group_name] for group_name in sorted(_VALIDATION_RECORD_GROUPS)}
+    )
 
     if graphify != completeness.get("graphify"):
         raise ReleaseInputError("Graphify metadata differs from the completeness ledger")
@@ -1993,6 +2043,7 @@ def load_compiler_bundle(
             binary_gate,
             repository_root=repository_root,
             source_commit=commit,
+            validator_source_texts=source_text_validation_records,
         )
         _validate_consequential_claim_projection(
             completeness,
@@ -2001,6 +2052,7 @@ def load_compiler_bundle(
             tree,
             acceptance_by_name["consequential_claim_denominator_closed"],
             repository_root=repository_root,
+            validator_source_texts=source_text_validation_records,
         )
     safe_parsed_files = {
         str(item["id"]): item
@@ -2142,6 +2194,19 @@ def load_compiler_bundle(
         {group_name: full_records[group_name] for group_name in sorted(groups) if group_name in wanted},
         deferred_groups=set(groups) - wanted,
     )
+    input_receipts: dict[str, tuple[str, int]] = {
+        relative: (str(receipt["sha256"]), int(receipt["bytes"]))
+        for relative, receipt in (
+            (completeness_path, manifest["completeness"]),
+            (graphify_path, manifest["graphify_metadata"]),
+            (architecture_path, manifest["architecture_conformance"]),
+        )
+    }
+    for group_receipts in chunk_receipts.values():
+        for relative, sha256, byte_count in group_receipts:
+            input_receipts[relative] = (sha256, byte_count)
+    if set(input_receipts) | {"manifest.json"} != input_files:
+        raise ReleaseInputError("compiler intake receipt snapshot differs from validated inputs")
     return CompilerBundle(
         root,
         manifest,
@@ -2149,5 +2214,7 @@ def load_compiler_bundle(
         retained,
         tuple(sorted(input_files)),
         chunk_census=chunk_census,
-        chunk_receipts=chunk_receipts,
+        chunk_receipts=MappingProxyType(chunk_receipts),
+        input_receipts=MappingProxyType(input_receipts),
+        manifest_raw=manifest_raw,
     )

@@ -7,14 +7,24 @@ groups the release builders read, re-verifies every chunk on each re-read, and
 writes both ZIPs entry by entry to disk.  These tests pin that:
 
 - every release fixture builds a family byte-identical, receipt for receipt, to
-  the pre-W64a in-memory path, reproduced verbatim below as the oracle;
+  the pre-W64a in-memory release path.  Scope of that oracle: the packaging
+  and serialization functions W64a replaced (canonical JSON, the generated-
+  output scan, preservation, bundle receipts, ZIPs, the one-shot symbol index)
+  are verbatim pre-W64a copies below, but the intake is W64a's own
+  ``load_compiler_bundle`` with every group retained, so the oracle proves the
+  family does not depend on retention or streaming, not that the intake equals
+  the pre-W64a intake.  That is proven at full scale by the workflow's A/B
+  step (the real pre-W64a files on the same compiler output) and, for refusals,
+  by the exact-message cases here;
 - the streamed ZIP equals the original in-memory ``deterministic_zip``;
 - refusals on streamed groups keep their exact messages in both retention modes;
 - a chunk changed after intake is refused before any output exists, while
   packaging, and on ``iter_records``;
 - a duplicate stable ID inside unretained groups is refused;
 - doubling the line bytes moves the intake's traced peak by less than 10 %,
-  while the retain-everything control grows past that same bound.
+  while the retain-everything control grows past that same bound;
+- the one-shot canonical JSON of an astral-character index peaks near eight
+  bytes per output byte, and the streamed symbol index stays far below that.
 
 The repository fixtures come from ``test_release_pipeline.py``, loaded by path
 under a private module name so their tests are not collected twice.
@@ -35,6 +45,7 @@ import tracemalloc
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -43,12 +54,15 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
+import release.compiler_bundle as compiler_bundle  # noqa: E402
 import release.pipeline as release_pipeline  # noqa: E402
+from atlas_privacy import FORBIDDEN_CONTENT_RULES, ForbiddenContentScan, forbidden_byte_findings  # noqa: E402
 from release.compiler_bundle import REQUIRED_GROUPS, load_compiler_bundle  # noqa: E402
 from release.model import (  # noqa: E402
     ReleaseInputError,
     VerifiedFile,
     canonical_json,
+    canonical_json_text_pieces,
     collect_output_bytes,
     deterministic_zip,
     digest_object,
@@ -75,6 +89,7 @@ _FIXTURES = _load_fixture_module()
 _fixture_repo = _FIXTURES._fixture_repo
 _declared_claim_compiler_fixture = _FIXTURES._declared_claim_compiler_fixture
 _rewrite_chunk = _FIXTURES._rewrite_chunk
+_rewrite_compiler_completeness = _FIXTURES._rewrite_compiler_completeness
 _replace_group_fixture = _FIXTURES._replace_group_fixture
 _all_files = _FIXTURES._all_files
 _json = _FIXTURES._json
@@ -91,6 +106,32 @@ LINES_CHUNK = "chunks/lines/00000.json"
 # ---------------------------------------------------------------------------
 
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def _pre_w64a_canonical_json(value: Any) -> bytes:
+    """Verbatim pre-W64a ``release.model.canonical_json``."""
+
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _pre_w64a_forbidden_byte_findings(path: str, value: bytes) -> list[dict[str, Any]]:
+    """Verbatim pre-W64a ``atlas_privacy.forbidden_byte_findings`` (whole-text scan)."""
+
+    text = value.decode("utf-8", errors="ignore")
+    findings: list[dict[str, Any]] = []
+    for rule, pattern in FORBIDDEN_CONTENT_RULES:
+        for match in pattern.finditer(text):
+            findings.append({"path": path, "line": text.count("\n", 0, match.start()) + 1, "rule": rule})
+    return findings
 
 
 def _pre_w64a_deterministic_zip(entries: dict[str, bytes]) -> bytes:
@@ -118,7 +159,7 @@ def _pre_w64a_deterministic_zip(entries: dict[str, bytes]) -> bytes:
 def _pre_w64a_compiler_preservation_entries(bundle: Any) -> dict[str, bytes]:
     """Verbatim pre-W64a ``release.pipeline._compiler_preservation_entries``."""
 
-    entries: dict[str, bytes] = {"compiler/manifest.json": canonical_json(bundle.manifest)}
+    entries: dict[str, bytes] = {"compiler/manifest.json": _pre_w64a_canonical_json(bundle.manifest)}
     expected: dict[str, dict[str, Any]] = {
         bundle.manifest["completeness"]["path"]: bundle.manifest["completeness"],
         bundle.manifest["graphify_metadata"]["path"]: bundle.manifest["graphify_metadata"],
@@ -143,7 +184,7 @@ def _pre_w64a_compiler_preservation_entries(bundle: Any) -> dict[str, bytes]:
 def _pre_w64a_bundle_receipt(entries: dict[str, bytes], source_commit: str, kind: str) -> bytes:
     """Verbatim pre-W64a ``release.pipeline._bundle_receipt``."""
 
-    return canonical_json(
+    return _pre_w64a_canonical_json(
         {
             "schema_version": "1.0.0",
             "kind": kind,
@@ -161,6 +202,12 @@ def _pre_w64a_zip_artifact(root: Path, relative: str, entries: dict[str, bytes],
     return release_pipeline._artifact(root, relative, _pre_w64a_deterministic_zip(entries), role)
 
 
+def _pre_w64a_symbol_index_artifact(root: Path, relative: str, value: Any, role: str) -> dict[str, Any]:
+    """The pre-W64a ``_artifact(target, name, canonical_json(index), role)`` call."""
+
+    return release_pipeline._artifact(root, relative, _pre_w64a_canonical_json(value), role)
+
+
 def _build_pre_w64a(
     monkeypatch: pytest.MonkeyPatch,
     repo: Path,
@@ -168,10 +215,13 @@ def _build_pre_w64a(
     output: Path,
     **options: Any,
 ) -> dict[str, Any]:
-    """Build with every group retained and every archive built in memory."""
+    """Build with every group retained and every replaced function pre-W64a."""
 
     with monkeypatch.context() as patch:
         patch.setattr(release_pipeline, "RELEASE_RETAINED_GROUPS", None)
+        patch.setattr(release_pipeline, "canonical_json", _pre_w64a_canonical_json)
+        patch.setattr(release_pipeline, "forbidden_byte_findings", _pre_w64a_forbidden_byte_findings)
+        patch.setattr(release_pipeline, "_streamed_json_artifact", _pre_w64a_symbol_index_artifact)
         patch.setattr(release_pipeline, "_compiler_preservation_entries", _pre_w64a_compiler_preservation_entries)
         patch.setattr(release_pipeline, "verified_output_entries", collect_output_bytes)
         patch.setattr(release_pipeline, "_bundle_receipt", _pre_w64a_bundle_receipt)
@@ -292,6 +342,21 @@ def _synthetic_multichunk(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
     return repo, rechunked, {}
 
 
+ASTRAL = "\U0001f4a3"
+
+
+def _synthetic_astral(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
+    # One astral character in a retained, indexed record makes the canonical
+    # symbol-index text four bytes per character, as on the real tree.
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_group_fixture(
+        compiler,
+        "datasets",
+        [{"id": f"urn:atlas:dataset:{'a' * 24}", "path": f"data/{ASTRAL}.json", "format": f"json {ASTRAL}"}],
+    )
+    return repo, compiler, {}
+
+
 def _synthetic_generated_pdf(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
     pytest.importorskip("reportlab")
     pytest.importorskip("pypdf")
@@ -308,8 +373,20 @@ def _compiled_declared_claims_generated_pdf(tmp_path: Path) -> tuple[Path, Path,
 
 @pytest.mark.parametrize(
     "fixture",
-    [_synthetic, _synthetic_multichunk, _synthetic_generated_pdf, _compiled_declared_claims_generated_pdf],
-    ids=["synthetic", "synthetic-multichunk", "synthetic-generated-pdf", "compiled-declared-claims-generated-pdf"],
+    [
+        _synthetic,
+        _synthetic_multichunk,
+        _synthetic_astral,
+        _synthetic_generated_pdf,
+        _compiled_declared_claims_generated_pdf,
+    ],
+    ids=[
+        "synthetic",
+        "synthetic-multichunk",
+        "synthetic-astral",
+        "synthetic-generated-pdf",
+        "compiled-declared-claims-generated-pdf",
+    ],
 )
 def test_every_release_fixture_builds_a_byte_identical_family(
     tmp_path: Path,
@@ -357,6 +434,9 @@ def test_every_release_fixture_builds_a_byte_identical_family(
             name: (compiler / name.removeprefix("compiler/")).read_bytes() for name in compiler_entries
         }
         assert any(name.startswith("compiler/chunks/lines/") for name in compiler_entries)
+    if fixture is _synthetic_astral:
+        # The streamed symbol index really carried the astral character.
+        assert ASTRAL in (streamed / "source-symbol-index.json").read_text(encoding="utf-8")
 
 
 def test_streamed_zip_equals_the_in_memory_deterministic_zip(tmp_path: Path) -> None:
@@ -817,3 +897,275 @@ def test_every_literal_release_read_of_bundle_records_is_a_retained_group() -> N
     assert reads, "the scan found no record reads, so it scanned nothing"
     assert {read for read in reads if read[2] not in RELEASE_RETAINED_GROUPS} == allowed_fallbacks
     assert {read[2] for read in reads} - {"lines"} <= RELEASE_RETAINED_GROUPS
+
+
+# ---------------------------------------------------------------------------
+# Round 2: the symbol-index transient, bounded scans, guarded reads, snapshot.
+# ---------------------------------------------------------------------------
+
+
+def _astral_index(records: int, pad: int) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0.0",
+        "source_commit": "0" * 40,
+        "line_mapping": {"record_count": records, "records_digest": "1" * 64},
+        "files": [],
+        "symbols": [
+            {
+                "id": f"urn:atlas:symbol:{index:024x}",
+                "decorators": [f"@pytest.mark.parametrize('glyph', ['{ASTRAL}'])"],
+                "documentation": "d" * pad,
+            }
+            for index in range(records)
+        ],
+    }
+
+
+def _traced_peak(call: Callable[[], Any]) -> int:
+    """The traced peak of ``call`` above the memory already traced when it began."""
+
+    gc.collect()
+    was_tracing = tracemalloc.is_tracing()
+    if not was_tracing:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        baseline, _ = tracemalloc.get_traced_memory()
+        result = call()
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        if not was_tracing:
+            tracemalloc.stop()
+    del result
+    return peak - baseline
+
+
+def test_the_symbol_index_multiplier_is_pinned_and_the_streamed_index_avoids_it(tmp_path: Path) -> None:
+    index = _astral_index(4_000, 2_000)
+    expected = _pre_w64a_canonical_json(index)
+    size = len(expected)
+    assert canonical_json(index) == expected
+    assert "".join(canonical_json_text_pieces(index)).encode("utf-8") == expected
+
+    # The ceiling model's index term: one-shot canonical JSON of a document
+    # that carries one astral character peaks near eight bytes per output byte
+    # (the encoder's four-byte-per-character accumulated text and its join).
+    one_shot = _traced_peak(lambda: canonical_json(index))
+    assert 4 * size < one_shot < 10 * size, (size, one_shot)
+    assert 4 * size < _traced_peak(lambda: _pre_w64a_canonical_json(index)) < 10 * size
+
+    # The streamed artifact writes, hashes and scans the same bytes piece by
+    # piece and never holds the document, so that term is gone.
+    rows: list[dict[str, Any]] = []
+    out = tmp_path / "streamed"
+    streamed = _traced_peak(
+        lambda: rows.append(release_pipeline._streamed_json_artifact(out, "index.json", index, "index-role"))
+    )
+    assert streamed < size / 4, (size, streamed)
+    assert (out / "index.json").read_bytes() == expected
+    assert rows == [release_pipeline._artifact(tmp_path / "one-shot", "index.json", expected, "index-role")]
+    assert rows[0]["sha256"] == sha256_bytes(expected) and rows[0]["bytes"] == size
+
+
+def test_a_refused_streamed_document_keeps_the_one_shot_message_and_leaves_no_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "AKIA" + "Q" * 16
+    index = {"files": [{"id": "a", "note": secret}], "symbols": [{"id": "b", "note": f"x {secret}"}]}
+    with pytest.raises(ReleaseInputError) as one_shot:
+        release_pipeline._artifact(tmp_path / "one-shot", "index.json", canonical_json(index), "role")
+    with pytest.raises(ReleaseInputError) as streamed:
+        release_pipeline._streamed_json_artifact(tmp_path / "streamed", "index.json", index, "role")
+    assert (
+        str(streamed.value)
+        == str(one_shot.value)
+        == ("generated-output privacy scan failed: index.json:1:aws_access_key, index.json:1:aws_access_key")
+    )
+    assert not (tmp_path / "streamed" / "index.json").exists()
+
+    # A failure while removing the partial file never masks the refusal.
+    def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("unlink refused")
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(ReleaseInputError, match="^generated-output privacy scan failed: "):
+        release_pipeline._streamed_json_artifact(tmp_path / "masked", "index.json", index, "role")
+
+
+_SECRETS = (
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----",
+    "AKIA" + "A" * 16,
+    "ASIA" + "Z9" * 8,
+    "ghp_" + "a" * 36,
+    "sk-" + "x" * 32,
+    "sk-proj-" + "y_" * 20,
+    "xoxb-" + "1-" * 12,
+    "AIza" + "Q" * 35,
+)
+_NOISE = 'abAZ09_- "\n{}[],:é' + ASTRAL
+
+
+def _adversarial_text(generator: random.Random) -> str:
+    parts = []
+    for _ in range(generator.randrange(1, 12)):
+        if generator.random() < 0.4:
+            secret = generator.choice(_SECRETS)
+            if generator.random() < 0.3:
+                cut = generator.randrange(len(secret))
+                secret = secret[:cut] + generator.choice('",:\n{') + secret[cut:]
+            parts.append(secret)
+        else:
+            parts.append("".join(generator.choice(_NOISE) for _ in range(generator.randrange(0, 20))))
+    return "".join(parts)
+
+
+def test_bounded_scans_return_exactly_the_whole_text_findings(monkeypatch: pytest.MonkeyPatch) -> None:
+    import atlas_privacy
+
+    # The segmenting proof holds for exactly the reviewed rule sources.
+    assert atlas_privacy._segmenting_reviewed() is True
+    generator = random.Random(64)
+    compared = 0
+    for _ in range(2_000):
+        text = _adversarial_text(generator)
+        raw = text.encode("utf-8")
+        if generator.random() < 0.3:
+            raw = raw.replace(b"a", b"\xc3", 1)
+        expected = _pre_w64a_forbidden_byte_findings("p", raw)
+        monkeypatch.setattr(atlas_privacy, "_SCAN_SLICE_BYTES", generator.randrange(1, 40))
+        assert forbidden_byte_findings("p", raw) == expected
+        scan = ForbiddenContentScan("p")
+        decoded = raw.decode("utf-8", errors="ignore")
+        position = 0
+        while position < len(decoded):
+            step = generator.randrange(1, 15)
+            scan.feed(decoded[position : position + step])
+            position += step
+        assert scan.finish() == expected
+        compared += bool(expected)
+    assert compared > 200, "too few cases with a finding to compare"
+
+    # An unreviewed rule (here one that can match a separator) switches
+    # segmenting off, so findings across a piece boundary are still found.
+    import re
+
+    extra = (*atlas_privacy.FORBIDDEN_CONTENT_RULES, ("colon_rule", re.compile(r"a:b")))
+    monkeypatch.setattr(atlas_privacy, "FORBIDDEN_CONTENT_RULES", extra)
+    assert atlas_privacy._segmenting_reviewed() is False
+    scan = ForbiddenContentScan("p")
+    for piece in ("xa:", "b\n", "a", ":b"):
+        scan.feed(piece)
+    assert scan.finish() == [
+        {"path": "p", "line": 1, "rule": "colon_rule"},
+        {"path": "p", "line": 2, "rule": "colon_rule"},
+    ]
+
+
+def test_a_verified_entry_is_refused_on_size_before_it_is_read(tmp_path: Path) -> None:
+    import release.model as release_model
+
+    source = tmp_path / "source"
+    _write(source / "entry.json", b"0123456789")
+    short = VerifiedFile(source, "entry.json", sha256_bytes(b"01234"), 5, changed_message="changed: entry.json")
+    opened: list[str] = []
+    real_open = Path.open
+
+    def recording_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        opened.append(self.name)
+        return real_open(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "open", recording_open)
+        with pytest.raises(ReleaseInputError, match=r"^changed: entry\.json$"):
+            short.read()
+    assert opened == []
+    exact = VerifiedFile(source, "entry.json", sha256_bytes(b"0123456789"), 10, changed_message="changed")
+    assert exact.read() == b"0123456789"
+
+    # The written archive is re-read through its own handle and must hold
+    # exactly its entries.
+    good = deterministic_zip({"a": b"1", "b": b"2"})
+    release_model._verify_written_archive(io.BytesIO(good), {"a": b"1", "b": b"2"}, "x.zip")
+    for entries, raw in (
+        ({"a": b"1", "b": b"3"}, good),
+        ({"a": b"1"}, good),
+        ({"a": b"1", "b": b"2"}, good[:-30]),
+    ):
+        with pytest.raises(ReleaseInputError, match=r"^streamed archive differs from its entries: x\.zip$"):
+            release_model._verify_written_archive(io.BytesIO(raw), entries, "x.zip")
+
+
+def test_a_declared_line_record_count_must_equal_the_line_group(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    count = len(_group_records(compiler, "lines"))
+
+    def declare(value: Any) -> Callable[[dict[str, Any]], None]:
+        def transform(completeness: dict[str, Any]) -> None:
+            completeness["parsing"]["line_records"] = value
+
+        return transform
+
+    _rewrite_compiler_completeness(compiler, declare(count))
+    for retained in (None, RELEASE_RETAINED_GROUPS):
+        load_compiler_bundle(compiler, retained_groups=retained, repository_root=repo)
+    for value in (count + 1, count - 1, str(count), True):
+        _rewrite_compiler_completeness(compiler, declare(value))
+        for retained in (None, RELEASE_RETAINED_GROUPS):
+            with pytest.raises(ReleaseInputError) as refusal:
+                load_compiler_bundle(compiler, retained_groups=retained, repository_root=repo)
+            assert str(refusal.value) == "compiler completeness line-record count differs from the line group"
+
+
+def test_validators_cannot_read_a_group_they_do_not_hold() -> None:
+    held = compiler_bundle._ValidatorRecords({"files": [{"id": "x"}]})
+    assert held["files"] == held.get("files") == [{"id": "x"}]
+    for group in ("source_text", "lines", "calls", "not-a-group"):
+        refusal = rf"^compiler validator read a record group it does not hold: {group}$"
+        with pytest.raises(ReleaseInputError, match=refusal):
+            held[group]
+        with pytest.raises(ReleaseInputError, match=refusal):
+            held.get(group, [])
+
+
+def test_every_literal_validator_read_is_a_held_group() -> None:
+    tree = ast.parse((MASTER_REFERENCE / "release" / "compiler_bundle.py").read_text(encoding="utf-8"))
+    reads: set[str] = set()
+    for node in ast.walk(tree):
+        target: ast.AST | None = None
+        key: ast.AST | None = None
+        if isinstance(node, ast.Subscript):
+            target, key = node.value, node.slice
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            target, key = node.func.value, node.args[0]
+        if isinstance(target, ast.Name) and target.id == "records" and isinstance(key, ast.Constant):
+            reads.add(str(key.value))
+    assert reads, "the scan found no validator reads, so it scanned nothing"
+    assert reads <= compiler_bundle._VALIDATION_RECORD_GROUPS, reads - compiler_bundle._VALIDATION_RECORD_GROUPS
+    # The fixed-path source_text records are passed explicitly; they never
+    # masquerade under the full group's name.
+    assert "source_text" not in reads and "lines" not in reads
+
+
+def test_preservation_binds_to_the_intake_snapshot(tmp_path: Path) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    bundle = load_compiler_bundle(compiler, retained_groups=RELEASE_RETAINED_GROUPS, repository_root=repo)
+    manifest_bytes = (compiler / "manifest.json").read_bytes()
+    assert isinstance(bundle.chunk_receipts, MappingProxyType)
+    assert isinstance(bundle.input_receipts, MappingProxyType)
+    with pytest.raises(TypeError):
+        bundle.input_receipts["chunks/lines/00000.json"] = ("0" * 64, 0)  # type: ignore[index]
+    assert set(bundle.input_receipts) | {"manifest.json"} == set(bundle.input_files)
+
+    # Tampering with the mutable manifest dictionary changes nothing preserved.
+    bundle.manifest["groups"]["lines"]["chunks"][0]["sha256"] = "0" * 64
+    bundle.manifest["schema_version"] = "tampered"
+    entries = release_pipeline._compiler_preservation_entries(bundle)
+    assert entries["compiler/manifest.json"] == manifest_bytes
+    assert entries[f"compiler/{LINES_CHUNK}"].read() == (compiler / LINES_CHUNK).read_bytes()  # type: ignore[union-attr]

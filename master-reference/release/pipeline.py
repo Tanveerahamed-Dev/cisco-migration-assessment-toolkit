@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import tempfile
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from atlas_privacy import forbidden_byte_findings
+from atlas_privacy import ForbiddenContentScan, forbidden_byte_findings
 from governance.capability_sink_lineage import (
     evaluate_capability_sink_lineage,
     load_capability_sink_lineage_contract,
@@ -45,8 +46,10 @@ from .model import (
     ReleaseInputError,
     VerifiedFile,
     canonical_json,
+    canonical_json_text_pieces,
     entry_receipt,
     prepare_output,
+    safe_relative,
     sha256_bytes,
     stable_id,
     verified_output_entries,
@@ -1068,13 +1071,17 @@ def self_contained_html_limit(completeness: dict[str, Any]) -> str:
     )
 
 
+def _privacy_scan_refusal(findings: list[dict[str, Any]]) -> ReleaseInputError:
+    labels = ", ".join(f"{item['path']}:{item['line']}:{item['rule']}" for item in findings)
+    return ReleaseInputError(f"generated-output privacy scan failed: {labels}")
+
+
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
     suffix = PurePosixPath(relative).suffix
     if suffix in TEXT_SCAN_SUFFIXES:
         findings = forbidden_byte_findings(relative, value)
         if findings:
-            labels = ", ".join(f"{item['path']}:{item['line']}:{item['rule']}" for item in findings)
-            raise ReleaseInputError(f"generated-output privacy scan failed: {labels}")
+            raise _privacy_scan_refusal(findings)
         privacy_scan = "high_confidence_utf8_text_scan_passed"
     else:
         privacy_scan = "binary_container_not_content_scanned"
@@ -1087,6 +1094,62 @@ def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, A
         }
     )
     return item
+
+
+def _streamed_json_artifact(root: Path, relative: str, value: Any, role: str) -> dict[str, Any]:
+    """``_artifact(root, relative, canonical_json(value), role)`` without the document in memory.
+
+    ``canonical_json`` of a large mapping holds about eight bytes per character
+    at its peak (the encoder's accumulated string plus its join, four bytes per
+    character once one astral character appears).  Here the canonical text is
+    produced piece by piece (``canonical_json_text_pieces``), and each piece is
+    scanned, hashed and written before the next exists.  The bytes are those
+    of ``canonical_json(value)``; ``ForbiddenContentScan`` returns exactly the
+    findings ``forbidden_byte_findings`` returns for them, so a refusal carries
+    the same message; and the row equals ``_artifact``'s.  A refused document's
+    partial file is removed before the refusal is raised.
+    """
+
+    suffix = PurePosixPath(relative).suffix
+    if suffix not in TEXT_SCAN_SUFFIXES:
+        raise ReleaseInputError(f"only scanned text members are streamed: {relative}")
+    relative = safe_relative(relative)
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise ReleaseInputError(f"release output already exists: {relative}")
+    scan = ForbiddenContentScan(relative)
+    digest = hashlib.sha256()
+    size = 0
+    with target.open("xb") as stream:
+        try:
+            for piece in canonical_json_text_pieces(value):
+                data = piece.encode("utf-8")
+                scan.feed(piece)
+                digest.update(data)
+                size += len(data)
+                stream.write(data)
+            findings = scan.finish()
+            if findings:
+                raise _privacy_scan_refusal(findings)
+        except BaseException:
+            try:
+                stream.close()
+            except BaseException:
+                pass
+            try:
+                target.unlink(missing_ok=True)
+            except BaseException:
+                pass
+            raise
+    return {
+        "path": relative,
+        "sha256": digest.hexdigest(),
+        "bytes": size,
+        "role": role,
+        "media_type": MEDIA_TYPES.get(suffix, "application/octet-stream"),
+        "privacy_scan": "high_confidence_utf8_text_scan_passed",
+    }
 
 
 def _zip_artifact(root: Path, relative: str, entries: dict[str, ArchiveEntry], role: str) -> dict[str, Any]:
@@ -1550,29 +1613,27 @@ def _compiler_preservation_entries(bundle: CompilerBundle) -> dict[str, ArchiveE
     """One full streaming verify pass over every validated compiler input.
 
     It runs before ``prepare_output``, as the in-memory copy it replaces did,
-    and refuses with the same messages.  Each input is re-read and checked
-    against its manifest receipt, then kept only as a ``VerifiedFile``: the
-    archives re-read and re-check it once more when they write it, so no
-    compiler chunk is held in memory between intake and packaging.
+    and refuses with the same messages.  It binds to the intake snapshot, not
+    to the mutable manifest dictionary: the manifest entry is the exact
+    canonical bytes intake validated, and every other input is re-read and
+    checked against the receipt captured when intake validated it, then kept
+    only as a ``VerifiedFile`` that the archives re-read and re-check once more
+    when they write it.  No compiler chunk is held in memory between intake and
+    packaging.
     """
 
-    entries: dict[str, ArchiveEntry] = {"compiler/manifest.json": canonical_json(bundle.manifest)}
-    expected: dict[str, dict[str, Any]] = {
-        bundle.manifest["completeness"]["path"]: bundle.manifest["completeness"],
-        bundle.manifest["graphify_metadata"]["path"]: bundle.manifest["graphify_metadata"],
-        bundle.manifest["architecture_conformance"]["path"]: bundle.manifest["architecture_conformance"],
-    }
-    for group in bundle.manifest["groups"].values():
-        for chunk in group["chunks"]:
-            expected[chunk["path"]] = chunk
+    if not bundle.manifest_raw or not bundle.input_receipts:
+        raise ReleaseInputError("compiler preservation requires the intake receipt snapshot")
+    entries: dict[str, ArchiveEntry] = {"compiler/manifest.json": bundle.manifest_raw}
+    expected = dict(bundle.input_receipts)
     if set(expected) | {"manifest.json"} != set(bundle.input_files):
         raise ReleaseInputError("compiler preservation allowlist differs from validated inputs")
-    for relative, item in sorted(expected.items()):
+    for relative, (sha256, byte_count) in sorted(expected.items()):
         entry = VerifiedFile(
             bundle.root,
             relative,
-            item["sha256"],
-            item["bytes"],
+            sha256,
+            byte_count,
             changed_message=f"compiler input changed before preservation: {relative}",
             unreadable_message="compiler input could not be reread before preservation",
         )
@@ -2007,7 +2068,7 @@ def build_release(
             )
         )
         primary.append(
-            _artifact(target, "source-symbol-index.json", canonical_json(index), "source-symbol-index-machine")
+            _streamed_json_artifact(target, "source-symbol-index.json", index, "source-symbol-index-machine")
         )
         primary.append(
             _artifact(
