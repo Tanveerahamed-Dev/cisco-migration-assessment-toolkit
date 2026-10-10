@@ -264,7 +264,14 @@ def write_deterministic_zip(root: Path, relative: str, entries: Mapping[str, Arc
     if target.exists() or target.is_symlink():
         raise ReleaseInputError(f"release output already exists: {relative}")
     with target.open("xb") as stream:
-        _write_deterministic_zip(stream, entries)
+        try:
+            _write_deterministic_zip(stream, entries)
+        except BaseException:
+            # A refused entry never leaves a partial archive behind; only the
+            # file this call created is removed.
+            stream.close()
+            target.unlink(missing_ok=True)
+            raise
     digest = hashlib.sha256()
     size = 0
     with target.open("rb") as stream:

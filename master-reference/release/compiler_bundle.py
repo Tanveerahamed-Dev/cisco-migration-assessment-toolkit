@@ -124,22 +124,24 @@ _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
 # verified compiler chunk byte plus every identity-depth source blob byte.  It
 # is not a privacy rule and never narrows the scan: the scan stays exhaustive,
 # and a census above this ceiling refuses the build instead of sampling or
-# skipping bytes.  What it bounds is memory and time.  The value below is
-# W63's, set while ``load_compiler_bundle`` kept the parsed records of every
-# group and the release family was built from them: measured on the 16 GB
-# GitHub-hosted public Linux runner (Master reference run 37985453718), a
+# skipping bytes.  What it bounds is memory and time.  W63 set 2.25 GiB while
+# ``load_compiler_bundle`` kept the parsed records of every group: a
 # 2,146,489,257-byte census peaked ``python -m cli build`` at 12,004,760 KiB
-# RSS, about 5.7 times the census.  2.25 GiB therefore predicted about
-# 12.9 GiB peak, leaving room for the OS and runner; 3 GiB would predict about
-# 17.2 GiB and fail by memory exhaustion before this refusal could name the
-# cause.  Since W64a the release pipeline retains only the groups its builders
-# read (``release.pipeline.RELEASE_RETAINED_GROUPS``) and streams the rest, so
-# that ratio no longer holds; this value is re-derived from W64a's hosted
-# peak-RSS measurement in a separate commit, never raised blind.  Each run
+# RSS (Master reference run 37985453718), about 5.7 times the census.  Since
+# W64a the release pipeline retains only the groups its builders read
+# (``release.pipeline.RELEASE_RETAINED_GROUPS``) and streams the rest.  On the
+# same 16 GB GitHub-hosted public Linux runner and the same compiler output
+# (run 38011273370, a 2,161,159,133-byte census) the streamed build peaked at
+# 6,093,292 KiB, 2.89 times the census, against 12,122,188 KiB for the
+# pre-W64a code, with a byte-identical release family.  3 GiB predicts about
+# 8.7 GiB if the whole peak scales with the census, and at most about
+# 12.7 GiB if every added byte were a retained ``symbols`` byte at about seven
+# times (parsed, then serialised again for the symbol index): both within
+# W63's 12.9 GiB budget that leaves room for the OS and runner.  Each run
 # prints the census and the step's peak RSS, so the next approach is measured
 # rather than discovered.  Records: ``docs/w63-compiler-census-headroom-2026-10-09.md``,
 # ``docs/w64a-streaming-intake-2026-10-10.md``.
-_MAX_COMPILER_CHUNK_BYTES = 2304 * 1024 * 1024
+_MAX_COMPILER_CHUNK_BYTES = 3072 * 1024 * 1024
 _GENERIC_AUTOMATION_USERS = frozenset({"actions", "agent", "build", "builder", "codex", "github", "root", "runner"})
 REQUIRED_GROUPS = frozenset(RECORD_GROUPS)
 _MANIFEST_KEYS = frozenset(

@@ -19,9 +19,9 @@ memory. That memory was about 5.7 times the census for four reasons:
 3. Both ZIPs were built in memory and then copied.
 4. The symbol index is serialised as one string.
 
-W64a removes the first three and leaves the release family byte-identical. It does not raise the
-ceiling. The ceiling is re-derived in a separate commit from the hosted peak-RSS measurement on
-this head, as W63 did.
+W64a removes the first three and leaves the release family byte-identical. The first commit kept
+the ceiling. A second commit re-derives it from that commit's hosted peak-RSS measurement, as W63
+did (see "Measured on the hosted run").
 
 ## What changed
 
@@ -30,21 +30,21 @@ validates every chunk of every group in sorted order, with every check unchanged
 only decides what the returned bundle keeps:
 
 - The groups the cross-group validators read are held in full during validation, whether the
-  caller retains them or not (`_VALIDATION_RECORD_GROUPS`, line 303). These are `files`,
+  caller retains them or not (`_VALIDATION_RECORD_GROUPS`, line 305). These are `files`,
   `symbols`, `structural_entities`, `routes`, `components`, `binaries`, `claims`,
   `consequential_claim_facets` and the two graph groups.
 - `lines` is reduced to one mapping tuple per record: path, line, semantic entity, mapping basis,
   file id and explanation depth, each exactly as `item.get` returned it. Repeated strings share one
-  object (lines 1865-1876).
+  object (lines 1867-1878).
 - `source_text` is reduced to one custody tuple per record: path, source basis, blob, digest and
   byte count. It also keeps the full records of the fixed validator paths, which are the
   consequential-claim contract, its content paths and the binary-review receipt
-  (`_SOURCE_TEXT_VALIDATION_PATHS`, line 320; lines 1877-1892).
-- Every stable ID of every group enters one global set (lines 1856-1862).
-- Each chunk's bytes and parse are released before the next chunk is read (line 1895).
+  (`_SOURCE_TEXT_VALIDATION_PATHS`, line 322; lines 1879-1894).
+- Every stable ID of every group enters one global set (lines 1858-1864).
+- Each chunk's bytes and parse are released before the next chunk is read (line 1897).
 - A group that is not retained raises if it is read through `bundle.records`. It never reads as
-  empty: `RetainedRecords`, line 1359.
-- `CompilerBundle.iter_records(group)` (line 1421) re-reads a group from disk through
+  empty: `RetainedRecords`, line 1361.
+- `CompilerBundle.iter_records(group)` (line 1423) re-reads a group from disk through
   `_receipt_json`. That re-checks the canonical path with no symlink component, the bytes, the
   SHA-256 and the canonical JSON bytes, against a snapshot of the receipts taken at intake rather
   than the mutable manifest dictionary.
@@ -92,24 +92,24 @@ Line numbers refer to this head.
 
 | Invariant | Where it holds |
 |---|---|
-| Exhaustive privacy scan of every chunk byte, refusing rather than sampling | `compiler_bundle.py:1797-1819`, unchanged except that the decoded text is now a temporary instead of a local |
-| Exhaustive privacy scan of every identity-depth blob | `compiler_bundle.py:509-572`, `1967` |
-| Receipt check before parsing: path, bytes, SHA-256, canonical bytes | `_receipt_json`, `compiler_bundle.py:1484-1526` |
-| Re-reads re-verify the receipt | `iter_records` 1421; preservation `VerifiedFile.read` (`model.py:172`) at `pipeline.py:1579`, and again at every archive write (`model.py:240`) |
-| Per-chunk `records_digest` | `compiler_bundle.py:1853` |
-| Group digest and strictly ascending IDs | `compiler_bundle.py:1898-1901` |
-| Global ID uniqueness across all 23 groups, retained or not | set at 1859-1862, refused at 1935 with the same message, at the same point (after the graph checks) |
-| Canonical packing | `compiler_bundle.py:1761-1788` |
-| Envelope, key fence, tracked schema | `compiler_bundle.py:1820-1840` |
-| Structural denominators | `compiler_bundle.py:1701-1717` |
-| `source_text` custody, for every record | `compiler_bundle.py:1974-1986`, over the custody tuples |
-| Structural roots | `compiler_bundle.py:2003-2069` |
-| GUI dossiers | `compiler_bundle.py:2071-2090` |
-| Line mapping | `compiler_bundle.py:2092-2125`, over the mapping tuples |
+| Exhaustive privacy scan of every chunk byte, refusing rather than sampling | `compiler_bundle.py:1799-1821`, unchanged except that the decoded text is now a temporary instead of a local |
+| Exhaustive privacy scan of every identity-depth blob | `compiler_bundle.py:511-574`, `1969` |
+| Receipt check before parsing: path, bytes, SHA-256, canonical bytes | `_receipt_json`, `compiler_bundle.py:1486-1528` |
+| Re-reads re-verify the receipt | `iter_records` (`compiler_bundle.py:1423`); preservation `VerifiedFile.read` (`model.py:172`) at `pipeline.py:1579`, and again at every archive write (`model.py:240`) |
+| Per-chunk `records_digest` | `compiler_bundle.py:1855` |
+| Group digest and strictly ascending IDs | `compiler_bundle.py:1900-1903` |
+| Global ID uniqueness across all 23 groups, retained or not | set at 1861-1864, refused at 1937 with the same message, at the same point (after the graph checks) |
+| Canonical packing | `compiler_bundle.py:1763-1790` |
+| Envelope, key fence, tracked schema | `compiler_bundle.py:1822-1842` |
+| Structural denominators | `compiler_bundle.py:1703-1719` |
+| `source_text` custody, for every record | `compiler_bundle.py:1976-1988`, over the custody tuples |
+| Structural roots | `compiler_bundle.py:2005-2071` |
+| GUI dossiers | `compiler_bundle.py:2073-2092` |
+| Line mapping | `compiler_bundle.py:2094-2127`, over the mapping tuples |
 | Exact source before, after and at the end | `pipeline.py:1711`, `2149`, `2242` |
 | Full validation before the output directory exists | load at `pipeline.py:1704`, preservation verify pass at `1979`, `prepare_output` at `1984` |
 | Preservation allowlist equals the validated inputs | `pipeline.py:1569` |
-| Byte-identical ZIPs and bundle receipts | `model.py:216-274`; `_bundle_receipt` `pipeline.py:1584` (`entry_receipt` gives the same row for both entry kinds) |
+| Byte-identical ZIPs and bundle receipts | `model.py:216-281`; `_bundle_receipt` `pipeline.py:1584` (`entry_receipt` gives the same row for both entry kinds) |
 | Generated-text scan | `_artifact`, `pipeline.py:1074`, unchanged for every text member. ZIPs keep the "binary container not content scanned" label. |
 
 Two refusals changed shape and say so:
@@ -119,7 +119,7 @@ Two refusals changed shape and say so:
   asserted it.
 - The per-record `"compiler {group} record lacks a stable id"` branch of the uniqueness loop could
   not be reached. Every ID is first proven a non-empty string by its chunk's check (lines
-  1841-1852), so it was removed along with the loop.
+  1843-1854), so it was removed along with the loop.
 
 Uniqueness is now stricter for a caller that retains a subset: it spans every group. Before, it
 spanned only the retained ones. For the default "retain all" callers (continuity,
@@ -162,14 +162,70 @@ bytes.
 - **Consumer map.** Every literal `bundle.records` read in `release/` must be a retained group,
   except the PDF's documented partial-bundle fallback.
 
-## Workflow (temporary)
+## Workflow (temporary, now removed)
 
-One step was added after the capacity guard: "Prove the streamed family equals the pre-W64a build".
-It extracts the pre-W64a `master-reference/` at `2ac65468` with `git archive`, runs its `cli build`
-on the same compiler output, prints both peak RSS lines, and requires `diff -r` of the two families
-to be empty. That gives the at-scale byte-identity proof and a same-runner RSS baseline in one
-job. The follow-up ceiling commit removes the step.
+The first commit (`44883b07`) added one step after the capacity guard: "Prove the streamed family
+equals the pre-W64a build". It extracted the pre-W64a `master-reference/` at `2ac65468` with
+`git archive`, ran its `cli build` on the same compiler output, printed both peak RSS lines, and
+required `diff -r` of the two families to be empty. The ceiling commit removes it, so the workflow
+is again exactly W64-0's.
+
+An independent review noted that the step mixed the legacy `master-reference/` code with the
+workspace's `release/schemas/`. It was sound for this run only because the PR merge tree equals
+`2ac65468` outside the W64a files. A future A/B should archive `HEAD` and overlay only the changed
+files from the old commit.
 
 ## Measured on the hosted run
 
-Pending.
+Master reference run `38011273370` (job `114091608712`) tested the PR merge of `44883b07`. Every step
+passed, the CI, webapp and portable workflows also passed, and the hosted pytest step ran 823
+items (W64-0: 802), with 0 failures and 1 skip.
+
+| Measure | W64-0 baseline (run `38004875653`) | W64a streamed | Pre-W64a code, same runner, same input |
+|---|---:|---:|---:|
+| `cli build` peak RSS | 12.06 GB (73.7 %) | **6,093,292 KiB, 5.81 GiB (37.21 % of `MemTotal`)** | 12,122,188 KiB, 11.56 GiB |
+| Ratio to the census | 5.6x | **2.89x** | 5.74x |
+| `cli build` wall time | 22:43 | 22:26 | 22:51 |
+| Release census | 2,155,136,802 B | 2,161,159,133 B (89.45 % WARN at 2.25 GiB) | same input |
+
+- **Byte identity at full scale.** `diff -r` of the streamed and pre-W64a families was empty.
+  Both `release-manifest.json` files have SHA-256 `2d1d080fcf65d21d61ff21d8ffe38d5440c6fb4cbd730482e15633830e7fd74a`,
+  so every artifact receipt is equal.
+- **Peak RSS** dropped 49.7 % against the same-runner pre-W64a build, and 49.5 % against the W64-0
+  baseline.
+- **Wall time** did not change. The build is dominated by validation, serialisation and
+  compression, not by memory.
+- **Guard.** It measured all 45 walls: WARN on 3 (the census at 89.45 %, the largest `symbols`
+  chunk at 86.46 %, the 8 MiB string token at 85.00 %), 0 at 95 % or above, 0 unmeasured.
+
+### The re-derived ceiling: 3 GiB
+
+`_MAX_COMPILER_CHUNK_BYTES` becomes 3,221,225,472 B (`3072 * 1024 * 1024`). Today's census is
+67.09 % of it, with 1,060,066,339 B of headroom. W63's budget was a predicted peak of about
+12.9 GiB of the runner's 15.61 GiB `MemTotal`. Two models predict the peak at the new ceiling:
+
+- **The whole peak scales with the census** (2.89x measured): about 8.66 GiB, 55.5 % of `MemTotal`.
+- **Worst case: every added byte is a retained `symbols` byte.** Such a byte is parsed (about 3x)
+  and serialised again for the symbol index (string, bytes and scan copy, about 3-4x), so about 7x:
+  5.81 GiB + 7 x 0.99 GiB, about 12.72 GiB, 81.5 % of `MemTotal`.
+
+Both stay within W63's budget. (W63's 5.7x had predicted 17.2 GiB at 3 GiB.) The ceiling is no
+longer the nearest wall. By W64-0's ratio the projection's 2 GiB expanded bound (73.93 %) refuses
+first, at a census of about 2.9 GB, and the `symbols` per-chunk bound (86.46 %) sooner still.
+W64b's compaction owns both.
+
+### Residuals (independent review, recorded rather than changed)
+
+- **What still scales with the census.** Memory is now independent of per-record *payload* bytes
+  in the streamed groups. It still grows with record *count*: the global ID set, the per-line
+  tuples, `combined_ids` and its digest. It also grows with the retained `symbols` and the
+  one-string symbol index (item 4).
+- **`RetainedRecords` refuses only some reads.** It refuses `records[g]` and `.get(g)`. Iteration,
+  `in`, `keys()` and `items()` list only the retained groups, which is honest for those groups. A
+  caller must not read the absence of a group there as "empty". The consumer-map test scans
+  literal reads only.
+- **`_read_bounded_owner_bytes` asks for 32 MiB + 1 bytes on every bounded read.** The buffered
+  reader allocates that up front, so each chunk read carries a transient 32 MiB. It is bounded and
+  freed per chunk, and it is unchanged by W64a.
+- **`write_deterministic_zip` now removes its own partial archive** when an entry is refused. Within
+  `build_release`, the staging cleanup already did this.

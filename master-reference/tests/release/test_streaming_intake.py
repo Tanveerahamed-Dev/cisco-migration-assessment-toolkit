@@ -397,6 +397,8 @@ def test_streamed_zip_equals_the_in_memory_deterministic_zip(tmp_path: Path) -> 
     changed.write_bytes(changed.read_bytes()[:-1] + b"X")
     with pytest.raises(ReleaseInputError, match=r"^changed: chunks/00001\.json$"):
         write_deterministic_zip(tmp_path / "out", "changed.zip", entries)
+    assert not (tmp_path / "out" / "changed.zip").exists()
+    assert (tmp_path / "out" / "family.zip").read_bytes() == expected
     with pytest.raises(ReleaseInputError, match=r"^changed: chunks/00001\.json$"):
         deterministic_zip(entries)
     # An entry that disappeared is refused with its own message, or the
