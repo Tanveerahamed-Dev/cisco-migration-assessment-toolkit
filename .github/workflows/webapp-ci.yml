@@ -226,7 +226,7 @@ jobs:
         run: node .github/scripts/frontend_dependency_prepare.mjs
       - name: Preserve dependency preparation candidates and failures
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.prepare_frontend_dependencies }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-dependency-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/frontend-dependency-preparation/
@@ -241,7 +241,7 @@ jobs:
         run: python -I -B .github/scripts/frontend_artifact_receive.py
       - name: Preserve frontend receiver results and failures
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.receive_frontend_artifact }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-artifact-receive-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/frontend-artifact-receive/
@@ -255,7 +255,7 @@ jobs:
         run: python -I -B .github/scripts/observe_vite_distribution.py --integrity "$VITE_SELECTED_INTEGRITY"
       - name: Preserve Vite distribution observation and failures
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.observe_vite_distribution }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vite-distribution-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vite-distribution-observation/
@@ -269,7 +269,7 @@ jobs:
         run: python -I -B .github/scripts/observe_jsonschema_rs_wheel.py
       - name: Preserve native wheel observations and failures
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.observe_jsonschema_rs }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: jsonschema-rs-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/jsonschema-rs-observation/
@@ -284,7 +284,7 @@ jobs:
         run: python -I -B .github/scripts/frontend_candidate_materials.py
       - name: Preserve candidate material observations and failures
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-candidate-materials-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/frontend-candidate-materials/
@@ -298,7 +298,7 @@ jobs:
         run: python -I -B webapp/backend/observe_ui_projection_contract.py
       - name: Preserve contract review material and failures
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-projection-contract-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ui-projection-contract/
@@ -318,7 +318,7 @@ jobs:
           python -I -B .github/scripts/verify_repository_privacy.py --root .
           python .github/scripts/frontend_build_handoff.py after --output "${{ runner.temp }}/frontend-dist-handoff"
       - name: Preserve the source-bound SPA build handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-dist-handoff-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/frontend-dist-handoff/
@@ -351,7 +351,7 @@ jobs:
       - run: npm run test:e2e
       - name: Preserve frontend E2E results and partial evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-e2e-results-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: webapp/frontend/test-results
@@ -400,7 +400,7 @@ jobs:
         run: npx playwright test --config playwright.real.config.ts
       - name: Preserve real-backend E2E results and partial evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: real-backend-e2e-results-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: webapp/frontend/test-results/real-backend
@@ -463,7 +463,7 @@ jobs:
           $details | ForEach-Object { "- $_" } | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
       - name: Upload candidate visual baselines
         if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.refresh_visual_baselines }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: design-visual-baselines-windows-2025-x64
           path: webapp/frontend/visual-e2e/__screenshots__/windows-2025-x64
@@ -471,7 +471,7 @@ jobs:
           retention-days: 14
       - name: Upload visual diffs
         if: ${{ failure() && (github.event_name != 'workflow_dispatch' || !inputs.refresh_visual_baselines) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: design-visual-diffs-windows-2025-x64
           path: |
