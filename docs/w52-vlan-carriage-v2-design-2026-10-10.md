@@ -172,7 +172,7 @@ Bytes are exact; milliseconds are hosted Linux 3.12 ceilings; the first hosted r
 ## (f) Atlas Scope
 
 Scope does not consume carriage:
-- `SECTIONS_READ` (`atlas-scope/tools/lib/compile-model.mjs:164-185`) lacks it.
+- `SECTIONS_READ` (`atlas-scope/tools/lib/compile-model.mjs:163-184`) lacks it.
 - Interface fields are read by name (`:1406-1407`).
 - No fixture prints `none` (`build_sample.py:215,277`).
 
