@@ -200,6 +200,14 @@ tests + frontend type-check & build, path-filtered to `webapp/**` and the engine
 python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 ```
 
+Browser E2E runs from `webapp/frontend` in two tiers. `npm run test:e2e` drives the production
+build with `/api` mocked per test. `npx playwright test --config playwright.real.config.ts` is the
+real-backend tier: it builds the SPA into a scratch directory, starts the real backend on a fresh
+store (`e2e-real/serve_real_backend.py`), ingests the synthetic collection through the real engine
+and walks the core views and one cutover execution compare. It needs the Python dependencies
+(`pip install -e ".[dev]"`); `E2E_REAL_PYTHON` selects the interpreter. webapp-ci runs it as a
+non-required job.
+
 ## API (selected)
 
 | Method | Path | Purpose |

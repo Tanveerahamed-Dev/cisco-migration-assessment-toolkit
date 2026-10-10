@@ -358,6 +358,55 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The real-backend browser tier: Playwright drives the REAL FastAPI backend (production entry
+  # point, fresh SQLite store) serving a fresh build of this checkout's SPA, and ingests the
+  # repository's synthetic collection through the real engine. Every spec in the job above mocks
+  # /api instead. Deliberately NON-REQUIRED: it is not in the gate job's needs and is no protected
+  # context, so a red result is evidence for review, never a merge block.
+  real-backend-e2e:
+    needs: scope
+    if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
+    name: Real-backend browser E2E (non-required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - name: Fail closed when scope classification did not succeed
+        if: ${{ needs.scope.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the application, engine and backend dependencies
+        working-directory: .
+        run: python -m pip install -e ".[dev]"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm run verify:node
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Real-backend browser walk (synthetic collection, real engine ingest)
+        env:
+          E2E_REAL_ROOT: ${{ runner.temp }}/assesshub-real-e2e
+        run: npx playwright test --config playwright.real.config.ts
+      - name: Preserve real-backend E2E results and partial evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-backend-e2e-results-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: webapp/frontend/test-results/real-backend
+          if-no-files-found: error
+          retention-days: 14
+
   visual:
     needs: scope
     if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}

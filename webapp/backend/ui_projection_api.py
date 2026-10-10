@@ -42,16 +42,27 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W45 train: W34 (G15 stored STP facts, main f797444e) combined with W28 (G08 trust
-# inputs, #628): compact ensure_ascii JSON plus LF, in owner key order. The combined
-# owner schema is the disjoint union of both reviewed deltas; see
-# docs/w45-engine-sample-train-2026-10-09.md (prior: docs/w34-stp-root-facts-validation-2026-10-09.md,
-# docs/w28-trust-inputs-validation-2026-10-08.md and the W24/W23 records).
+# W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
+# facts, pins 16b80957.../bca688bd...), #629 + #628 (W28 trust inputs, pins
+# 6aa9a264.../a3021b67...; #629 at f6323759 carries both, pins 0553957c.../3ee0af7f...)
+# and the G41 + G17 + G16 + G05 + G21 + G24 deltas
+# (W37-W42): compact ensure_ascii JSON plus LF, in owner key order. Re-pinned once
+# on the combined schema; every parent's extract reproduces its own committed pins.
+# Reviewed delta in the W51 pull request (against predicted main: 20 definitions
+# added, 9 changed, none removed or reordered, keyword profile unchanged). Per-slice
+# notes: docs/w34-stp-root-facts-validation-2026-10-09.md,
+# docs/w37-snapshot-identity-validation-2026-10-09.md,
+# docs/w38-peer-host-validation-2026-10-09.md,
+# docs/w39-gateway-detail-validation-2026-10-09.md,
+# docs/w40-axis-unassessed-validation-2026-10-09.md,
+# docs/w41-punch-facets-validation-2026-10-09.md,
+# docs/w42-cross-layer-validation-2026-10-09.md
+# (prior: docs/w28-trust-inputs-validation-2026-10-08.md).
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "0553957c7d4e6e535420488d0aec799db5e319c0942154e6729ab7b5d45fccb4",
-    "list": "3ee0af7f1686050821ed29878b1785eac3a5ca3ee482b35af55561c770a659df",
+    "view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
+    "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -575,6 +586,20 @@ _PROJECTION_VERSION = (
 )
 
 
+def _require_engine_source(document: dict[str, Any], digest: str, size: int) -> None:
+    """A published engine source identity (G41) must name the exact store bytes this cache entry was admitted from.
+
+    The owner publishes it only from the exact-byte marker that ``bind_ui_projection_snapshot`` mints over
+    these same bytes, so both digests are taken over one byte string, not compared across forms. A
+    withheld identity is left exactly as the owner wrote it: the transport never writes an engine fact.
+    """
+    block = document["engine"]
+    for key, expected in (("snapshot_sha256", digest), ("snapshot_bytes", size)):
+        fact = block[key]
+        if fact["state"] == "published" and fact["value"] != expected:
+            raise ValueError("Engine projection names other source bytes than the store read")
+
+
 class _SnapshotProjection:
     def __init__(self) -> None:
         self.lock = Lock()
@@ -616,6 +641,7 @@ class _ProjectionCache:
             _require_json_native(produced)
             document = deepcopy(produced)
             (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+            _require_engine_source(document, digest, len(raw))
             with self.lock:
                 entry.documents[host] = document
             return document

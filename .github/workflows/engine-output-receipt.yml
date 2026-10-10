@@ -1,0 +1,80 @@
+name: engine-output-receipt
+
+# Manual, hosted-only receipt of one engine-output-handoff artifact as review data. Under the
+# GitHub-only rule the receiver never runs on a workstation: `.github/scripts/engine_output_handoff.py
+# receive` refuses every environment except this workflow on a GitHub-hosted Linux runner. It
+# selects the producer run, job and artifact through the read-only Actions API, closes every raw ZIP
+# member span, binds the manifest to the source commit and every member hash, executes the canonical
+# marker policy only from admitted Git bytes, and uploads `receipt.json` plus `files/<path>` as review
+# data. It never writes to the repository. With `verify_import` it instead proves that the dispatched
+# commit carries exactly the admitted bytes. See docs/engine-output-handoff.md.
+#
+# Dispatch only. A pull request or push never starts it.
+on:
+  workflow_dispatch:
+    inputs:
+      producer_run_id:
+        description: Run id of the successful engine-output-handoff run to receive
+        required: true
+        type: string
+      source_commit:
+        description: Full 40-character commit that the producer run regenerated
+        required: true
+        type: string
+      allow_golden_shrink:
+        description: Accept a handoff produced under allow_golden_shrink (review the removal first)
+        required: false
+        default: false
+        type: boolean
+      verify_import:
+        description: Verify that the dispatched commit imports exactly the admitted bytes instead of emitting them
+        required: false
+        default: false
+        type: boolean
+
+# Read-only: the Actions API selects and downloads the producer artifact; nothing is written back.
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: engine-output-receipt-${{ github.ref }}
+  cancel-in-progress: false
+
+# Action revisions are immutable, while the comments retain the human-readable upstream release
+# that each commit represents.
+jobs:
+  receive:
+    name: Receive engine outputs as review data (manual)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      TZ: UTC
+    steps:
+      # Full history: the producer's source is the dispatched commit or one of its ancestors.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Receive the selected handoff as review data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANDOFF_RUN_ID: ${{ inputs.producer_run_id }}
+          HANDOFF_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          ALLOW_GOLDEN_SHRINK_INPUT: ${{ inputs.allow_golden_shrink }}
+          VERIFY_IMPORT_INPUT: ${{ inputs.verify_import }}
+        run: python -I -B .github/scripts/engine_output_handoff.py receive
+      # Uploaded only on success: a refused receipt never leaves importable review data.
+      - name: Preserve the receipt review data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-output-receipt-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/engine-output-receipt/
+          if-no-files-found: error
+          retention-days: 14

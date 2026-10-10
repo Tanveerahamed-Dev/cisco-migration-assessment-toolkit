@@ -8,14 +8,62 @@ FIRST RUN / EVERY ENGAGEMENT START
 ----------------------------------
 1. Plug in, open the  Atlas\  folder on the stick.
 2. Run:  Atlas.exe --selftest        -> expect "SELFTEST: PASS".
-3. Double-click Atlas.exe. It starts the cockpit and opens your browser.
-   Keep the console window open; closing it stops Atlas.
+3. Double-click Atlas.exe. It starts AssessHub (the app) and opens
+   your browser. Keep the console window open; closing it stops Atlas.
 Everything the app stores lives in  Atlas\data\  beside the exe. That is
 the ONLY writable folder - updates replace everything else wholesale.
+Atlas is also the engine itself. With --run-engine in front of the
+engine's own arguments, Atlas.exe runs the assessment engine instead
+of the app (see OFFLINE / LIVE NETWORK BOUNDARY). There is no second
+engine program on the stick.
+
+READING A SNAPSHOT (THE CORE SCREENS)
+-------------------------------------
+Open a campaign, then a snapshot. Five views run across the top:
+  Overview          fleet posture, health and lifecycle bands,
+                    gating items, move-group readiness.
+  Trust             what the analysis could NOT see: for each
+                    analysis input, how many devices it could not
+                    assess, and which. Read it before you quote any
+                    number to the client.
+  Inventory         devices, VLANs, endpoints, uncollected peers.
+  Findings          the prioritised findings, in the engine's order.
+  Topology & Paths  the map, the 3-D view (see ATLAS SCOPE), and an
+                    IP path question answered from the stored route
+                    model - nothing is sent on the network.
+Click a linked device name for its Device page. Two of its panels
+come straight from the engine's stored rows, in the engine's order:
+  "If this device fails"  the severity, VLANs impacted and stranded
+                          endpoints the engine found for its loss.
+  "Structural links"      its links, whether each is a bridge, and
+                          which switch pairs it would sever.
+The page does not simulate, rank or fill in either one.
+"Tools and downloads" (top right of a snapshot) holds the cutover
+plan, the documents and the older full snapshot page.
+
+EVERY VALUE CARRIES A STATE. A dash with a label is NOT zero and NOT
+healthy - read the label and the reason under it:
+  Not collected         a blind spot: the evidence was never captured.
+  Collected, empty      captured, and nothing of that kind was there.
+  Not assessed          the engine had nothing it could judge.
+  Analysis unavailable  that analysis step failed in this run.
+  Unverified            the value failed a check.
+The Evidence button beside a value opens its source records and the
+limits that apply to it.
+
+LOWER BOUNDS. Some failure-impact counts are only a floor: the true
+impact can be larger, for example behind a neighbour the collection
+did not reach. On the Device page and in Topology & Paths such a
+count reads >= N, with the reason on a line below it, and its
+Evidence lists a witness reference. A Findings total that the engine
+publishes only as a minimum also reads >= N. The Failure impact tab
+under Tools and downloads spells it out, and the cutover plan writes
+LOWER BOUND, at least N. NOT ASSESSED in the cutover plan or the
+keystone list marks what could not be ranked - never a clean result.
 
 ATLAS SCOPE (THE 3-D VIEW OF A SNAPSHOT)
 ----------------------------------------
-On a snapshot's page in the cockpit, click "Open in Atlas Scope". The
+On a snapshot's page in the app, click "Open in Atlas Scope". The
 same snapshot opens as a 3-D investigation view in the same browser, at
 /scope/snapshots/<id>/ on the Atlas address. The view reads that
 snapshot from Atlas when the page opens: nothing is copied off the
@@ -28,6 +76,13 @@ damaged or incomplete: update it (see UPDATE).
 The view draws what the collection recorded. A device, link or finding
 the collection did not see is simply not there - an empty or quiet
 view is NOT a clean bill of health.
+The same view also opens inside Topology & Paths as 3-D investigation.
+Atlas Scope ships as a labelled PREVIEW: its acceptance is not
+complete. Its status bar is marked Preview on every view and at every
+window size, and the app marks Preview beside "Open in Atlas Scope"
+and beside the 3-D investigation heading. Use it to look around, and
+check anything it shows on the core screens before you act on it or
+repeat it to the client.
 
 LOSS OF STICK (prepare BEFORE the first engagement)
 ---------------------------------------------------
@@ -73,6 +128,88 @@ Never delete data\ to "fix" a problem - it is the client's evidence.
 A boot saying "cannot open the store" is NOT corruption - usually Atlas
 is already running in another window. Close it and start again.
 
+WHAT ATLAS KEEPS, AND WHAT IT WILL NOT DELETE
+---------------------------------------------
+Atlas keeps snapshots, not raw captures. A ZIP or folder you ingest is
+copied to this computer's temporary folder for the engine run, and
+Atlas deletes that copy when the run ends (a failed deletion is not
+reported); your collection folder is only read.
+The ingest never connects to a device.
+An execution run that binds its post-change snapshot makes a
+comparison receipt: a permanent decision record. Atlas refuses to
+delete a snapshot a receipt names, an execution run that holds one,
+or a campaign that contains one. A campaign, snapshot or execution
+run WITHOUT a receipt can be deleted (a campaign from its own page).
+IN-APP DELETE IS NOT DISPOSAL: a deleted row leaves the app's lists,
+but its bytes can stay readable inside data\assesshub.db (Atlas does
+not make the database overwrite or compact freed space), and the
+start-time copies in data\backups\ can still hold it.
+There is NO purge in the app, by decision. Disposing of client data
+means removing the whole data\ folder and every other copy listed
+below, outside Atlas (see DISPOSING OF CLIENT DATA).
+The app does NOT redact documents you download (see REDACTION).
+
+DISPOSING OF CLIENT DATA (MANUAL, OUTSIDE ATLAS)
+------------------------------------------------
+Do this only at the end of an engagement, and only when the client
+agreement allows it. It is not a repair: for a damaged database,
+follow CORRUPTION instead. Never edit the database or try to remove
+single records - receipts are permanent by design.
+  1. First hand over or archive everything the agreement says to
+     keep: the deliverables, and the receipts and execution records
+     they rest on.
+  2. Close Atlas and its browser tab (EJECT DISCIPLINE, steps 1-2).
+  3. Find every copy. Client data can be in all of these places:
+     Inside Atlas\data\ on the stick:
+       assesshub.db, and assesshub.db-journal if it exists
+       any .corrupt files you made (see CORRUPTION)
+       backups\          start-time copies of the database, and any
+                         copies you parked there yourself
+       release-backups\  database copies and hash receipts kept by
+                         updates and rollbacks
+       *.log             engine logs (they name devices and hosts)
+     Beside Atlas\ on the stick, after any update or rollback,
+     finished or interrupted: every folder whose name starts with
+     Atlas. or .Atlas. can hold client data - Atlas.data-handoff (the
+     whole data folder), Atlas.incoming\data, Atlas.previous\data,
+     the Atlas.failed-* folders, and .Atlas.database-preflight (a copy
+     of assesshub.db, left behind if the updater cannot remove it).
+     Folders you chose: the raw captures of a live collection (the
+     --collection-dir folder; without that option the engine makes a
+     migration_collection_<date> folder in the folder the run was
+     started from, even inside Atlas\), every --output folder and the
+     documents beside it, and every --out folder.
+     On the laptop: documents downloaded from the app (usually the
+     Downloads folder), engine logs in the folder an engine run was
+     started from, and anything named assesshub_* or atlas_redact_*
+     in the temporary folder (%TEMP%). Atlas removes those after each
+     run, but a removal that failed is not reported. Also any tmp*
+     file in %TEMP%: an upload larger than 1 MB is spooled there
+     while Atlas reads it, and a power loss or a pulled stick can
+     leave it behind.
+     The browser on the laptop: its cache and site data can keep
+     pages and data Atlas served. Use a browser profile kept only for
+     Atlas and delete that profile, or clear that browser's cache and
+     site data for the Atlas address.
+  4. Delete them with Windows Explorer, not through the app. Remove
+     Atlas\data\ as a whole - the database together with backups\
+     and release-backups\ - and the client data inside the Atlas.*
+     and .Atlas.* folders, so no older copy is left behind. The empty
+     data folder itself can stay.
+  5. Deleting a file does not make it unrecoverable. On a USB stick
+     or an SSD, neither does overwriting it: wear levelling writes to
+     other memory cells, so old copies can survive an overwrite tool
+     as well as a delete. BitLocker To Go turned on AFTER client data
+     was written, with "Encrypt used disk space only", leaves the
+     space that was free at that moment unencrypted, so data deleted
+     earlier can stay readable. The honest options: encrypt the stick
+     from its first use (LOSS OF STICK) and, at disposal, reformat it
+     and destroy every saved copy of its recovery key; or physically
+     destroy the stick. Where the agreement requires it, follow your
+     organisation's media-sanitisation procedure for the stick and
+     the laptop.
+The next start begins with a new, empty database.
+
 EJECT DISCIPLINE
 ----------------
 1. Close the Atlas console window (Ctrl+C or the X).
@@ -89,6 +226,8 @@ REDACTION - BEFORE ANYTHING LEAVES THE SITE
 -------------------------------------------
 Deliverables carry client IPs/MACs/serials. --redact pseudonymizes them
 across the whole output set (snapshot, workbook, explorer).
+Redaction exists ONLY as a command: the app does NOT redact the
+documents you download from its pages.
 
 Run this as ONE line (nothing else needs to be on the stick):
   Atlas.exe --redact-folder <collection folder> --out <D:\share>
@@ -253,7 +392,11 @@ loopback (127.0.0.1 or ::1). This is defense in depth, not an OS firewall:
 the disconnected-NIC field test is the hard no-internet check. For an
 explicitly authorized read-only SSH collection, use the engine door with the
 engagement's reviewed devices file and workbook template, for example:
-  Atlas.exe --allow-live-network --run-engine --devices-file D:\job\devices.json --template D:\job\template.xlsx --output D:\job\Assessment.xlsx
+  Atlas.exe --allow-live-network --run-engine --devices-file D:\job\devices.json --template D:\job\template.xlsx --output D:\job\Assessment.xlsx --collection-dir D:\job\collection
+Always pass --collection-dir and --output, each to a folder outside
+Atlas\: without --collection-dir the raw captures land in a new
+migration_collection_<date> folder in whatever folder the command was
+started from, and only the engine log is moved into Atlas\data.
 The browser ingest routes remain offline; the bare `--allow-live-network`
 server form changes reachability but does not itself start a collection.
 This enables network reachability only. It does NOT authorize a collection,

@@ -22,21 +22,29 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
+from cisco_toolkit import impact_assessability   # W48: which stored failure-impact rows are measurements
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
 
 def _facts(snap: dict) -> dict:
-    """Defensive reads of the snapshot sections the handbook is grounded in."""
-    devices = _as_dict(snap.get("devices"))
-    fi = _as_list(snap.get("failure_impact"))
-    keystones = [r for r in fi if isinstance(r, dict)]
+    """Defensive reads of the snapshot sections the handbook is grounded in.
 
-    def _stranded(r):
-        return _as_num(r.get("stranded"))
-    keystones.sort(key=lambda r: (-_stranded(r), str(r.get("host") or "")))
-    keystones = [k for k in keystones if _stranded(k) > 0]
+    W48: the keystones are ranked through the engine owner of row assessability, never from the raw rows. A
+    published row ranks by its stranded count and a lower-bound row by the positive floor the owner publishes for it
+    (`ranking_floor`); each keystone is a ``(row, verdict)`` pair so §2.1 writes every cell as the owner publishes it.
+    ``keystones_unranked`` carries the verdict of every row the owner does not rank (held, doubted, or bounded at
+    zero), so §2.1 names them instead of reading them as stranding nobody."""
+    devices = _as_dict(snap.get("devices"))
+    fi_pairs = impact_assessability.rows_with_verdicts(snap)
+
+    def _stranded(pair):
+        floor = impact_assessability.ranking_floor(pair[1])
+        return floor if floor is not None else _as_num(pair[0].get("stranded"))
+    keystones = [p for p in fi_pairs if impact_assessability.ranks(p[1]) and _stranded(p) > 0]
+    keystones.sort(key=lambda p: (-_stranded(p), str(p[0].get("host") or "")))
+    keystones_unranked = [verdict for _rec, verdict in fi_pairs if not impact_assessability.ranks(verdict)]
     si = _as_dict(snap.get("syslog_intelligence"))
     ph = _as_dict(snap.get("platform_health"))
     gd = _as_dict(snap.get("golden_drift"))
@@ -63,7 +71,8 @@ def _facts(snap: dict) -> dict:
     n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (r.get("fhrp", "none") or "none") != "none")
     # n_keystones carries the PRE-cap total so §2.1 can disclose what the [:5] dropped: on the
     # 303-device production snapshot 193 devices strand endpoints and the handbook showed five.
-    return {"devices": devices, "keystones": keystones[:5], "n_keystones": len(keystones), "si": si, "ph": ph,
+    return {"devices": devices, "keystones": keystones[:5], "n_keystones": len(keystones),
+            "keystones_unranked": keystones_unranked, "si": si, "ph": ph,
             "gd": gd, "qa": qa, "sr": sr, "lc": lc, "sec": sec, "n_sec_fail": sec_fail,
             "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}
 
@@ -421,19 +430,36 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             doc.add_paragraph(f"… and {len(rows) - 60} more — full inventory in the workbook.")
     else:
         absent("device inventory", "re-run the collection to populate the quick reference.")
-    if ev["keystones"]:
+    ks_unranked = ev.get("keystones_unranked") or []
+    if ev["keystones"] or ks_unranked:
         doc.add_heading("2.1 Keystone devices (handle with care)", level=2)
+    if ev["keystones"]:
         doc.add_paragraph(
             "Failure-impact analysis ranks these as the fleet's keystones — the devices whose loss "
             "strands the most endpoints. Treat any work on them as high-risk change control.")
+        # W48: a published row renders as before; a lower-bound row writes each value as the owner publishes it
+        # ('High (lower bound)', '≥ N (lower bound)'), never as an exact measurement.
         table(["Device", "Severity", "Endpoints stranded if it fails", "VLANs impacted"],
-              [[k.get("host"), k.get("severity", "—"), k.get("stranded", 0),
-                k.get("vlans_impacted", 0)]
-               for k in ev["keystones"]], widths=[2.0, 1.2, 2.0, 1.6])
+              [[k.get("host"), k.get("severity", "—"), k.get("stranded", 0), k.get("vlans_impacted", 0)]
+               if verdict.published else
+               [k.get("host")] + [impact_assessability.ranked_value(verdict, field)
+                                  for field in ("severity", "stranded", "vlans_impacted")]
+               for k, verdict in ev["keystones"]], widths=[2.0, 1.2, 2.0, 1.6])
         _disclose(doc, ev.get("n_keystones", len(ev["keystones"])), len(ev["keystones"]),
                   "device(s) whose loss strands endpoints", "Failure Impact",
                   "'The fleet's keystones' is the ranked top of that list, not its whole length — "
                   "change control applies to every device on it.")
+        ks_bounded = [verdict for _k, verdict in ev["keystones"] if not verdict.published]
+        if ks_bounded:
+            doc.add_paragraph(
+                f"{len(ks_bounded)} keystone(s) above publish their counts only as lower bounds, so each can "
+                f"strand more than it reads: {impact_assessability.disclose(ks_bounded)}.")
+    if ks_unranked:
+        # W48: a switch whose blast radius is not a measurement is neither a keystone nor a safe-to-lose box.
+        doc.add_paragraph(
+            f"{len(ks_unranked)} switch(es) are not ranked as keystones, because their failure impact is not a "
+            f"measurement on this evidence: {impact_assessability.disclose(ks_unranked)}. Treat them as "
+            "high-risk change control until the missing evidence is collected.")
 
     # ===== 3. Monitoring & alerting baseline =====
     doc.add_heading("3. Monitoring & Alerting Baseline", level=1)

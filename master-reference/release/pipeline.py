@@ -1622,18 +1622,25 @@ def build_release(
     pdf_path: Path | None = None,
     generate_pdf: bool = False,
     enhancement_gap: str | None = None,
+    observations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate all required inputs and emit one deterministic release family.
 
     The destination must be absent or empty.  Inputs are fully validated before
     the destination is created, so an integrity failure does not leave a
     plausible partial release.
+
+    ``observations``, when given, receives operational facts about this run
+    (the compiler chunk byte census and its headroom).  They are reported to
+    the caller only and never enter the release family or its manifest.
     """
 
     staged = None
     try:
         repo_root = repo_root.resolve(strict=True)
         bundle = load_compiler_bundle(compiler_output, repository_root=repo_root)
+        if observations is not None:
+            observations["compiler_chunk_census"] = bundle.chunk_census
         source_before = validate_exact_source(repo_root, bundle)
         content = load_content_bundle(
             repo_root / "master-reference" / "content",

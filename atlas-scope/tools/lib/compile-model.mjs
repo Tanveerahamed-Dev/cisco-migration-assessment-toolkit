@@ -166,6 +166,7 @@ export const SECTIONS_READ = Object.freeze([
   "cable_map",
   "cross_layer",
   "devices",
+  "device_dossiers",
   "endpoint_identity",
   "failure_impact",
   "health_scores",
@@ -975,6 +976,69 @@ function compileEvidence(p, i, snap) {
 /* ── the fabric model ───────────────────────────────────────────────────────────────────────── */
 
 /**
+ * Read the persisted failure-impact owner, not the raw row's appearance. Dossiers store the aggregate
+ * verdict, reason and exact row pointer (analyze.compute_device_dossiers). They do not store reason codes
+ * or per-cell severity eligibility. Scope therefore holds categorical severity on every bound, rather
+ * than reproducing the owner's simulation predicates or deciding which bands it may publish.
+ * @param {string} host
+ * @param {unknown[]} dossiers
+ * @param {unknown[]} rows
+ * @param {string} contextCite  the existing inventory or topology record, never an invented inventory path
+ */
+function ownedImpact(host, dossiers, rows, contextCite) {
+  const matches = dossiers.map((d, index) => ({ d: obj(d), index })).filter(({ d }) => own(d, "host") === host);
+  const rawMatches = rows.filter((r) => own(obj(r), "host") === host);
+  if (matches.length === 0 && rawMatches.length === 0) return null;
+  const match = matches.length === 1 ? matches[0] : null;
+  const storedOwner = match ? own(match.d, "impact_assessability") : undefined;
+  const ownerPresent = storedOwner !== null && typeof storedOwner === "object" && !Array.isArray(storedOwner);
+  const owner = obj(storedOwner);
+  const verdict = own(owner, "assessable");
+  const why = typeof own(owner, "why") === "string" ? own(owner, "why") : null;
+  const pointer = own(owner, "pointer");
+  const cite = match ? `device_dossiers.per_device[${match.index}]${ownerPresent ? ".impact_assessability" : ""}` : contextCite;
+  let unavailable = matches.length > 1
+    ? "More than one device dossier names this host; no single impact owner can be selected."
+    : matches.length === 0 ? "No device dossier supplies a failure-impact verdict for this host." : null;
+  const states = ["published", "lower_bound", "not_assessed", "ambiguous"];
+  if (unavailable === null && (!states.includes(verdict) || why === null || (verdict !== "published" && why.trim() === ""))) {
+    unavailable = "The stored failure-impact owner has no readable verdict and reason.";
+  }
+  const indexText = typeof pointer === "string" ? /^\/failure_impact\/(0|[1-9][0-9]*)$/.exec(pointer)?.[1] : undefined;
+  const index = indexText === undefined ? null : Number(indexText);
+  const source = index !== null && Number.isSafeInteger(index) ? own(rows, String(index)) : undefined;
+  const selected = source !== null && typeof source === "object" && !Array.isArray(source) && own(source, "host") === host;
+  if (unavailable === null && !selected && !(pointer === null && verdict === "not_assessed" && rawMatches.length === 0)) {
+    unavailable = "The owner pointer does not select a readable failure-impact row for this exact host.";
+  }
+  if (unavailable === null && (verdict === "published" || verdict === "lower_bound") && rawMatches.length !== 1) {
+    unavailable = "Multiple failure-impact rows name this host; the stored owner cannot select a unique measurement.";
+  }
+  /** @param {unknown} value */
+  const count = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  /** @param {unknown} value */
+  const text = (value) => typeof value === "string" ? value : null;
+  const raw = selected ? obj(source) : null;
+  const row = raw ? {
+    host, severity: text(own(raw, "severity")), vlans: count(own(raw, "vlans_impacted")),
+    stranded: count(own(raw, "stranded")), hard: count(own(raw, "hard")),
+    backup: count(own(raw, "backup")), fhrp: count(own(raw, "fhrp")), detail: text(own(raw, "detail")),
+    cite: `failure_impact[${index}]`,
+  } : null;
+  const assessable = unavailable === null ? verdict : null;
+  /** @param {number | null | undefined} value */
+  const measure = (value) => assessable === "published" || (assessable === "lower_bound" && value !== null && value !== undefined && value > 0)
+    ? value ?? null : null;
+  return {
+    assessable, why, unavailable, row,
+    severity: assessable === "published" ? row?.severity ?? null : null,
+    vlans: measure(row?.vlans), stranded: measure(row?.stranded), hard: measure(row?.hard),
+    backup: measure(row?.backup), fhrp: measure(row?.fhrp),
+    detail: assessable === "published" ? row?.detail ?? null : null, cite,
+  };
+}
+
+/**
  * Compile the UI model (src/data/fabric.json).
  * @param {Record<string, any>} snap  a validated snapshot (tools/lib/validate-snapshot.mjs)
  * @param {Binding} binding
@@ -985,7 +1049,8 @@ export function compileFabric(snap, binding, opts = {}) {
   const cableNodes = arr(snap.cable_map?.nodes);
   const nodeByHost = new Map(cableNodes.map((n) => [n.host, n]));
   const healthByHost = new Map(arr(snap.health_scores).map((h) => [h.switch, h]));
-  const impactByHost = new Map(arr(snap.failure_impact).map((f) => [f.host, f]));
+  const impactRows = arr(snap.failure_impact);
+  const impactDossiers = arr(obj(snap.device_dossiers).per_device);
 
   /* Hosts the fabric must render = cable-map nodes union inventoried devices. A cable-map-only node
      (an AP, a phone, an uncollected neighbour) is REAL topology; dropping it would silently shrink
@@ -1032,7 +1097,8 @@ export function compileFabric(snap, binding, opts = {}) {
     const d = own(inventory, host);
     const n = nodeByHost.get(host);
     const h = healthByHost.get(host);
-    const fi = impactByHost.get(host);
+    const cite = d ? `devices.${host}` : `cable_map.nodes[host=${host}]`;
+    const impact = ownedImpact(host, impactDossiers, impactRows, cite);
     return {
       id: host,
       host,
@@ -1060,20 +1126,9 @@ export function compileFabric(snap, binding, opts = {}) {
       criticality: Number.isFinite(h?.criticality) ? h.criticality : null,
       dataQuality: Number.isFinite(h?.data_quality) ? h.data_quality : null,
       deductions: strs(h?.deductions, `health_scores[switch=${host}].deductions`),
-      impact: fi
-        ? {
-            severity: val(fi.severity),
-            vlans: num(fi.vlans_impacted),
-            stranded: num(fi.stranded),
-            hard: num(fi.hard),
-            backup: num(fi.backup),
-            fhrp: num(fi.fhrp),
-            detail: val(fi.detail),
-            cite: `failure_impact[host=${host}]`,
-          }
-        : null,
+      impact,
       fieldCites: deviceFieldCites(host, d, n, h),
-      cite: d ? `devices.${host}` : `cable_map.nodes[host=${host}]`,
+      cite,
     };
   });
 

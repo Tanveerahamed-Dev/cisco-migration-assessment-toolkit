@@ -21,9 +21,11 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes a pull request's in-flight run instead of queueing behind a stale head. A
+# dispatched candidate build is never cancelled: it may be attesting or attaching draft assets.
 concurrency:
   group: atlas-portable-${{ github.event.pull_request.number || inputs.source_commit || github.sha }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gate:

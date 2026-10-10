@@ -308,7 +308,8 @@ class CensusDepthDeclaration:
 # the compiler output from roughly 1.87 GB to 2.74 GB (atlas-scope alone about
 # 868 MB of per-line, symbol, source-text, call and dossier records).  That
 # breaks the 32 MiB compiler-chunk bound, the 2 GiB expanded-projection and
-# bounded privacy-scan budgets.  These are resource safety bounds, not a claim
+# the then-2 GiB release privacy-scan budgets (the release ceiling became
+# 2.25 GiB in W63).  These are resource safety bounds, not a claim
 # about a hosting platform's capacity.  Internal reference validation no longer
 # imposes an aggregate Sites quota; this coverage deferral remains unchanged.  The
 # owner recorded the decision to defer line projection for this prefix until a

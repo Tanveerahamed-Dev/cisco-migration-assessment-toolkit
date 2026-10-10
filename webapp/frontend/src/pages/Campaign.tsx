@@ -11,6 +11,7 @@ import type {
   SnapshotVerification,
 } from "../api";
 import ComparisonDecision from "../components/ComparisonDecision";
+import { downloadJsonDocument, trendReceiptsExportDocument } from "../receiptExport";
 import ObservedL2TrialInput, {
   EMPTY_OBSERVED_L2_TRIAL,
   observedL2TrialIsReading,
@@ -186,20 +187,10 @@ const CANONICAL_GATE_COLOR: Record<string, string> = {
   REGRESSED: "var(--crit)",
 };
 
+// The trend file holds bound evidence only: the trend's own fields and, per adjacent pair, its identity and complete
+// comparison. The display-only impacts_view the server serves beside each pair is never written (receiptExport.ts).
 function downloadTrendJson(value: CampaignTrendResponse, campaignId: number) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
-  const makeUrl = typeof URL.createObjectURL === "function";
-  const href = makeUrl
-    ? URL.createObjectURL(blob)
-    : `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(value, null, 2))}`;
-  const anchor = document.createElement("a");
-  anchor.href = href;
-  anchor.download = `atlas-campaign-${campaignId}-trend-receipts.json`;
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  if (makeUrl) URL.revokeObjectURL(href);
+  downloadJsonDocument(trendReceiptsExportDocument(value), `atlas-campaign-${campaignId}-trend-receipts.json`);
 }
 
 function TrendCanonicalReceipts({ value, campaignId }: {
@@ -273,7 +264,7 @@ function TrendCanonicalReceipts({ value, campaignId }: {
                 {" · "}{gate.l2_rehearsal_not_verified || 0} not verified
               </div>
             )}
-            <ComparisonDecision value={entry.comparison}
+            <ComparisonDecision value={entry.comparison} impactsView={entry.impacts_view}
               exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
           </details>
         );

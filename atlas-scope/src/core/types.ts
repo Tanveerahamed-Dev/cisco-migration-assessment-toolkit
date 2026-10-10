@@ -103,7 +103,9 @@ export const KIND_NOT_STATED = "kind not stated";
 export const kindWords = (kind: string | null): string =>
   kind === null ? KIND_NOT_STATED : recognisedKind(kind) ? kind : unrecognisedPhrase("kind", kind);
 
-export interface FailureImpact {
+/** Stored simulation row, retained for inspection even when its values are held. */
+export interface FailureImpactRow {
+  host: string;
   severity: string | null;
   vlans: number | null;
   stranded: number | null;
@@ -112,6 +114,16 @@ export interface FailureImpact {
   fhrp: number | null;
   detail: string | null;
   cite: Cite;
+}
+
+export interface FailureImpact extends Omit<FailureImpactRow, "host"> {
+  /** Persisted engine verdict; null means the owner could not be admitted. */
+  assessable: "published" | "lower_bound" | "not_assessed" | "ambiguous" | null;
+  why: string | null;
+  /** Compiler admission failure, separate from the owner's verbatim reason. */
+  unavailable: string | null;
+  /** Exact pointer-selected row; never a raw host-join fallback. */
+  row: FailureImpactRow | null;
 }
 
 export interface Device {

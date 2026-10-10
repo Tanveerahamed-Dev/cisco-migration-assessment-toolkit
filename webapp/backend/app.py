@@ -181,8 +181,8 @@ _SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
 # literals (`interfaces.${host}.${port}`), which never match. Pinned to SECTIONS_READ and to the
 # compiler's real output, member by member, by webapp/tests/test_scope_mount.py.
 _SCOPE_SNAPSHOT_SECTIONS = (
-    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "endpoint_identity",
-    "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
+    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "device_dossiers",
+    "endpoint_identity", "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
     "object_groups", "overlay", "physical_health", "protocol_assessability", "protocol_health",
     "punchlist", "routes", "routing_neighbors",
 )
@@ -3301,8 +3301,16 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 # engine function (main stores the same failure_impact its _device_dossiers adapter reads), and the
                 # engine owns its inputs. Whether the dossier's impact term should honour the projection's holds is
                 # an engine question, not one this route answers by feeding it different rows.
+                # W48: it also passes the engine owner's verdicts on those rows, exactly as main() does, so a held
+                # or lower-bound impact is disclosed here too and never phrased as an exact measurement. The owner
+                # is total; the pipeline's phase fallback (a document with no row verdicts) covers a fault.
+                from cisco_toolkit import impact_assessability
                 from cisco_toolkit.analyze import compute_device_dossiers
                 from cisco_toolkit.ssot import failed_sections
+                try:
+                    _fi_verdicts = impact_assessability.assessment_document(snap)
+                except Exception:   # noqa: BLE001 -- mirrors main()'s guarded phase: no verdict, never published
+                    _fi_verdicts = impact_assessability.unavailable_document()
                 data = compute_device_dossiers(
                     health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
                     lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
@@ -3313,7 +3321,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
                     move_groups=snap.get("move_groups"),
                     protocol_assessability=snap.get("protocol_assessability"),
-                    parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap))
+                    parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap),
+                    failure_impact_assessability=_fi_verdicts)
         return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")
@@ -3661,14 +3670,46 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         }
 
     # -- execution runs (war room) ------------------------------------------
+    def _receipts_with_impacts_views(rows: List[Any]) -> List[Any]:
+        """The stored comparison receipt rows, each shallow-copied with a DISPLAY-ONLY ``impacts_view`` sibling (W50).
+
+        A receipt binds its after snapshot's failure-impact rows as raw evidence and is re-verified by recomputation
+        on every read, so it never carries their interpretation. ``impacts_view`` is that interpretation, computed
+        live by the engine owner from the receipt's bound after snapshot (``engine.receipt_impacts_view``). It sits
+        BESIDE ``receipt``: the stored row, its receipt bytes and every digest are untouched, it is never written
+        back, and the PIR export (which reads ``rec["comparisons"]`` directly) never sees it."""
+        views: Dict[Any, Dict[str, Any]] = {}
+        out: List[Any] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                out.append(row)
+                continue
+            receipt = row.get("receipt")
+            comparison = receipt.get("comparison") if isinstance(receipt, dict) else None
+            key = engine.comparison_after_binding(comparison)
+            if key not in views:
+                views[key] = engine.receipt_impacts_view(comparison, store.get_bound_snapshot)
+            out.append({**row, "impacts_view": views[key]})
+        return out
+
     def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
         view = execution.with_progress(
             rec["id"], rec["snapshot_id"], state if state is not None else rec["state"])
-        view["comparison_receipts"] = list(rec.get("comparisons") or [])
+        view["comparison_receipts"] = _receipts_with_impacts_views(list(rec.get("comparisons") or []))
         return view
 
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
-        """Atomic read-modify-write on one run's state; returns the updated derived state."""
+        """Atomic read-modify-write on one run's state; returns the updated derived state.
+
+        Only the read-modify-write holds ``execution.MUTATION_LOCK``. The response view is built AFTER the lock is
+        released (W50): it loads each receipt's bound after snapshot and runs the engine owner over it
+        (``_receipts_with_impacts_views``), which must never serialize the war room. It is built from the record this
+        call just read and saved, exactly as before, so neither what is stored nor what is returned changes."""
+        saved_rec = _mutate_execution_locked(execution_id, fn)
+        return _execution_view(saved_rec, saved_rec["state"])
+
+    def _mutate_execution_locked(execution_id: int, fn) -> Dict[str, Any]:
+        """The locked half of :func:`_mutate_execution`: read, apply `fn`, save; returns the saved record."""
         with execution.MUTATION_LOCK:
             rec = store.get_execution(execution_id)
             if not rec:
@@ -3704,7 +3745,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "Execution comparison authority could not be revalidated from its persisted "
                     "receipt and exact source rows; the mutation was refused.",
                 )
-            return _execution_view(rec, rec["state"])
+            return rec
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
     def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:
