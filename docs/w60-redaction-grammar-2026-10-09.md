@@ -233,6 +233,11 @@ and the Slack-format sentinel. Each is neutralised without changing a single val
 
 The scanner, run as a pure function over every file the branch changes, now reports 0 findings.
 
+The second hosted run (job `114150176956`) stopped the same compiler with an internal `UnicodeEncodeError`.
+The compiler re-encodes every JSON value as UTF-8, and three corpus rows carry a non-UTF-8 byte as a lone
+surrogate escape (`\udca0`, `\udc96`). The file now spells each such character `{{U+DCxx}}`, and the test
+module's loader (`_restore_surrogates`) restores it, so every row is exactly the string it was.
+
 ## The defect (unchanged history)
 
 The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced

@@ -1,5 +1,5 @@
 {
- "about": "W60 adversarial redaction corpus (round 4). Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the first placeholder unless flags carry 'notail' (that placeholder is not governed by a credential keyword: URL userinfo, a whole high-entropy token or crypt hash, a table/CSV/chap column, a wrapped value, a private-key body). qualifier_shaped: the same, except that each secret is spelled like a word the line also uses as structure, so it is checked by its whole-word count, which must drop. must_keep: left byte-identical and certified. over_redacted: lines with no credential that the fail-safe rules rewrite, pinned with a note. main_6390b66c on every row: origin/main 6390b66c's own _redact_config_values output for the line, captured by running git-archived 6390b66c (not a frozen copy of its code); every secret main removed must stay removed (the parity differential).",
+ "about": "W60 adversarial redaction corpus (round 4). Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the first placeholder unless flags carry 'notail' (that placeholder is not governed by a credential keyword: URL userinfo, a whole high-entropy token or crypt hash, a table/CSV/chap column, a wrapped value, a private-key body). qualifier_shaped: the same, except that each secret is spelled like a word the line also uses as structure, so it is checked by its whole-word count, which must drop. must_keep: left byte-identical and certified. over_redacted: lines with no credential that the fail-safe rules rewrite, pinned with a note. main_6390b66c on every row: origin/main 6390b66c's own _redact_config_values output for the line, captured by running git-archived 6390b66c (not a frozen copy of its code); every secret main removed must stay removed (the parity differential). A non-UTF-8 byte (surrogate-escaped, U+DC80..U+DCFF) is spelled '{{U+DCxx}}' and the test module's loader restores it: a lone surrogate escape in a JSON string stops the master reference's exact-source compiler.",
  "main_ref": "6390b66c1e91e675ebcb52464d60af6f552c9271",
  "must_redact": [
   {
@@ -4358,14 +4358,14 @@
   },
   {
    "platform": "latin1",
-   "line": "snmp-server community\udca0FakeLat97x RO",
-   "expect": "snmp-server community\udca0<redacted> RO",
+   "line": "snmp-server community{{U+DCA0}}FakeLat97x RO",
+   "expect": "snmp-server community{{U+DCA0}}<redacted> RO",
    "secrets": [
     "FakeLat97x"
    ],
    "flags": [],
    "source": "w58r2-review:F01",
-   "main_6390b66c": "snmp-server community\udca0FakeLat97x RO"
+   "main_6390b66c": "snmp-server community{{U+DCA0}}FakeLat97x RO"
   },
   {
    "platform": "utf8",
@@ -4457,8 +4457,8 @@
   },
   {
    "platform": "cp1252",
-   "line": " local-user admin password cipher\udca0FakeLat98x",
-   "expect": " local-user admin password cipher\udca0<redacted>",
+   "line": " local-user admin password cipher{{U+DCA0}}FakeLat98x",
+   "expect": " local-user admin password cipher{{U+DCA0}}<redacted>",
    "secrets": [
     "FakeLat98x"
    ],
@@ -6407,10 +6407,10 @@
   },
   {
    "platform": "ios",
-   "line": "snmp-server host 198.51.100.200 version 2c Ow9\udc96dashQ",
+   "line": "snmp-server host 198.51.100.200 version 2c Ow9{{U+DC96}}dashQ",
    "expect": "snmp-server host 198.51.100.200 version 2c <redacted>",
    "secrets": [
-    "Ow9\udc96dashQ",
+    "Ow9{{U+DC96}}dashQ",
     "dashQ"
    ],
    "flags": [],

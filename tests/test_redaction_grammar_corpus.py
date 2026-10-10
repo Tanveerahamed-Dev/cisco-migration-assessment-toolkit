@@ -33,8 +33,24 @@ from webapp.backend import redaction_verify as rv
 
 _CORPUS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
                             "redaction_grammar_corpus.json")
+#: A few rows carry a non-UTF-8 byte, surrogate-escaped (U+DC80..U+DCFF). A JSON string holding a lone surrogate
+#: escape stops the master reference's exact-source compiler (it re-encodes every JSON value as UTF-8), so the file
+#: spells each such character '{{U+DCxx}}' and the loader restores it: the rows are exactly the surrogate strings.
+_SURROGATE_MARK_RE = re.compile(r"\{\{U\+(DC[89A-F][0-9A-F])\}\}")
+
+
+def _restore_surrogates(value):
+    if isinstance(value, str):
+        return _SURROGATE_MARK_RE.sub(lambda m: chr(int(m.group(1), 16)), value)
+    if isinstance(value, list):
+        return [_restore_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _restore_surrogates(item) for key, item in value.items()}
+    return value
+
+
 with open(_CORPUS_PATH, encoding="utf-8") as _f:
-    CORPUS = json.load(_f)
+    CORPUS = _restore_surrogates(json.load(_f))
 MUST_REDACT = CORPUS["must_redact"]
 MUST_KEEP = CORPUS["must_keep"]
 OVER_REDACTED = CORPUS["over_redacted"]
