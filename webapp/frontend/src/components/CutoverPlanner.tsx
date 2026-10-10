@@ -541,7 +541,7 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
         <ComparisonDecision
           value={latestComparison}
           impactsView={latestStored?.impacts_view}
-          exportFilename={`execution-${execution.id}-comparison-receipt-${latestStored?.id || "latest"}.json`}
+          exportFilename={`execution-${execution.id}-receipt-${latestStored?.id || "latest"}.comparison.json`}
         />
       ) : policy ? (
         <section aria-label="Canonical post-change cutover decision"

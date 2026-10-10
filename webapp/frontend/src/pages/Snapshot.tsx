@@ -446,7 +446,7 @@ function ProtocolAssurancePane({ value, snapId }:
             Catalog presence is not runtime support, and this receipt owns no score or cutover verdict.
           </div>
         </div>
-        <a className="btn" href={exportUrl} download={`protocol-assurance-snapshot-${snapId}.json`}>
+        <a className="btn" href={exportUrl} download={`snapshot-${snapId}.protocol-assurance.json`}>
           ↓ Complete JSON export
         </a>
       </div>

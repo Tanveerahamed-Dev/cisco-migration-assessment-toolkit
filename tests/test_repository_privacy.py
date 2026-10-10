@@ -273,6 +273,81 @@ def test_guard_rejects_other_snapshots_and_office_artifacts(tmp_path):
     assert any("report.xlsx" in item for item in violations)
 
 
+def test_guard_rejects_engine_sidecars_in_both_index_and_worktree_scans(tmp_path):
+    """W65: the sidecars both gates used to miss, plus one of each other match kind.
+
+    Every name class comes from `cisco_toolkit.distribution_verify.CLIENT_ARTIFACT_NAME_CLASSES`;
+    `tests/test_client_artifact_census.py` checks the full registry. This drives the real scan
+    loops, so a class the matcher knows but a loop skips still fails.
+    """
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    sidecars = {
+        "out/Acme.protocol-assurance.json": "protocol-assurance-export",
+        "out/Acme.comparison.json": "comparison-receipt",
+        "out/Acme.trend-comparisons.json": "trend-comparisons",
+        "out/Acme.phase_timings.json": "phase-timings",
+        "out/Acme.run_manifest.json": "run-manifest",
+        "out/Acme.incomplete.json": "incomplete-marker",
+        "out/topology.mmd": "topology-mermaid",
+        "out/assesshub.db": "database",
+        "out/.protocol-receipt-authority-1.html": "receipt-authority-probe",
+        "collection/CORE-1/show_version.txt": "capture-show",
+    }
+    for relative in sidecars:
+        _track(root, relative, "{}\n")
+    violations = module.inspect_tracked_tree(root)
+    for relative, key in sidecars.items():
+        for scope in ("indexed", "tracked"):
+            expected = f"client-bearing artifact type is {scope}: {relative} ({key})"
+            assert expected in violations, (expected, violations)
+
+
+def _pin_fixtures(root: Path, entries: dict[str, str]) -> None:
+    """Track the reviewed-fixture manifest: `<sha256 of LF bytes>  <path>` per entry."""
+    lines = [
+        f"{hashlib.sha256(text.encode('utf-8')).hexdigest()}  {relative}"
+        for relative, text in entries.items()
+    ]
+    _track(root, ".github/privacy/synthetic_capture_fixtures_sha256.txt", "\n".join(lines) + "\n")
+
+
+def test_guard_admits_only_manifest_pinned_capture_fixtures(tmp_path):
+    """W65: `tests/` is not a blanket exemption; only a digest-pinned, reviewed fixture is."""
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    fixture, text = "tests/fixtures/show_version.txt", "Cisco IOS Software\n"
+    _pin_fixtures(root, {fixture: text})
+    _track(root, fixture, text)
+    # A real capture copied under tests/ for a repro, and one outside tests/: both refused.
+    _track(root, "tests/fixtures/repro/show_running-config.txt", "hostname REAL-CORE\n")
+    _track(root, "docs/show_version.txt", text)
+    violations = module.inspect_tracked_tree(root)
+    assert not any(fixture in item for item in violations), violations
+    for relative in ("tests/fixtures/repro/show_running-config.txt", "docs/show_version.txt"):
+        for scope in ("indexed", "tracked"):
+            assert f"client-bearing artifact type is {scope}: {relative} (capture-show)" in violations
+
+
+def test_guard_refuses_a_pinned_fixture_whose_bytes_changed(tmp_path):
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    fixture = "tests/fixtures/show_version.txt"
+    _pin_fixtures(root, {fixture: "Cisco IOS Software\n"})
+    _track(root, fixture, "Cisco IOS Software\nhostname REAL-CORE\n")
+    violations = module.inspect_tracked_tree(root)
+    assert f"indexed capture fixture differs from its reviewed digest: {fixture}" in violations
+    assert f"tracked capture fixture differs from its reviewed digest: {fixture}" in violations
+
+
+def test_guard_refuses_an_invalid_fixture_manifest(tmp_path):
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    _track(root, ".github/privacy/synthetic_capture_fixtures_sha256.txt", "not-a-digest  docs/x.txt\n")
+    violations = module.inspect_tracked_tree(root)
+    assert len(violations) == 1 and "privacy guard configuration is invalid" in violations[0]
+
+
 def test_guard_rejects_hashed_private_hostname_without_storing_it(tmp_path):
     module = _privacy_module()
     root = _repo(tmp_path)

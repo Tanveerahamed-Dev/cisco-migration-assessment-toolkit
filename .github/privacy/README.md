@@ -9,6 +9,30 @@ The current set contains 253 canonical private-estate hostnames plus three
 observed inventory/reporting variants. Public fixtures use deterministic
 `MERIDIAN-*` aliases and reserved `example.net` domains.
 
+Client-bearing artifact names are refused by class. The one owner is
+`cisco_toolkit/distribution_verify.py :: CLIENT_ARTIFACT_NAME_CLASSES`: every
+name shape whose bytes can carry client evidence (office deliverables, the
+engine JSON sidecars and AssessHub/Atlas Scope downloads, explorer and topology
+views, logs, databases, local state, collection captures and configuration
+files, field-redaction markers, and crash-left staging names), each with its
+producer. Names are compared after NFKC normalisation, with invisible format
+characters and trailing dots or whitespace removed, case-insensitively. The
+wheel/sdist audit consumes the registry directly. This guard is stdlib-only and
+runs before any install, so it restates the classes and the matcher;
+`tests/test_client_artifact_census.py` pins the restatement equal (data and a
+generated differential corpus), requires the generated case-insensitive
+`.gitignore` block, and classifies every write site in every tracked non-test
+Python file (`python tests/client_artifact_census.py`) so that a new sidecar
+fails CI until it is registered or declared non-client. Raw captures are owned
+by `webapp/backend/redaction_verify.py :: is_uncoverable_capture`; the registry
+holds their name-identifiable shapes only.
+
+`synthetic_capture_fixtures_sha256.txt` lists the reviewed SYNTHETIC collection
+fixtures (`<sha256 of the LF-normalised bytes>  <path>`, `tests/fixtures/` only).
+A capture-shaped file anywhere else, an unlisted one under `tests/`, or a listed
+one whose bytes changed is refused. Review new fixture bytes as synthetic before
+adding or updating a line.
+
 The guard inspects both tracked files and non-ignored untracked files—the exact
 set that could enter the next commit. Ordinary files must be bounded, strict
 UTF-8 text; opaque/binary content is refused even when it contains no NUL byte.
