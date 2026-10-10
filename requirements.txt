@@ -13,7 +13,7 @@ uvicorn[standard]>=0.27,<1
 python-multipart>=0.0.9,<1
 # Engine-owned UI projection responses are validated before delivery.
 jsonschema==4.26.0
-jsonschema-rs==0.58.5
+jsonschema-rs==0.58.6
 referencing==0.37.0
 
 # Atlas R2 qualification receipts verify Ed25519 signatures directly. This
