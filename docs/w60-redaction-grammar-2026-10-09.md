@@ -212,6 +212,15 @@ Every rule is restated in the verifier and pinned equal (`_REDACT_SNMP_PROTOCOLS
 `_REDACT_ARGV_OPTIONS`, and the four new patterns). The verifier also adds the four patterns to
 `_INLINE_SECRET_RES`.
 
+**Pushed history.** GitHub push protection refused the first push. The synthetic Slack-format sentinel of
+corpus row `w58r2-review:C30` (`xoxb-` followed by digit groups) matched its Slack token detector. The row is
+respelled `xoxb-FakeSlackNotAToken-abcdefghij`; the producer's token-format rule still matches it, main still
+leaves it, and the scrubbed result is still `<redacted>`. Because the branch had never been pushed, every
+local commit since round 1 was rewritten for that one string, and nothing else changed. The reviewed commits
+this record cites are mapped as follows: round 2 `409b854e` is pushed as `607b6f0e`, and round 3 `b07fff18`
+is pushed as `d05ff1aa`. The pre-rewrite history is kept on this host at
+`refs/preserved/w60-pre-push-rewrite-0f008ca3`.
+
 ## The defect (unchanged history)
 
 The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced
