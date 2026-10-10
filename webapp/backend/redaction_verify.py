@@ -17,6 +17,7 @@ import contextlib
 import bisect
 import hashlib
 import io
+import itertools
 import ipaddress
 import json
 import os
@@ -509,6 +510,9 @@ _SWEEP_VOID_NEXT = {
     **dict.fromkeys(("authentication-mode", "area-authentication-mode", "domain-authentication-mode"),
                     frozenset({"hwtacacs", "radius", "local", "aaa", "password", "scheme", "keychain",
                                "key-chain", "none"})),
+    # the engine security check ID that spells a keyword, before a severity or a check status (the
+    # producer derives it from parse._SEC_CHECKS; the restatement is pinned equal)
+    "weak-user-pw": frozenset({"high", "medium", "low", "fail", "pass", "na"}),
     "auth": frozenset({"sign", "verify", "via", "add", "priv(enforce"}),
     "credentials": frozenset({"caching"}),
     "psk": frozenset({"tunnel"}),
@@ -525,8 +529,7 @@ _SWEEP_VOID_NEXT = {
 _SWEEP_VOID_PREV = {"community": frozenset({"set", "match", "policy-options", "then", "from"}),
                     "key": frozenset({"trusted-", "public-", "ssh-", "host-"}),
                     "cipher": frozenset({"crypto"}),
-                    "psk": frozenset({"sign", "verify"}),
-                    "weak-user-pw": frozenset({"check"})}
+                    "psk": frozenset({"sign", "verify"})}
 _SWEEP_EDGE = "\"'`()[]{}<>;:,."
 _SWEEP_KEEP = "\"'`()[]{};:,."
 _SWEEP_ALLOW = frozenset({
@@ -677,13 +680,25 @@ _SWEEP_SNMP_PROTOCOLS = frozenset({
     "md5", "sha", "sha1", "sha-1", "sha224", "sha-224", "sha256", "sha-256", "sha384", "sha-384", "sha512",
     "sha-512", "des", "3des", "aes", "aes128", "aes-128", "aes192", "aes-192", "aes256", "aes-256", "aes192c",
     "aes-192c", "aes256c", "aes-256c"})
-_SWEEP_SNMP_ARGV_SHAPE_RE = re.compile(_v(
-    r"(?<!{S})(?:(?:-v{h}*(?:1|2c|3)|-l{h}*(?i:noauthnopriv|authnopriv|authpriv)|-[ax]{h}*(?i:"
+_SWEEP_SNMP_SHAPE_STRONG_RE = re.compile(_v(
+    r"(?<!{S})(?:-v{h}*2c|-l{h}*(?i:noauthnopriv|authnopriv|authpriv)|-3[mMkK]{h}*(?:0x)?[0-9A-Fa-f]+)(?!{S})"))
+_SWEEP_SNMP_SHAPE_WEAK_RE = re.compile(_v(
+    r"(?<!{S})(?:-v{h}*(?:1|3)|-[ax]{h}*(?i:"
     + "|".join(sorted(map(re.escape, _SWEEP_SNMP_PROTOCOLS), key=lambda p: (-len(p), p)))
-    + r"))(?!{S})|-3[mMkK])"))
-_SWEEP_SNMP_DIRECTIVE_RE = re.compile(_v(r"(?:trapsess|informsess|proxy)(?={H})"), re.IGNORECASE)
+    + r"))(?!{S})"))
+_SWEEP_SNMP_DIRECTIVES = frozenset({"trapsess", "informsess", "proxy"})
 _SWEEP_SNMP_POSITIONAL = {"usmuser": (7, 9), "smuxpeer": (1,)}
+_SWEEP_SNMP_LINE_WORD_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9_.])(?:trapsess|informsess|proxy|(?i:usmuser|smuxpeer))(?={H})"))
 _SWEEP_SNMP_FIELD_RE = re.compile(_v(r"\"[^\"\r\n]*\"|{S}+"))
+_SWEEP_SNMP_OID_RE = re.compile(r"\.?\d{1,10}(?:\.\d{1,10}){0,127}")
+_SWEEP_LINE_WORD_LEADS = "#+>:=(|"
+#: Argument words (the producer's ``_REDACT_ARGV_WORD_RE``): a quoted run is part of its word, an unterminated
+#: quote runs to the line end, and a non-UTF-8 byte is inside the word it touches.
+_SWEEP_ARGV_WS = _CRED_WS.replace("\udc80-\udcff", "")
+_SWEEP_ARGV_WORD_RE = re.compile(
+    "(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
 _SWEEP_CHPASSWD_RE = re.compile(_v(
     r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
 _SWEEP_PGPASS_RE = re.compile(_v(
@@ -740,12 +755,12 @@ _SWEEP_DANGLE_QUALIFIERS = frozenset({
 _SWEEP_SIZE_WORDS = frozenset({"aes", "des", "3des", "aes-cbc"})
 _SWEEP_DANGLE_HINT_RE = re.compile(r"pass|secret|communit|key|psk|auth|priv|-pw|snmp-server")
 _SWEEP_NAME_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*\Z"""))
-#: A credential header whose authorization scheme ends the line (the producer's ``_REDACT_SCHEME_OPEN_RE``):
-#: the next non-blank line's first token must be the placeholder.
+#: A credential header whose value a wrap cut (the producer's ``_REDACT_SCHEME_OPEN_RE``): the next non-blank
+#: line's first argument word must be the placeholder.
 _SWEEP_SCHEME_OPEN_RE = re.compile(_v(
-    r"(?<![A-Za-z0-9_-])(?:(?:proxy-)?authorization|x-[a-z0-9-]{0,64}?(?:token|api-?key|auth[a-z0-9-]{0,32}"
-    r"|secret|password))[\"']?{h}*:{h}*[\"']?(?:" + "|".join(sorted(_SWEEP_SCHEMES)) + r"){h}*\Z"),
-    re.IGNORECASE)
+    r"(?<![A-Za-z0-9_-])(?:(?:proxy-)?authorization[\"']?{h}*:{h}*[\"']?[A-Za-z][A-Za-z0-9!#$%&*+.^_`|~-]*"
+    r"|x-[a-z0-9-]{0,64}?(?:token|api-?key|secret|password)[\"']?{h}*:{h}*(?:[\"']?(?:"
+    + "|".join(sorted(_SWEEP_SCHEMES)) + r"))?){h}*\Z"), re.IGNORECASE)
 _SWEEP_SNMP_HOST_OPEN_RE = re.compile(_v(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
 #: Closed configuration command words (the producer's ``_REDACT_COMMAND_WORDS``) and clause-trailing
 #: words (``_REDACT_CONT_TRAILERS``): exact words, never a shape -- any other word is a wrapped value.
@@ -850,7 +865,8 @@ _INLINE_SECRET_RES = tuple(
        _TABLE_END_RE, _FORTI_CONFIG_RE, _FORTI_END_RE, _FORTI_SET_NAME_RE, _CHAP_HEADER_RE, _JSON_OPEN_RE,
        _XML_OPEN_RE, _YAML_OPEN_RE]
     + [header[0] for header in _TABLE_HEADERS]
-    + [_SWEEP_SNMP_ARGV_SHAPE_RE, _SWEEP_SNMP_DIRECTIVE_RE, _SWEEP_SNMP_FIELD_RE, _SWEEP_SCHEME_OPEN_RE])
+    + [_SWEEP_SNMP_SHAPE_STRONG_RE, _SWEEP_SNMP_SHAPE_WEAK_RE, _SWEEP_SNMP_LINE_WORD_RE, _SWEEP_SNMP_FIELD_RE,
+       _SWEEP_SNMP_OID_RE, _SWEEP_ARGV_WORD_RE, _SWEEP_SCHEME_OPEN_RE])
 
 
 def _cred_token(line: str, pos: int) -> tuple[str, int] | None:
@@ -1144,7 +1160,7 @@ def _sweep_snmp_host_tail(tokens: list[str]) -> bool:
     return True
 
 
-def _sweep_dangle(line: str) -> tuple[str, list[str], bool] | None:
+def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tuple[str, list[Any], bool] | None:
     """``(kind, tail, key_id)`` when the line DANGLES (the producer's rule, restated)."""
     if "snmp-server" in line.casefold():
         masked = _sweep_masked(line)
@@ -1159,6 +1175,10 @@ def _sweep_dangle(line: str) -> tuple[str, list[str], bool] | None:
             return ("value", [], False)
     if ":" in line and _SWEEP_SCHEME_OPEN_RE.search(_sweep_masked(line)):
         return ("scheme", [], False)
+    if carry is not None or "-" in line or "net" in line.casefold():
+        pending = _sweep_argv_walk(line, carry)[1]
+        if pending is not None:
+            return ("argv", list(pending), False)
     dangle = _sweep_dangle_tail(line)
     return None if dangle is None else ("value", dangle[0], dangle[1])
 
@@ -1248,7 +1268,7 @@ def _sweep_starts_clause(line: str, masked: str, start: int, end: int) -> bool:
 def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], start: int = 0,
                                           key_id: bool = False) -> bool:
     """The first value token a dangling clause continues into must be the placeholder (after a dangling
-    authorization scheme: the first blank-delimited token, whatever it spells)."""
+    authorization scheme its first blank-delimited token, whatever it spells)."""
     if kind == "scheme":
         for match in _SWEEP_ROW_TOKEN_RE.finditer(line, start):
             if not match.group(0).strip(_SWEEP_EDGE):
@@ -1463,75 +1483,155 @@ def _sweep_shell_violation(line: str) -> bool:
     return False
 
 
-def _sweep_argv_runs(line: str) -> list[tuple[str, int]]:
-    """``(kind, start)`` of every shell-argument run: each listed command from its end, and a net-snmp
-    argument vector by its shape (from the line start) or after an SNMPCMD_ARGS directive at the line start."""
-    runs = [(_sweep_argv_kind(m.group("cmd")), m.end()) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
+def _sweep_line_word_lead(line: str, pos: int) -> bool:
+    """Does a line WORD at ``pos`` (a directive or a positional keyword) start its statement? It does at the
+    line start, or after a structural prefix: a comment '#', a quote '>', a grep 'path:' / 'path:N:', an
+    '(item=' echo, a pipe (``_SWEEP_LINE_WORD_LEADS``), a diff '+' / '-', or a 'cat -n' line number. Scans back
+    over the separators and digits before the word only, so a line of many words stays linear."""
+    j = pos - 1
+    while j >= 0 and line[j] in _CRED_WS_CHARS:
+        j -= 1
+    if j < 0 or line[j] in _SWEEP_LINE_WORD_LEADS:
+        return True
+    k = j
+    while k >= 0 and line[k].isdigit() and j - k < 9:
+        k -= 1
+    if k == j and line[j] == "-":
+        k = j - 1
+    elif k == j:
+        return False
+    while k >= 0 and line[k] in _CRED_WS_CHARS:
+        k -= 1
+    return k < 0
+
+
+def _sweep_line_words(line: str) -> list[re.Match[str]]:
+    return [m for m in _SWEEP_SNMP_LINE_WORD_RE.finditer(line) if _sweep_line_word_lead(line, m.start())]
+
+
+def _sweep_snmp_shape(line: str) -> bool:
+    if _SWEEP_SNMP_SHAPE_STRONG_RE.search(line):
+        return True
+    return len({m.group(0)[1] for m in _SWEEP_SNMP_SHAPE_WEAK_RE.finditer(line)}) >= 2
+
+
+def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
+    """``(kind, start, shape_only)`` of every shell-argument run, by start (the producer's rule restated):
+    each listed command from its end, an SNMPCMD_ARGS directive that starts a statement, or else a net-snmp
+    vector by its shape from the line start. Each run ends where the next one starts."""
+    runs = [(_sweep_argv_kind(m.group("cmd")), m.end(), False) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
     if "-" in line:
-        directive = _SWEEP_SNMP_DIRECTIVE_RE.match(line, _SWEEP_LEAD_RE.match(line).end())
+        directive = next((m for m in _sweep_line_words(line) if m.group(0) in _SWEEP_SNMP_DIRECTIVES), None)
         if directive is not None:
-            runs.append(("snmp", directive.end()))
-        elif _SWEEP_SNMP_ARGV_SHAPE_RE.search(line):
-            runs.append(("snmp", 0))
-    return runs
+            runs.append(("snmp", directive.end(), False))
+        elif _sweep_snmp_shape(line):
+            runs.append(("snmp", 0, True))
+    return sorted(runs, key=lambda run: run[1])
+
+
+def _sweep_argv_option(text: str, options: tuple[tuple[str, str], ...],
+                       shape_only: bool) -> tuple[str, int | None] | None:
+    for option, kind in options:
+        if text == option:
+            return kind, None
+        if option.startswith("--"):
+            if text.startswith(option + "="):
+                return kind, len(option) + 1
+        elif text.startswith(option) and len(text) > len(option):
+            rest = text[len(option):]
+            if shape_only and not (option in ("-c", "-A", "-X")
+                                   or (option.startswith("-3") and re.fullmatch(r"(?:0x)?[0-9A-Fa-f]+", rest))):
+                continue
+            return kind, len(option)
+    return None
+
+
+def _sweep_operand_bad(text: str, kind: str) -> bool:
+    """An operand word that does not hold the placeholder where the producer's ``_redact_operand_span`` puts it."""
+    core = text.strip(_SWEEP_KEEP)
+    if kind in ("userinfo", "userpct"):
+        sep = ":" if kind == "userinfo" else "%"
+        if sep not in core:
+            return False
+        core = core.partition(sep)[2]
+    if kind == "protocol" and core.casefold() in _SWEEP_SNMP_PROTOCOLS:
+        return False
+    return bool(core) and core != _PLACEHOLDER and bool(core.strip(_SWEEP_KEEP))
+
+
+def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
+                     ) -> tuple[list[tuple[int, int, str]], tuple[str, str | None] | None]:
+    """The producer's ``_redact_argv_walk`` restated: every credential operand word span, and the run kind and
+    expected operand kind when the vector continues on the next line (``carry``: this line continues one)."""
+    runs = _sweep_argv_runs(line)
+    if carry is not None:
+        runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
+    if not runs:
+        return [], None
+    words = [m.span() for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
+    starts = [a for a, _b in words]
+    operands: list[tuple[int, int, str]] = []
+    pending: tuple[str, str | None] | None = None
+    for index, (kind_name, run, shape_only) in enumerate(runs):
+        stop = runs[index + 1][1] if index + 1 < len(runs) else len(line) + 1
+        options = _SWEEP_ARGV_OPTIONS[kind_name]
+        expect: str | None = carry[1] if (carry is not None and index == 0) else None
+        position = bisect.bisect_left(starts, run)
+        while position < len(words) and words[position][0] < stop:
+            a, b = words[position]
+            position += 1
+            text = line[a:b]
+            if kind_name == "net":
+                if not _sweep_netuse_structural(text):
+                    operands.append((a, b, "value"))
+                continue
+            option = _sweep_argv_option(text, options, shape_only)
+            if expect is not None:
+                operands.append((a, b, expect))
+                expect = None
+                if option is None:
+                    continue
+            if option is not None:
+                kind, offset = option
+                if offset is None:
+                    expect = None if kind == "attached" else kind
+                else:
+                    operands.append((a + offset, b, kind))
+        if index + 1 == len(runs) and (expect is not None or line.rstrip(_CRED_WS_CHARS).endswith(chr(92))):
+            pending = (kind_name, expect)
+    return operands, pending
 
 
 def _sweep_positional_violation(line: str) -> bool:
-    """A net-snmp positional credential field ('usmUser' keys, 'smuxpeer' password) that is neither empty
-    ('""') nor the placeholder."""
-    first = _SWEEP_SNMP_FIELD_RE.match(line, _SWEEP_LEAD_RE.match(line).end())
-    slots = _SWEEP_SNMP_POSITIONAL.get(first.group(0).casefold()) if first else None
-    if not slots:
-        return False
-    fields = _SWEEP_SNMP_FIELD_RE.findall(line, first.end())
-    for index in slots:
-        if index < len(fields):
-            core = fields[index].strip(_SWEEP_KEEP)
+    """A net-snmp positional credential ('usmUser' keys by field index, everything after a 'smuxpeer' OID)
+    that is neither empty ('""') nor the placeholder."""
+    end = None
+    for word in _sweep_line_words(line):
+        name = word.group(0).casefold()
+        if name not in _SWEEP_SNMP_POSITIONAL:
+            continue
+        fields = list(itertools.islice(_SWEEP_SNMP_FIELD_RE.finditer(line, word.end()),
+                                       max(_SWEEP_SNMP_POSITIONAL[name]) + 1))
+        if name == "usmuser":
+            if len(fields) < 2 or not (fields[0].group(0).isdigit() and fields[1].group(0).isdigit()):
+                continue
+            targets = [fields[i].group(0) for i in _SWEEP_SNMP_POSITIONAL[name] if i < len(fields)]
+        else:
+            if len(fields) < 2 or not _SWEEP_SNMP_OID_RE.fullmatch(fields[0].group(0)):
+                continue
+            if end is None:
+                end = len(line.rstrip(_CRED_WS_CHARS))
+            targets = [line[fields[1].start():end]]
+        for text in targets:
+            core = text.strip(_SWEEP_KEEP)
             if core and core != _PLACEHOLDER:
                 return True
     return False
 
 
-def _sweep_argv_violation(line: str) -> bool:
+def _sweep_argv_violation(line: str, carry: tuple[str, str | None] | None = None) -> bool:
     """A credential operand of the closed shell-argument list that is not the placeholder."""
-    def bad(text: str, kind: str) -> bool:
-        core = text.strip(_SWEEP_KEEP)
-        if kind in ("userinfo", "userpct"):
-            sep = ":" if kind == "userinfo" else "%"
-            if sep not in core:
-                return False
-            core = core.partition(sep)[2].strip(_SWEEP_KEEP)
-        if kind == "protocol" and core.casefold() in _SWEEP_SNMP_PROTOCOLS:
-            return False
-        return bool(core) and core != _PLACEHOLDER
-
-    for kind_name, run in _sweep_argv_runs(line):
-        options = _SWEEP_ARGV_OPTIONS[kind_name]
-        expect = None
-        for token in _SWEEP_ROW_TOKEN_RE.finditer(line, run):
-            text = token.group(0)
-            if kind_name == "net":
-                if not _sweep_netuse_structural(text) and bad(text, "value"):
-                    return True
-                continue
-            if expect is not None:
-                if bad(text, expect):
-                    return True
-                expect = None
-                continue
-            for option, kind in options:
-                if text == option:
-                    expect = None if kind == "attached" else kind
-                    break
-                if option.startswith("--") and text.startswith(option + "="):
-                    if bad(text[len(option) + 1:], kind):
-                        return True
-                    break
-                if not option.startswith("--") and text.startswith(option) and len(text) > len(option):
-                    if bad(text[len(option):], kind):
-                        return True
-                    break
-    return False
+    return any(_sweep_operand_bad(line[a:b], kind) for a, b, kind in _sweep_argv_walk(line, carry)[0])
 
 
 def _sweep_entropy(line: str) -> bool:
@@ -1892,7 +1992,11 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
         wraps = states and not in_block
         if wraps and prev_nb is not None:
             kinds.extend(_cred_cross_line_findings(prev_nb, line))
-        if states and cont is not None and _sweep_clause_continuation_violation(line, cont[0], cont[1], 0, cont[2]):
+        carry = tuple(cont[1]) if (states and cont is not None and cont[0] == "argv") else None
+        if carry is not None:
+            if _sweep_argv_violation(line, carry):
+                kinds.append("credential value (shell argument, continued from the previous line)")
+        elif states and cont is not None and _sweep_clause_continuation_violation(line, cont[0], cont[1], 0, cont[2]):
             kinds.append("credential value (wrapped onto the next line)")
         if wraps and prev_nb is not None:
             split = _sweep_snmp_host_split(prev_nb, line)
@@ -1954,7 +2058,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
         if not chap and "client" in low and _CHAP_HEADER_RE.match(line):
             chap = True
         if not blank and header is None:
-            dangle = _sweep_dangle(line)
+            dangle = _sweep_dangle(line, carry)
             if dangle is not None and not has_next[index]:
                 kind, tail, key_id = dangle
                 if kind == "value" and len(tail) == 1 and _CRED_TYPE_DIGIT_RE.fullmatch(tail[0]) and not key_id:

@@ -17230,6 +17230,379 @@
    ],
    "source": "w60-review-r4:bearer-wrap-structure-shaped",
    "main_6390b66c": "Authorization: Bearer\nview"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u trapmon -l authPriv -a SHA -A \"Nq1amber Nq2birch Nq3cobalt\" -x AES -X 'Nq4dune Nq5ember Nq6fjord' 198.51.100.20:162",
+   "expect": "trapsess -v 3 -u trapmon -l authPriv -a SHA -A \"<redacted>\" -x AES -X '<redacted>' 198.51.100.20:162",
+   "secrets": [
+    "Nq1amber",
+    "Nq2birch",
+    "Nq3cobalt",
+    "Nq4dune",
+    "Nq5ember",
+    "Nq6fjord"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-trapsess",
+   "main_6390b66c": "trapsess -v 3 -u trapmon -l authPriv -a SHA -A \"Nq1amber Nq2birch Nq3cobalt\" -x AES -X 'Nq4dune Nq5ember Nq6fjord' 198.51.100.20:162"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "informsess -v 2c -c \"Nq7grove Nq8hollow\" 198.51.100.21",
+   "expect": "informsess -v 2c -c \"<redacted>\" 198.51.100.21",
+   "secrets": [
+    "Nq7grove",
+    "Nq8hollow"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-informsess",
+   "main_6390b66c": "informsess -v 2c -c \"Nq7grove Nq8hollow\" 198.51.100.21"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "proxy -v 3 -u pxm -l authNoPriv -a SHA -A \"Nq9isle Nr1jade\" 198.51.100.22 .1.3.6.1.2.1.1",
+   "expect": "proxy -v 3 -u pxm -l authNoPriv -a SHA -A \"<redacted>\" 198.51.100.22 .1.3.6.1.2.1.1",
+   "secrets": [
+    "Nq9isle",
+    "Nr1jade"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-proxy",
+   "main_6390b66c": "proxy -v 3 -u pxm -l authNoPriv -a SHA -A \"Nq9isle Nr1jade\" 198.51.100.22 .1.3.6.1.2.1.1"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u p -l authNoPriv -a SHA -A\"Nr2kelp Nr3lagoon\" 198.51.100.23",
+   "expect": "trapsess -v 3 -u p -l authNoPriv -a SHA -A\"<redacted>\" 198.51.100.23",
+   "secrets": [
+    "Nr2kelp",
+    "Nr3lagoon"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-attached",
+   "main_6390b66c": "trapsess -v 3 -u p -l authNoPriv -a SHA -A\"Nr2kelp Nr3lagoon\" 198.51.100.23"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "net-snmp-create-v3-user -A \"Nr4maple Nr5nectar\" -X \"Nr6onyx Nr7pebble\" opsuser",
+   "expect": "net-snmp-create-v3-user -A \"<redacted>\" -X \"<redacted>\" opsuser",
+   "secrets": [
+    "Nr4maple",
+    "Nr5nectar",
+    "Nr6onyx",
+    "Nr7pebble"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-create-user",
+   "main_6390b66c": "net-snmp-create-v3-user -A \"Nr4maple Nr5nectar\" -X \"Nr6onyx Nr7pebble\" opsuser"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "snmpwalk -v2c -c 'Nr8quartz Nr9ruby' 198.51.100.24",
+   "expect": "snmpwalk -v2c -c '<redacted>' 198.51.100.24",
+   "secrets": [
+    "Nr8quartz",
+    "Nr9ruby"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:quoted-snmpwalk",
+   "main_6390b66c": "snmpwalk -v2c -c 'Nr8quartz Nr9ruby' 198.51.100.24"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u p -l authPriv -A \"Ns1unterm Ns2tail 198.51.100.25",
+   "expect": "trapsess -v 3 -u p -l authPriv -A \"<redacted>",
+   "secrets": [
+    "Ns1unterm",
+    "Ns2tail"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:unterminated-quote",
+   "main_6390b66c": "trapsess -v 3 -u p -l authPriv -A \"Ns1unterm Ns2tail 198.51.100.25"
+  },
+  {
+   "platform": "wrap",
+   "line": "trapsess -v 2c -c\nNs3wrapped 198.51.100.26",
+   "expect": "trapsess -v 2c -c\n<redacted> 198.51.100.26",
+   "secrets": [
+    "Ns3wrapped"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:operand-wrap",
+   "main_6390b66c": "trapsess -v 2c -c\nNs3wrapped 198.51.100.26"
+  },
+  {
+   "platform": "wrap",
+   "line": "snmpwalk -v 3 -l authPriv -u m -a SHA -A\n\"Ns4wrap Ns5quoted\" -x AES -X Ns6x 198.51.100.27",
+   "expect": "snmpwalk -v 3 -l authPriv -u m -a SHA -A\n\"<redacted>\" -x AES -X <redacted> 198.51.100.27",
+   "secrets": [
+    "Ns4wrap",
+    "Ns5quoted",
+    "Ns6x"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:operand-wrap-vector",
+   "main_6390b66c": "snmpwalk -v 3 -l authPriv -u m -a SHA -A\n\"Ns4wrap Ns5quoted\" -x AES -X Ns6x 198.51.100.27"
+  },
+  {
+   "platform": "wrap",
+   "line": "snmpget -v 3 -l authPriv -u m -a SHA -A Ns7cont \\\n  -x AES -X Ns8cont 198.51.100.28",
+   "expect": "snmpget -v 3 -l authPriv -u m -a SHA -A <redacted> \\\n  -x AES -X <redacted> 198.51.100.28",
+   "secrets": [
+    "Ns7cont",
+    "Ns8cont"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:backslash-continuation",
+   "main_6390b66c": "snmpget -v 3 -l authPriv -u m -a SHA -A Ns7cont \\\n  -x AES -X Ns8cont 198.51.100.28"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "/var/lib/net-snmp/snmpd.conf:usmUser 1 3 0x80001f8880aa05 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\"",
+   "expect": "/var/lib/net-snmp/snmpd.conf:usmUser 1 3 0x80001f8880aa05 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"",
+   "secrets": [
+    "0x1f2e3d4c5b6a798807162534435261708f9e0a1b",
+    "0xa0b1c2d3e4f5061728394a5b6c7d8e9f"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:usmuser-grep",
+   "main_6390b66c": "/var/lib/net-snmp/snmpd.conf:usmUser 1 3 0x80001f8880aa05 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "    12\tusmUser 1 3 0x80001f8880aa06 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\"",
+   "expect": "    12\tusmUser 1 3 0x80001f8880aa06 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"",
+   "secrets": [
+    "0x1f2e3d4c5b6a798807162534435261708f9e0a1b",
+    "0xa0b1c2d3e4f5061728394a5b6c7d8e9f"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:usmuser-cat-n",
+   "main_6390b66c": "    12\tusmUser 1 3 0x80001f8880aa06 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "+usmUser 1 3 0x80001f8880aa07 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\"",
+   "expect": "+usmUser 1 3 0x80001f8880aa07 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"",
+   "secrets": [
+    "0x1f2e3d4c5b6a798807162534435261708f9e0a1b",
+    "0xa0b1c2d3e4f5061728394a5b6c7d8e9f"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:usmuser-diff",
+   "main_6390b66c": "+usmUser 1 3 0x80001f8880aa07 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "#usmUser 1 3 0x80001f8880aa08 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\"",
+   "expect": "#usmUser 1 3 0x80001f8880aa08 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 <redacted> .1.3.6.1.6.3.10.1.2.4 <redacted> \"\"",
+   "secrets": [
+    "0x1f2e3d4c5b6a798807162534435261708f9e0a1b",
+    "0xa0b1c2d3e4f5061728394a5b6c7d8e9f"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:usmuser-comment",
+   "main_6390b66c": "#usmUser 1 3 0x80001f8880aa08 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x1f2e3d4c5b6a798807162534435261708f9e0a1b .1.3.6.1.6.3.10.1.2.4 0xa0b1c2d3e4f5061728394a5b6c7d8e9f \"\""
+  },
+  {
+   "platform": "net-snmp",
+   "line": "/etc/snmp/snmpd.conf:smuxpeer .1.3.6.1.4.1.674.10892.1 Ns9smuxgrep",
+   "expect": "/etc/snmp/snmpd.conf:smuxpeer .1.3.6.1.4.1.674.10892.1 <redacted>",
+   "secrets": [
+    "Ns9smuxgrep"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:smuxpeer-grep",
+   "main_6390b66c": "/etc/snmp/snmpd.conf:smuxpeer .1.3.6.1.4.1.674.10892.1 Ns9smuxgrep"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "smuxpeer .1.3.6.1.4.1.3317.1.2.2 Nt1quill Nt2raven",
+   "expect": "smuxpeer .1.3.6.1.4.1.3317.1.2.2 <redacted>",
+   "secrets": [
+    "Nt1quill",
+    "Nt2raven"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:smuxpeer-rest-of-line",
+   "main_6390b66c": "smuxpeer .1.3.6.1.4.1.3317.1.2.2 Nt1quill Nt2raven"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "snmpwalk -v3 -u xmon -l authPriv -a SHA -A Nt3xa -x -X Nt4xx 198.51.100.38",
+   "expect": "snmpwalk -v3 -u xmon -l authPriv -a SHA -A <redacted> -x <redacted> <redacted> 198.51.100.38",
+   "secrets": [
+    "Nt3xa",
+    "Nt4xx"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:option-after-protocol-option",
+   "main_6390b66c": "snmpwalk -v3 -u xmon -l authPriv -a SHA -A Nt3xa -x -X Nt4xx 198.51.100.38"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "snmpget -v3 -u x -l authPriv -a -A Nt5ma 198.51.100.39",
+   "expect": "snmpget -v3 -u x -l authPriv -a <redacted> <redacted> 198.51.100.39",
+   "secrets": [
+    "Nt5ma"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:option-after-a",
+   "main_6390b66c": "snmpget -v3 -u x -l authPriv -a -A Nt5ma 198.51.100.39"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "snmpget -v3 -u x -l authPriv -3m -A Nt6mk 198.51.100.40",
+   "expect": "snmpget -v3 -u x -l authPriv -3m <redacted> <redacted> 198.51.100.40",
+   "secrets": [
+    "Nt6mk"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:option-after-3m",
+   "main_6390b66c": "snmpget -v3 -u x -l authPriv -3m -A Nt6mk 198.51.100.40"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: DPoP\n    Nt7dpop",
+   "expect": "Authorization: <redacted>\n    <redacted>",
+   "secrets": [
+    "Nt7dpop"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:any-scheme-indented",
+   "main_6390b66c": "Authorization: DPoP\n    Nt7dpop"
+  },
+  {
+   "platform": "wrap",
+   "line": "headers:\n  Authorization: Token\n    Nt8yaml",
+   "expect": "headers:\n  Authorization: <redacted>\n    <redacted>",
+   "secrets": [
+    "Nt8yaml"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:any-scheme-yaml",
+   "main_6390b66c": "headers:\n  Authorization: Token\n    Nt8yaml"
+  },
+  {
+   "platform": "wrap",
+   "line": "> Authorization: Token\n> Nt9quote",
+   "expect": "> Authorization: <redacted>\n> <redacted>",
+   "secrets": [
+    "Nt9quote"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:any-scheme-quoted",
+   "main_6390b66c": "> Authorization: Token\n> Nt9quote"
+  },
+  {
+   "platform": "wrap",
+   "line": "Authorization: JWT\nNu1jwt more",
+   "expect": "Authorization: <redacted>\n<redacted> more",
+   "secrets": [
+    "Nu1jwt"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:any-scheme-two-words",
+   "main_6390b66c": "Authorization: JWT\nNu1jwt more"
+  },
+  {
+   "platform": "wrap",
+   "line": "X-Auth-Token:\nNu2xat",
+   "expect": "X-Auth-Token:\n<redacted>",
+   "secrets": [
+    "Nu2xat"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:x-header-empty-value",
+   "main_6390b66c": "X-Auth-Token:\nNu2xat"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "#trapsess -c Nu3cmt 198.51.100.26",
+   "expect": "#trapsess -c <redacted> 198.51.100.26",
+   "secrets": [
+    "Nu3cmt"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:directive-comment",
+   "main_6390b66c": "#trapsess -c Nu3cmt 198.51.100.26"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "118:trapsess -c Nu4grep 198.51.100.28",
+   "expect": "118:trapsess -c <redacted> 198.51.100.28",
+   "secrets": [
+    "Nu4grep"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:directive-grep-n",
+   "main_6390b66c": "118:trapsess -c Nu4grep 198.51.100.28"
+  },
+  {
+   "platform": "net-snmp",
+   "line": "trapsess -v 3 -u p -l authPriv -A Caf{{U+DCE9}}Nu5latin 198.51.100.29",
+   "expect": "trapsess -v 3 -u p -l authPriv -A <redacted> 198.51.100.29",
+   "secrets": [
+    "Nu5latin"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review-r4b:operand-non-utf8-byte",
+   "main_6390b66c": "trapsess -v 3 -u p -l authPriv -A Caf{{U+DCE9}}Nu5latin 198.51.100.29"
   }
  ],
  "must_keep": [
@@ -18240,6 +18613,84 @@
    "line": "core1 security check weak-user-pw (fail: line looked for and not present)",
    "source": "w60-review-r4:evidence-cite",
    "main_6390b66c": "core1 security check weak-user-pw (fail: line looked for and not present)"
+  },
+  {
+   "platform": "show",
+   "line": "^- 198.51.100.5                  2   6   377    34   -3ms[  -3ms] +/-   45ms",
+   "source": "w60-review-r4b:chronyc-offsets",
+   "main_6390b66c": "^- 198.51.100.5                  2   6   377    34   -3ms[  -3ms] +/-   45ms"
+  },
+  {
+   "platform": "shell",
+   "line": "poll -v 3 -t 5 -r 2 -config /etc/collector/poll.conf",
+   "source": "w60-review-r4b:single-weak-version",
+   "main_6390b66c": "poll -v 3 -t 5 -r 2 -config /etc/collector/poll.conf"
+  },
+  {
+   "platform": "shell",
+   "line": "kubectl logs pod/x -c sidecar --since 1h -v 3",
+   "source": "w60-review-r4b:kubectl-verbosity",
+   "main_6390b66c": "kubectl logs pod/x -c sidecar --since 1h -v 3"
+  },
+  {
+   "platform": "shell",
+   "line": "java -Xmx2g -jar collector.jar -v 3",
+   "source": "w60-review-r4b:java-heap",
+   "main_6390b66c": "java -Xmx2g -jar collector.jar -v 3"
+  },
+  {
+   "platform": "shell",
+   "line": "grep -v 1 /etc/hosts | grep -c localhost",
+   "source": "w60-review-r4b:grep-count",
+   "main_6390b66c": "grep -v 1 /etc/hosts | grep -c localhost"
+  },
+  {
+   "platform": "show",
+   "line": "Ambient delta -3K vs inlet",
+   "source": "w60-review-r4b:temperature-delta",
+   "main_6390b66c": "Ambient delta -3K vs inlet"
+  },
+  {
+   "platform": "show",
+   "line": "Proxy -c option is not supported on this build",
+   "source": "w60-review-r4b:proxy-prose",
+   "main_6390b66c": "Proxy -c option is not supported on this build"
+  },
+  {
+   "platform": "shell",
+   "line": "tar -X exclude.lst -cf backup.tar /etc",
+   "source": "w60-review-r4b:tar-exclude-2",
+   "main_6390b66c": "tar -X exclude.lst -cf backup.tar /etc"
+  },
+  {
+   "platform": "api",
+   "line": "X-Auth-Method: Basic\nContent-Type: application/json",
+   "source": "w60-review-r4b:x-auth-method",
+   "main_6390b66c": "X-Auth-Method: Basic\nContent-Type: application/json"
+  },
+  {
+   "platform": "show",
+   "line": "usmUser entries live in the persistent file and contain the localized keys",
+   "source": "w60-review-r4b:usmuser-prose",
+   "main_6390b66c": "usmUser entries live in the persistent file and contain the localized keys"
+  },
+  {
+   "platform": "show",
+   "line": "smuxpeer lines take an OID and an optional password",
+   "source": "w60-review-r4b:smuxpeer-prose",
+   "main_6390b66c": "smuxpeer lines take an OID and an optional password"
+  },
+  {
+   "platform": "engine",
+   "line": "weak-user-pw high (-8)",
+   "source": "w60-review-r4b:health-deduction",
+   "main_6390b66c": "weak-user-pw high (-8)"
+  },
+  {
+   "platform": "shell",
+   "line": "lsof -v 1 -c snmpd",
+   "source": "w60-review-r4b:lsof-single-weak",
+   "main_6390b66c": "lsof -v 1 -c snmpd"
   }
  ],
  "over_redacted": [
@@ -18484,20 +18935,28 @@
    "main_6390b66c": "Image                                         SHA256\ncat9k_iosxe.17.09.04a.SPA.bin                  4f1c2b9e7d6a5f3e2c1b0a99887766554433221100ffeeddccbbaa9988776655\nBoot loader digest 7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d\nCertificate fingerprint SHA1 0F:1E:2D:3C:4B:5A:69:78:87:96:A5:B4:C3:D2:E1:F0:0F:1E:2D:3C"
   },
   {
-   "platform": "shell",
-   "line": "lsof -v 1 -c snmpd",
-   "expect": "lsof -v 1 -c <redacted>",
-   "note": "over-redaction accepted (fail-safe): '-v 1' is net-snmp's version option, so the line reads as an SNMP argument vector and its '-c' operand is swept",
-   "source": "w60-review-r4:over",
-   "main_6390b66c": "lsof -v 1 -c snmpd"
-  },
-  {
    "platform": "api",
    "line": "Authorization: Basic\nHost: 192.0.2.30",
    "expect": "Authorization: Basic\n<redacted>: 192.0.2.30",
    "note": "over-redaction accepted (fail-safe): an authorization scheme that ends its line owns the next line's first token, whatever it spells",
    "source": "w60-review-r4:over",
    "main_6390b66c": "Authorization: Basic\nHost: 192.0.2.30"
+  },
+  {
+   "platform": "api",
+   "line": "Authorization: Bearer\nAuthorization: Bearer\nAccept: */*",
+   "expect": "Authorization: Bearer\n<redacted>: Bearer\nAccept: */*",
+   "note": "over-redaction accepted (fail-safe): the second header line's first token is the first header's wrapped credential; the third line is kept",
+   "source": "w60-review-r4b:double-authorization",
+   "main_6390b66c": "Authorization: Bearer\nAuthorization: Bearer\nAccept: */*"
+  },
+  {
+   "platform": "shell",
+   "line": "poll -v 2c -t 5 -r 2 -config /etc/collector/poll.conf",
+   "expect": "poll -v 2c -t 5 -r 2 -c<redacted> /etc/collector/poll.conf",
+   "note": "over-redaction accepted (fail-safe): '-v 2c' makes the line an SNMP argument vector and '-config' reads as '-c' with an attached community",
+   "source": "w60-review-r4b:config-after-2c",
+   "main_6390b66c": "poll -v 2c -t 5 -r 2 -config /etc/collector/poll.conf"
   }
  ],
  "qualifier_shaped": [

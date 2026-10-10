@@ -242,11 +242,58 @@ module's loader (`_restore_surrogates`) restores it, so every row is exactly the
 test: `tests/test_punchlist_evidence_refs.py::test_redaction_leaves_every_evidence_pointer_byte_identical`. The
 `-pw` compound keyword rule (ASA `radius-common-pw`) read the engine's own security check ID `weak-user-pw` as a
 credential keyword. `redact_snapshot` then rewrote the evidence cite `core1 security check weak-user-pw (fail)`
-to `... (<redacted>)`, and R9 of that test pins evidence pointers byte-identical across redaction. The exact ID
-directly after `check` is now structure (`_REDACT_SWEEP_VOID_PREV`, restated in the verifier). In a
-configuration line the same compound is still a keyword. Across the golden and sample `--redact` views, exactly
-three leaves each change against round 3: the two punch-list cites and one health-score deduction cite, all back
-to main's text. Two must-keep rows pin the cites.
+to `... (<redacted>)`, and R9 of that test pins evidence pointers byte-identical across redaction. Round 4b
+(below) replaced the first fix, which keyed the exemption to the word `check`. In a configuration line the same
+compound is still a keyword.
+
+## Round 4b: the independent refutation of round 4
+
+A max-effort independent refutation of `7d210752` found one P2 and seven P3, none of them a regression against
+main. Each is closed in the owner and its restatement:
+
+- **P2: quoted operands.** The operand model took one blank-delimited token, so in
+  `-A "correct horse battery"` every word after the first survived, certified. An operand is now one ARGUMENT
+  WORD (`_REDACT_ARGV_WORD_RE`), read the way net-snmp's `copy_nword` (snmplib/read_config.c) and a shell read
+  it:
+  - a quoted run (single or double quotes, backslash escapes) is part of its word;
+  - an unterminated quote runs to the line end (fail safe);
+  - a non-UTF-8 byte is inside its word.
+
+  When an operand option ends the line, or the line ends in a shell continuation backslash, the vector continues
+  on the next line (`_redact_argv_walk(..., carry)`, a dangle of kind `argv`). The verifier demands the
+  placeholder there too.
+- **P3: statement prefixes.** The SNMPCMD_ARGS directives and the `usmUser` / `smuxpeer` lines now count after
+  a structural prefix (`_redact_line_word_lead`): `#`, `+`, `-`, `>`, a grep `path:` / `path:N:`, an `(item=`
+  echo, or a `cat -n` number. A `smuxpeer` password is the rest of the line, as `smux_parse_peer_auth`
+  (agent/mibgroup/smux/smux.c) reads it. A `usmUser` line needs integer status and storage fields and a
+  `smuxpeer` line needs an OID, so prose that starts with either word is not such a line. The directives are
+  now case-sensitive (`Proxy -c option ...` is prose).
+- **P3: a regression against round 3.** A protocol or key option followed by another listed option consumed
+  that option as its operand (`-x -X PRIV`). A listed option in an operand position is now both things: it is
+  taken as the operand (fail safe), and it is also read as an option.
+- **P3: right boundaries and shape.** A line is a vector by shape only when it has:
+  - one STRONG pair: `-v 2c`, `-l <level>`, or `-3? <hex>`; or
+  - two WEAK pairs with different option letters: `-v 1|3`, `-a|-x <protocol>`.
+
+  One `-v 3` is a verbosity flag in kubectl, java and grep, and chronyc's `-3ms` is no key option. On a run
+  found only by shape, an attached operand counts for `-c` / `-A` / `-X`, and for `-3?` only when it is hex.
+  The `X-...` header branch of the scheme rule now requires a credential-bearing name
+  (`token|api-key|secret|password`), so `X-Auth-Method: Basic` no longer dangles.
+- **P3: any scheme.** Any RFC 7235 auth-scheme token after an `Authorization` / `Proxy-Authorization` header
+  now dangles (`DPoP`, `Token`, `JWT`, `Splunk`, ...), not only the five listed words. A credential-bearing
+  `X-...` header with no value dangles too. The previous line's raw form is no longer re-read after a scheme
+  or argument wrap took the line's first word, which removes a cascade.
+- **P3: linear cost.** Each shell-argument run ends where the next one starts, and a line's argument words are
+  read once. The statement-prefix check scans backwards over separators and digits only. Positional fields
+  stop at the last slot. Span replacement is a single join.
+  - Before: `net-snmp-config ` x10,000 took over 150 s.
+  - Now: x20,000 (312 KB) takes about 0.5 s for the producer and 0.4 s for the verifier, and doubling the line
+    roughly doubles the time.
+  - `test_argument_lines_stay_linear` keeps those probes, with a generous bound.
+- **P3: the check-ID exemption.** It is now structural and owned by the engine. Every engine security check ID
+  that spells a keyword (`parse._SEC_CHECKS`; today only `weak-user-pw`) is structure before a severity or a
+  check status (`_REDACT_SWEEP_VOID_NEXT`). That covers the health-score deduction `weak-user-pw high (-8)` as
+  well as the evidence cites.
 
 ## The defect (unchanged history)
 
@@ -403,9 +450,17 @@ evidence-retention branch (W58r2) digests it at import time.
   cites) and 2 over-redacted rows. The negative controls
   are look-alike lines: another tool's `-A`/`-X`/`-c` (curl, ssh, iptables, tar, ping), a daemon's
   `-c FILE`, `proxy-arp`, a noAuthNoPriv `trapsess`, an empty-key `usmUser`, a USM MIB walk, `smuxpeer`
-  without a password, `WWW-Authenticate: Basic`, OAuth `token_type`, and scheme prose. The totals are now
-  1,451 must-redact, 168 must-keep, 32 over-redacted and 14 qualifier-shaped rows. main 6390b66c leaves
+  without a password, `WWW-Authenticate: Basic`, OAuth `token_type`, and scheme prose. main 6390b66c leaves
   every round-4 secret in place.
+- **Round 4b (`w60-review-r4b`).**
+  - 27 must-redact rows: quoted, attached, unterminated and wrapped operands; a backslash continuation;
+    prefixed `usmUser`, `smuxpeer` and directive lines; the operand-position regression; any-scheme wraps; and
+    a non-UTF-8 byte inside an operand.
+  - 13 must-keep controls: chronyc offsets, kubectl/java/grep `-v`, a temperature `-3K`, `Proxy -c` prose,
+    `tar -X`, `X-Auth-Method`, `usmUser` and `smuxpeer` prose, the health deduction, and `lsof -v 1 -c snmpd`,
+    which moved here from over-redacted.
+  - 2 over-redacted rows: a doubled `Authorization: Bearer`, and `-config` after `-v 2c`.
+- **The totals are now** 1,478 must-redact, 181 must-keep, 33 over-redacted and 14 qualifier-shaped rows.
 
 **Measured on the final code** (production functions only, in scratch folders):
 
@@ -424,7 +479,28 @@ evidence-retention branch (W58r2) digests it at import time.
   or CRLF. 12,000 cases on the final code (plus about 44,000 on intermediate builds), 0 failures.
 - **Every assertion of the test module** was re-computed by hand-restated scratch checks, not by running
   the tests.
-- **Round 4, on the final code.**
+- **Round 4b, on the final code.**
+  - Corpus: 1,478/1,478 must-redact rows lose every listed secret, are refused raw, are certified after the
+    scrub, and are idempotent. The whole corpus as one capture is a certified fixpoint. Main parity holds:
+    every secret main removed is still removed. Every round-4b row also went through
+    `redact_collection_dir` and `verify_collection_secret_scrub` on scratch trees.
+  - Every leak and certification scenario in the refutation (29 cases) is closed, and its 14 look-alike
+    lines stay byte-identical, except the doubled-`Authorization` row, which is pinned as over-redacted.
+  - A fresh structural battery: 33 line families x prefixes x LF/CRLF, run through main 6390b66c, round 3
+    and this head.
+    - Seed 4711: 12,000 cases and 13,834 secrets. Main removes 3,733, round 3 removes 8,398, this head
+      removes 13,660.
+    - Seed 90210: 8,000 cases.
+    - Both seeds: 0 regressions against main, 0 against round 3, 0 refused outputs, 0 non-idempotent
+      outputs, and the next line always survives.
+    - The only survivors (174 and 124) are one pre-existing class that main and round 3 share: an informal
+      `pw` in a `description` line behind a grep, diff or `cat -n` prefix (listed under Residual limits).
+    - Against round 3, the only non-secret words this head removes are `DES` after
+      `net-snmp-create-v3-user -X` (documented) and the value in a `usmUser` key slot.
+  - Differential against round 3: 0 changed outputs across 17,780 test literals, the tracked captures and
+    the synthetic collection. The golden and sample `--redact` views each change in 4 leaves: two punch-list
+    cites, one deduction cite and one deduction, all back to main's text.
+- **Round 4, on the round-4 code.**
   - Corpus: 1,451/1,451 must-redact rows lose every listed secret, are refused raw and certified after
     the scrub, and are idempotent. The whole corpus as one capture is a certified fixpoint with no
     surviving strong secret. Every round-4 row also went through `redact_collection_dir` and
@@ -495,9 +571,15 @@ evidence-retention branch (W58r2) digests it at import time.
    list, net-snmp argument vectors, `usmUser` and `smuxpeer`, and an expect `send` after a password
    prompt. Anything else, such as an unknown vendor table whose header is not strict, or a free-form note
    without a prose anchor, is not. In particular:
-   - a non-net-snmp tool's own options (Nagios `check_snmp -C`, a vendor CLI);
-   - an SNMP vector with no version, level, protocol or key option, outside a listed tool or directive;
-   - a vector cut by a terminal wrap (an argv operand is read on its own line only).
+   - a non-net-snmp tool's own options (Nagios `check_snmp -C`, a vendor CLI) and argv held in JSON or
+     Python arrays;
+   - an SNMP vector with neither a strong option nor two weak ones, outside a listed tool or directive
+     (`wrapper.sh -v 1 -c X`);
+   - a vector that wraps at column 0 without a pending operand option or a continuation backslash (the next
+     line is read as a vector only by its own shape);
+   - an informal prose anchor (`pw X` in a `description`) behind a grep, diff or `cat -n` prefix: prose
+     context starts only at the line start. This is shared with main and round 3, and it is the only
+     survivor class in the round-4b batteries.
 3. **High entropy is a heuristic.** These are missed:
    - a 24-31 character random token split by `/` into short segments;
    - a low-entropy pasted secret;
@@ -509,11 +591,12 @@ evidence-retention branch (W58r2) digests it at import time.
    - A qualifier that ends a wrapped clause, and the next line's first word after a clause that really
      ends in a qualifier.
    - The neighbour cell of a misaligned table row.
-   - On a line read as an SNMP vector, any `-c`/`-A`/`-X` operand: `-X DES` in net-snmp-create-v3-user,
-     or another tool's `-c` beside a stray `-v 1` (`lsof -v 1 -c snmpd`).
+   - On a line read as an SNMP vector, any `-c`/`-A`/`-X` operand: `-X DES` in net-snmp-create-v3-user, or
+     a wrapper's `-config` after a strong `-v 2c` (read as `-c` with an attached community).
    - After an authorization scheme that ends its line, the next line's first token, whatever it is
-     (`Authorization: Basic` / `Host: ...`). When that token is itself a value-required keyword, the next
-     line's first word as well (the producer's raw-line fail safe).
+     (`Authorization: Basic` / `Host: ...`, or a second `Authorization:` header). The scheme word itself is
+     swept when it is not on the allowlist (`Authorization: <redacted>` for `DPoP`).
+   - A listed option in an operand position (`-x -X`) is replaced as well as read as an option.
    - A base64-looking line after a PuTTY body.
    - `--no-collect` re-analysis of a scrubbed folder loses those values.
 5. **Terminal wraps.**
@@ -540,6 +623,9 @@ evidence-retention branch (W58r2) digests it at import time.
   hand-restated checks. It has never executed as a test.
 - **The other redaction test files** were checked only by the literal differential above, not
   re-computed assertion by assertion.
+- **Round 4b's new test functions** were re-computed by hand-restated probe code of my own (no extraction,
+  no pytest). The refutation's own 12,000-case fuzz was not available here; the round-4b batteries are
+  fresh and independent of it.
 - **Round 4's three new test functions** were re-computed once by executing their extracted statement bodies
   as scratch code (no pytest, no import of the test module). The changed pins and corpus checks were
   restated by hand.

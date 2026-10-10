@@ -188,9 +188,11 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
     assert len(_sources(MUST_REDACT, "w60-r3-matrix")) >= 190, "the R1 pin matrix fell out of the corpus"
     sources = {source.split(":")[0] for row in MUST_REDACT for source in row["source"].split()}
     assert {"w60-builder", "w60-review", "w58r2-review", "w60-review-r2", "w60-r2-wrap", "w60-review-r3",
-            "w60-r3-matrix", "w60-review-r4"} <= sources, sources
-    # round 4: the negative controls (look-alike lines the new rules must leave byte-identical) are kept rows
+            "w60-r3-matrix", "w60-review-r4", "w60-review-r4b"} <= sources, sources
+    # round 4: the negative controls (look-alike lines the new rules must leave byte-identical) are kept rows,
+    # and so are the round-4 refutation's cases (quoted and wrapped operands, statement prefixes, ...)
     assert len(_sources(MUST_KEEP, "w60-review-r4")) >= 15, "the round-4 negative controls fell out"
+    assert len(_sources(MUST_REDACT, "w60-review-r4b")) >= 25 and len(_sources(MUST_KEEP, "w60-review-r4b")) >= 10
     platforms = {row["platform"] for row in MUST_REDACT}
     for platform in ("ios", "nxos", "asa", "aireos", "iosxr", "eos", "junos", "fortigate", "huawei", "panos",
                      "net-snmp", "rest", "yaml", "pem", "csv", "shell", "wrap"):
@@ -445,6 +447,8 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_KEY_ENDS": "_CRED_KEY_ENDS", "_REDACT_CLAUSE_LEAD": "_CRED_CLAUSE_LEAD",
         # round 4
         "_REDACT_SNMP_PROTOCOLS": "_SWEEP_SNMP_PROTOCOLS", "_REDACT_SNMP_POSITIONAL": "_SWEEP_SNMP_POSITIONAL",
+        "_REDACT_SNMP_DIRECTIVES": "_SWEEP_SNMP_DIRECTIVES", "_REDACT_LINE_WORD_LEADS": "_SWEEP_LINE_WORD_LEADS",
+        "_REDACT_ARGV_WS": "_SWEEP_ARGV_WS",
         # the credential field-name vocabulary's OWNER (docs/ssot.md) and its restatement
         "_REDACT_SECRET_KEYS": "_SECRET_KEYS",
     }
@@ -494,8 +498,10 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_SWEEP_PREFILTER": "_SWEEP_PREFILTER", "_REDACT_SWEEP_RUN_RE": "_SWEEP_RUN_RE",
         "_REDACT_LINE_PREFILTER": "_CRED_PREFILTER_RE", "_REDACT_TYPE_DIGIT_RE": "_CRED_TYPE_DIGIT_RE",
         # round 4
-        "_REDACT_SNMP_ARGV_SHAPE_RE": "_SWEEP_SNMP_ARGV_SHAPE_RE",
-        "_REDACT_SNMP_DIRECTIVE_RE": "_SWEEP_SNMP_DIRECTIVE_RE",
+        "_REDACT_SNMP_SHAPE_STRONG_RE": "_SWEEP_SNMP_SHAPE_STRONG_RE",
+        "_REDACT_SNMP_SHAPE_WEAK_RE": "_SWEEP_SNMP_SHAPE_WEAK_RE",
+        "_REDACT_SNMP_LINE_WORD_RE": "_SWEEP_SNMP_LINE_WORD_RE", "_REDACT_SNMP_OID_RE": "_SWEEP_SNMP_OID_RE",
+        "_REDACT_ARGV_WORD_RE": "_SWEEP_ARGV_WORD_RE",
         "_REDACT_SNMP_FIELD_RE": "_SWEEP_SNMP_FIELD_RE", "_REDACT_SCHEME_OPEN_RE": "_SWEEP_SCHEME_OPEN_RE",
     }
     for producer, verifier in patterns.items():
@@ -1054,12 +1060,130 @@ def test_engine_evidence_cites_survive_redaction():
     """Hosted CI found that the sweep read the engine's security check ID 'weak-user-pw' (an ASA-style '-pw'
     compound) as a credential keyword, so `redact_snapshot` rewrote the punch-list evidence cite 'core1 security
     check weak-user-pw (fail)' -- which tests/test_punchlist_evidence_refs.py pins byte-identical across
-    redaction (R9). The exact ID after 'check' is structure (`_REDACT_SWEEP_VOID_PREV`); the same compound in a
-    configuration line is still a keyword."""
+    redaction (R9) -- and the health-score deduction 'weak-user-pw high (-8)'. Every engine check ID that spells
+    a keyword is structure before a severity or a check status (`_REDACT_SWEEP_VOID_NEXT`, derived from the
+    engine's own registry `parse._SEC_CHECKS`); the same compound in a configuration line is still a keyword."""
+    from cisco_toolkit.parse import _SEC_CHECKS
     redact = html._redact_config_values
+    ids = {cid for cid in _SEC_CHECKS if html._REDACT_SWEEP_KW_RE.fullmatch(cid)}
+    assert ids == {"weak-user-pw"} and all(cid in html._REDACT_SWEEP_VOID_NEXT for cid in ids)
     for line in ("core1 security check weak-user-pw (fail; matched line not retained in the snapshot)",
                  "core1 security check weak-user-pw (fail: line looked for and not present)",
-                 "core1 security check weak-user-pw (fail)"):
+                 "core1 security check weak-user-pw (fail)", "weak-user-pw high (-8)"):
         assert redact(line) == line and not _refused(line), line
     assert redact("username ops weak-user-pw Fake99wup") == "username ops weak-user-pw <redacted>"
     assert _refused("username ops weak-user-pw Fake99wup")
+
+
+# ---- round 4b: the independent refutation of round 4 ----
+def test_quoted_and_wrapped_net_snmp_operands():
+    """(P2) The operand model took one blank-delimited token, so a quoted multi-word passphrase kept every word
+    after the first, certified. An operand is one ARGUMENT WORD (`_REDACT_ARGV_WORD_RE`, as net-snmp's
+    copy_nword and a shell read it): a quoted run is part of its word, an unterminated quote runs to the line
+    end, and a non-UTF-8 byte is inside its word. An operand option at the line end -- or a shell continuation
+    backslash -- carries the vector onto the next line."""
+    redact = html._redact_config_values
+    for text, secrets in (
+            ('trapsess -v 3 -u t -l authPriv -a SHA -A "Fk1a Fk2b Fk3c" -x AES -X \'Fk4d Fk5e\' 198.51.100.20:162',
+             ("Fk1a", "Fk2b", "Fk3c", "Fk4d", "Fk5e")),
+            ('informsess -v 2c -c "Fk6f Fk7g" 198.51.100.21', ("Fk6f", "Fk7g")),
+            ('trapsess -v 3 -u p -l authNoPriv -a SHA -A"Fk8h Fk9i" 198.51.100.23', ("Fk8h", "Fk9i")),
+            ('net-snmp-create-v3-user -A "Fm1j Fm2k" -X "Fm3l Fm4m" ops', ("Fm1j", "Fm2k", "Fm3l", "Fm4m")),
+            ('trapsess -v 3 -u p -l authPriv -A "Fm5n Fm6o 198.51.100.25', ("Fm5n", "Fm6o")),
+            ("trapsess -v 2c -c\nFm7p 198.51.100.26", ("Fm7p",)),
+            ('snmpwalk -v 3 -l authPriv -u m -a SHA -A\n"Fm8q Fm9r" -x AES -X Fn1s 198.51.100.27',
+             ("Fm8q", "Fm9r", "Fn1s")),
+            ("snmpget -v 3 -l authPriv -u m -a SHA -A Fn2t " + chr(92) + "\n  -x AES -X Fn3u 198.51.100.28",
+             ("Fn2t", "Fn3u")),
+            ("trapsess -v 3 -u p -l authPriv -A Caf\udce9Fn4v 198.51.100.29", ("Fn4v",))):
+        out = redact(text + "\nhostname next")
+        assert not any(secret in out for secret in secrets), out
+        assert out.endswith("\nhostname next"), out
+        assert _refused(text) and not _refused(out) and redact(out) == out, out
+    assert redact("snmpwalk -v2c -c 'Fn5w Fn6x' 192.0.2.4") == "snmpwalk -v2c -c '<redacted>' 192.0.2.4"
+    # a residue after the placeholder inside the quoted operand is refused
+    assert _refused('trapsess -v 2c -c "<redacted> Fn7y" 198.51.100.21')
+
+
+def test_statement_prefixes_for_directives_and_positional_lines():
+    """(P3) The SNMPCMD_ARGS directives and the 'usmUser' / 'smuxpeer' lines count after a structural prefix --
+    a comment, a diff sign, a quote, a grep 'path:N:', an '(item=' echo, a 'cat -n' number -- and a
+    'smuxpeer' password is the rest of the line (agent/mibgroup/smux/smux.c). A 'usmUser' line has integer
+    status and storage fields, a 'smuxpeer' line an OID, so prose that starts with either word is no line."""
+    redact = html._redact_config_values
+    usm = ("usmUser 1 3 0x80001f8880aa 0x6f7073 0x6f7073 NULL .1.3.6.1.6.3.10.1.1.3 0x0a1b2c3d4e5f "
+           ".1.3.6.1.6.3.10.1.2.4 0x6a7b8c9d \"\"")
+    for prefix in ("/var/lib/net-snmp/snmpd.conf:", "    12\t", "+", "-", "#", "> ", "ok: (item="):
+        out = redact(prefix + usm)
+        assert "0x0a1b2c3d4e5f" not in out and "0x6a7b8c9d" not in out and "0x80001f8880aa" in out, out
+        assert _refused(prefix + usm) and not _refused(out), prefix
+    for text, secret in (("/etc/snmp/snmpd.conf:smuxpeer .1.3.6.1.4.1.674.10892.1 Fp1smux", "Fp1smux"),
+                         ("smuxpeer .1.3.6.1.4.1.3317.1.2.2 Fp2one Fp3two", "Fp3two"),
+                         ("#trapsess -c Fp4cmt 198.51.100.26", "Fp4cmt"),
+                         ("118:trapsess -c Fp5grep 198.51.100.28", "Fp5grep")):
+        out = redact(text)
+        assert secret not in out and _refused(text) and not _refused(out), out
+    for line in ("usmUser entries live in the persistent file and contain the localized keys",
+                 "smuxpeer lines take an OID and an optional password",
+                 "Proxy -c option is not supported on this build",
+                 "net-snmp-proxy -c option"):
+        assert redact(line) == line and not _refused(line), line
+
+
+def test_a_listed_option_where_an_operand_was_expected():
+    """(P3, a regression against round 3) A protocol or key option followed by another listed option consumed
+    that option as its operand, so the value after it survived, certified. A listed option where an operand was
+    expected is both: taken as the operand (fail safe) and read as an option."""
+    redact = html._redact_config_values
+    for text, secret in (("snmpwalk -v3 -u x -l authPriv -a SHA -A Fq1a -x -X Fq2x 198.51.100.38", "Fq2x"),
+                         ("snmpget -v3 -u x -l authPriv -a -A Fq3a 198.51.100.39", "Fq3a"),
+                         ("snmpget -v3 -u x -l authPriv -3m -A Fq4m 198.51.100.40", "Fq4m")):
+        out = redact(text)
+        assert secret not in out and _refused(text) and not _refused(out) and redact(out) == out, out
+
+
+def test_a_vector_needs_a_strong_option_or_two_weak_ones():
+    """(P3) One '-v 3' is a verbosity flag in kubectl, java or grep, and '-3ms' is a chronyc offset: a line is an
+    SNMP vector by shape only with one strong option+operand pair ('-v 2c', '-l <level>', '-3? <hex>') or two
+    weak ones with different letters ('-v 1|3', '-a|-x <protocol>'). On a shape-only run an attached operand
+    counts for '-c'/'-A'/'-X' and a hex '-3?' only."""
+    redact = html._redact_config_values
+    for line in ("^- 198.51.100.5   2   6   377    34   -3ms[  -3ms] +/-   45ms", "kubectl logs p -c sidecar -v 3",
+                 "java -Xmx2g -jar collector.jar -v 3", "grep -v 1 /etc/hosts | grep -c localhost",
+                 "poll -v 3 -t 5 -r 2 -config /etc/collector/poll.conf", "Ambient delta -3K vs inlet",
+                 "lsof -v 1 -c snmpd"):
+        assert redact(line) == line and not _refused(line), line
+    out = redact("/opt/poll.sh -v 3 -a SHA -A Fr1a 198.51.100.41")
+    assert "Fr1a" not in out
+
+
+def test_any_authorization_scheme_dangles():
+    """(P3) The dangling-scheme rule named five schemes. Any RFC 7235 scheme token after an 'Authorization' header
+    now dangles ('DPoP', 'Token', 'JWT', ...); a credential-bearing 'X-...-Token' header dangles with a closed
+    scheme or with no value; 'X-Auth-Method' is no credential header."""
+    redact = html._redact_config_values
+    for text, secret in (("Authorization: DPoP\n    Fs1dpop", "Fs1dpop"),
+                         ("headers:\n  Authorization: Token\n    Fs2yaml", "Fs2yaml"),
+                         ("> Authorization: Token\n> Fs3quote", "Fs3quote"),
+                         ("Authorization: JWT\nFs4jwt more", "Fs4jwt"),
+                         ("X-Auth-Token:\nFs5xat", "Fs5xat")):
+        out = redact(text + "\nhostname next")
+        assert secret not in out and out.endswith("\nhostname next"), out
+        assert _refused(text) and not _refused(out), out
+    assert redact("X-Auth-Method: Basic\nContent-Type: application/json") == \
+        "X-Auth-Method: Basic\nContent-Type: application/json"
+
+
+def test_argument_lines_stay_linear():
+    """(P3) Every command match started a run that rescanned to the line end (quadratic: 'net-snmp-config ' x
+    10,000 took over 150 s). Runs now end where the next one starts and span replacement is one join. A generous
+    bound only: the quadratic form needed minutes."""
+    import time
+    redact = html._redact_config_values
+    for unit, count in (("net-snmp-config ", 20000), ("snmpget -v 2c -c x ", 8000), ("curl -k ", 12000),
+                        ("#usmUser 1 3 a b c d e f g h ", 8000), ('trapsess -A "a b ', 4000)):
+        line = unit * count
+        started = time.perf_counter()
+        out = redact(line)
+        _refused(out)
+        assert time.perf_counter() - started < 30, unit
