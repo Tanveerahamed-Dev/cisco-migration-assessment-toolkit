@@ -37,7 +37,7 @@ import types
 import pytest
 from jsonschema import Draft202012Validator
 
-from cisco_toolkit import analyze, ssot
+from cisco_toolkit import analyze, ssh_session, ssot
 from cisco_toolkit import ui_projection as uip
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -599,14 +599,26 @@ def test_an_unreadable_or_unregistered_axis_label_claims_nothing():
 # --------------------------------------------------------------------------------------------------
 # a further layer the count does not cover (Software risk's release-train layer)
 # --------------------------------------------------------------------------------------------------
+def _ssh_sessions(hosts):
+    """The real SSH session owner's block over `hosts` as an offline re-analysis writes it with no sealed session
+    record: every row not recorded (``verify``, never closed). W59 made ``ssh_sessions`` an input of software_risk's
+    values (``ssot.DERIVED_FACT_BASIS``) and every current producer writes it, so a fixture without it reads as a
+    snapshot whose session evidence is missing and withholds the Software risk counts for that reason instead."""
+    return ssh_session.compute_ssh_sessions(list(hosts), lambda _host: (None, None), live=False, consent=None,
+                                            evidence_path=lambda host: f"{host}/{ssh_session.SIDECAR_FILENAME}")
+
+
 def _software_only(configs, versions, hosts=("acc1", "acc2")):
     """The real software-risk producer over `hosts`, with the brief recomputed by its real producer. The real
     collection-completeness producer over an empty capture set supplies a readable blind-spot record that lists none
-    (W51: a record the snapshot does not carry would qualify every count instead)."""
+    (W51: a record the snapshot does not carry would qualify every count instead), and the real session owner the
+    W59 ``ssh_sessions`` block the software-risk producer reads (:func:`_ssh_sessions`)."""
+    sessions = _ssh_sessions(hosts)
     snap = {"software_risk": analyze.compute_software_risk(
         {h: PLAIN_CONFIG for h in configs}, {h: {"model": "", "sw_version": versions.get(h, "")} for h in hosts},
-        all_hosts=list(hosts)),
-        "collection_completeness": analyze.compute_collection_completeness([], {})}
+        all_hosts=list(hosts), ssh_sessions=sessions),
+        "collection_completeness": analyze.compute_collection_completeness([], {}),
+        "ssh_sessions": sessions}
     return _rebrief(snap)
 
 
@@ -702,6 +714,8 @@ def _blind_fleet(root, third):
         seen.append("edge")
     health = [{"switch": h, "score": 96, "band": "Excellent", "role": "access", "criticality": 1.0, "deductions": []}
               for h in seen]
+    # the W59 session block over the devices the producers see, so the blind spot stays a device no producer holds
+    sessions = _ssh_sessions(seen)
     snap = {
         "collection_completeness": analyze.compute_collection_completeness(["acc1", "acc2", "edge"], acf),
         "health_scores": health,
@@ -709,7 +723,9 @@ def _blind_fleet(root, third):
         "syslog_intelligence": analyze.compute_syslog_intelligence({h: LOG for h in seen}),
         "qos_audit": analyze.compute_qos_audit({h: PLAIN_CONFIG for h in seen}),
         "software_risk": analyze.compute_software_risk({h: PLAIN_CONFIG for h in seen},
-                                                       {h: {"sw_version": "17.12.1"} for h in seen}),
+                                                       {h: {"sw_version": "17.12.1"} for h in seen},
+                                                       ssh_sessions=sessions),
+        "ssh_sessions": sessions,
         "platform_health": analyze.compute_platform_health(
             {h: {"cpu": CPU_OK, "memory": {}, "system": {}} for h in seen}),
         "device_dossiers": analyze.compute_device_dossiers(health_scores=copy.deepcopy(health)),

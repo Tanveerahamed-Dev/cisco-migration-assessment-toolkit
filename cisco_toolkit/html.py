@@ -20,6 +20,7 @@ from cisco_toolkit.analyze import (PROTOCOL_ASSESSABILITY_STATES, _protocol_asse
                                    compute_current_baseline_gate, normalize_routing_adjacency_state)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
+from cisco_toolkit import ssh_session as _ssh_session   # W59 PR-1: session records are schema-covered
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
 from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
 from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
@@ -4130,6 +4131,24 @@ def _is_raw_capture(filename: str) -> bool:
     return suffix != _REDACT_SCRUB_TEMP_SUFFIX and suffix not in _REDACT_SKIP_CAPTURE_SUFFIXES
 
 
+def _ssh_session_record_valid(path: str) -> bool:
+    """True when `path` is a bounded, valid ``ssh_session/1`` record (owner: cisco_toolkit.ssh_session).
+
+    What "valid" checks (``ssh_session.validate_record``): the closed key set, enums, library versions, identifiers,
+    small integers and booleans, every algorithm name a member of the recordable vocabulary
+    (``ssh_session.RECORDABLE_ALGORITHM_NAMES``) and the server banner token of the vendor grammar
+    (``ssh_session.SERVER_SOFTWARE_RE``). A device-offered name or banner outside those is never stored (only
+    counted), so a valid record carries no device-controlled free text. Anything else stays NOT COVERED."""
+    try:
+        if os.path.getsize(path) > 1024 * 1024:
+            return False
+        with open(path, "rb") as fh:
+            record, _reason = _ssh_session.parse_record(fh.read())
+        return record is not None
+    except OSError:
+        return False
+
+
 class _ScrubResult(tuple):
     """``(scanned, changed)`` — plus ``.uncovered``, the files this pass declined to rewrite.
 
@@ -4138,9 +4157,13 @@ class _ScrubResult(tuple):
     attribute instead of being visible only in a ``logger.debug`` line nobody reads at a client site.
     Each entry is ``(relative_path, reason)``."""
 
-    def __new__(cls, scanned: int, changed: int, uncovered=()):
+    def __new__(cls, scanned: int, changed: int, uncovered=(), schema_covered=()):
         self = super().__new__(cls, (scanned, changed))
         self.uncovered = tuple(uncovered)
+        # W59 PR-1: SSH session records (`_ssh_session.json`) whose closed schema validates: not a capture,
+        # nothing to scrub, and not "uncovered" either. The schema check vouches only for what it checks: closed
+        # keys, enums, versions, small integers, vocabulary-member algorithm names and a vendor-grammar banner.
+        self.schema_covered = tuple(schema_covered)
         return self
 
 
@@ -4182,6 +4205,7 @@ def redact_collection_dir(collection_dir: str) -> tuple:
     Returns ``(scanned, changed)`` (a `_ScrubResult`, so ``.uncovered`` carries limits 1-3)."""
     scanned = changed = 0
     uncovered: List[tuple] = []
+    schema_covered: List[str] = []
     base = collection_dir or ""
 
     def _rel(path: str) -> str:
@@ -4193,6 +4217,9 @@ def redact_collection_dir(collection_dir: str) -> tuple:
     for root, _dirs, files in os.walk(base):
         for fn in files:
             p = os.path.join(root, fn)
+            if fn == _ssh_session.SIDECAR_FILENAME and _ssh_session_record_valid(p):
+                schema_covered.append(_rel(p))
+                continue
             if not _is_raw_capture(fn):
                 uncovered.append((_rel(p), "not a raw capture by name (structured serialisation "
                                            "or the scrub's own scratch file)"))
@@ -4246,7 +4273,7 @@ def redact_collection_dir(collection_dir: str) -> tuple:
                                                f"({e.__class__.__name__}); the original is unchanged "
                                                "and still holds them"))
     uncovered.sort()
-    return _ScrubResult(scanned, changed, uncovered)
+    return _ScrubResult(scanned, changed, uncovered, schema_covered)
 
 
 def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) -> None:

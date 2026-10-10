@@ -80,6 +80,7 @@ _CLIENT_ARTIFACTS = [
     "AcmeBank_Q1.snapshot.json",                    # the parsed estate, every device
     "AcmeBank_Q1.run_manifest.json",                # chain-of-custody for the above
     "AcmeBank_Q1.phase_timings.json",
+    "AcmeBank_Q1.incomplete.json",                  # W59 PR-2: the SSH consent block, devices by hostname
     "AcmeBank_Q1_mop.docx",                         # the change plan
     "AcmeBank_Q1_design.docx",
     "AcmeBank_Q1_crd.docx",
@@ -170,7 +171,15 @@ _REQUIRED_COMMAND_LISTS = {
     "COMMANDS_CLOUD",
     "COMMANDS_FORTINET",
 }
-_COLLECTION_SIDECARS = ("device_info.json", "command_index.json", "_capture_meta.json")
+_COLLECTION_SIDECARS = ("device_info.json", "command_index.json", "_capture_meta.json", "_ssh_session.json")
+
+
+def test_collection_sidecar_restatement_matches_its_owner() -> None:
+    """W59 PR-1: this tuple restates `capture_integrity.COLLECTION_SIDECAR_BASENAMES`; a new sidecar added to
+    the owner without an ignore rule would be commit-visible client evidence."""
+    from cisco_toolkit.capture_integrity import COLLECTION_SIDECAR_BASENAMES
+
+    assert set(_COLLECTION_SIDECARS) == set(COLLECTION_SIDECAR_BASENAMES)
 
 
 def _git() -> str:

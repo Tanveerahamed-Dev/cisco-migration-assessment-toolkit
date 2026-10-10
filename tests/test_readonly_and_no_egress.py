@@ -35,6 +35,9 @@ import pytest
 import COLLECT_PARSE_V3_23_0 as C
 from cisco_toolkit.attestation import (
     NETWORK_IMPORTS as _NETWORK_IMPORTS,
+    NO_EGRESS_CHARTER as _NO_EGRESS_CHARTER,
+    NO_EGRESS_EXCLUDE as _NO_EGRESS_EXCLUDE,
+    NO_EGRESS_PERMITTED_IMPORTS as _NO_EGRESS_PERMITTED_IMPORTS,
     READ_ONLY_CMD as _READ_ONLY_CMD,
     is_read_only_command as _is_read_only_command,
     imported_names as _imported_names,
@@ -146,7 +149,9 @@ def test_ssh_wire_carries_only_show_plus_the_terminal_setup_commands(tmp_path, m
     every device — the mechanism that put the other channel's strings on the wire in the first place.
     """
     dev = _RecordingDev()
-    monkeypatch.setattr(C, "ConnectHandler", lambda **kw: dev)
+    # W59 PR-1: the collector constructs every connection through ONE factory; patching it intercepts
+    # the whole connection path (C.ConnectHandler no longer exists, so a stale patch fails loudly).
+    monkeypatch.setattr(C, "_open_connection", lambda kwargs, platform, profile, recorder: dev)
     conn, _ = C.connect_device("10.0.0.1", "SW1", "u", "p", "ios")
     assert conn is dev
     for i, plat in enumerate(("ios", "nxos")):
@@ -293,7 +298,9 @@ def test_rest_collect_is_get_only_except_single_login_post():
 
     # The AST scan is only COMPLETE while urllib is the only transport in the module: a `requests`
     # / `http.client` write would carry no `Request(...)` node at all. (rest_collect is the one file
-    # test_no_network_egress_in_analysis_pipeline excludes, so nothing else pins its imports.)
+    # test_no_network_egress_in_analysis_pipeline excludes WHOLE, so nothing else pins its imports. The other
+    # charter entry, legacy_ssh.py, is NOT excluded: that walk scans it with only paramiko permitted, and
+    # test_legacy_ssh_network_imports_are_pinned_to_paramiko pins its imports the same way as this one.)
     nets = sorted(n for n in _imported_names(ast.parse(src))
                   if any(n == net or n.startswith(net + ".") for net in _NETWORK_IMPORTS))
     assert nets == ["urllib.request"], (
@@ -358,18 +365,55 @@ def test_shared_read_only_grammar_rejects_write_verbs():
 
 
 def test_no_network_egress_in_analysis_pipeline():
-    """The analysis -> deliverable library imports NO network library, at any nesting depth. Only the two
-    intended collectors may touch the network: rest_collect.py (the REST collector) and the dev-only
-    data/gen_port_registry.py (a one-off data-pack generator, not import-reachable from the runtime pipeline).
+    """The analysis -> deliverable library imports NO network library, at any nesting depth. Only the
+    charter entries may touch the network, each paired with its own published floor claim — today
+    rest_collect.py (the opt-in REST collector, `rest_collect_get_only`), excluded WHOLE, and legacy_ssh.py
+    (the opt-in legacy SSH transport tier, `legacy_ssh_confined`), which stays in this walk with ONLY paramiko
+    permitted (W59 PR-2 review P1-a: excluding it whole let a planted socket/urllib/requests import through) —
+    plus the dev-only data/gen_port_registry.py (a one-off data-pack generator, not import-reachable from the
+    runtime pipeline). The charter is the attestation's own NO_EGRESS_EXCLUDE / NO_EGRESS_PERMITTED_IMPORTS,
+    never restated here: a hard-coded copy would let the shipped claim and this doctrine guard drift apart.
     COLLECT_PARSE_V3_23_0.py (the SSH collector) lives at the repo root, outside cisco_toolkit/, so it is
     naturally out of this analysis-library scope. A stray `import requests` in a deliverable fails here."""
-    offenders = {}
-    for path in _toolkit_py(exclude={"rest_collect.py"}):
+    # Every charter entry is a TOP-LEVEL module of the package (this walk is top-level by basename), is exactly
+    # one of the two kinds, and is paired with a published claim; anything else would be a silent hole here.
+    assert all("/" not in rel for rel in _NO_EGRESS_CHARTER), _NO_EGRESS_CHARTER
+    assert set(_NO_EGRESS_CHARTER) == set(_NO_EGRESS_EXCLUDE) | set(_NO_EGRESS_PERMITTED_IMPORTS)
+    assert not set(_NO_EGRESS_EXCLUDE) & set(_NO_EGRESS_PERMITTED_IMPORTS)
+    offenders, permitted = {}, {}
+    for path in _toolkit_py(exclude=_NO_EGRESS_EXCLUDE):
         tree = ast.parse(open(path, encoding="utf-8", errors="replace").read(), filename=path)
         imported = _imported_names(tree)
         bad = sorted(n for n in imported if any(n == net or n.startswith(net + ".") for net in _NETWORK_IMPORTS))
+        roots = _NO_EGRESS_PERMITTED_IMPORTS.get(os.path.basename(path), frozenset())
+        allowed = [n for n in bad if n.split(".")[0] in roots]
+        bad = [n for n in bad if n not in allowed]
+        if allowed:
+            permitted[os.path.basename(path)] = allowed
         if bad:
             offenders[os.path.basename(path)] = bad
+    # non-vacuity: the permitted file was walked, and its permission did real work
+    assert set(permitted) == set(_NO_EGRESS_PERMITTED_IMPORTS), permitted
     # the dev-only data-pack generator is the one documented exception (urllib to IANA; not pipeline-reachable)
     offenders.pop("gen_port_registry.py", None)
     assert not offenders, f"network-egress import(s) in the offline analysis pipeline: {offenders}"
+
+
+def test_legacy_ssh_network_imports_are_pinned_to_paramiko():
+    """W59 PR-2 review (P1-a), the mirror of rest_collect's pin above: legacy_ssh.py's network imports are EXACTLY
+    these paramiko names. The walk above permits paramiko there and nothing else, and the published
+    `legacy_ssh_confined` claim holds the module to a closed import allowlist; this pin fails first, with the
+    exact list, the day a new paramiko module (or anything else) is imported there."""
+    path = os.path.join(_TOOLKIT, "legacy_ssh.py")
+    src = open(path, encoding="utf-8").read()
+    nets = sorted(n for n in _imported_names(ast.parse(src))
+                  if any(n == net or n.startswith(net + ".") for net in _NETWORK_IMPORTS))
+    assert nets == [
+        "paramiko.kex_gex", "paramiko.kex_gex.KexGexSHA256",
+        "paramiko.kex_group14", "paramiko.kex_group14.KexGroup14SHA256",
+        "paramiko.rsakey", "paramiko.rsakey.RSAKey",
+        "paramiko.ssh_exception", "paramiko.ssh_exception.IncompatiblePeer",
+        "paramiko.transport", "paramiko.transport.Transport",
+    ], (f"legacy_ssh gained or lost a network import {nets}: widen this pin and the closed allowlist "
+        f"(cisco_toolkit.attestation._LEGACY_SSH_IMPORTS_*) together, deliberately")
+    assert set(_NO_EGRESS_PERMITTED_IMPORTS["legacy_ssh.py"]) == {n.split(".")[0] for n in nets}

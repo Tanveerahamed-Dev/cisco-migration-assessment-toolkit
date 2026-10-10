@@ -645,6 +645,127 @@ def _write_collection(root: str, cols: dict) -> None:
                 f.write(text)
 
 
+# --------------------------------------------------------------------------- #
+# W59 PR-1: the demo's SSH session records. Built by the REAL producer (cisco_toolkit.ssh_session.build_record /
+# render_record, the bytes the collector writes) from observation snapshots shaped exactly like the sink's, so
+# the sample exercises the engine's sealed-sidecar path end to end. One library for the whole run -- the shipped
+# Atlas as of W59 PR-1 (paramiko 4.0.0 / netmiko 4.7.0, whose stock tables still permit SHA-1) -- so the three
+# records are mutually consistent:
+#   access4  (12.2 C3560): offers only SHA-1-class kex/host key -> negotiated SHA-1 WITHOUT opt-in (legacy_sha1)
+#   core1:                 offers curve25519 / rsa-sha2-512      -> modern
+#   edge1:                 a FOLDER WITH ONLY THE RECORD (no captures): a common SHA-1 key exchange, but a DSA
+#                          host key only, which paramiko 4.0.0 (DSA removed) cannot verify -> refused at the
+#                          host-key step: refused_legacy_only, an EXPOSED Medium finding ("no profile of this
+#                          collector implements" -- DSA is outside the legacy-sha1 tier). The one paramiko 4 run is
+#                          consistent: it negotiates SHA-1 with access4 and refuses edge1's DSA-only host key.
+#                          The sample thereby pins a refused device's exposed finding on every surface (W59 PR-1
+#                          review P2-b): software risk, punch list, dossier and the collection-integrity deliverables.
+# SHA-1 algorithm names come from the vocabulary owner, never restated here.
+# --------------------------------------------------------------------------- #
+_SSH_EXTRA_DEVICE = {"hostname": "edge1", "ip": "10.0.99.240", "platform": "ios"}
+
+
+def _paramiko4_client_tables(S) -> dict:
+    """paramiko 4.0.0's stock client preference lists (transport.py), SHA-1 entries from the vocabulary."""
+    g14_sha1, gex_sha1 = S.LEGACY_SHA1_TIER_KEX
+    g1_sha1 = next(n for n in sorted(S.SHA1_KEX_NAMES) if n not in S.LEGACY_SHA1_TIER_KEX)
+    rsa_sha1 = S.LEGACY_SHA1_TIER_HOST_KEYS[0]
+    kex = ["curve25519-sha256@libssh.org", "ecdh-sha2-nistp256", "ecdh-sha2-nistp384", "ecdh-sha2-nistp521",
+           "diffie-hellman-group16-sha512", "diffie-hellman-group-exchange-sha256",
+           "diffie-hellman-group14-sha256", gex_sha1, g14_sha1, g1_sha1]
+    plain_keys = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+                  "rsa-sha2-512", "rsa-sha2-256", rsa_sha1]
+    host_key = plain_keys + [f"{k}-cert-v01@openssh.com" for k in plain_keys]
+    cipher = ["aes128-ctr", "aes192-ctr", "aes256-ctr", "aes128-cbc", "aes192-cbc", "aes256-cbc", "3des-cbc",
+              "aes128-gcm@openssh.com", "aes256-gcm@openssh.com"]
+    sha1_mac, sha1_96 = sorted(n for n in S.SHA1_MACS if "etm" not in n)
+    md5_mac, md5_96 = sorted(n for n in S.MD5_MACS if "etm" not in n)
+    mac = ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha2-256-etm@openssh.com", "hmac-sha2-512-etm@openssh.com",
+           sha1_mac, md5_mac, sha1_96, md5_96]
+    return {"kex": kex, "host_key": host_key, "cipher": cipher, "mac": mac}
+
+
+def _ssh_session_records() -> dict:
+    """hostname -> exact sidecar bytes."""
+    from cisco_toolkit import ssh_session as S
+
+    lib = S.library_block(paramiko_version="4.0.0", netmiko_version="4.7.0", transport_class="ObservedTransport",
+                          default_permits_sha1=True)
+    client = _paramiko4_client_tables(S)
+    g14_sha1 = S.LEGACY_SHA1_TIER_KEX[0]
+    rsa_sha1 = S.LEGACY_SHA1_TIER_HOST_KEYS[0]
+    sha1_mac = sorted(n for n in S.SHA1_MACS if "etm" not in n)[0]
+    legacy_server = {"kex": [g14_sha1], "host_key": [rsa_sha1], "cipher_c2s": ["aes128-cbc", "aes256-ctr"],
+                     "cipher_s2c": ["aes128-cbc", "aes256-ctr"], "mac_c2s": [sha1_mac], "mac_s2c": [sha1_mac]}
+    legacy_obs = {"kexinit": True, "newkeys": True, "server": legacy_server, "client": client,
+                  "negotiated": {"kex": g14_sha1, "kex_hash_bytes": 20, "dh_group_bits": 2048,
+                                 "host_key_algorithm": rsa_sha1, "cipher_c2s": "aes256-ctr",
+                                 "cipher_s2c": "aes256-ctr", "mac_c2s": sha1_mac, "mac_s2c": sha1_mac,
+                                 "strict_kex": False, "server_software": "SSH-1.99-Cisco-1.25"},
+                  "engine_name_agrees": True, "group_size_agrees": True, "dropped": 0}
+    modern_server = {"kex": ["curve25519-sha256", "curve25519-sha256@libssh.org", "ecdh-sha2-nistp256",
+                             "diffie-hellman-group14-sha256", "kex-strict-s-v00@openssh.com"],
+                     "host_key": ["rsa-sha2-512", "rsa-sha2-256"], "cipher_c2s": ["aes256-gcm@openssh.com",
+                                                                               "aes256-ctr"],
+                     "cipher_s2c": ["aes256-gcm@openssh.com", "aes256-ctr"], "mac_c2s": ["hmac-sha2-256"],
+                     "mac_s2c": ["hmac-sha2-256"]}
+    modern_obs = {"kexinit": True, "newkeys": True, "server": modern_server, "client": client,
+                  "negotiated": {"kex": "curve25519-sha256@libssh.org", "kex_hash_bytes": 32, "dh_group_bits": None,
+                                 "host_key_algorithm": "rsa-sha2-512", "cipher_c2s": "aes256-ctr",
+                                 "cipher_s2c": "aes256-ctr", "mac_c2s": "hmac-sha2-256", "mac_s2c": "hmac-sha2-256",
+                                 "strict_kex": True, "server_software": "SSH-2.0-Cisco-1.25"},
+                  "engine_name_agrees": None, "group_size_agrees": None, "dropped": 0}
+    # The DSA host-key name, derived from the vocabulary owner (the one plain SHA-1-class host key outside the
+    # legacy-sha1 tier that is neither a certificate nor an X.509 form) -- never spelled here.
+    dsa_only = [n for n in sorted(S.SHA1_HOST_KEY_NAMES)
+                if n not in S.LEGACY_SHA1_TIER_HOST_KEYS and "cert" not in n and not n.startswith("x509")]
+    if len(dsa_only) != 1:
+        raise SystemExit(f"demo SSH session: expected exactly one plain DSA host-key name, got {dsa_only}")
+    gap_server = {"kex": [g14_sha1], "host_key": dsa_only, "cipher_c2s": ["aes128-ctr"],
+                  "cipher_s2c": ["aes128-ctr"], "mac_c2s": [sha1_mac], "mac_s2c": [sha1_mac]}
+    gap_obs = {"kexinit": True, "newkeys": False, "server": gap_server, "client": client, "negotiated": None,
+               "engine_name_agrees": None, "group_size_agrees": None, "dropped": 0, "errors": 0}
+
+    class _IncompatiblePeer(Exception):
+        """Stand-in carrying paramiko's exception class NAME (the classifier matches by name)."""
+
+    _IncompatiblePeer.__name__ = "IncompatiblePeer"
+    observation = S.SessionObservation()
+    observation.server, observation.client, observation.kexinit_seen = gap_server, client, True
+    refusal = S.classify_failure(_IncompatiblePeer("Incompatible ssh peer (no acceptable host key)"),
+                                 observation)
+    if not refusal or (refusal["category"], refusal["classification"]) != ("host_key", "refused_legacy_only"):
+        raise SystemExit(f"demo SSH session: edge1 must classify as a host-key refused_legacy_only, got {refusal}")
+    default_consent = S.consent_for({}, None)
+    records = {
+        "access4": S.build_record(outcome="established", consent=default_consent, library=lib, attempts=1,
+                                  observation=legacy_obs),
+        "core1": S.build_record(outcome="established", consent=default_consent, library=lib, attempts=1,
+                                observation=modern_obs),
+        _SSH_EXTRA_DEVICE["hostname"]: S.build_record(
+            outcome="negotiation_refused", consent=default_consent, library=lib, attempts=1,
+            observation=gap_obs, refusal=refusal, failure_class="NetmikoTimeoutException"),
+    }
+    out = {}
+    for host, record in records.items():
+        errors = S.validate_record(record)
+        if errors:
+            raise SystemExit(f"demo SSH session record for {host} fails its schema: {errors}")
+        out[host] = S.render_record(record)
+    return out
+
+
+def _write_ssh_session_records(root: str) -> None:
+    """The sidecars, exact LF bytes (render_record is canonical ASCII + LF), beside each device's captures."""
+    from cisco_toolkit import ssh_session as S
+
+    for host, data in _ssh_session_records().items():
+        d = os.path.join(root, host)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, S.SIDECAR_FILENAME), "wb") as f:
+            f.write(data)
+
+
 def _make_template(path: str) -> None:
     from openpyxl import Workbook
     wb = Workbook()
@@ -711,11 +832,14 @@ def main(argv: list = None) -> None:
     devices = [{"hostname": h, "ip": f"10.0.99.{i + 1}", "username": "demo",
                 "password": "x", "platform": plat}
                for i, (h, (plat, _o)) in enumerate(cols.items())]
+    # W59 PR-1: the device whose folder holds only its SSH session record (attempted, not collected).
+    devices.append({**_SSH_EXTRA_DEVICE, "username": "demo", "password": "x"})
 
     work = tempfile.mkdtemp(prefix="assesshub_sample_")
     try:
         collection = os.path.join(work, f"collection_{_SAMPLE_COLLECTION_STAMP}")
         _write_collection(collection, cols)
+        _write_ssh_session_records(collection)
         dev_file = os.path.join(work, "devices.json")
         # The engine binds this input's bytes too (its devices_file custody record). Compact json.dump emits
         # no newline today, so LF is declared for the same host-independence rule, not to change any byte.

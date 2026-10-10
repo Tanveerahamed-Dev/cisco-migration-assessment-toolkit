@@ -138,7 +138,7 @@ from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
     DOSSIER_AXIS_INPUTS, PUNCH_CATEGORIES, PUNCH_CATEGORY_SECTION, PUNCH_SEVERITIES, compute_device_findings,
-    compute_punchlist_facets, device_config_capture, vlan_cutover_host_index,
+    compute_punchlist_facets, device_config_capture, punch_row_session_evidenced, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -461,8 +461,21 @@ VLAN_FIELD_BASIS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: The ``compute_migration_punchlist`` inputs that are snapshot sections (its rows roll up over them).
 PUNCHLIST_INPUTS: Tuple[str, ...] = (
     "cross_layer", "security", "config_hygiene", "physical_health", "l3_forwarding", "protocol_health",
-    "health_scores", "move_groups", "syslog_intelligence", "qos_audit", "software_risk", "platform_health",
-    "device_dossiers", "protocol_assessability", "vtp_safety_baseline", "ipv6_routing_adjacency_baseline")
+    "health_scores", "move_groups", "syslog_intelligence", "qos_audit", "software_risk", "ssh_sessions",
+    "platform_health", "device_dossiers", "protocol_assessability", "vtp_safety_baseline",
+    "ipv6_routing_adjacency_baseline")
+#: W59 PR-1 review (supervisor P2): an input section an engine release ADDED to a rollup after snapshots without it were
+#: stored, with the release that added it. Absent from a snapshot whose OWN embedded census (``schema_census``, which
+#: every producer since J3 writes over its final section set, :meth:`_Ctx.predates`) proves its producer never wrote
+#: it, the section is not a collection gap of the values that roll up over it: those values are exactly what that
+#: producer published, so they are not withheld as not_collected. A failed phase (analysis_unavailable, attributed
+#: through ``ssot.PHASE_SECTIONS`` even when the section is absent), an owner fault, a present null, and an absence the
+#: census cannot explain -- the census lists the section, is missing, failed, or cannot be read -- all still propagate.
+#: Exactly the rollup inputs a pre-W59 producer lacks; tests/test_ui_projection_w59_legacy.py derives that set from the
+#: frozen pre-W59 golden snapshot and holds this registry equal to it.
+LATER_INPUT_SECTIONS: Mapping[str, str] = MappingProxyType({
+    "ssh_sessions": "W59 (SSH session disclosure, cisco_toolkit.ssh_session)",
+})
 #: The snapshot-local identity written by ``compute_move_groups``; legacy rows may lack it.
 MOVE_GROUP_LABEL = "group"
 MOVE_GROUP_UNSCHEDULED = "(unscheduled)"  # analyze.MOVE_GROUP_UNSCHEDULED
@@ -1204,6 +1217,7 @@ class _Ctx:
         self._source: Any = _UNSET
         self._addresses: Any = _UNSET
         self._addr_cov: Any = _UNSET
+        self._predates: Dict[str, bool] = {}
 
     @property
     def impact(self) -> impact_assessability.ImpactSnapshot:
@@ -1363,6 +1377,43 @@ class _Ctx:
                 self.faults[f"abstention:{subject}"] = _fault_text("ssot.abstention_reason", exc)
             self._abst[subject] = token
         return self._abst[subject]
+
+    def predates(self, section: str) -> bool:
+        """W59 PR-1 review (supervisor P2): True when `section` (one of :data:`LATER_INPUT_SECTIONS`) is ABSENT because
+        this snapshot's producer predates it. The version signal is the snapshot's own embedded census
+        (``schema_census``), which every producer since J3 writes over its final section set: a readable census that
+        lists no such key proves the producer never wrote the section. Never True for a section the snapshot carries
+        (a null included: the engine abstained), for a failed phase (attributed even when the section is absent), or
+        when the census is absent, failed, of another schema, or holds a row whose key cannot be read -- that absence
+        cannot be explained, so it stays a collection gap."""
+        if section not in self._predates:
+            self._predates[section] = self._census_never_wrote(section)
+        return self._predates[section]
+
+    def _census_never_wrote(self, section: str) -> bool:
+        if section not in LATER_INPUT_SECTIONS or section in self.s or section in self.direct:
+            return False
+        if "schema_census" in self.direct:
+            return False
+        census = self.s.get("schema_census")
+        rows = census.get("sections") if isinstance(census, dict) else None
+        if not isinstance(census, dict) or census.get("schema") != ssot.SCHEMA_CENSUS_SCHEMA:
+            return False
+        if not isinstance(rows, list) or not rows:
+            return False
+        keys = set()
+        for row in rows:
+            key = row.get("key") if isinstance(row, dict) else None
+            if not _is_text(key):
+                return False                     # a row that cannot be read could be the section's
+            keys.add(key)
+        return section not in keys
+
+    def uncollected(self, section: str) -> bool:
+        """``section`` withholds a value computed over it as not_collected: the abstention core says not_collected
+        and the section is not one this snapshot's producer predates (:meth:`predates`). Every roll-up and derived
+        basis reads its inputs here, never ``abst(...) == not_collected`` directly."""
+        return self.abst(section) == _NC and not self.predates(section)
 
     def fault(self, subjects: Iterable[str]) -> str:
         for subject in subjects:
@@ -1961,7 +2012,7 @@ def _scalar(ctx: _Ctx, path: str, slot: str, basis: str, *, vocab: Sequence[str]
             ok, typed = _typed(raw, slot, vocab)
             empty = t == _CBE                      # the core: present, carries no evidence (0 / "" / False)
             zero = slot in _MEASURED_ZERO_SLOTS and ok and _measured_zero(typed)
-            nc_basis = [s for s in derived if ctx.abst(s) == _NC]
+            nc_basis = [s for s in derived if ctx.uncollected(s)]
             gated = gate(ctx, typed, zero) if (gate is not None and ok) else None
             if nc_basis and empty:
                 state = _NC                        # nothing, computed over nothing: before any type verdict
@@ -2044,7 +2095,7 @@ def _factlist(ctx: _Ctx, path: Optional[str], basis: str, items: List[Any], base
     sections = own + tuple(s for s in rollup if s not in own)
     rollup_failed = sorted(s for s in rollup if ctx.abst(s) == AU)
     rollup_fault = [s for s in rollup if ctx.abst(s) == _FAULT]
-    rollup_nc = sorted(s for s in rollup if ctx.abst(s) == _NC)
+    rollup_nc = sorted(s for s in rollup if ctx.uncollected(s))
     if base == AU or rollup_failed:
         state = AU
         reason = ctx.unavailable_reason(sections)
@@ -3429,7 +3480,7 @@ def _cell(ctx: _Ctx, row: _Row, field: Optional[str], slot: str, basis: str, *, 
             else:
                 ok, typed = _typed(raw, slot, vocab)
                 gated = gate(ctx, typed, row) if (gate is not None and ok) else None
-                nc_basis = [s for s in secs[1:] if ctx.abst(s) == _NC]
+                nc_basis = [s for s in secs[1:] if ctx.uncollected(s)]
                 if not ok:
                     state = _UV
                 elif gated is not None:
@@ -3461,7 +3512,7 @@ def _rolled(ctx: _Ctx, state: str, reason: Optional[str], sections: Sequence[str
     all_secs = tuple(sections) + tuple(s for s in rollup if s not in sections)
     failed = sorted(s for s in rollup if ctx.abst(s) == AU)
     faulted = [s for s in rollup if ctx.abst(s) == _FAULT]
-    uncollected = sorted(s for s in rollup if ctx.abst(s) == _NC)
+    uncollected = sorted(s for s in rollup if ctx.uncollected(s))
     if state == AU or failed:
         head = reason if (state == AU and reason) else ctx.unavailable_reason(all_secs)
         tail = ("; the list may be incomplete: a failed input can drop or empty an entry "
@@ -3990,18 +4041,55 @@ def _capture_record(ctx: _Ctx, section: str, host: str) -> Tuple[Any, Any, Optio
     return (*selected[0], None) if selected else (None, None, None)
 
 
+#: W59 PR-1 review (P2-b): what a WITHHELD device finding rollup adds when stored punch-list rows naming the device
+#: rest on its sealed SSH session record (analyze.punch_row_session_evidenced): they need no running-config, so no
+#: capture gap may hide them. The counts stay withheld -- the configuration-derived rows may be missing -- while the
+#: reason states the floor the session evidence proves and every such row is witnessed.
+_R_SESSION_FLOOR = ("; {n} stored finding(s) naming this device rest on its sealed SSH session record and need no "
+                    "running-config (session-evidenced, worst {worst}): at least these apply (the witnessed rows)")
+
+
+def _session_evidenced_floor(raw: Any, host: Any) -> Tuple[str, List[Tuple[str, Sequence[Any]]]]:
+    """``(reason suffix, witness entries)`` for the stored punch-list rows naming `host` that are session-evidenced,
+    or ``("", [])``. The rows naming the device are the owner's fold (``analyze.compute_device_findings``, asked for
+    this one host, so a device outside the devices map -- one refused at collection -- is answered too)."""
+    if not isinstance(raw, list) or not _is_text(host) or not host.strip():
+        return "", []
+    try:
+        fold = compute_device_findings(raw, [host])
+    except _OWNER_FAULTS:
+        return "", []
+    result = (fold.get("per_device") or {}).get(host) if isinstance(fold, dict) and fold.get("problem") is None \
+        else None
+    indices = result.get("indices") if isinstance(result, dict) else None
+    rows = [i for i in (indices if isinstance(indices, list) else [])
+            if type(i) is int and 0 <= i < len(raw) and punch_row_session_evidenced(raw[i])]
+    if not rows:
+        return "", []
+    present = {raw[i].get("severity") for i in rows}
+    worst = next((sev for sev in PUNCH_SEVERITIES if sev in present), "unknown")
+    return (_R_SESSION_FLOOR.format(n=len(rows), worst=worst),
+            [("witness", ("punchlist", i)) for i in rows])
+
+
 def _device_finding_rollup(ctx: _Ctx, host: Any,
                            forced: Optional[_Forced] = None) -> Dict[str, Any]:
-    """Publish the pure owner fold only after scoped input and positive capture custody."""
+    """Publish the pure owner fold only after scoped input and positive capture custody. A rollup withheld for a
+    collection or capture gap still names the session-evidenced findings that do not depend on it
+    (:func:`_session_evidenced_floor`)."""
     sections = ("punchlist",) + PUNCHLIST_INPUTS
     base, reason, _raw = _list_state(ctx, ("punchlist",), ("punchlist",))
     state, reason = _rolled(ctx, base, reason, ("punchlist",), PUNCHLIST_INPUTS)
     witness: List[Tuple[str, Sequence[Any]]] = [("basis", ("punchlist",))]
     values: Dict[str, Any] = {"worst": None, "by_severity": None}
+    floor_wit: List[Tuple[str, Sequence[Any]]] = []
     if forced is not None:
         # a forced state is ``(state, reason)`` or, beside a roster it cannot read, ``(state, reason, witnesses)``
         # (:func:`_roster_join`); its witnesses ride in the row's extra (:func:`_forced_wit`), never in the unpacking
         state, reason = forced[0], forced[1]
+        if state == _NC:
+            suffix, floor_wit = _session_evidenced_floor(_raw, host)
+            reason = (reason or "") + suffix
     elif not _is_text(host) or not host.strip():
         state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
     elif state in (_PUB, _CBE):
@@ -4013,8 +4101,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
             witness += scope[2] + (gap[1] if gap else [])
         elif gap is not None:
             why, extra = gap
-            state, reason = _NC, f"not collected: finding counts may be incomplete: {why}"
-            witness += extra
+            suffix, floor_wit = _session_evidenced_floor(_raw, host)
+            state, reason = _NC, f"not collected: finding counts may be incomplete: {why}" + suffix
+            witness += extra + floor_wit
         else:
             software, sw_toks, problem = _capture_record(ctx, "software_risk", host)
             qos, qa_toks = None, None
@@ -4029,7 +4118,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
             if problem is not None:
                 state, reason = _UV, problem
             elif capture is False:
-                state, reason = _NC, "not collected: the canonical capture owner reports no running-config"
+                suffix, floor_wit = _session_evidenced_floor(_raw, host)
+                state, reason = _NC, "not collected: the canonical capture owner reports no running-config" + suffix
+                witness += floor_wit
             elif capture is not True:
                 state, reason = _UV, "unverified: running-config capture custody is missing or not an exact boolean"
             elif not isinstance(security, dict) or not security:
@@ -4051,8 +4142,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
                         values = result
                         witness += [("witness", ("punchlist", index)) for index in indices]
     held = None if state in (_PUB, _CBE) else state
-    row = _Row(held, reason, None, values, sections, _forced_wit(forced), basis_refs=forced is None,
-               bare=forced is not None)
+    # a forced row cites only its own extra (bare), so the session-evidenced rows it names ride there
+    row = _Row(held, reason, None, values, sections, _forced_wit(forced) + (floor_wit if forced is not None else []),
+               basis_refs=forced is None, bare=forced is not None)
 
     def empty_worst(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
         return (_CBE, "collected but empty: no stored punch-list finding names this captured device; not a clean bill of health") \
@@ -8789,7 +8881,7 @@ __all__ = [
     "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
     "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",
     "EXPOSURE_STATES", "FLEET_HEALTH_STATES", "HEALTH_BANDS", "HEALTH_BAND_NOT_SCORED", "IDENTITY_FIELDS",
-    "IF_COLUMNS", "JS_MAX_SAFE_INT", "LIFECYCLE_BAND_FACTS", "LIFECYCLE_BAND_FACTS_BY_BAND", "LIFECYCLE_BAND_ORDER",
+    "IF_COLUMNS", "JS_MAX_SAFE_INT", "LATER_INPUT_SECTIONS", "LIFECYCLE_BAND_FACTS", "LIFECYCLE_BAND_FACTS_BY_BAND", "LIFECYCLE_BAND_ORDER",
     "LIMITATIONS", "MOVE_GROUP_LABEL", "NOT_ASSESSED_REASONS", "NOT_OBSERVED_SENTINEL", "NRFU_NOT_OBSERVED",
     "OP_STATUSES", "PHASE_CLASSIFICATIONS", "PHYSICAL_TEXT_FIELDS", "POSTURE_STATEMENT_BASIS", "PUNCHLIST_INPUTS",
     "READINESS_CHECK_STATUSES", "READINESS_INPUTS",

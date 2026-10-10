@@ -135,6 +135,10 @@ def hidden_imports() -> List[str]:
         # command whose module PyInstaller only sees inside a function body. README-FIELD teaches
         # that command; a ModuleNotFoundError at a client site is the failure this line prevents.
         "cisco_toolkit.manifest",
+        # W59: the opt-in legacy SSH transport tier is imported only inside the collector's transport
+        # resolver and its consent preflight, for an effective-legacy device, so PyInstaller never sees
+        # it statically. Missing here, a field run with --allow-legacy-ssh would refuse at the preflight.
+        "cisco_toolkit.legacy_ssh",
         # D2: derive lazy renderer imports from the registry that owns the artifact lifecycle.
         *artifact_dependency_modules(),
         *artifact_writer_modules(),

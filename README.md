@@ -241,7 +241,30 @@ Passwords resolve in this order:
    `devices.json` then holds live credentials in cleartext on disk.
 
 Authentication failures are **never** retried (this avoids account lockout);
-transient connection/timeout failures are retried with backoff.
+transient connection/timeout failures are retried with backoff. An SSH
+**negotiation refusal** (the device and the collector share no key-exchange,
+host-key, cipher or MAC algorithm) is never retried either: it is classified
+and recorded. An entry may carry an optional integer `"port"` (default 22).
+
+**What each SSH session negotiated is disclosed.** Every live-attempted device
+gets a session record, `<device folder>/_ssh_session.json`: the key exchange,
+exchange-hash size, Diffie-Hellman group size, host-key signature, ciphers and
+MACs, or the classified refusal. Its closed schema has no field for a hostname,
+address or host-key fingerprint, and what it stores is checked: algorithm names
+only from the disclosure's closed vocabulary (any other name the device offers
+is counted, never stored), the server banner only when it matches a known SSH
+vendor's grammar, plus library versions, enums and small counts. That check is
+what the collection redaction verifiers report as "covered by schema". A live
+run reads only the records it wrote itself (one left by an earlier run reads
+`unknown`, never as current posture), and a `"port"` is validated when
+devices.json is loaded. The record is sealed with the captures and is the only
+source of the snapshot's `ssh_sessions` block, the workbook's **Collection
+Transport** sheet, the per-device disclosure in the runbook, operations
+handbook and executive deck, and the Software Risk `ssh-legacy-transport`
+finding (Medium when SHA-1 was used in the key exchange or host-key signature,
+High below a 2048-bit group), which needs no running-config, so a device whose
+negotiation was refused keeps it. Host keys are not verified. This is
+CI-validated, not field-validated.
 
 ### Secrets at rest — the raw collection directory
 

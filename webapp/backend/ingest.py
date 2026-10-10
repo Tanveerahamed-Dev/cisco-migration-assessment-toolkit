@@ -407,7 +407,14 @@ def _find_collection_root(dest: Path) -> Tuple[Path, List[str]]:
 
     Tolerates a wrapping folder in the ZIP (``my-export/<host>/show_*.txt``) and stray copies nested
     INSIDE a device folder (``core1/backup/show_version.txt`` — the engine's loader ignores those
-    too). Returns ``(root, device_dir_names)``."""
+    too). Returns ``(root, device_dir_names)``.
+
+    W59 PR-1: a folder holding the collector's SSH session record (``_ssh_session.json``) and NO
+    ``show_*.txt`` is a device that was ATTEMPTED but not collected -- typically one whose SSH
+    negotiation was refused. It is a device folder too: dropping it would drop the device's
+    refusal finding with it, and absence must never read as health."""
+    from cisco_toolkit.ssh_session import SIDECAR_FILENAME as _SSH_SESSION_SIDECAR
+
     def fail_walk(exc: OSError) -> None:
         raise IngestError(
             "The collection could not be completely enumerated; no partial folder scan "
@@ -418,14 +425,16 @@ def _find_collection_root(dest: Path) -> Tuple[Path, List[str]]:
     for dirpath, _dirnames, filenames in os.walk(dest, onerror=fail_walk, followlinks=False):
         if any(f.startswith("show_") and f.endswith(".txt") for f in filenames):
             candidates.append(Path(dirpath))
+        elif _SSH_SESSION_SIDECAR in filenames:
+            candidates.append(Path(dirpath))       # attempted, not collected (session record only)
     if not candidates:
         raise IngestError(
             "No device outputs found. Expected the offline-collection layout: one folder per device "
             "containing its show-command outputs (e.g. core1/show_interface_status.txt).")
     if dest in candidates:
         raise IngestError(
-            "show_*.txt files sit at the archive root. Place each device's outputs in its own folder "
-            "named after the device (e.g. core1/show_interface_status.txt).")
+            "show_*.txt files (or an SSH session record) sit at the archive root. Place each device's "
+            "outputs in its own folder named after the device (e.g. core1/show_interface_status.txt).")
     root = min({d.parent for d in candidates}, key=lambda p: len(p.parts))
     device_dirs = sorted({d.name for d in candidates if d.parent == root})
     for d in candidates:
@@ -2030,6 +2039,16 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
                 # scrubbed and NOT scanned. Reporting only the verified count let "verified N"
                 # read as "the folder is clean", which is the same false-health shape as a
                 # dark device disappearing out of an average.
+                # W59 PR-1: SSH session records the verifier's closed-schema check vouches for are named
+                # as COVERED BY SCHEMA (not scrubbed, not scanned as captures, and not NOT COVERED either).
+                schema_covered = staged_scrub_proof.get("schema_covered") or []
+                if schema_covered:
+                    scrub_detail += (
+                        f"; {len(schema_covered)} SSH session record(s) covered by schema (the whole closed "
+                        "ssh_session/1 schema: exact field names, enum values and ranges; algorithm names only "
+                        "from its closed vocabulary; the server banner only in a known vendor's grammar; every "
+                        "other value a short token with no address-, MAC- or serial-shaped text)"
+                    )
                 uncovered = staged_scrub_proof.get("uncovered") or []
                 scrub_uncovered_count = len(uncovered)
                 if uncovered:

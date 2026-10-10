@@ -885,3 +885,57 @@ def test_minified_bundle_carveout_silences_only_the_bare_initials_and_only_in_bu
     # And the path class is exact: a lookalike path outside dist/assets gets the full set.
     assert len(gate._marker_patterns_for("webapp/frontend/src/evil.js", gate_full)) == \
         len(gate_full)
+
+
+def _ssh_consent_carrier_suffixes() -> list[str]:
+    """The leaf suffixes of the engine's on-disk carriers of a run's SSH transport consent block, read from the
+    engine source rather than restated: the string suffix appended to the output base in each of the two path
+    arguments (the marker, then the run manifest it points at) of every ``_write_incomplete_marker(...)`` call."""
+    import ast
+
+    tree = ast.parse((ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8"))
+    suffixes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "_write_incomplete_marker":
+            for arg in node.args[:2]:
+                if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add) \
+                        and isinstance(arg.right, ast.Constant) and isinstance(arg.right.value, str):
+                    suffixes.add(arg.right.value)
+    return sorted(suffixes)
+
+
+def test_both_gates_refuse_the_engine_carriers_of_the_ssh_consent_block(tmp_path):
+    """W59 PR-2 review round 3 (P3). Catches: the run manifest and the `.incomplete.json` marker -- both carry the
+    run's SSH transport consent block, which names devices by their devices.json hostname -- committable to this
+    PUBLIC repository (the repository gate classified neither) or packable into the wheel/sdist (nor did the archive
+    audit), while the Atlas release contract already refused both. Every suffix the engine writes the block under,
+    read from its source, is refused by both gates, whatever the directory and letter case; names that merely
+    resemble one stay clean (negative control)."""
+    from cisco_toolkit.distribution_verify import _privacy_violations
+
+    module = _privacy_module()
+    suffixes = _ssh_consent_carrier_suffixes()
+    assert suffixes == [".incomplete.json", ".run_manifest.json"], suffixes      # non-vacuity: the writer's own
+
+    planted = [f"out/Assessment{s}" for s in suffixes] + [f"deep/runs/Field{s.upper()}" for s in suffixes]
+    lookalikes = ["docs/run-manifest-format.md", "tests/fixtures/incomplete_marker.json",
+                  "src/run_manifest_json.py"]
+    (tmp_path / "planted").mkdir()
+    root = _repo(tmp_path / "planted")
+    for relative in planted:
+        _track(root, relative, "{}\n")
+    violations = module.inspect_tracked_tree(root)
+    for relative in planted:
+        assert any(relative in item and "client-bearing artifact type" in item for item in violations), (
+            relative, violations)
+
+    (tmp_path / "clean").mkdir()
+    clean = _repo(tmp_path / "clean")                    # it already tracks cisco_toolkit/data/registry_manifest.json
+    for relative in lookalikes:
+        _track(clean, relative, "{}\n")
+    assert module.inspect_tracked_tree(clean) == []
+
+    wheel_members = {f"cisco_toolkit/{p.rsplit('/', 1)[1]}" for p in planted}
+    assert _privacy_violations(wheel_members | {"cisco_toolkit/data/registry_manifest.json",
+                                                "cisco_toolkit/run_manifest_json.py"}) == sorted(wheel_members)

@@ -475,6 +475,36 @@ def write_runbook_docx(
             if len(blind) > 40:
                 doc.add_paragraph(f"…and {len(blind) - 40} more — see the 'Collection Completeness' sheet.")
 
+    # W59 PR-1 review (P2-b, design section 6.3): the collection-integrity section names, for every device whose
+    # collection session was not modern, what its session record supports -- worded by the one owner
+    # (ssh_session.disclosure_sentence, grouped by ssh_session.disclosure_groups). A snapshot without the block
+    # (older engine) prints nothing here; a block with no readable rows says so, never "every session modern".
+    _ssh_block = snap_dict.get("ssh_sessions")
+    if isinstance(_ssh_block, dict):
+        from cisco_toolkit.ssh_session import STATUS_MODERN as _SSH_MODERN, disclosure_groups as _ssh_groups
+        doc.add_heading("2.2 Collection transport (SSH session disclosure)", level=2)
+        _ssh_rows = [r for r in _as_list(_ssh_block.get("rows")) if isinstance(r, dict)]
+        _ssh_grouped = _ssh_groups(_ssh_block)
+        _n_modern = sum(1 for r in _ssh_rows if r.get("status") == _SSH_MODERN)
+        if _ssh_grouped:
+            doc.add_paragraph(
+                f"{sum(len(g['hosts']) for g in _ssh_grouped)} of {len(_ssh_rows)} device(s) were not collected "
+                f"over a modern SSH session ({_n_modern} modern). Each line is the disclosure the device's sealed "
+                "session record supports, exposed findings first; host keys are not verified on any path, and "
+                "'not recorded' is a blind spot, never a modern session.")
+            table(["Finding", "Disclosure", "Devices"],
+                  [[g["finding"] + (f" ({g['severity']})" if g["severity"] else ""), g["label"],
+                    f"{len(g['hosts'])}: " + _join_cap(g["hosts"], 40, ", ")] for g in _ssh_grouped],
+                  widths=[1.2, 3.9, 2.3])
+            doc.add_paragraph("Every device, with the negotiated algorithms, is in the workbook's "
+                              "'Collection Transport' sheet.")
+        elif _ssh_rows and _n_modern == len(_ssh_rows):
+            doc.add_paragraph(f"All {len(_ssh_rows)} device session record(s) negotiated SHA-256 or better "
+                              "(modern); host keys are not verified on any path.")
+        else:
+            doc.add_paragraph("The SSH session disclosure carries no readable device row (the phase produced none "
+                              "or failed) — this is not a statement that any collection session was modern.")
+
     # ===== 3. Scenario Classification =====
     doc.add_heading("3. Scenario Classification", level=1)
     doc.add_paragraph(
@@ -2057,7 +2087,12 @@ def write_runbook_docx(
             "cautious software-train lifecycle classification. This is screening, NOT a "
             "vulnerability scan — validate every running release with the Cisco PSIRT Software "
             "Checker before drawing release-level conclusions.")
-        _sr_find = _R(sr.get("findings"))
+        # W59 PR-1 review (P3-h): the session-evidenced ssh-legacy-transport findings share software_risk.findings with
+        # the configuration surfaces but are the collector's own negotiated SSH sessions: counted and listed apart,
+        # with no PSIRT step (owner: ssh_session.partition_software_findings). Without one this reads as before W59.
+        from cisco_toolkit.ssh_session import (SURFACE_COUNT_NOUN as _SSH_NOUN, SURFACE_NO_PSIRT as _SSH_NO_PSIRT,
+                                               partition_software_findings as _sr_partition)
+        _sr_find, _sr_ssh = _sr_partition(_R(sr.get("findings")))
         rrows = []
         for f in _sr_find[:15]:
             adv = "; ".join(f"{a.get('cve')}" for a in _as_list(f.get("advisories"))) or "—"
@@ -2072,6 +2107,11 @@ def write_runbook_docx(
             doc.add_paragraph("No exposed advisory surfaces on the config-assessable devices."
                               if rsum.get("n_config_assessable") else
                               "No full running-config captures — surface screening not assessable.")
+        if _sr_ssh:
+            doc.add_paragraph(
+                f"Separately, {len(_sr_ssh)} {_SSH_NOUN}: "
+                + _join_cap(sorted({str(f.get('host')) for f in _sr_ssh if f.get('host')}), 40, ", ")
+                + f". {_SSH_NO_PSIRT} Each device's disclosure is in §2.2 (Collection transport).")
         tb = _as_dict(rsum.get("train_bands"))
         worst = [b for b in ("Replace/Upgrade", "Verify EoL") if tb.get(b)]
         if worst:

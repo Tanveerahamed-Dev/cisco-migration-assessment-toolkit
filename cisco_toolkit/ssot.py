@@ -495,6 +495,7 @@ PHASE_SECTIONS: Dict[str, Tuple[str, ...]] = {
     "Score Sensitivity": ("score_sensitivity",),
     "Segmentation audit": ("segmentation",),
     "Service map": ("service_map",),
+    "SSH session disclosure": ("ssh_sessions",),
     "Software risk screening": ("software_risk",),
     "State assertion pack": ("state_assertions",),
     "Subnet intelligence": ("subnet_intelligence",),
@@ -607,7 +608,8 @@ def failed_sections(snap: Any) -> Tuple[FrozenSet[str], bool]:
 # complete for every CANONICAL_FACTS path under `executive_brief` by
 # tests/test_ssot_failed_phase_abstention.py, which also cross-checks each `== len(<section>)` basis
 # hint in CANONICAL_FACTS. Facts outside `executive_brief` (lifecycle_risk.summary.*,
-# design_blueprint.summary.*) are derived inside their own section, whose failure is already `direct`.
+# design_blueprint.summary.*) are derived inside their own section, whose failure is already `direct`; a
+# section that PROJECTS another phase's section (software_risk from ssh_sessions, W59) registers that basis here.
 DERIVED_FACT_BASIS: Dict[str, Tuple[str, ...]] = {
     "executive_brief.posture": ("health_scores",),
     "executive_brief.scale.n_devices": ("health_scores",),
@@ -616,6 +618,10 @@ DERIVED_FACT_BASIS: Dict[str, Tuple[str, ...]] = {
     "executive_brief.scale.n_domains": ("application_intelligence",),
     # vlan_inventory(interfaces, l3_forwarding, service_map): the two computed inputs can fail
     "executive_brief.scale.n_vlans": ("l3_forwarding", "service_map"),
+    # W59 PR-1 review (P3-d): software_risk's ssh-legacy-transport surface is PROJECTED from ssh_sessions (its one
+    # owner, cisco_toolkit.ssh_session). With the 'SSH session disclosure' phase failed, every surface status and
+    # count software_risk publishes is computed over that phase's fallback, so the section is withheld with it.
+    "software_risk": ("ssh_sessions",),
 }
 
 

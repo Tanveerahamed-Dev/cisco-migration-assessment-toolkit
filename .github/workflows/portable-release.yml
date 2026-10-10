@@ -213,6 +213,20 @@ jobs:
         shell: pwsh
         run: |
           python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix atlas-scope/node_modules --allow-untracked-prefix atlas-scope/dist-hub --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
+      # W59 T14 (design section 8): the FROZEN bundle, on its locked paramiko, run live on the DEFAULT profile with
+      # no opt-in against a loopback SHA-1-only SSH fixture, must record and disclose `legacy_sha1` "without
+      # opt-in". The fixture peer (asyncssh, test-only) runs from its own hash-pinned venv in RUNNER_TEMP; the
+      # bundle is copied to a fresh field layout first, so portable/dist never gains runtime data. W59 PR-3 flips
+      # --expect to refused-once (the negative control) when the lock moves to paramiko 5.
+      - name: W59 frozen SSH disclosure smoke (T14)
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\ssh-fixture-venv"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\ssh-fixture-venv\Scripts\python.exe" -m pip install --require-hashes --only-binary=:all: --no-deps -r tools/requirements-ssh-fixture-test.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -I -B tools/ssh_frozen_disclosure_smoke.py --atlas-dist portable/dist/Atlas --fixture-python "$env:RUNNER_TEMP\ssh-fixture-venv\Scripts\python.exe" --work "$env:RUNNER_TEMP\w59-t14" --expect sha1-without-opt-in
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload exact portable candidate evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

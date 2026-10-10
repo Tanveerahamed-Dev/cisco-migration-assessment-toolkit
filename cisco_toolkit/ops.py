@@ -171,8 +171,19 @@ def _known_issues(ev: dict) -> tuple:
     # -- software_risk: open advisory / PSIRT surface --
     sr_sum = _as_dict(ev["sr"].get("summary"))
     if sr_sum.get("n_devices"):
-        srf = [f for f in _as_list(ev["sr"].get("findings")) if isinstance(f, dict)]
-        n_find = sr_sum.get("n_findings", 0)
+        # W59 PR-1 review (P3-h): the session-evidenced ssh-legacy-transport findings are the collector's own negotiated
+        # SSH sessions, not advisory surfaces -- their own known issue, with no PSIRT step (owner:
+        # ssh_session.partition_software_findings). Without one the configuration issue reads exactly as before W59.
+        from cisco_toolkit.ssh_session import (SURFACE_COUNT_NOUN as _SSH_NOUN, SURFACE_NO_PSIRT as _SSH_NO_PSIRT,
+                                               partition_software_findings as _sr_partition)
+        srf, _ssh_f = _sr_partition(_as_list(ev["sr"].get("findings")))
+        n_find = sr_sum.get("n_findings", 0) if not _ssh_f else len(srf)
+        if _ssh_f:
+            issues.append((
+                "Software Risk (SSH transport)",
+                f"{len(_ssh_f)} {_SSH_NOUN}.",
+                _hosts_from(_ssh_f),
+                _SSH_NO_PSIRT + " The per-device disclosure is §5.1."))
         if srf:
             surfaces = "; ".join(sorted({str(f.get("label") or f.get("kind") or "?") for f in srf}))
             issues.append((
@@ -181,7 +192,7 @@ def _known_issues(ev: dict) -> tuple:
                 _hosts_from(srf),
                 "Each is a standing exposure until closed — validate every running release against the "
                 "Cisco PSIRT Software Checker (§5) and remediate the surface."))
-        else:
+        elif not _ssh_f:
             issues.append((
                 "Software Risk", f"{n_find} exposed advisory surface(s) flagged; see the Software Risk sheet.",
                 "(see sheet)", "Screen every release against the Cisco PSIRT Software Checker on the §8 cadence."))
@@ -583,12 +594,17 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     sr_sum = _as_dict(ev["sr"].get("summary"))
     if sr_sum.get("n_devices"):
         tb = _as_dict(sr_sum.get("train_bands"))
+        # W59 PR-1 review (P3-h): the session-evidenced ssh-legacy-transport findings are counted apart (no PSIRT step).
+        from cisco_toolkit.ssh_session import (SURFACE_COUNT_NOUN as _SSH_NOUN5, SURFACE_NO_PSIRT as _SSH_NO_PSIRT5,
+                                               partition_software_findings as _sr_partition5)
+        _cfg5, _ssh5 = _sr_partition5(_as_list(ev["sr"].get("findings")))
         doc.add_paragraph(
             f"Software trains at assessment: {', '.join(f'{v}× {k}' for k, v in tb.items())}. "
-            f"{sr_sum.get('n_findings', 0)} exposed advisory surface(s) were open (Software Risk "
-            "sheet). Governance: validate every running release with the Cisco PSIRT Software "
+            f"{sr_sum.get('n_findings', 0) if not _ssh5 else len(_cfg5)} exposed advisory surface(s) were open "
+            "(Software Risk sheet). Governance: validate every running release with the Cisco PSIRT Software "
             "Checker on the §8 cadence, close the exposed surfaces, and plan upgrades for every "
-            "Replace/Upgrade and Verify-EoL train against Cisco's published notices.")
+            "Replace/Upgrade and Verify-EoL train against Cisco's published notices."
+            + (f" Separately, {len(_ssh5)} {_SSH_NOUN5}. {_SSH_NO_PSIRT5}" if _ssh5 else ""))
         _worst_all = [d for d in _as_list(ev["sr"].get("per_device"))
                       if isinstance(d, dict)
                       and d.get("train_band") in ("Replace/Upgrade", "Verify EoL")]
@@ -608,6 +624,32 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
         doc.add_paragraph(
             "Hardware lifecycle: the Lifecycle Risk sheet carries the per-device EoX bands — "
             "review quarterly and feed Past-EoS / Near-LDoS devices into budget planning.")
+    # W59 PR-1 review (P2-b, design section 6.3): the management plane every operator and migration tool will use.
+    # Each device whose collection session was not modern carries the disclosure its sealed session record supports,
+    # worded by the one owner (ssh_session.disclosure_groups / disclosure_sentence). Silent on an older snapshot.
+    _ssh_block = snap.get("ssh_sessions")
+    if isinstance(_ssh_block, dict):
+        from cisco_toolkit.ssh_session import STATUS_MODERN as _SSH_MODERN, disclosure_groups as _ssh_groups
+        _ssh_grouped = _ssh_groups(_ssh_block)
+        _ssh_rows = [r for r in _as_list(_ssh_block.get("rows")) if isinstance(r, dict)]
+        doc.add_heading("5.1 Management-plane SSH transport (collection sessions)", level=2)
+        if _ssh_grouped:
+            doc.add_paragraph(
+                "What the assessment's own SSH sessions negotiated, for every device whose session was not modern "
+                "(exposed findings first). Operations owns closing the exposed ones on the device's SSH server; "
+                "'not recorded' is a blind spot to re-collect, never a modern session; host keys are not verified.")
+            _ssh_cap = 30
+            table(["Finding", "Disclosure", "Devices"],
+                  [[g["finding"] + (f" ({g['severity']})" if g["severity"] else ""), g["label"],
+                    f"{len(g['hosts'])}: " + ", ".join(g["hosts"][:_ssh_cap])
+                    + (f" (+{len(g['hosts']) - _ssh_cap} more)" if len(g["hosts"]) > _ssh_cap else "")]
+                   for g in _ssh_grouped], widths=[1.2, 3.6, 1.9])
+        elif _ssh_rows and all(r.get("status") == _SSH_MODERN for r in _ssh_rows):
+            doc.add_paragraph(f"All {len(_ssh_rows)} recorded collection session(s) negotiated SHA-256 or better; "
+                              "host keys are not verified on any path (Collection Transport sheet).")
+        else:
+            absent("the SSH session disclosure rows", "the phase produced none or failed; re-run the assessment "
+                   "— this is not a statement that any session was modern.")
 
     # ===== 6. Backup & recovery =====
     # Config-backup strategy + cadence, the restore procedure, and — load-bearing — the restore-TEST

@@ -285,7 +285,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 # 'from openpyxl.cell.cell import MergedCell' dropped (step 26): its only user,
 # append_interface_rows, moved to cisco_toolkit.excel.
@@ -462,6 +462,7 @@ from cisco_toolkit.excel import (
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
+    write_collection_transport_sheet,                            # W59 PR-1 (per-device SSH session disclosure)
     write_platform_health_sheet,                                 # NEW-V3.23.167 (control-plane CPU/memory capacity screening)
     write_device_risk_sheet,                                     # NEW-V3.23.172 (per-asset compound-risk register)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
@@ -483,6 +484,10 @@ from cisco_toolkit.external_import import (normalize_rows, read_inventory_csv,
 # the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
 from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
                                              load_capture_meta, CAPTURE_META_FILENAME)
+# W59 PR-1: the network-free SSH session disclosure owner (profiles, algorithm vocabulary, consent, records).
+# Eager by design. The W59 PR-2 legacy transport tier (cisco_toolkit.legacy_ssh) is NOT imported here: only
+# `_transport_for_profile` and the consent preflight import it, lazily, for an effective-legacy device.
+from cisco_toolkit import ssh_session
 from cisco_toolkit.traffic_assurance import (
     TRAFFIC_ASSURANCE_OWNER, TRAFFIC_ASSURANCE_SET_SCHEMA,
     TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, assess_flows, build_traffic_evidence_custody,
@@ -550,8 +555,14 @@ from cisco_toolkit.ops import write_ops_handbook_docx                # NEW-V3.23
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# W59 PR-1: the collector builds every SSH connection through ONE factory (`_open_connection`, below), so
+# it imports netmiko's class map rather than `ConnectHandler`. Deliberately NO `ConnectHandler` name in
+# this module: a test that still patches `C.ConnectHandler` then fails loudly (monkeypatch raises on a
+# missing attribute) instead of silently letting a real connection through.
 try:
-    from netmiko import ConnectHandler
+    import netmiko as _netmiko
+    import paramiko as _paramiko
+    from netmiko.ssh_dispatcher import CLASS_MAPPER as _NETMIKO_CLASS_MAPPER
 except ImportError:
     print("ERROR: netmiko not installed. Run: python3 -m pip install netmiko paramiko")
     sys.exit(1)
@@ -1089,12 +1100,17 @@ def _close_detect_session(guesser) -> None:
         logger.debug(f"autodetect session close failed (ignored): {e}")
 
 
-def autodetect_platform(ip: str, username: str, password: str) -> str:
+def autodetect_platform(ip: str, username: str, password: str, port: Optional[int] = None) -> str:
+    """The `platform: auto` probe. `port` is the device row's optional devices.json ``port`` (W59 PR-1 review): the
+    probe sends the same credentials as the observed session that follows, so it must reach the SAME port -- never
+    netmiko's default 22 when the row names another one. ``None`` keeps netmiko's default."""
     if SSHDetect is None: return "ios"
     guesser = None
+    probe = dict(device_type="autodetect", host=ip, username=username, password=password)
+    if port is not None:
+        probe["port"] = port
     try:
-        guesser = SSHDetect(device_type="autodetect", host=ip,
-                            username=username, password=password)
+        guesser = SSHDetect(**probe)
         best = (guesser.autodetect() or "").strip().lower()
         if "nxos" in best: return "nxos"
         return "ios"
@@ -1154,22 +1170,220 @@ def _is_auth_error(exc) -> bool:
     m = str(exc).lower()  # fallback if the class isn't importable
     return "authentication" in m or "auth failed" in m or "bad password" in m
 
-def connect_device(ip, hostname, username, password, platform):
+
+# -----------------------------------------------------------------------------
+# W59 PR-1: ONE connection factory, an observed transport on the default path.
+#
+# paramiko frees the key-exchange engine at NEWKEYS, before `connect()` returns, so what a session actually
+# negotiated can only be recorded from INSIDE the transport (cisco_toolkit/ssh_session.py, design §4.3).
+# netmiko 4.7/4.8 build their client through `_build_ssh_client()` -> `_get_ssh_client_instance()`, and
+# paramiko's `SSHClient.connect` takes a `transport_factory` (since 2.12); neither the IOS nor the NX-OS
+# driver overrides the hook. So the collector:
+#   * composes `ObservedTransport` = (ObservingTransportMixin, paramiko.Transport) -- no algorithm table,
+#     the negotiation is byte-for-byte stock paramiko;
+#   * subclasses the netmiko driver per (device_type, transport class) to return an `_ObservedSSHClient`;
+#   * hands the per-connection recorder to that hook through a THREAD-LOCAL set only for the duration of the
+#     driver constructor (netmiko's `__init__` takes no extra kwargs), and the client's transport factory
+#     binds the attempt's sink to the transport INSTANCE -- the key exchange runs in paramiko's own thread,
+#     which never reads the thread-local, so a ThreadPoolExecutor run cannot mix two devices' observations.
+# `_open_connection` is the ONLY constructor of a device session in this module, with ONE named exception: the
+# platform auto-detection probe (`autodetect_platform`), whose netmiko SSHDetect opens its own connection on
+# construction, outside the observed path by design (§4.2), and is reached only for a default-profile row with no
+# explicit platform (a non-default profile with an auto platform is refused at load time and again in
+# `connect_device`). Both rules are structurally tested; the live-safety tests patch `_open_connection`.
+#
+# W59 PR-2 adds the legacy branch and nothing else: `_transport_for_profile` resolves a NON-default effective
+# profile to the frozen transport class of `cisco_toolkit.legacy_ssh`, imported HERE, lazily, so a run with no
+# effective-legacy device never loads it (design §4.1 rule 3). It reaches netmiko through the same driver hook and
+# the same observer as the default path. A profile the tier cannot honour raises SshProfileRefused before any
+# socket opens. There is no fallback between profiles, ever.
+# -----------------------------------------------------------------------------
+ObservedTransport = type("ObservedTransport", (ssh_session.ObservingTransportMixin, _paramiko.Transport), {})
+
+_SESSION_HANDOFF = threading.local()
+
+
+class _ObservedSSHClient(_paramiko.SSHClient):
+    """A paramiko client whose ``connect()`` forces the observing transport for THIS connection and writes the
+    established-session record after authentication and BEFORE returning -- i.e. before netmiko opens the
+    shell, runs its session preparation, or the collector sends `TERMINAL_SETUP_CMDS`."""
+
+    def __init__(self, recorder, transport_cls):
+        super().__init__()
+        self._ssh_recorder = recorder
+        self._ssh_transport_cls = transport_cls
+
+    def connect(self, *args, **kwargs):
+        recorder, transport_cls = self._ssh_recorder, self._ssh_transport_cls
+        observation = recorder.observation
+
+        def _transport_factory(sock, **factory_kwargs):
+            # paramiko 4.0.0 passes the GSSAPI arguments, 5.0.0 does not: forward whatever arrives.
+            transport = transport_cls(sock, **factory_kwargs)
+            ssh_session.bind_observation(transport, observation)
+            return transport
+
+        kwargs["transport_factory"] = _transport_factory
+        result = super().connect(*args, **kwargs)
+        try:
+            recorder.complete_established()
+        except ssh_session.SessionRecordError:
+            try:
+                self.close()
+            except Exception as e:                                      # noqa: BLE001
+                logger.debug(f"closing the unrecorded SSH session failed (ignored): {e}")
+            raise
+        return result
+
+
+class _ObservedClientMixin:
+    """Mixed in FRONT of the netmiko driver class: its only change is which paramiko client is built."""
+
+    def _get_ssh_client_instance(self):
+        handoff = getattr(_SESSION_HANDOFF, "value", None)
+        if handoff is None:
+            raise RuntimeError("observed netmiko driver constructed outside _open_connection(); refusing to "
+                               "open an unrecorded SSH session")
+        recorder, transport_cls = handoff
+        return _ObservedSSHClient(recorder, transport_cls)
+
+
+_OBSERVED_DRIVERS: Dict[Tuple[str, type], type] = {}
+_OBSERVED_DRIVERS_LOCK = threading.Lock()
+
+
+def _observed_driver_for(platform: str, transport_cls: type) -> type:
+    """The netmiko driver class for `platform`, with the observed client hook mixed in. Cached per
+    (device_type, transport class)."""
+    device_type = NETMIKO_TYPE.get(platform, "cisco_ios")
+    key = (device_type, transport_cls)
+    with _OBSERVED_DRIVERS_LOCK:
+        cls = _OBSERVED_DRIVERS.get(key)
+        if cls is None:
+            base = _NETMIKO_CLASS_MAPPER[device_type]
+            cls = type("Observed" + base.__name__, (_ObservedClientMixin, base), {})
+            _OBSERVED_DRIVERS[key] = cls
+        return cls
+
+
+class SshProfileRefused(RuntimeError):
+    """W59 PR-2: a device's effective SSH profile cannot be honoured here (the legacy tier failed to import, the stock
+    paramiko already permits SHA-1, an unknown profile, or a non-default profile on an auto-detected platform).
+    Deterministic and raised before any socket is opened, so `connect_device` records it once and never retries it."""
+
+
+def _transport_for_profile(profile: str) -> type:
+    """The transport class for one device's EFFECTIVE profile: `ObservedTransport` for the default profile; for a
+    non-default one, the frozen class of the W59 PR-2 legacy tier, imported HERE, lazily (a run with no
+    effective-legacy device never loads `cisco_toolkit.legacy_ssh`). Anything the tier refuses is SshProfileRefused,
+    never a fallback to another profile."""
+    if profile == ssh_session.DEFAULT_PROFILE:
+        return ObservedTransport
+    try:
+        from cisco_toolkit import legacy_ssh
+        return legacy_ssh.transport_for(profile)
+    except Exception as exc:                                            # noqa: BLE001 - one refusal type
+        raise SshProfileRefused(
+            f"SSH profile {profile!r} cannot be used in this environment: {type(exc).__name__}: {exc}") from exc
+
+
+def _open_connection(kwargs: dict, platform: str, profile: str, recorder) -> Any:
+    """THE connection factory: the only place this module constructs a netmiko connection."""
+    transport_cls = _transport_for_profile(profile)
+    driver = _observed_driver_for(platform, transport_cls)
+    _SESSION_HANDOFF.value = (recorder, transport_cls)
+    try:
+        return driver(**kwargs)
+    finally:
+        _SESSION_HANDOFF.value = None
+
+
+def _transport_class_name(profile: str) -> Optional[str]:
+    """The name of the transport class `profile`'s sessions use, for the session record's `library` block; None when
+    the profile cannot be honoured here (its connection then refuses with SshProfileRefused, before any socket)."""
+    try:
+        return _transport_for_profile(profile).__name__
+    except SshProfileRefused:
+        return None
+
+
+_SSH_LIBRARY_BLOCK: Optional[dict] = None
+
+
+def _ssh_library_block(profile: Optional[str] = None) -> dict:
+    """The `library` block of every session record: versions, transport class and the stock-table SHA-1 probe
+    (recorded only in PR-1; the post-re-lock refusal is W59 PR-3). W59 PR-2: for a NON-default effective `profile` the
+    transport class is the legacy tier's own (None when the tier cannot be built here)."""
+    global _SSH_LIBRARY_BLOCK
+    if _SSH_LIBRARY_BLOCK is None:
+        _SSH_LIBRARY_BLOCK = ssh_session.library_block(
+            paramiko_version=getattr(_paramiko, "__version__", None),
+            netmiko_version=getattr(_netmiko, "__version__", None),
+            transport_class=ObservedTransport.__name__,
+            default_permits_sha1=ssh_session.permits_sha1(_paramiko.Transport,
+                                                          getattr(_paramiko, "RSAKey", None)))
+    block = dict(_SSH_LIBRARY_BLOCK)
+    if profile is not None and profile != ssh_session.DEFAULT_PROFILE:
+        block["transport_class"] = ssh_session.conforming_identifier(_transport_class_name(profile))
+    return block
+
+
+def _session_recorder_for(devinfo: dict, dev_dir: Optional[str]):
+    """A per-device recorder: its sidecar under `dev_dir` (None = in memory only).
+
+    W59 PR-2: its consent is the one this run resolved for the row BEFORE the first connection
+    (``devinfo["ssh_consent"]``, computed by the owner ``ssh_session.consent_for`` in :func:`_resolve_ssh_consent`).
+    A row the run never resolved reads as the default profile, never as a standing legacy grant."""
+    path = os.path.join(dev_dir, ssh_session.SIDECAR_FILENAME) if dev_dir else None
+    consent = devinfo.get("ssh_consent")
+    if not isinstance(consent, dict):
+        consent = ssh_session.consent_for(devinfo, None)
+    return ssh_session.SessionRecorder(
+        path, consent=consent, library=_ssh_library_block(consent.get("effective_profile")),
+        platform_source="autodetect" if devinfo.get("platform") in ("auto", "") else "device_row")
+
+
+def connect_device(ip, hostname, username, password, platform, session=None, port=None):
+    """Open one device's SSH session through `_open_connection`, recording what it negotiated.
+
+    `session` is the device's `ssh_session.SessionRecorder` (collect_one passes one whose sidecar was written
+    `pending` BEFORE this call); None records in memory only. A NEGOTIATION REFUSAL is classified from the
+    observed server lists and is never retried (design §4.4); an authentication failure is never retried; any
+    other failure keeps the existing same-profile retry.
+
+    W59 PR-2: the recorder's EFFECTIVE profile selects the transport. A non-default profile needs an explicit
+    platform (netmiko's SSHDetect cannot take the legacy transport), and a profile the tier cannot honour
+    (SshProfileRefused) gets one attempt: both are recorded as ``connect_failed`` and never retried."""
+    recorder = session or ssh_session.SessionRecorder(
+        None, consent=ssh_session.consent_for({"hostname": hostname, "ip": ip}, None),
+        library=_ssh_library_block())
+    profile = recorder.effective_profile
+    if profile != ssh_session.DEFAULT_PROFILE and platform in ("auto", ""):
+        # load_devices refuses this shape for a live run; this is the same rule at the last seam.
+        refused = SshProfileRefused(
+            f"SSH profile {profile!r} requires an explicit platform (ios or nxos); netmiko's platform "
+            f"auto-detection opens its own connection and cannot take the legacy transport")
+        recorder.finish_failure("connect_failed", refused)
+        logger.error(f"[FAIL] {hostname}: {refused} (not retrying)")
+        return None, platform
     resolved = platform
     if platform in ("auto", ""):                       # CHANGED-V3.23.1: detect once,
-        resolved = autodetect_platform(ip, username, password)  # not per retry
+        resolved = autodetect_platform(ip, username, password, port=port)  # not per retry; the row's own port
+        recorder.platform_source = "autodetect"        # the autodetect probe itself is not observed (§4.2)
     attempts = max(1, CONNECT_MAX_ATTEMPTS)
     last_err = None
     for attempt in range(1, attempts + 1):
+        observation = recorder.begin_attempt()
         try:
             logger.info(f"Connecting to {hostname} ({ip}) [{resolved}] "
                         f"(attempt {attempt}/{attempts}) ...")
-            dev = ConnectHandler(
-                device_type=NETMIKO_TYPE.get(resolved, "cisco_ios"),
-                host=ip, username=username, password=password,
-                timeout=120, conn_timeout=30, auth_timeout=30,
-                global_delay_factor=3, fast_cli=False,
-            )
+            conn_kwargs = dict(device_type=NETMIKO_TYPE.get(resolved, "cisco_ios"),
+                               host=ip, username=username, password=password,
+                               timeout=120, conn_timeout=30, auth_timeout=30,
+                               global_delay_factor=3, fast_cli=False)
+            if port is not None:
+                conn_kwargs["port"] = port      # W59 PR-1: optional devices.json `port` (default 22)
+            dev = _open_connection(conn_kwargs, resolved, profile, recorder)
             # Session setup. A FAILURE here is not cosmetic (review 2026-07-28 #11): it was swallowed
             # by a bare `except Exception: pass` with no log and no record, yet it changes what every
             # later capture MEANS. Under a TACACS+ command-authorization policy that denies `terminal *`
@@ -1201,18 +1415,184 @@ def connect_device(ip, hostname, username, password, platform):
                                f"{hostname} connection ({e}); the sidecar will not carry it")
             logger.info(f"[OK] Connected to {hostname}")
             return dev, resolved
+        except ssh_session.SessionRecordError as e:
+            # The session authenticated but its record could not be written: the client already closed the
+            # transport, no command was sent, and the sealed sidecar stays `pending` (design §6.1 step 2).
+            # Never retried -- a second session would cross the same unrecorded path.
+            logger.error(f"[FAIL] {hostname}: {e}; session closed before any command, not retrying")
+            return None, resolved
+        except SshProfileRefused as e:
+            # W59 PR-2: deterministic and raised before any socket opened. One attempt, recorded, never retried
+            # and never retried on another profile.
+            recorder.finish_failure("connect_failed", e)
+            logger.error(f"[FAIL] {hostname}: {e} (not retrying)")
+            return None, resolved
         except Exception as e:
             last_err = e
             if _is_auth_error(e):                       # don't retry bad credentials
+                recorder.finish_failure("auth_failed", e)
                 logger.error(f"[FAIL] Authentication failed to {hostname}: {e} (not retrying)")
+                return None, resolved
+            refusal = ssh_session.classify_failure(e, observation)
+            if refusal is not None:
+                # W59: a deterministic negotiation refusal. Retrying cannot change the answer (the profile never
+                # changes between attempts), and it is never retried over a weaker profile either.
+                recorder.finish_failure("negotiation_refused", e, refusal)
+                logger.error(f"[REFUSED] {hostname}: SSH negotiation refused ({refusal['classification']}): "
+                             f"{ssh_session.refusal_message(refusal, recorder.consent, observation.snapshot())} "
+                             "(not retrying)")
                 return None, resolved
             if attempt < attempts:
                 wait = CONNECT_BACKOFF_BASE * attempt
                 logger.warning(f"[RETRY] Connect to {hostname} failed "
                                f"(attempt {attempt}/{attempts}): {e}; retrying in {wait:.0f}s ...")
                 time.sleep(wait)
+    recorder.finish_failure("connect_failed", last_err)
     logger.error(f"[FAIL] Connection failed to {hostname} after {attempts} attempt(s): {last_err}")
     return None, resolved
+
+def _ssh_port(devinfo: dict) -> Optional[int]:
+    """W59 PR-1: an optional devices.json ``port`` (an integer 1-65535); absent means netmiko's default (22).
+    A present but invalid value is refused loudly rather than silently replaced by 22."""
+    if devinfo.get("port") in (None, ""):
+        return None
+    value = devinfo.get("port")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        raise ValueError(f"devices.json entry {devinfo.get('hostname')!r}: 'port' must be an integer 1-65535")
+    return value
+
+
+#: W59 PR-1 review (P2-a): how one devices.json host's session record stands after this run's pre-connect step.
+#: Only WRITTEN lets the analysis read the folder's sidecar as THIS run's record (``ssh_session.compute_ssh_sessions``
+#: ``run_written``); every other present sidecar reads ``unknown`` ("record not written by this run"), never the
+#: posture an earlier run left behind. A second devices.json row claiming the same folder makes the host's record
+#: ambiguous (CONFLICT) even when the first row wrote it.
+RUN_RECORD_WRITTEN = "written"
+RUN_RECORD_FAILED = "failed"
+RUN_RECORD_CONFLICT = "conflict"
+
+
+#: The attribute a failed stale-record removal's exception carries: how many ``os.unlink`` attempts were made.
+UNLINK_ATTEMPTS_ATTRIBUTE = "ssh_record_unlink_attempts"
+
+
+def _attempt_count(exc: BaseException, attribute: str) -> int:
+    """The attempt count a failed record operation's exception carries (0 when it carries none or a non-count)."""
+    n = getattr(exc, attribute, 0)
+    return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else 0
+
+
+def _unlink_stale_session_record(path: str, *, unlink: Optional[Callable[[str], None]] = None,
+                                 sleep: Optional[Callable[[float], None]] = None) -> int:
+    """Remove the session record an earlier run left at `path` before this run writes its own (a missing file is
+    fine). Raises when an existing record cannot be removed: the device is then NOT connected, so a stale record can
+    never stand beside a session this run opened (P2-a).
+
+    W59 PR-1 review: on Windows an on-access scanner or the indexer holds exactly this file for a moment, so one
+    attempt turned a transient sharing violation into a device left uncollected for the whole run. The removal is
+    retried over the same bounded backoff as the atomic replace (``ssh_session.REPLACE_BACKOFF_S``: seven attempts,
+    3.15 s in all). Returns the attempt count (0: nothing to remove); a final failure carries it on the exception as
+    :data:`UNLINK_ATTEMPTS_ATTRIBUTE`, so the manifest's record failure discloses it. ``unlink`` / ``sleep`` default to
+    ``os.unlink`` / ``time.sleep`` (injectable for tests)."""
+    unlink = unlink or os.unlink
+    sleep = sleep or time.sleep
+    attempts = 0
+    for delay in ssh_session.REPLACE_BACKOFF_S + (None,):
+        if not os.path.lexists(path):
+            return attempts
+        attempts += 1
+        try:
+            unlink(path)
+            return attempts
+        except FileNotFoundError:
+            return attempts                      # gone between the check and the unlink: nothing stale remains
+        except OSError as exc:
+            if delay is None:
+                try:
+                    setattr(exc, UNLINK_ATTEMPTS_ATTRIBUTE, attempts)
+                except Exception:                                       # noqa: BLE001 - an exception without __dict__
+                    pass
+                raise
+            sleep(delay)
+    return attempts
+
+
+def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any,
+                         on_record_failure: Callable[..., None],
+                         written: Optional[Dict[str, str]] = None) -> Tuple[str, Optional[Dict[str, str]]]:
+    """ONE device's live collection: session record, connection, command sweep, disconnect.
+
+    W59 PR-1 (design section 6.1): the session record is written `pending` BEFORE connecting, and if it cannot
+    be written the device is NOT connected. Two devices.json rows that resolve to the same folder cannot both
+    claim it (the second is refused, never silently overwritten). A record an earlier run left in the folder is
+    removed first, and a removal that fails leaves the device unconnected (P2-a). `written` (host -> one of
+    RUN_RECORD_*) is where the run learns which sidecars it wrote itself. Returns ``(platform, cmd_to_file)`` with
+    ``cmd_to_file=None`` when the device was not collected. `on_record_failure(host, stage, error_class,
+    replace_attempts[, unlink_attempts])` lands a record-write failure, with the writer's atomic-replace attempt
+    count, in the run manifest's consent block; a stale record that could not be removed
+    (``ssh_session.RECORD_STAGE_STALE_UNLINK``) adds the removal's own attempt count as the fifth argument."""
+    hostname = devinfo["hostname"]
+    platform = devinfo["platform"]
+    recorder = _session_recorder_for(devinfo, dev_dir)
+    sidecar_key = os.path.normcase(os.path.abspath(recorder.path))
+
+    def _mark(state: str) -> None:
+        if written is None:
+            return
+        with lock:
+            if written.get(hostname) != RUN_RECORD_CONFLICT:
+                written[hostname] = state
+
+    with lock:
+        duplicate = sidecar_key in claimed
+        claimed.add(sidecar_key)
+        if duplicate and written is not None:
+            written[hostname] = RUN_RECORD_CONFLICT
+    stage = ssh_session.RECORD_STAGE_PENDING
+    try:
+        if duplicate:
+            raise FileExistsError("another device in this run already claimed this session record")
+        port = _ssh_port(devinfo)
+        os.makedirs(dev_dir, exist_ok=True)
+        stage = ssh_session.RECORD_STAGE_STALE_UNLINK
+        _unlink_stale_session_record(recorder.path)
+        stage = ssh_session.RECORD_STAGE_PENDING
+        recorder.write_pending()
+    except Exception as e:                                              # noqa: BLE001
+        _mark(RUN_RECORD_FAILED)
+
+        if stage == ssh_session.RECORD_STAGE_STALE_UNLINK:
+            on_record_failure(hostname, stage, type(e).__name__, 0, _attempt_count(e, UNLINK_ATTEMPTS_ATTRIBUTE))
+        else:
+            on_record_failure(hostname, stage, type(e).__name__,
+                              _attempt_count(e, ssh_session.REPLACE_ATTEMPTS_ATTRIBUTE))
+        logger.error(f"  [FAIL] {hostname}: the SSH session record could not be written before connecting "
+                     f"({stage}: {type(e).__name__}: {e}); the device is NOT connected")
+        return platform, None
+    _mark(RUN_RECORD_WRITTEN)
+    logger.info(f"  Connecting to {hostname} ({devinfo['ip']}) ...")
+    dev, platform = connect_device(devinfo["ip"], hostname, devinfo["username"], devinfo["password"], platform,
+                                   session=recorder, port=port)
+    for fail in recorder.write_failures:
+        if fail.get("stage") != ssh_session.RECORD_STAGE_PENDING:
+            on_record_failure(hostname, fail.get("stage", "?"), fail.get("error_class", "?"),
+                              fail.get("replace_attempts", 0))
+    if not dev:
+        # W59 PR-2 (design §4.4): consent is never inferred from a failure; say how to give it instead, and ONLY for
+        # a classified refusal the legacy tier would change (review P3-g), never for auth, timeout or unreachable.
+        advice = _legacy_ssh_rerun_advice(hostname, recorder)
+        if advice:
+            logger.error(f"  {advice}")
+        logger.error(f"  [FAIL] Skipped {hostname}")
+        return platform, None
+    try:
+        return platform, collect(hostname, platform, dev, dev_dir)
+    finally:
+        try:
+            dev.disconnect()
+        except Exception:                                               # noqa: BLE001
+            pass
+
 
 _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show lldp neighbors detail", "show mac address-table",
@@ -1508,10 +1888,223 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
 # cisco_toolkit/excel.py.
 
 # =============================================================================
+# W59 PR-2: TWO-LEVEL LEGACY-SSH CONSENT (docs/w59-legacy-ssh-design-2026-10-09.md §5)
+# =============================================================================
+# SHA-1 can be negotiated for a device only when BOTH levels name it: its devices.json row sets
+# "ssh_profile" to the legacy profile, AND this run's --allow-legacy-ssh names its hostname or IP. Every
+# other combination collects it on the default path. The per-device consent fields and the run's consent block
+# have ONE owner, cisco_toolkit.ssh_session (`consent_for`, `live_consent_block`, `offline_consent_block`,
+# `consent_summary_lines`); this section only validates the two levels and refuses what the owner cannot express
+# (a run-flag name that matches no row, or several). The eligible hosts and both mismatch lists are printed before
+# the first connection and written, before it, into the run's `.incomplete.json` marker (cleared only by a verified
+# seal), then sealed in the run manifest. There is no prompt, no alias, no inference from a failure and no fallback
+# between profiles.
+ALLOW_LEGACY_SSH_FLAG = "--allow-legacy-ssh"
+
+
+def _row_ident(d: dict) -> str:
+    """Name a devices.json entry by its identifying keys only (never by dumping it: it can hold a
+    credential)."""
+    return ", ".join(f"{a}={d[a]!r}" for a in ("hostname", "ip") if d.get(a)) or "<unnamed>"
+
+
+def _validate_ssh_profile(d: dict, *, check_platform: bool = True) -> None:
+    """Normalize ``d["ssh_profile"]`` in place. A missing key means the default profile; any other value
+    must be a JSON STRING naming a profile in the vocabulary (no truthiness, no aliases). A non-default
+    profile also needs a non-empty hostname (W59 PR-2 review P3-j): the consent lists, the run flag's
+    recorded hosts and the session record's folder all name a device by its hostname. With
+    ``check_platform``, a non-default profile also needs a platform that maps to ios/nxos: netmiko's
+    SSHDetect opens its own connection and cannot take the legacy transport, and an unknown platform
+    string (``"asa"``) silently maps to auto-detection, so the check runs on the MAPPED value."""
+    profiles = tuple(ssh_session.SSH_PROFILES)
+    if "ssh_profile" not in d:
+        d["ssh_profile"] = ssh_session.DEFAULT_PROFILE
+        return
+    value = d["ssh_profile"]
+    if not isinstance(value, str) or value not in profiles:
+        # The value is caller-supplied, so report its JSON type, not its bytes.
+        raise ValueError(
+            f"devices.json entry ({_row_ident(d)}) has an invalid 'ssh_profile' "
+            f"({type(value).__name__} value): it must be a JSON string, one of {list(profiles)}")
+    if value == ssh_session.DEFAULT_PROFILE:
+        return
+    if not str(d.get("hostname") or "").strip():
+        raise ValueError(
+            f"devices.json entry ({_row_ident(d)}) requests ssh_profile {value!r} but its 'hostname' is empty; "
+            f"a non-default SSH profile needs a hostname that names the device in the consent record")
+    if check_platform and d.get("platform") not in NETMIKO_TYPE:
+        raise ValueError(
+            f"devices.json entry ({_row_ident(d)}) requests ssh_profile {value!r} but its platform maps "
+            f"to auto-detection; the legacy SSH transport needs an explicit platform, one of "
+            f"{sorted(NETMIKO_TYPE)}")
+
+
+def _parse_allow_legacy_ssh(value: str) -> Tuple[str, Tuple[str, ...]]:
+    """``--allow-legacy-ssh <profile>=<host>[,<host>...]`` -> ``(profile, hosts)``.
+
+    The profile must be a NON-default vocabulary profile and the host list must be non-empty with no
+    empty item; surrounding whitespace is stripped, identical repeats are collapsed. Matching the hosts
+    against devices.json happens in :func:`_resolve_ssh_consent`."""
+    legacy = [p for p in ssh_session.SSH_PROFILES if p != ssh_session.DEFAULT_PROFILE]
+    text = value if isinstance(value, str) else ""
+    profile, sep, hosts_txt = text.partition("=")
+    profile = profile.strip()
+    if not sep or profile not in legacy:
+        raise ValueError(
+            f"{ALLOW_LEGACY_SSH_FLAG} takes PROFILE=HOST[,HOST...] with PROFILE one of {legacy}")
+    items = [h.strip() for h in hosts_txt.split(",")]
+    if not hosts_txt.strip() or any(not h for h in items):
+        raise ValueError(
+            f"{ALLOW_LEGACY_SSH_FLAG} {profile}=... needs a non-empty, comma-separated host list with no "
+            f"empty item; it names each device's devices.json hostname or ip")
+    return profile, tuple(dict.fromkeys(items))
+
+
+def _hostname_key(d: dict) -> str:
+    """A row's hostname as the consent record compares it: stripped, and case-folded (a device folder on a
+    case-insensitive file system, and an operator's reading of the consent lists, do not tell `SW1` from `sw1`)."""
+    return str(d.get("hostname") or "").strip().casefold()
+
+
+def _consent_attribution_refusal(devices: List[dict], named: List[dict]) -> Optional[str]:
+    """None when every consent-bearing row can be attributed, else the reason to refuse, before any connection.
+
+    W59 PR-2 review round 3 (P3): the consent lists, the run flag's recorded hosts and each session record name a
+    device by its HOSTNAME (``ssh_session.live_consent_block``), so a consent decision about a row is attributable
+    only when that row's hostname is non-empty and unique. Round 2 refused only one member of that class (an empty
+    hostname on a row the flag names by its ip); this is the whole class. A row is CONSENT-BEARING when it requests
+    a non-default ``ssh_profile`` (whether or not the run names it: its ``requested_not_named`` entry is a consent
+    statement too) or the run flag names it (`named`, the rows the flag's items matched); each must have a hostname
+    that is non-empty and shared, case-insensitively, by no other row. Other rows are not this rule's business."""
+    counts: Dict[str, int] = {}
+    for d in devices:
+        key = _hostname_key(d)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    bearing = [d for d in devices if ssh_session.requested_profile(d) != ssh_session.DEFAULT_PROFILE]
+    bearing += [d for d in named if not any(d is b for b in bearing)]
+    for d in bearing:
+        why = ("requests ssh_profile " + repr(ssh_session.requested_profile(d))
+               if ssh_session.requested_profile(d) != ssh_session.DEFAULT_PROFILE
+               else f"is named on {ALLOW_LEGACY_SSH_FLAG}")
+        key = _hostname_key(d)
+        if not key:
+            return (f"devices.json entry ({_row_ident(d)}) {why} but its 'hostname' is empty; the SSH consent "
+                    f"record names every device by its hostname, so give that row a hostname")
+        if counts[key] > 1:
+            return (f"devices.json entry ({_row_ident(d)}) {why} but {counts[key]} rows share its hostname "
+                    f"(compared case-insensitively); the SSH consent record names every device by its hostname, "
+                    f"so a consent-bearing row needs a hostname no other row shares")
+    return None
+
+
+def _resolve_ssh_consent(devices: List[dict],
+                         run_flag: Optional[Tuple[str, Tuple[str, ...]]]) -> dict:
+    """Validate the run level against devices.json, annotate each live device with ``d["ssh_consent"]`` and return
+    the run's consent block. Both come from the ONE owner: ``ssh_session.consent_for`` (the exact consent fields of
+    the per-device session record) and ``ssh_session.live_consent_block`` (the manifest block, hosts by hostname).
+
+    Every run-flag item must equal exactly one row's hostname or ip; an item that matches no row, or more than
+    one, is a ValueError raised before any connection, so a stale name or a typo fails loudly. Because each item
+    then identifies exactly one row, the owner's by-identifier match names exactly the rows the operator named.
+
+    Every CONSENT-BEARING row -- one that requests a non-default ``ssh_profile``, or one the run flag names -- must
+    also carry a hostname that is non-empty and that no other row shares, compared case-insensitively (W59 PR-2
+    review round 3, P3; :func:`_consent_attribution_refusal`)."""
+    flag = None
+    named = []
+    if run_flag:
+        run_profile, items = run_flag
+        for item in items:
+            rows = [d for d in devices if item in (d.get("hostname"), d.get("ip"))]
+            if not rows:
+                raise ValueError(
+                    f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} matches no devices.json row (by hostname or ip); "
+                    f"refusing to start rather than ignore a stale or mistyped name")
+            if len(rows) > 1:
+                raise ValueError(
+                    f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} matches {len(rows)} devices.json rows; name each "
+                    f"device by a hostname or ip that identifies exactly one row")
+            named.append(rows[0])
+        flag = {"profile": run_profile, "hosts_named": list(items)}
+    refusal = _consent_attribution_refusal(devices, named)
+    if refusal:
+        raise ValueError(refusal)
+    for d in devices:
+        d["ssh_consent"] = ssh_session.consent_for(d, flag)
+    return ssh_session.live_consent_block(devices, flag)
+
+
+def _log_ssh_consent(block: dict) -> None:
+    """Print the owner's consent summary (``ssh_session.consent_summary_lines``) before the first connection of a
+    live run, to the console and the run's log: at WARNING when the run flag is given or any row requests a legacy
+    profile (a consent decision the operator must see), at INFO otherwise."""
+    if not isinstance(block, dict) or block.get("mode") != "live":
+        return
+    run_flag = block.get("run_flag") or {}
+    level = logging.WARNING if (run_flag.get("profile") or block.get("devices_requesting_legacy")) else logging.INFO
+    for line in ssh_session.consent_summary_lines(block):
+        logger.log(level, f"  [SSH-CONSENT] {line}")
+
+
+def _legacy_ssh_preflight(block: dict) -> Optional[str]:
+    """Run-level refusal, before any connection: None to proceed, else the reason to stop.
+
+    Only consulted when at least one device is EFFECTIVELY legacy (a default-only run never imports the
+    tier). The tier must import (a frozen bundle missing it is a build defect, named here rather than at
+    the first device), and this environment's stock paramiko must NOT already permit SHA-1: under
+    paramiko older than 5, or netmiko[par4], every device would negotiate SHA-1 anyway, so the opt-in
+    would add nothing and blur what consent means (design §4.1)."""
+    if not block.get("devices_eligible"):
+        return None
+    try:
+        from cisco_toolkit import legacy_ssh
+        permits = legacy_ssh.default_permits_sha1()
+    except Exception as exc:                                           # noqa: BLE001
+        return (f"{ALLOW_LEGACY_SSH_FLAG}: the legacy SSH transport is unavailable in this build "
+                f"({type(exc).__name__}: {exc}); no device was contacted")
+    if permits:
+        return (f"{ALLOW_LEGACY_SSH_FLAG}: this environment's paramiko already permits SHA-1 for every "
+                f"device (paramiko older than 5, or netmiko[par4]), so the legacy opt-in cannot be "
+                f"honoured as consent. Install the paramiko 5 re-lock (netmiko>=4.8, paramiko>=5) and "
+                f"re-run; no device was contacted")
+    return None
+
+
+def _legacy_ssh_rerun_advice(hostname: str, recorder) -> Optional[str]:
+    """W59 PR-2 review (P3-g): the ``[LEGACY-SSH]`` re-run advice for a device that was not collected, or None.
+
+    Given ONLY when the device's row requests a legacy profile this run did not make effective AND its session
+    record holds a CLASSIFIED negotiation refusal that the legacy tier would change (``refused_legacy_only`` with an
+    offered name inside the tier: ``ssh_session.refusal_within_legacy_tier``). An authentication failure, a timeout,
+    an unreachable host, a record-write failure or any other refusal never earns it: consent is never inferred from
+    a failure, and the advice must never point at the opt-in for a failure the opt-in cannot fix."""
+    record = getattr(recorder, "record", None)
+    consent = getattr(recorder, "consent", None)
+    if not isinstance(record, dict) or not isinstance(consent, dict):
+        return None
+    requested, effective = consent.get("device_profile"), consent.get("effective_profile")
+    if requested in (None, ssh_session.DEFAULT_PROFILE) or requested == effective:
+        return None
+    if record.get("outcome") != "negotiation_refused" or \
+            not ssh_session.refusal_within_legacy_tier(record.get("refusal")):
+        return None
+    return (f"[LEGACY-SSH] {hostname}: the device offers only SHA-1-class SSH that the {requested} profile adds; "
+            f"its devices.json row requests ssh_profile {requested!r}, but this run's {ALLOW_LEGACY_SSH_FLAG} did "
+            f"not name it, so it was tried once on the default profile and refused. To collect it, re-run with "
+            f"{ALLOW_LEGACY_SSH_FLAG} {requested}={hostname}")
+
+
+# =============================================================================
 # DEVICES LOADER
 # =============================================================================
 def load_devices(devices_file: str, allow_prompt: bool = True,
-                 *, _bound_bytes: Optional[bytes] = None) -> List[dict]:
+                 *, _bound_bytes: Optional[bytes] = None,
+                 check_ssh_platform: bool = True) -> List[dict]:
+    # W59: every row leaves here with a validated `ssh_profile` (the DEVICE level of the two-level
+    # legacy-SSH consent, design §5). `check_ssh_platform` adds the live-only rule that a non-default
+    # profile needs an explicit platform; an offline (--no-collect) run validates the field's shape and
+    # otherwise ignores it, because nothing connects.
     # FIX-V3.23.177: allow_prompt gates ONLY the interactive getpass fallback (chain step 4).
     # main() passes allow_prompt=not args.no_collect: an offline re-analysis never opens SSH,
     # so blocking the whole pipeline on a TTY password prompt for credentials that are never
@@ -1598,6 +2191,11 @@ def load_devices(devices_file: str, allow_prompt: bool = True,
         d["password"] = pw
         plat_raw = (d.get("platform") or d.get("device_type") or d.get("os") or d.get("nos") or "auto")
         d["platform"] = plat_map.get(plat_raw.strip().lower(), "auto")
+        # W59 PR-1 review (P3-j): a present `port` is validated HERE, at load time and on --no-collect too, so an
+        # invalid value fails the run before any connection or session-record write (never silently 22).
+        _ssh_port(d)
+        # W59 PR-2: the DEVICE level of the two-level legacy-SSH consent (design section 5).
+        _validate_ssh_profile(d, check_platform=check_ssh_platform)
 
     # NEW-V3.23.1: prompt securely for any device still lacking a password - but ONLY when
     # attached to a terminal. An unattended/batch run must not block on input, so it keeps the
@@ -2123,13 +2721,33 @@ def _sync_mandatory_failures(snap_dict: dict) -> None:
         _record_phase_failure(name, detail)
 
 
+#: W59 PR-2 review (P3-h): the two moments the `.incomplete.json` marker is written. `collection_started` is
+#: published before the FIRST connection of a live run, so the run's SSH transport consent is durable on disk before
+#: any device is contacted; a verified seal clears it (`_stage_finalize`), a run that dies mid-collection leaves it,
+#: and a failed finalization overwrites it as `finalization` with the same consent block.
+INCOMPLETE_STAGE_COLLECTION_STARTED = "collection_started"
+INCOMPLETE_STAGE_FINALIZATION = "finalization"
+
+
 def _write_incomplete_marker(path: str, manifest_path: str,
-                             manifest_sealed: bool) -> None:
-    """Atomically publish a bounded, content-free receipt that can never be read as success."""
+                             manifest_sealed: bool, *,
+                             stage: str = INCOMPLETE_STAGE_FINALIZATION) -> None:
+    """Atomically publish a bounded receipt that can never be read as success. It holds no device output, no
+    address and no credential: digests, step names and, since W59 PR-2, the run's SSH transport consent block
+    (``ssh_session`` consent vocabulary). That block names devices by their devices.json HOSTNAME, so the marker is
+    no longer content-free: like the run manifest it is a client artifact (``portable.release_contract`` refuses
+    both in a release, W59 PR-2 review round 2)."""
     evidence = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input") or {}
-    payload = {
+    consent = _RUN_CUSTODY.get("ssh_transport_consent")
+    # W59 PR-2 review round 2 (P1): the marker's consent VALUE lives in this local -- the custody block, or below the
+    # commitment that replaces an oversized one -- and is only ever placed into a fresh payload dict display. It is
+    # never stored by subscript, so the collector's census of the custody key's writers stays exact
+    # (tests/test_legacy_ssh_consent.py::test_p2d_the_consent_block_has_one_writer).
+    marker_consent = consent if isinstance(consent, dict) else None
+    base = {
         "schema": 1,
         "status": "incomplete",
+        "stage": stage,
         "run_id": _RUN_CUSTODY.get("run_id"),
         "generated_at": _RUN_CUSTODY.get("generated_at"),
         "output": {
@@ -2149,8 +2767,18 @@ def _write_incomplete_marker(path: str, manifest_path: str,
             k: evidence.get(k) for k in ("root_name", "n_files", "root_sha256")
         },
     }
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps({**base, "ssh_transport_consent": marker_consent},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES and marker_consent:
+        # A fleet whose consent lists alone outgrow the bound keeps a durable COMMITMENT instead: the SHA-256 of the
+        # block's canonical bytes at this moment (the sealed manifest's block later adds the negotiated and
+        # record-failure fields, so compare it with those two fields reset to their pre-connection values).
+        canonical = json.dumps(marker_consent, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=True).encode("ascii")
+        marker_consent = {"mode": marker_consent.get("mode"), "omitted": "exceeds the marker's size bound",
+                          "sha256": hashlib.sha256(canonical).hexdigest()}
+        encoded = json.dumps({**base, "ssh_transport_consent": marker_consent},
+                             ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES:
         raise ValueError("incomplete marker exceeded its 64 KiB safety bound")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -2192,10 +2820,25 @@ def _register_artifact(path: str, *, kind: str = "", source: str = "") -> dict:
 
 
 def _evidence_records(all_cmd_to_files: Dict[str, Dict[str, str]], root_dir: str,
-                      *, _bindings_out: Optional[List[dict]] = None) -> dict:
-    """Hash the exact raw files analysis consumed, including capture-integrity sidecars."""
+                      *, _bindings_out: Optional[List[dict]] = None,
+                      session_hosts: Iterable[str] = ()) -> dict:
+    """Hash the exact raw files analysis consumed, including capture-integrity sidecars.
+
+    W59 PR-1: every device's SSH session sidecar (`_ssh_session.json`) is sealed too -- for every host in
+    `session_hosts` (the whole devices.json, so a REFUSED device, which never enters `all_cmd_to_files`,
+    keeps its sealed record) as well as every host in the command map."""
     root = os.path.abspath(root_dir)
     by_path: Dict[str, dict] = {}
+    for host in sorted({str(h) for h in (session_hosts or ()) if str(h)} | set(all_cmd_to_files or {})):
+        mapping = (all_cmd_to_files or {}).get(host) or {}
+        paths = list(mapping.values())
+        device_dir = os.path.dirname(os.path.abspath(paths[0])) if paths else \
+            os.path.join(root, safe_fs_name(str(host)))
+        ssh_sidecar = os.path.join(device_dir, ssh_session.SIDECAR_FILENAME)
+        if os.path.isfile(ssh_sidecar):
+            rec = by_path.setdefault(ssh_sidecar, {"hosts": set(), "commands": set()})
+            rec["hosts"].add(str(host))
+            rec["commands"].add(ssh_session.CUSTODY_ROLE)
     for host, mapping in sorted((all_cmd_to_files or {}).items()):
         for command, raw_path in sorted((mapping or {}).items()):
             p = os.path.abspath(raw_path)
@@ -2365,6 +3008,10 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
     input_rows = list(state.get("inputs") or [])
     devices_hash = next((r.get("sha256") for r in input_rows
                          if r.get("role") == "devices_file"), None)
+    # The snapshot's integrity block is read into its own name, so `meta` (the manifest's dict) is never assigned
+    # from an expression over that block: the integrity-key census (tests/test_ssot_owner_robustness.py) treats any
+    # such name as an alias of the block, and `ssh_transport_consent` (W59) is a manifest key, not an integrity key.
+    integrity_block = snap_dict.get("assessment_integrity") or {}
     meta = {
         "schema_version": _schema_version,
         "generated_at": state.get("generated_at") or snap_dict.get("generated_at"),
@@ -2375,7 +3022,7 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
         "raw_evidence": state.get("evidence") or {},
         "redaction": state.get("redaction") or {},
         "data_authorities": snap_dict.get("data_authorities") or {},
-        "assessment_integrity": snap_dict.get("assessment_integrity") or {},
+        "assessment_integrity": integrity_block,
         "producer_finalization": {
             "mandatory_prerequisites": (
                 "failed" if state.get("mandatory_failures") else "complete"),
@@ -2389,6 +3036,11 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
                                   list(state.get("excluded_stale_outputs") or []),
         "artifact_registry": {"mode": "exact-current-run", "n_artifacts": len(artifacts)},
     }
+    # W59 PR-1: the SSH transport consent block (recorded before the first connection on a live run; the
+    # offline form, every consent field null, on --no-collect). Library callers without it publish none.
+    # W59 PR-2: on a live run it carries the run flag and the two-level consent lists (design section 5).
+    if isinstance(state.get("ssh_transport_consent"), dict):
+        meta["ssh_transport_consent"] = state["ssh_transport_consent"]
     return _manifest.build_manifest(meta, artifacts, steps)
 
 
@@ -3638,6 +4290,25 @@ def main():
                          "kept so the dir stays analyzable and remains the --compare/--trend source; "
                          "nothing is deleted. Idempotent. Rewritten captures will no longer match "
                          "archive hashes recorded at collection time (deliberate). Default off.")
+    # Spelled literally (== ALLOW_LEGACY_SSH_FLAG): tests/test_readme_field.py reads the argparse surface
+    # from `add_argument("--flag"` literals. README-FIELD gains this flag in W59 PR-3 (design §10); PR-2 adds
+    # only the engine surface. The help text takes the profile names and the group floor from their one owner,
+    # ssh_session (W59 PR-2 review round 2, SSOT Law 1), and restates neither.
+    _legacy_profiles = ", ".join(p for p in ssh_session.SSH_PROFILES if p != ssh_session.DEFAULT_PROFILE)
+    ap.add_argument("--allow-legacy-ssh", dest="allow_legacy_ssh", action="append", default=None,
+                    metavar="PROFILE=HOST[,HOST...]",
+                    help="W59, opt-in, live collection only: the RUN level of the two-level legacy-SSH "
+                         "consent. Names the devices (each by its devices.json hostname or ip; every "
+                         "name must match exactly one row, and that row must have a hostname) that may use "
+                         f"PROFILE (one of: {_legacy_profiles}) THIS run. A device uses it only when its "
+                         "devices.json row ALSO sets \"ssh_profile\" to that PROFILE; every other device "
+                         "stays on the default SSH profile. The legacy profile still prefers SHA-2 and uses "
+                         "SHA-1 only when the device offers nothing stronger; it refuses Diffie-Hellman "
+                         f"groups below {ssh_session.DH_FLOOR_BITS} bits. Eligible hosts are printed and "
+                         "written to disk (the run's .incomplete.json marker) before the first connection, "
+                         "then sealed in the run manifest; every session is disclosed in the snapshot. Give "
+                         "it at most once. Refused on paramiko older than 5 (which permits SHA-1 for every "
+                         "device anyway).")
     args = ap.parse_args()
 
     if args.fail_on_compare_gate and not args.compare:
@@ -3667,6 +4338,20 @@ def main():
             "--compare/--trend project any stored traffic_assurance receipt but never rerun the "
             "path engine with a new intent catalog"
         )
+
+    # W59: the run level of the legacy-SSH consent applies to a LIVE collection only. Combined with an
+    # offline mode it would record a consent that no connection used.
+    legacy_ssh_run_flag = None
+    if args.allow_legacy_ssh is not None:
+        if len(args.allow_legacy_ssh) > 1:
+            ap.error(f"{ALLOW_LEGACY_SSH_FLAG} may be given only once (name every host in its one list)")
+        if args.no_collect or args.compare or args.trend:
+            ap.error(f"{ALLOW_LEGACY_SSH_FLAG} applies to a live collection only; it cannot be "
+                     f"combined with --no-collect, --compare or --trend")
+        try:
+            legacy_ssh_run_flag = _parse_allow_legacy_ssh(args.allow_legacy_ssh[0])
+        except ValueError as exc:
+            ap.error(str(exc))
 
     # This run's gate ledger starts empty. Matters for hosts that call main() twice in one process --
     # in-repo that is tests/test_pipeline_inprocess.py and tests/test_pipeline_failopen.py (the webapp
@@ -4117,7 +4802,23 @@ def main():
         args.template, role="template")
     devices = load_devices(
         args.devices_file, allow_prompt=not args.no_collect,
-        _bound_bytes=devices_bytes)  # --no-collect must never block on a TTY password prompt
+        _bound_bytes=devices_bytes,  # --no-collect must never block on a TTY password prompt
+        check_ssh_platform=not args.no_collect)
+    # W59 PR-2: resolve the two-level legacy-SSH consent and run its preflight BEFORE anything is created on
+    # disk and before the first connection (design §5). An offline run observed no consent and states none. The
+    # block comes from the one owner (ssh_session); it is put in custody and on disk further down, still before
+    # the first connection.
+    if args.no_collect:
+        ssh_consent_block = ssh_session.offline_consent_block()
+    else:
+        try:
+            ssh_consent_block = _resolve_ssh_consent(devices, legacy_ssh_run_flag)
+        except ValueError as exc:
+            ap.error(str(exc))
+        _log_ssh_consent(ssh_consent_block)
+        _refusal = _legacy_ssh_preflight(ssh_consent_block)
+        if _refusal:
+            ap.error(_refusal)
     stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_xlsx = args.output or DEFAULT_OUTPUT_FILE.format(stamp)
 
@@ -4193,11 +4894,43 @@ def main():
     _progress_lock = threading.Lock()
     _done_count    = [0]
 
+    # W59 PR-1: the SSH transport consent block, PRINTED and RECORDED before the first connection of a live run
+    # (design §5); a --no-collect re-analysis records the offline form, every consent field null, so it never
+    # states a consent it did not observe. The same object travels into the run manifest and the snapshot's
+    # ssh_sessions block. W59 PR-2: it is the block resolved (and printed) right after devices.json was loaded,
+    # with the run flag; this is its ONE custody writer.
+    _ssh_consent = ssh_consent_block
+    _RUN_CUSTODY["ssh_transport_consent"] = _ssh_consent
+    if not args.no_collect:
+        # W59 PR-2 review (P3-h): durable BEFORE the first connection. The run's `.incomplete.json` marker carries
+        # the consent block from here until a verified seal clears it, so a run that dies mid-collection still
+        # leaves on disk the consent under which it contacted devices. If that cannot be written, nothing connects.
+        _precollection_base = str(_RUN_CUSTODY.get("base") or os.path.splitext(os.path.abspath(out_xlsx))[0])
+        try:
+            _write_incomplete_marker(_precollection_base + ".incomplete.json",
+                                     _precollection_base + ".run_manifest.json", False,
+                                     stage=INCOMPLETE_STAGE_COLLECTION_STARTED)
+        except Exception as exc:                                        # noqa: BLE001 - fail closed, named
+            raise RuntimeError(
+                f"the SSH transport consent could not be recorded on disk before the first connection "
+                f"({type(exc).__name__}: {exc}); no device was contacted") from exc
+    _ssh_claimed_sidecars: set = set()
+    # W59 PR-1 review (P2-a): host -> RUN_RECORD_* for every device this live run attempted. Only the sidecars this
+    # run WROTE are read as current posture; any other sidecar in the folder is `unknown`, never a stale `modern`.
+    _ssh_run_records: Dict[str, str] = {}
+
+    def _ssh_record_failure(hostname: str, stage: str, error_class: str, replace_attempts: int = 0,
+                            unlink_attempts: int = 0) -> None:
+        # Every entry has the same five keys: the atomic-replace attempts of a record write, and the removal attempts
+        # of a stale record (W59 PR-1 review: the removal is retried too, and a failed one says how hard it tried).
+        with _progress_lock:
+            fails = _ssh_consent.setdefault("record_failures", [])
+            if isinstance(fails, list):
+                fails.append({"host": hostname, "stage": stage, "error_class": error_class,
+                              "replace_attempts": replace_attempts, "unlink_attempts": unlink_attempts})
+
     def collect_one(devinfo):
-        ip       = devinfo["ip"]
         hostname = devinfo["hostname"]
-        username = devinfo["username"]
-        password = devinfo["password"]
         platform = devinfo["platform"]
         safe_host = safe_fs_name(hostname)
         dev_dir   = os.path.join(root_dir, safe_host)
@@ -4213,19 +4946,14 @@ def main():
                 fpath = os.path.join(dev_dir, fn)
                 if os.path.isfile(fpath): cmd_to_file[cmd] = fpath
         else:
-            logger.info(f"  Connecting to {hostname} ({ip}) ...")
-            dev, platform = connect_device(ip, hostname, username, password, platform)
-            if not dev:
-                logger.error(f"  [FAIL] Skipped {hostname}")
+            platform, cmd_to_file = _collect_live_device(
+                devinfo, dev_dir, claimed=_ssh_claimed_sidecars, lock=_progress_lock,
+                on_record_failure=_ssh_record_failure, written=_ssh_run_records)
+            if cmd_to_file is None:
                 with _progress_lock:
                     _done_count[0] += 1
                     logger.info(f"  Progress: {_done_count[0]}/{len(devices)} devices done")
                 return hostname, platform, None
-            try:
-                cmd_to_file = collect(hostname, platform, dev, dev_dir)
-            finally:
-                try: dev.disconnect()
-                except Exception: pass
 
         # V14.12: correct the platform from the actually-collected output. Union collection
         # means both command forms are present; whichever returned real (non-error) output
@@ -4279,10 +5007,13 @@ def main():
 
     # Bind the evidence BEFORE the first parser (global ARP below).  Finalization re-hashes the
     # same finite path set and refuses success if any byte changed while analysis was in flight.
+    # W59 PR-1: every devices.json host's SSH session sidecar joins the sealed set (a refused device never
+    # enters all_cmd_to_files, and its record is exactly the evidence its finding rests on).
+    _ssh_session_hosts = [str(d.get("hostname") or "") for d in devices if str(d.get("hostname") or "")]
     try:
         raw_bindings: List[dict] = []
         _RUN_CUSTODY["evidence"]["analysis_input"] = _evidence_records(
-            all_cmd_to_files, root_dir, _bindings_out=raw_bindings)
+            all_cmd_to_files, root_dir, _bindings_out=raw_bindings, session_hosts=_ssh_session_hosts)
         _RUN_CUSTODY["raw_evidence_bindings"] = raw_bindings
         raw_input_custody.bind_files(raw_bindings)
         rebound_meta = []
@@ -4865,9 +5596,34 @@ def main():
                                      all_syslogs, _default={})
     qos_audit = _run_phase("QoS audit", compute_qos_audit,
                            all_run_configs, sorted(all_syslogs), _default={})
+    # W59 PR-1: SSH session disclosure -- one row per devices.json host, read ONLY from the sealed per-device
+    # session record (`_ssh_session.json`, bound above), never from the current devices.json or command line.
+    # The software-risk `ssh-legacy-transport` surface is a projection of this one owner.
+    def _ssh_sidecar_path(host: str) -> str:
+        return os.path.join(root_dir, safe_fs_name(str(host)), ssh_session.SIDECAR_FILENAME)
+
+    def _read_ssh_sidecar(host: str):
+        p = _ssh_sidecar_path(host)
+        if not os.path.isfile(p):
+            return None, None
+        try:
+            return raw_input_custody.read_bytes(p), None
+        except Exception as exc:                                        # noqa: BLE001 - row reads unknown
+            return None, f"session record failed its custody read ({type(exc).__name__})"
+
+    ssh_sessions = _run_phase(
+        "SSH session disclosure", ssh_session.compute_ssh_sessions,
+        _ssh_session_hosts, _read_ssh_sidecar, live=not args.no_collect, consent=_ssh_consent,
+        evidence_path=lambda h: os.path.relpath(_ssh_sidecar_path(h), root_dir).replace("\\", "/"),
+        # P2-a: a live run derives rows only from the records it wrote itself (None offline: every sealed record)
+        run_written=(None if args.no_collect else
+                     sorted(h for h, state in _ssh_run_records.items() if state == RUN_RECORD_WRITTEN)),
+        _default={})
+    if isinstance(ssh_sessions, dict) and isinstance(ssh_sessions.get("consent"), dict):
+        _RUN_CUSTODY["ssh_transport_consent"] = ssh_sessions["consent"]
     software_risk = _run_phase("Software risk screening", compute_software_risk,
                                all_run_configs, _dev_lifecycle, _dev_platform,
-                               sorted(all_syslogs), _default={})
+                               sorted(all_syslogs), _default={}, ssh_sessions=ssh_sessions)
     platform_health = _run_phase("Platform health", compute_platform_health,
                                  all_platform_metrics, _default={})
     # NEW-V3.23.172: golden-drift is COMPUTED here (hoisted from its Phase 30d-quinquies slot, the
@@ -4942,7 +5698,8 @@ def main():
         ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
         ipv6_routing_subject_scope=ipv6_routing_subject_scope,
         move_groups=move_groups,
-        failure_impact_assessability=failure_impact_assessability)
+        failure_impact_assessability=failure_impact_assessability,
+        ssh_sessions=ssh_sessions)              # W59 PR-1 review (P2-b / P3-d): the Software risk axis's session input
     device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
     # NEW-V3.23.117: lifecycle risk stays its OWN axis (sheet / cockpit / runbook §4.1). V3.23.172
     # compound patterns may also fold a lifecycle band into the punch-list when it stacks with another
@@ -5016,6 +5773,9 @@ def main():
     # Presentation remains in the historic slot; the decision input itself was computed once before
     # Protocol/Readiness above.
     _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # W59 PR-1: one row per device -- what its SSH session negotiated (kex, host key, ciphers, MACs) and
+    # under which consent; MAC/cipher posture is disclosed here and raises no finding (decision 5).
+    _run_phase("Collection Transport sheet", write_collection_transport_sheet, wb, ssh_sessions)
     # Compact positive custody for the route/config evidence Traffic Assurance consumes. The owner combines
     # actual command presence, capture integrity and parser-yield telemetry; raw paths/bodies never enter it.
     parse_yield = parse_yield_report()
@@ -5244,6 +6004,7 @@ def main():
     snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
     snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["qos_audit"] = qos_audit                               # NEW-V3.23.165 (configured QoS posture + doctrine findings; reused from Phase 30d-septies)
+    snap_dict["ssh_sessions"] = ssh_sessions                         # W59 PR-1 (SSH session disclosure; owner cisco_toolkit.ssh_session)
     snap_dict["software_risk"] = software_risk                       # NEW-V3.23.166 (advisory-surface screening + train lifecycle; reused from Phase 30d-octies)
     snap_dict["platform_health"] = platform_health                   # NEW-V3.23.167 (control-plane CPU/memory capacity screening; reused from Phase 30d-nonies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
@@ -5690,6 +6451,7 @@ def main():
     _actx.snap_dict = snap_dict
     _actx.snap_path = snap_path
     _actx.all_cmd_to_files = all_cmd_to_files
+    _actx.ssh_session_hosts = _ssh_session_hosts           # W59 PR-1: sealed session-sidecar host set
     _actx.wb = wb
     _actx.protocol_assurance_receipt_enabled = True
     _actx.protocol_assurance_export_path = (
@@ -5811,9 +6573,11 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             "pre-analysis binding: %s", detail)
 
     all_cmd_to_files = getattr(ctx, "all_cmd_to_files", {}) or {}
+    # W59 PR-1: the same session-sidecar host set the pre-analysis binding sealed, so the two path sets match.
+    ssh_session_hosts = list(getattr(ctx, "ssh_session_hosts", ()) or ())
     before_redaction = None
     try:
-        before_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        before_redaction = _evidence_records(all_cmd_to_files, root_dir, session_hosts=ssh_session_hosts)
         bound = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input")
         if bound is None:
             if all_cmd_to_files:
@@ -5880,6 +6644,8 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                     verifier_files=collection_proof["files"],
                     verifier_sha256=collection_proof["sha256"],
                     verifier_uncovered=_uncovered,
+                    # W59 PR-1: SSH session records the verifier's closed-schema check vouches for.
+                    verifier_schema_covered=list(collection_proof.get("schema_covered") or []),
                 )
                 if _uncovered:
                     _log_redaction_coverage_gap("verifier", _uncovered)
@@ -5896,7 +6662,7 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                     "  Raw capture redaction verification FAILED: %s", exc
                 )
     try:
-        after_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        after_redaction = _evidence_records(all_cmd_to_files, root_dir, session_hosts=ssh_session_hosts)
         _RUN_CUSTODY["evidence"]["after_redaction"] = after_redaction
         if not getattr(args, "redact_collection", False) and \
                 before_redaction is not None and after_redaction != before_redaction:
@@ -6322,7 +7088,8 @@ def _device_dossiers(ctx: "AnalysisContext") -> dict:
         physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
         move_groups=ctx.move_groups, protocol_assessability=ctx.protocol_assessability,
         parse_yield=ctx.parse_yield, input_failures=ctx.input_failures,
-        failure_impact_assessability=ctx.failure_impact_assessability)
+        failure_impact_assessability=ctx.failure_impact_assessability,
+        ssh_sessions=ctx.ssh_sessions)
 
 
 def _punchlist(ctx: "AnalysisContext") -> list:
@@ -6342,7 +7109,8 @@ def _punchlist(ctx: "AnalysisContext") -> list:
         vtp_safety_subject_scope=ctx.vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ctx.ipv6_routing_adjacency_baseline,
         ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope,
-        interface_index=ctx.all_interfaces or None)
+        interface_index=ctx.all_interfaces or None,
+        ssh_sessions=ctx.ssh_sessions)
 
 
 def _executive_brief(ctx: "AnalysisContext") -> dict:

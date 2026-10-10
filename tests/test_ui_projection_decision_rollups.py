@@ -432,3 +432,35 @@ def test_failed_empty_raw_vlan_inputs_are_unavailable_before_label_admission(sec
     fact = _vlan_wave(snap)
     assert fact["state"] == AU
     assert fact["value"] is None
+
+
+def _session_row(host):
+    """A stored punch-list row that cites the device's sealed SSH session row, as the engine's ssh-legacy-transport
+    fold writes it (analyze.compute_migration_punchlist): session-evidenced, needing no running-config."""
+    return {"severity": "Medium", "devices": [host],
+            "evidence_refs": [{"kind": "analysis_row", "host": host, "ref": "/ssh_sessions/rows/0",
+                               "role": "derived_from", "cite": f"{host} SSH session record row"}]}
+
+
+def test_w59_a_withheld_device_rollup_names_its_session_evidenced_findings():
+    """W59 PR-1 review (P2-b). Catches: a running-config or collection gap hiding the findings that rest on the
+    device's sealed SSH session record (a device refused at collection keeps no config). The counts stay withheld --
+    configuration-derived rows may be missing -- while the reason states the floor and each such row is witnessed,
+    on the configless path and on the blind (roster-forced) path alike."""
+    snap = _snapshot(_stored_rows() + [_session_row("edgeA")])
+    snap["software_risk"]["per_device"][0]["config_assessable"] = False
+    for fact in _assert_held(snap, "edgeA", NC).values():
+        assert "rest on its sealed SSH session record" in fact["reason"] and "worst Medium" in fact["reason"]
+        assert {"pointer": "/punchlist/5", "role": "witness"} in fact["refs"]
+    ghost = _snapshot(_stored_rows() + [_session_row("ghost")])
+    ghost["collection_completeness"]["devices"] = [
+        {"host": "ghost", "status": "not collected", "missing": ["interface status"], "data_quality": 0},
+    ]
+    ghost["collection_completeness"]["summary"]["inventory"] += 1
+    for fact in _assert_held(ghost, "ghost", NC).values():
+        assert "rest on its sealed SSH session record" in fact["reason"]
+        assert {"pointer": "/punchlist/5", "role": "witness"} in fact["refs"]
+    # non-vacuity: without a session-evidenced row the withheld reason claims no floor
+    plain = _snapshot(_stored_rows())
+    plain["software_risk"]["per_device"][0]["config_assessable"] = False
+    assert all("SSH session record" not in fact["reason"] for fact in _assert_held(plain, "edgeA", NC).values())

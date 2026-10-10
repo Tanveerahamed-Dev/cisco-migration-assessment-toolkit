@@ -402,11 +402,21 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "family": "Software",
         "checks": "A configuration surface that is open (exposed web UI / SNMP v1-v2c / Smart Install / "
                   "telnet / SSHv1 / IKEv1 / small services) and maps to a landmark public advisory — "
-                  "'surface open', never a per-release vulnerability verdict.",
-        "healthy_value": "surface closed on every screened kind",
+                  "'surface open', never a per-release vulnerability verdict. One more surface is "
+                  "SESSION-evidenced, not configuration-screened: ssh-legacy-transport, read from the "
+                  "collector's own sealed SSH session record (ssh_sessions.rows[]) — the session used, or "
+                  "could only use, a SHA-1 key exchange or host-key signature (Medium) or a Diffie-Hellman "
+                  "group below 2048 bits (High).",
+        "healthy_value": "surface closed on every screened kind; ssh-legacy-transport closed only for a "
+                         "recorded modern session",
         "threshold": None,
-        "cited_fields": ["software_risk.per_device[].surfaces", "software_risk.findings[].kind"],
-        "abstains_when": "no running-config captured (per_device.config_assessable == False -> the surface layer is declared not-assessable, never 'closed')",
+        "cited_fields": ["software_risk.per_device[].surfaces", "software_risk.findings[].kind",
+                         "ssh_sessions.rows[].status"],
+        "abstains_when": "configuration surfaces: no running-config captured (per_device.config_assessable == False "
+                         "-> the configuration surface layer is declared not-assessable, never 'closed'); "
+                         "ssh-legacy-transport has its own rule and needs no running-config: no sealed session "
+                         "record, a record not written by the run, an unreadable or unknown record, or a "
+                         "collector-gap refusal -> 'verify', never 'closed'",
         "evidence_gated": True,
         "source_command": _src("Software exposure", "show version"),
     },

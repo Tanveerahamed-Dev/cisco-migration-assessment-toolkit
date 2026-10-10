@@ -3322,7 +3322,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     move_groups=snap.get("move_groups"),
                     protocol_assessability=snap.get("protocol_assessability"),
                     parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap),
-                    failure_impact_assessability=_fi_verdicts)
+                    failure_impact_assessability=_fi_verdicts,
+                    # W59: the Software risk axis's session input, as main() passes it
+                    ssh_sessions=snap.get("ssh_sessions"))
         return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")

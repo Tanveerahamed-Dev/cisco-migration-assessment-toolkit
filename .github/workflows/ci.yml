@@ -99,6 +99,19 @@ jobs:
       - name: Install Atlas Scope's locked toolchain
         working-directory: atlas-scope
         run: npm ci
+      # W59 PR-1: the SSH interop tests' independent peer (asyncssh -- TEST ONLY, EPL-2.0 OR GPL-2.0-or-later,
+      # pending the owner's adoption decision) runs as a SUBPROCESS from its OWN virtualenv, built only from the
+      # hash-pinned tools/requirements-ssh-fixture-test.txt; it never enters this test interpreter or any shipped
+      # lock, and the file is audited on its own in dependency-audit. ATLAS_SSH_FIXTURE_REQUIRED on the suite step
+      # below makes a missing fixture FAIL the interop tests instead of skipping them.
+      - name: Provision the isolated SSH interop fixture
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/ssh-fixture-venv"
+          if [ "$RUNNER_OS" = "Windows" ]; then fx="$RUNNER_TEMP/ssh-fixture-venv/Scripts/python.exe"; else fx="$RUNNER_TEMP/ssh-fixture-venv/bin/python"; fi
+          "$fx" -m pip install --require-hashes --only-binary=:all: --no-deps -r tools/requirements-ssh-fixture-test.txt
+          "$fx" -I -c "import asyncssh; print('ssh fixture peer: asyncssh', asyncssh.__version__)"
+          echo "ATLAS_SSH_FIXTURE_PYTHON=$fx" >> "$GITHUB_ENV"
       # The /scope markup oracle (webapp/tests/test_scope_mount.py, "the browser is the oracle") needs a
       # real Chromium this matrix does not install. It is required on the legs that install one: webapp-ci's
       # backend leg (webapp/** changes) and atlas-scope-ci (atlas-scope/** changes). Here it is declined
@@ -107,6 +120,7 @@ jobs:
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+          ATLAS_SSH_FIXTURE_REQUIRED: "1"
         run: python -m pytest
 
   typecheck:
@@ -222,6 +236,11 @@ jobs:
       - name: Audit the transition runtime test pins
         if: ${{ !cancelled() }}
         run: python -m pip_audit --strict -r tools/requirements-transition-runtime-test.txt
+      # W59 PR-1: the hash-pinned, test-only SSH interop peer (asyncssh and its closure). Never shipped; audited
+      # exactly as pinned because the hosted test legs install exactly these hashes into the fixture venv.
+      - name: Audit the SSH interop fixture pins
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict --disable-pip -r tools/requirements-ssh-fixture-test.txt
       # --ignore-vuln PYSEC-2026-2858 is a NAMED suppression on this lock only; the registry with its
       # reason is NAMED_PIP_AUDIT_SUPPRESSIONS in tests/test_python_dependency_audit_contract.py. The
       # shipped lock still pins paramiko 4.0.0 under netmiko 4.7.0; the fix is a re-lock to netmiko

@@ -1314,7 +1314,8 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place. The G21
     # finding facets admit the owner's public category vocabulary, its read-only category-to-source-section map
     # (what a category count was computed over) and its stored-row facet fold, by exact name, beside the
-    # severity owner.
+    # severity owner. W59: a withheld device rollup names the session-evidenced stored rows through the owner's
+    # public row predicate (analyze.punch_row_session_evidenced), never a pointer prefix of its own.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
@@ -1322,6 +1323,7 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
                "cisco_toolkit.analyze:PUNCH_CATEGORIES", "cisco_toolkit.analyze:PUNCH_CATEGORY_SECTION",
                "cisco_toolkit.analyze:compute_punchlist_facets",
                "cisco_toolkit.analyze:compute_device_findings", "cisco_toolkit.analyze:device_config_capture",
+               "cisco_toolkit.analyze:punch_row_session_evidenced",
                "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",
                "cisco_toolkit.coverage_matrix:compute_device_coverage", "cisco_toolkit.coverage_matrix:COVERAGE_STATE_ORDER",

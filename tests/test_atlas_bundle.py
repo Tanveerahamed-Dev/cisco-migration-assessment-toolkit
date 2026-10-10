@@ -330,6 +330,9 @@ def test_hidden_imports_cover_the_dynamic_seams():
     # --verify-manifest's module is imported inside a function body too, and README-FIELD teaches
     # that command to an engineer with no Python and no second machine
     assert "cisco_toolkit.manifest" in hidden
+    # W59: the legacy SSH tier is imported only inside the collector's transport resolver and consent
+    # preflight; without it a field run with --allow-legacy-ssh refuses at the preflight.
+    assert "cisco_toolkit.legacy_ssh" in hidden
     # ADR-0004 D2: every registry-owned lazy renderer must ship.
     dependencies = set(artifact_dependency_modules())
     assert dependencies and dependencies <= hidden

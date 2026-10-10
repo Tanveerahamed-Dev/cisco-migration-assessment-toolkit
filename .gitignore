@@ -61,6 +61,9 @@ topology.dot
 *.snapshot.json
 *.run_manifest.json
 *.phase_timings.json
+# W59 PR-2: the engine's `<output>.incomplete.json` marker carries the run's SSH transport consent block, which
+# names devices by their devices.json hostname (written before the first connection of a live run).
+*.incomplete.json
 *_runbook.docx
 *_design.docx
 *_mop.docx
@@ -84,6 +87,7 @@ show_*.txt
 # Raw-collection metadata and non-CLI controller/cloud captures do not share the
 # `show_` prefix. Cover both producer filenames and conventional evidence roots.
 *_capture_meta.json
+*_ssh_session.json
 device_info.json
 command_index.json
 moquery_*.txt
@@ -155,6 +159,7 @@ get_system_ha_status.txt
 device_info.json
 command_index.json
 _capture_meta.json
+_ssh_session.json
 /webapp/data/*.db
 /webapp/data/*.db-*
 /webapp/data/*.sqlite
@@ -174,6 +179,7 @@ _capture_meta.json
 !tests/**/device_info.json
 !tests/**/command_index.json
 !tests/**/_capture_meta.json
+!tests/**/_ssh_session.json
 
 # Claude Code local settings
 .claude/settings.local.json
