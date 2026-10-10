@@ -659,7 +659,11 @@ def bind_checkout(root: Path, commit: str, *, regenerated: tuple[str, ...] = ())
         try:
             actual = _worktree_blob(root, path, mode)
         except (HandoffRefusal, OSError) as error:
-            mismatched.append(str(error) if isinstance(error, HandoffRefusal) else f"{path}: unreadable ({error.strerror})")
+            message = str(error) if isinstance(error, HandoffRefusal) else f"{path}: unreadable ({error.strerror})"
+            if path in regenerated:
+                # A regenerated output may change bytes, never its kind or mode; name it as the output it is.
+                message = message.replace(f"{path}: executable mode", f"{path}: output executable mode", 1)
+            mismatched.append(message)
             continue
         if path not in regenerated and actual != blob:
             mismatched.append(f"{path}: bytes differ from the bound commit")
