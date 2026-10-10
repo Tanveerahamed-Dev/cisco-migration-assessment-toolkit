@@ -126,8 +126,8 @@ _REMEDY_CENSUS = (
     "(docs/w63-compiler-census-headroom-2026-10-09.md)"
 )
 _REMEDY_CHUNK = (
-    "lower the group's records per chunk (source_text already uses one record per chunk) or compact its "
-    "records (W64b)"
+    "lower the group's records-per-chunk cap in compiler/packing.py (GROUP_CHUNK_RECORD_CAPS; every packing "
+    "reader derives from it) or compact its records (W64b)"
 )
 _REMEDY_OWNER_JSON = "split or compact the named compiler owner document"
 _REMEDY_JSON_VALUES = "lower records per chunk or flatten the records of the named compiler file"

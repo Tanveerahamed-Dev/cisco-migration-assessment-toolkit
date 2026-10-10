@@ -4373,6 +4373,85 @@ def test_family_intake_enforces_canonical_nonfinal_chunk_packing(tmp_path: Path)
     assert not output.exists()
 
 
+class _SymbolChunksReachedRecordValidation(Exception):
+    """Raised by the test seam once every symbols chunk passed the packing checks."""
+
+
+def _symbol_chunk_rows(layout: tuple[int, ...]) -> list[list[dict[str, object]]]:
+    rows = [{"id": f"urn:atlas:symbol:{index:024x}"} for index in range(sum(layout))]
+    chunks: list[list[dict[str, object]]] = []
+    start = 0
+    for size in layout:
+        chunks.append(rows[start : start + size])
+        start += size
+    return chunks
+
+
+def _record_symbol_chunk_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    final_index: int | None,
+) -> list[int]:
+    # The minimal symbol rows below are not schema-valid symbols, so the seam
+    # stands in for record validation of ``symbols`` only. Reaching it means
+    # the chunk passed both packing checks (chunk count and per-chunk record
+    # count) and its receipt verified.
+    original = compiler_bundle._validate_chunk_against_tracked_schema
+    reached: list[int] = []
+
+    def seam(envelope: dict[str, object], group_name: str, chunk_index: int) -> None:
+        if group_name != "symbols":
+            original(envelope, group_name, chunk_index)
+            return
+        reached.append(chunk_index)
+        if chunk_index == final_index:
+            raise _SymbolChunksReachedRecordValidation
+
+    monkeypatch.setattr(compiler_bundle, "_validate_chunk_against_tracked_schema", seam)
+    return reached
+
+
+def test_family_intake_accepts_symbols_packed_at_500_records_per_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    manifest = json.loads((compiler / "manifest.json").read_text(encoding="utf-8"))
+    # The fixture's shared size is far above the cap, so only the symbols cap
+    # (compiler/packing.py) can make this three-chunk layout canonical.
+    assert manifest["chunk_size"] > 2_000
+    _replace_group_chunk_fixture(compiler, "symbols", _symbol_chunk_rows((500, 500, 1)))
+    reached = _record_symbol_chunk_validation(monkeypatch, final_index=2)
+    with pytest.raises(_SymbolChunksReachedRecordValidation):
+        compiler_bundle.load_compiler_bundle(compiler, repository_root=repo)
+    assert reached == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        pytest.param((2_000,), id="former-shared-size-one-chunk"),
+        pytest.param((2_000, 1), id="former-shared-size-two-chunks"),
+        pytest.param((1_001,), id="above-cap-single-chunk"),
+        pytest.param((1, 500, 500), id="right-count-wrong-boundaries"),
+    ],
+)
+def test_family_intake_refuses_symbols_not_packed_at_500_records_per_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    layout: tuple[int, ...],
+) -> None:
+    repo, compiler = _fixture_repo(tmp_path)
+    _replace_group_chunk_fixture(compiler, "symbols", _symbol_chunk_rows(layout))
+    reached = _record_symbol_chunk_validation(monkeypatch, final_index=None)
+    with pytest.raises(ReleaseInputError, match="compiler chunk packing is not canonical: symbols"):
+        compiler_bundle.load_compiler_bundle(compiler, repository_root=repo)
+    assert reached == []
+    output = tmp_path / "release"
+    with pytest.raises(ReleaseError, match="compiler chunk packing is not canonical: symbols"):
+        build_release(repo, compiler, output)
+    assert not output.exists()
+
+
 def test_family_intake_enforces_strict_ascending_record_order(tmp_path: Path) -> None:
     repo, compiler = _fixture_repo(tmp_path)
     _replace_group_fixture(

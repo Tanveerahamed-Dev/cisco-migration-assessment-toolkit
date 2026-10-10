@@ -47,6 +47,7 @@ from .graphify import (
     verify_graphify_snapshot,
 )
 from .model import SCHEMA_VERSION, canonical_json, chunked, digest_object, sha256_bytes, stable_id
+from .packing import GROUP_CHUNK_RECORD_CAPS, effective_chunk_size
 from .parsers import (
     ParseFailure,
     ParseResult,
@@ -121,6 +122,10 @@ FALLBACK_ENTITY_TYPE_BY_GROUP = {
     "claims": "claim",
     "consequential_claim_facets": "consequential_claim_facet",
 }
+# Canonical chunk packing is owned by ``packing.py``; a cap for a group the
+# compiler never emits would be a table the readers silently ignore.
+if not set(GROUP_CHUNK_RECORD_CAPS) <= set(RECORD_GROUPS):
+    raise RuntimeError("chunk-packing caps name a group the compiler does not emit")
 
 GUI_DOSSIER_FIELDS = (
     "persona_journey",
@@ -2444,8 +2449,7 @@ def _write_success(
     manifest_groups: dict[str, Any] = {}
     for group in RECORD_GROUPS:
         group_records = records[group]
-        effective_chunk_size = 1 if group == "source_text" else chunk_size
-        pieces = list(chunked(group_records, effective_chunk_size))
+        pieces = list(chunked(group_records, effective_chunk_size(group, chunk_size)))
         chunk_receipts: list[dict[str, Any]] = []
         for index, piece in enumerate(pieces):
             record_ids = [str(item["id"]) for item in piece]
