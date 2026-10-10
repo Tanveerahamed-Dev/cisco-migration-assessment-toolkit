@@ -1,7 +1,8 @@
 # 0007: One application, and owner decisions D0 / D9 / D10 / D11
 
-**Date:** 2026-09-30 · **Status:** accepted · **Decided by:** Claude Code under an explicit, full
-delegation from the owner ("take the best decision; you have full authority") ·
+**Date:** 2026-09-30 · **Status:** accepted; D10's owner control amended 2026-10-09 (Amendment 1) ·
+**Decided by:** Claude Code under an explicit, full delegation from the owner ("take the best
+decision; you have full authority") ·
 **Related:** `docs/NOW.md` (live board), `docs/ui-direction-verdict-2026-09-29.md` (dated research
 record), `docs/decisions/0004-atlas-portable-app-p0.md` (Atlas), `docs/ssot.md`
 
@@ -64,7 +65,8 @@ They delegated the four open decisions below.
   snapshot.
 - **A failed or incomplete scrub means the capture is not retained.** The UI states that
   drill-down is unavailable. It must never silently keep plaintext.
-- **Owner control:** the UI shows a retention indicator and a per-campaign purge.
+- **Owner control:** the UI shows a retention indicator and a per-campaign purge. *Superseded on
+  2026-10-09 by Amendment 1: no in-app purge or retention indicator is built.*
 - **Never in the repository.** Share-safe client delivery stays governed by
   `Atlas.exe --redact-folder`.
 - **Why:**
@@ -106,3 +108,23 @@ Merging follows the normal gates.
   - D0 when the external review arrives.
   - D10 if a field deployment forbids client evidence at rest on removable media. BitLocker To Go
     remains the owner's recommended control.
+
+## Amendment 1 (2026-10-09): D10's in-app purge is superseded by keep-everything
+
+**Decided by:** the owner, relayed by the supervising session on 2026-10-09 and recorded on the board
+(`docs/NOW.md`, Owner decisions, 2026-10-09 entry, with the other three decisions of that day).
+
+- **Keep everything.** Comparison receipts stay immutable, and AssessHub has **no in-app purge and no retention indicator**. D10's "Owner
+  control" bullet above (a per-campaign purge and a retention indicator) is superseded and is not
+  built.
+- **Disposal is a manual operator step outside the application.** At the end of an engagement,
+  and only when the client agreement allows it, the operator removes the whole data folder and
+  every other copy with the operating system. The procedure and the list of locations are owned
+  by `docs/operator-guide-core-screens.md` (section 10, *Disposing of client data*) and
+  `portable/README-FIELD.txt` (DISPOSING OF CLIENT DATA).
+- **An in-app delete is not disposal.** Unreceipted campaigns, snapshots and execution runs can
+  still be deleted, but a deleted row can stay readable inside the database file and in its
+  start-time backups.
+- **Unchanged:** the rest of D10 (scrubbed retention of raw collection evidence, never in the
+  repository, share-safe delivery through `Atlas.exe --redact-folder`) and D10's revisit trigger
+  under Consequences. This amendment changes no code.

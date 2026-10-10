@@ -4,9 +4,10 @@ name: engine-output-handoff
 # tests/golden/sheet_schema.json and webapp/sample_data/sample_fleet.snapshot.json) for one exact
 # dispatched commit. It runs the repository's own regeneration commands and nothing else, refuses
 # any produced set other than that closed set, and uploads one source-bound artifact. It never
-# writes to the repository: a person imports the artifact with
-# `.github/scripts/engine_output_handoff.py receive`, reviews the diff and commits it, and the
-# ordinary hosted gates on that commit decide. See docs/engine-output-handoff.md.
+# writes to the repository. The hosted, dispatch-only `.github/workflows/engine-output-receipt.yml`
+# admits that artifact as review data; a person applies the admitted bytes with Git, reviews and
+# commits them, the receipt's `verify_import` mode binds that commit to those bytes, and the ordinary
+# hosted gates on that commit decide. See docs/engine-output-handoff.md.
 #
 # Dispatch only. A pull request or push never starts it, so it can neither re-bless a golden behind
 # a review nor run on code that has not been deliberately selected.
