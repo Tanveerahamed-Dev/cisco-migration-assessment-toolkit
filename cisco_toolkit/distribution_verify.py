@@ -288,7 +288,7 @@ CLIENT_FIXTURE_EXEMPTIBLE_CLASSES = frozenset({
 })
 #: The digest-pinned list of reviewed synthetic fixtures (``<sha256>  <path>`` lines, LF-normalised
 #: bytes). Only the repository gate reads it; an absent manifest exempts nothing.
-CLIENT_FIXTURE_MANIFEST = ".github/privacy/synthetic_capture_fixtures.sha256"
+CLIENT_FIXTURE_MANIFEST = ".github/privacy/synthetic_capture_fixtures_sha256.txt"
 _CLIENT_NAME_STRIP = " .\t\r\n\x0b\x0c"
 _CLIENT_ARTIFACT_FOLDED = tuple(
     (key, match, pattern.casefold()) for key, match, pattern, _producer in CLIENT_ARTIFACT_NAME_CLASSES

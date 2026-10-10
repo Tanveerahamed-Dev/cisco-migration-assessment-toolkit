@@ -123,7 +123,7 @@ _CLIENT_FIXTURE_EXEMPTIBLE_CLASSES = frozenset({
     "config-name-running",
     "config-name-startup",
 })
-_CLIENT_FIXTURE_MANIFEST = PurePosixPath(".github/privacy/synthetic_capture_fixtures.sha256")
+_CLIENT_FIXTURE_MANIFEST = PurePosixPath(".github/privacy/synthetic_capture_fixtures_sha256.txt")
 _CLIENT_NAME_STRIP = " .\t\r\n\x0b\x0c"
 _KNOWN_HOST_HASHES = PurePosixPath(
     ".github/privacy/known_client_hostname_sha256.txt"

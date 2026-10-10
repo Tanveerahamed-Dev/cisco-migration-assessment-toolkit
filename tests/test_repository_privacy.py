@@ -309,7 +309,7 @@ def _pin_fixtures(root: Path, entries: dict[str, str]) -> None:
         f"{hashlib.sha256(text.encode('utf-8')).hexdigest()}  {relative}"
         for relative, text in entries.items()
     ]
-    _track(root, ".github/privacy/synthetic_capture_fixtures.sha256", "\n".join(lines) + "\n")
+    _track(root, ".github/privacy/synthetic_capture_fixtures_sha256.txt", "\n".join(lines) + "\n")
 
 
 def test_guard_admits_only_manifest_pinned_capture_fixtures(tmp_path):
@@ -343,7 +343,7 @@ def test_guard_refuses_a_pinned_fixture_whose_bytes_changed(tmp_path):
 def test_guard_refuses_an_invalid_fixture_manifest(tmp_path):
     module = _privacy_module()
     root = _repo(tmp_path)
-    _track(root, ".github/privacy/synthetic_capture_fixtures.sha256", "not-a-digest  docs/x.txt\n")
+    _track(root, ".github/privacy/synthetic_capture_fixtures_sha256.txt", "not-a-digest  docs/x.txt\n")
     violations = module.inspect_tracked_tree(root)
     assert len(violations) == 1 and "privacy guard configuration is invalid" in violations[0]
 

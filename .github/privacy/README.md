@@ -27,7 +27,7 @@ fails CI until it is registered or declared non-client. Raw captures are owned
 by `webapp/backend/redaction_verify.py :: is_uncoverable_capture`; the registry
 holds their name-identifiable shapes only.
 
-`synthetic_capture_fixtures.sha256` lists the reviewed SYNTHETIC collection
+`synthetic_capture_fixtures_sha256.txt` lists the reviewed SYNTHETIC collection
 fixtures (`<sha256 of the LF-normalised bytes>  <path>`, `tests/fixtures/` only).
 A capture-shaped file anywhere else, an unlisted one under `tests/`, or a listed
 one whose bytes changed is refused. Review new fixture bytes as synthetic before
