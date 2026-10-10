@@ -143,10 +143,16 @@ _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
 # 10.9 in all.  At 10.9 per byte, W63's 12.9 GiB budget (room for the OS and
 # runner) allows 5.81 GiB + 10.9 x (C - 2.01 GiB) <= 12.9 GiB, so C is about
 # 2.66 GiB: 2,720 MiB, a model estimate, not a measured bound.  The symbol
-# index is now streamed piece by piece, which removes the 8-byte term; the
-# ceiling may be re-derived upward only from a hosted peak-RSS measurement of
-# that head (W63's method).  Each run prints the census and the step's peak
-# RSS, so the next approach is measured rather than discovered.  Records:
+# index is now streamed piece by piece, which removes the 8-byte term.
+# Measured on that head (run 38040021909, a 2,183,272,402-byte census):
+# 2,511,136 KiB peak, 1.18 times the census, against 12,292,532 KiB for the
+# pre-W64a code on the same runner and input, with a byte-identical family.
+# Even the superseded 10.9 marginal would allow about 3.0 GiB from that
+# measurement, but the value stays 2,720 MiB: the projection's 2 GiB
+# expanded-bytes wall (75.14 % on that run) refuses first, at a census of
+# about 2.9 GB, so a higher ceiling would buy no capacity.  Each run prints
+# the census and the step's peak RSS, so the next approach is measured
+# rather than discovered.  Records:
 # ``docs/w63-compiler-census-headroom-2026-10-09.md``,
 # ``docs/w64a-streaming-intake-2026-10-10.md``.
 _MAX_COMPILER_CHUNK_BYTES = 2720 * 1024 * 1024
