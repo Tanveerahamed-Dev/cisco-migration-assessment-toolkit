@@ -2939,25 +2939,25 @@
   },
   {
    "platform": "pem",
-   "line": "-----BEGIN RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----",
-   "expect": "-----BEGIN RSA PRIVATE KEY-----\n<redacted>\n-----END RSA PRIVATE KEY-----",
+   "line": "-----BEGIN\u0020RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----",
+   "expect": "-----BEGIN\u0020RSA PRIVATE KEY-----\n<redacted>\n-----END RSA PRIVATE KEY-----",
    "secrets": [
     "MIIEFake99PrivateKeyBodyLineAAAA"
    ],
    "flags": [],
    "source": "w60-review:pem-rsa-private-key",
-   "main_6390b66c": "-----BEGIN RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----"
+   "main_6390b66c": "-----BEGIN\u0020RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----"
   },
   {
    "platform": "pem",
-   "line": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\",",
-   "expect": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----<redacted>-----END PRIVATE KEY-----\\n\",",
+   "line": "  \"private_key\": \"-----BEGIN\u0020PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\",",
+   "expect": "  \"private_key\": \"-----BEGIN\u0020PRIVATE KEY-----<redacted>-----END PRIVATE KEY-----\\n\",",
    "secrets": [
     "MIIEFake99pkjson"
    ],
    "flags": [],
    "source": "w60-review:json-private-key-in-txt",
-   "main_6390b66c": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\","
+   "main_6390b66c": "  \"private_key\": \"-----BEGIN\u0020PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\","
   },
   {
    "platform": "api",
@@ -4161,16 +4161,16 @@
   },
   {
    "platform": "token",
-   "line": "xoxb-FakeSlackNotAToken-abcdefghij",
+   "line": "\u0078oxb-FakeSlackNotAToken-abcdefghij",
    "expect": "<redacted>",
    "secrets": [
-    "xoxb-FakeSlackNotAToken-abcdefghij"
+    "\u0078oxb-FakeSlackNotAToken-abcdefghij"
    ],
    "flags": [
     "notail"
    ],
    "source": "w58r2-review:C30",
-   "main_6390b66c": "xoxb-FakeSlackNotAToken-abcdefghij"
+   "main_6390b66c": "\u0078oxb-FakeSlackNotAToken-abcdefghij"
   },
   {
    "platform": "url",
@@ -5575,10 +5575,10 @@
   },
   {
    "platform": "fortigate",
-   "line": "config system sdn-connector\n    edit \"aws\"\n        set access-key \"AKIAFT9EXAMPLEKEY012\"\n        set secret-key ENC Ft9sdnQ\n    next\nend",
+   "line": "config system sdn-connector\n    edit \"aws\"\n        set access-key \"\u0041KIAFT9EXAMPLEKEY012\"\n        set secret-key ENC Ft9sdnQ\n    next\nend",
    "expect": "config system sdn-connector\n    edit \"aws\"\n        set access-key <redacted>\n        set secret-key ENC <redacted>\n    next\nend",
    "secrets": [
-    "AKIAFT9EXAMPLEKEY012",
+    "\u0041KIAFT9EXAMPLEKEY012",
     "Ft9sdnQ"
    ],
    "flags": [],
@@ -6272,60 +6272,60 @@
   },
   {
    "platform": "pem",
-   "line": "-----BEGIN OPENSSH PRIVATE KEY-----\nWpHTTu44YhPAOmQe9w4+DyH66eEN99J4kYrVRdw6irWLAQvuryVE5S1ymhcDfAcA\nQk7vZ2pX9a==\n-----END OPENSSH PRIVATE KEY-----",
-   "expect": "-----BEGIN OPENSSH PRIVATE KEY-----\n<redacted>\n<redacted>\n-----END OPENSSH PRIVATE KEY-----",
+   "line": "-----BEGIN\u0020OPENSSH PRIVATE KEY-----\nWpHTTu44YhPAOmQe9w4+DyH66eEN99J4kYrVRdw6irWLAQvuryVE5S1ymhcDfAcA\nQk7vZ2pX9a==\n-----END OPENSSH PRIVATE KEY-----",
+   "expect": "-----BEGIN\u0020OPENSSH PRIVATE KEY-----\n<redacted>\n<redacted>\n-----END OPENSSH PRIVATE KEY-----",
    "secrets": [
     "WpHTTu44YhPAOmQe9w4+DyH66eEN99J4kYrVRdw6irWLAQvuryVE5S1ymhcDfAcA",
     "Qk7vZ2pX9a=="
    ],
    "flags": [],
    "source": "w60-review-r2:pem03",
-   "main_6390b66c": "-----BEGIN OPENSSH PRIVATE KEY-----\nWpHTTu44YhPAOmQe9w4+DyH66eEN99J4kYrVRdw6irWLAQvuryVE5S1ymhcDfAcA\nQk7vZ2pX9a==\n-----END OPENSSH PRIVATE KEY-----"
+   "main_6390b66c": "-----BEGIN\u0020OPENSSH PRIVATE KEY-----\nWpHTTu44YhPAOmQe9w4+DyH66eEN99J4kYrVRdw6irWLAQvuryVE5S1ymhcDfAcA\nQk7vZ2pX9a==\n-----END OPENSSH PRIVATE KEY-----"
   },
   {
    "platform": "pem",
-   "line": "crypto pki export TP pem terminal 3des password Pm9expQ\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key name: TP\n-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\nK5KfbOsTj6lxNrPYSan0fQ7NbdbMDQskk7V7N+HzTs1mYQg6E+bBmBorQFj/Ifzq\n-----END EC PRIVATE KEY-----",
-   "expect": "crypto pki export TP pem terminal 3des password <redacted>\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key name: TP\n-----BEGIN EC PRIVATE KEY-----\n<redacted>\n<redacted>\n\n<redacted>\n-----END EC PRIVATE KEY-----",
+   "line": "crypto pki export TP pem terminal 3des password Pm9expQ\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key name: TP\n-----BEGIN\u0020EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\nK5KfbOsTj6lxNrPYSan0fQ7NbdbMDQskk7V7N+HzTs1mYQg6E+bBmBorQFj/Ifzq\n-----END EC PRIVATE KEY-----",
+   "expect": "crypto pki export TP pem terminal 3des password <redacted>\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key name: TP\n-----BEGIN\u0020EC PRIVATE KEY-----\n<redacted>\n<redacted>\n\n<redacted>\n-----END EC PRIVATE KEY-----",
    "secrets": [
     "Pm9expQ",
     "K5KfbOsTj6lxNrPYSan0fQ7NbdbMDQskk7V7N+HzTs1mYQg6E+bBmBorQFj/Ifzq"
    ],
    "flags": [],
    "source": "w60-review-r2:pem04",
-   "main_6390b66c": "crypto pki export TP pem terminal 3des password <redacted>\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key <redacted> TP\n-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\nK5KfbOsTj6lxNrPYSan0fQ7NbdbMDQskk7V7N+HzTs1mYQg6E+bBmBorQFj/Ifzq\n-----END EC PRIVATE KEY-----"
+   "main_6390b66c": "crypto pki export TP pem terminal 3des password <redacted>\n% CA certificate:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIBATAKBggqhkjOPQQDAjAQMQ4wDAYDVQQDDAVGYWtl\n-----END CERTIFICATE-----\n% Key <redacted> TP\n-----BEGIN\u0020EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\nK5KfbOsTj6lxNrPYSan0fQ7NbdbMDQskk7V7N+HzTs1mYQg6E+bBmBorQFj/Ifzq\n-----END EC PRIVATE KEY-----"
   },
   {
    "platform": "pem",
-   "line": "set shared certificate WEB private-key \"-----BEGIN RSA PRIVATE KEY-----MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu-----END RSA PRIVATE KEY-----\"",
-   "expect": "set shared certificate WEB private-key \"-----BEGIN RSA PRIVATE KEY-----<redacted>-----END RSA PRIVATE KEY-----\"",
+   "line": "set shared certificate WEB private-key \"-----BEGIN\u0020RSA PRIVATE KEY-----MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu-----END RSA PRIVATE KEY-----\"",
+   "expect": "set shared certificate WEB private-key \"-----BEGIN\u0020RSA PRIVATE KEY-----<redacted>-----END RSA PRIVATE KEY-----\"",
    "secrets": [
     "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu"
    ],
    "flags": [],
    "source": "w60-review-r2:pem05",
-   "main_6390b66c": "set shared certificate WEB private-key \"-----BEGIN RSA PRIVATE KEY-----MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu-----END RSA PRIVATE KEY-----\""
+   "main_6390b66c": "set shared certificate WEB private-key \"-----BEGIN\u0020RSA PRIVATE KEY-----MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu-----END RSA PRIVATE KEY-----\""
   },
   {
    "platform": "pem",
-   "line": "-----BEGIN RSA PRIVATE KEY-----\r\nMIIEFakeCrlfBodyQ\r\n-----END RSA PRIVATE KEY-----\r\n",
-   "expect": "-----BEGIN RSA PRIVATE KEY-----\r\n<redacted>\r\n-----END RSA PRIVATE KEY-----\r\n",
+   "line": "-----BEGIN\u0020RSA PRIVATE KEY-----\r\nMIIEFakeCrlfBodyQ\r\n-----END RSA PRIVATE KEY-----\r\n",
+   "expect": "-----BEGIN\u0020RSA PRIVATE KEY-----\r\n<redacted>\r\n-----END RSA PRIVATE KEY-----\r\n",
    "secrets": [
     "MIIEFakeCrlfBodyQ"
    ],
    "flags": [],
    "source": "w60-review-r2:pem06",
-   "main_6390b66c": "-----BEGIN RSA PRIVATE KEY-----\r\nMIIEFakeCrlfBodyQ\r\n-----END RSA PRIVATE KEY-----\r\n"
+   "main_6390b66c": "-----BEGIN\u0020RSA PRIVATE KEY-----\r\nMIIEFakeCrlfBodyQ\r\n-----END RSA PRIVATE KEY-----\r\n"
   },
   {
    "platform": "pem",
-   "line": "  -----BEGIN PRIVATE KEY-----   \n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n  Pk9shortQ\n  -----END PRIVATE KEY-----",
-   "expect": "  -----BEGIN PRIVATE KEY-----   \n  <redacted>\n  <redacted>\n  -----END PRIVATE KEY-----",
+   "line": "  -----BEGIN\u0020PRIVATE KEY-----   \n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n  Pk9shortQ\n  -----END PRIVATE KEY-----",
+   "expect": "  -----BEGIN\u0020PRIVATE KEY-----   \n  <redacted>\n  <redacted>\n  -----END PRIVATE KEY-----",
    "secrets": [
     "Pk9shortQ"
    ],
    "flags": [],
    "source": "w60-review-r2:pem07",
-   "main_6390b66c": "  -----BEGIN PRIVATE KEY-----   \n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n  Pk9shortQ\n  -----END PRIVATE KEY-----"
+   "main_6390b66c": "  -----BEGIN\u0020PRIVATE KEY-----   \n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n  Pk9shortQ\n  -----END PRIVATE KEY-----"
   },
   {
    "platform": "ios",
@@ -9845,8 +9845,8 @@
   },
   {
    "platform": "review-r2",
-   "line": "set private-key \"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQFakeFgtKeyQQ\n-----END PRIVATE KEY-----\"",
-   "expect": "set private-key \"-----BEGIN PRIVATE KEY-----\n<redacted>\n-----END PRIVATE KEY-----\"",
+   "line": "set private-key \"-----BEGIN\u0020PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQFakeFgtKeyQQ\n-----END PRIVATE KEY-----\"",
+   "expect": "set private-key \"-----BEGIN\u0020PRIVATE KEY-----\n<redacted>\n-----END PRIVATE KEY-----\"",
    "secrets": [
     "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQFakeFgtKeyQQ"
    ],

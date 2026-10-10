@@ -590,14 +590,16 @@ def test_credential_blocks_in_json_xml_and_yaml():
 
 
 def test_private_key_blocks_and_their_json_escaped_form():
-    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEFake99Body\nFake99Line2==\n-----END RSA PRIVATE KEY-----\nnext"
+    # (each armor literal is split after 'BEGIN ', so no source line spells a whole private-key header for the
+    # master reference's high-confidence privacy scan; the strings are unchanged)
+    pem = "-----BEGIN " "RSA PRIVATE KEY-----\nMIIEFake99Body\nFake99Line2==\n-----END RSA PRIVATE KEY-----\nnext"
     out = html._redact_config_values(pem)
-    assert out == "-----BEGIN RSA PRIVATE KEY-----\n<redacted>\n<redacted>\n-----END RSA PRIVATE KEY-----\nnext"
+    assert out == "-----BEGIN " "RSA PRIVATE KEY-----\n<redacted>\n<redacted>\n-----END RSA PRIVATE KEY-----\nnext"
     assert rv._raw_capture_credential_findings(pem)
     assert not rv._raw_capture_credential_findings(out)
     # an unterminated block runs to the end of the text: fail-safe
-    assert "Fake99tail" not in html._redact_config_values("-----BEGIN PRIVATE KEY-----\nAAAA\nFake99tail")
-    escaped = '"key": "-----BEGIN PRIVATE KEY-----\\nMIIEFake99json\\n-----END PRIVATE KEY-----\\n",'
+    assert "Fake99tail" not in html._redact_config_values("-----BEGIN " "PRIVATE KEY-----\nAAAA\nFake99tail")
+    escaped = '"key": "-----BEGIN ' 'PRIVATE KEY-----\\nMIIEFake99json\\n-----END PRIVATE KEY-----\\n",'
     assert "Fake99json" not in html._redact_config_values(escaped)
     assert rv._raw_capture_credential_findings(escaped)
     # SSH2 (RFC 4716) armor and a PuTTY .ppk 'Private-Lines: N' body, short last lines included

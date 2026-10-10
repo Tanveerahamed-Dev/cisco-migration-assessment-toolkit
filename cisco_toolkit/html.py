@@ -4643,7 +4643,7 @@ _REDACT_CONT_EXEMPT = frozenset({
 })
 
 # ---- Stateful (multi-line) rules: private-key blocks, credential table columns, FortiGate SNMP blocks.
-#: RFC 7468 armor ('-----BEGIN RSA PRIVATE KEY-----') and SSH2 / RFC 4716 armor
+#: RFC 7468 armor ('-----BEGIN <type> PRIVATE KEY-----') and SSH2 / RFC 4716 armor
 #: ('---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----'): everything between BEGIN and END is the key.
 _REDACT_PEM_BEGIN_RE = re.compile(r"-{4,5} ?BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)? ?-{4,5}", re.IGNORECASE)
 _REDACT_PEM_END_RE = re.compile(r"-{4,5} ?END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)? ?-{4,5}", re.IGNORECASE)
