@@ -144,13 +144,30 @@ def _make_shell(log: _Log, expect_file: str | None):
     return _shell
 
 
+def _pinned_host_keypair(profile: dict):
+    """One RSA host key whose KEXINIT host-key list is EXACTLY the profile's ``signature_algs``.
+
+    asyncssh's ``signature_algs`` governs signatures, not the server's KEXINIT host-key list: a server derives that
+    list from each keypair's ``host_key_algorithms``, which for an RSA key is every RSA signature name (``rsa-sha2-*``,
+    the ``@ssh.com`` variants and ``ssh-rsa``). The first hosted run proved it on the wire, so the keypair is narrowed
+    here; a profile naming an algorithm the key cannot sign with fails at start-up instead of offering something else.
+    """
+    key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+    (keypair,) = asyncssh.load_keypairs([key])
+    wanted = [name.encode("ascii") for name in profile["signature_algs"]]
+    unsupported = [name for name in wanted if name not in keypair.host_key_algorithms]
+    if unsupported or not wanted:
+        raise SystemExit(f"fixture profile host-key algorithms unsupported by the RSA key: {unsupported or wanted}")
+    keypair.host_key_algorithms = wanted
+    return keypair
+
+
 async def _main(args) -> None:
     log = _Log(args.log)
-    key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
     profile = PROFILES[args.profile]
     acceptor = await asyncssh.listen(
         "127.0.0.1", 0,
-        server_host_keys=[key],
+        server_host_keys=[_pinned_host_keypair(profile)],
         server_factory=_make_server(log, args.password),
         process_factory=_make_shell(log, args.expect_file),
         line_editor=False,

@@ -1659,7 +1659,10 @@ def test_r2_a_session_only_high_finding_on_a_high_impact_device_carries_no_psirt
     cr04 = [c for c in rows["edge2"]["compound"] if c["code"] == "CR-04"]
     assert len(cr04) == 1 and cr04[0]["title"] == "Legacy SSH transport on a high-impact asset", cr04
     assert S.SURFACE_KIND in cr04[0]["basis"] and "session-evidenced" in cr04[0]["basis"]
-    assert "PSIRT" not in cr04[0]["basis"]
+    # the session-only basis disclaims the PSIRT step in words; it never carries the configuration trigger's
+    # PSIRT-checker instruction (first hosted run: a bare "PSIRT" substring test matched the disclaimer itself)
+    assert "PSIRT Software Checker" not in cr04[0]["basis"]
+    assert cr04[0]["basis"].endswith("no PSIRT step applies.") and cr04[0]["basis"].count("PSIRT") == 1
     axis = next(a for a in analyze.compute_executive_brief(software_risk=sr)["axes"] if a["axis"] == "Software risk")
     assert axis["severity"] == "High" and f"{len(sr['findings'])} {S.SURFACE_COUNT_NOUN}" in axis["headline"]
     assert "configuration surfaces not assessable" in axis["headline"] and S.SURFACE_NO_PSIRT in axis["detail"]
@@ -1671,7 +1674,7 @@ def test_r2_a_session_only_high_finding_on_a_high_impact_device_carries_no_psirt
                                                          ssh_sessions=block)["per_device"]
               for c in r["compound"] if c["code"] == "CR-04"]
     assert len(cfg_cr) == 1 and cfg_cr[0]["title"] == "Open advisory surface on a high-impact asset"
-    assert "PSIRT" in cfg_cr[0]["basis"] and S.SURFACE_KIND in cfg_cr[0]["basis"]
+    assert "PSIRT Software Checker" in cfg_cr[0]["basis"] and S.SURFACE_KIND in cfg_cr[0]["basis"]
     axis = next(a for a in analyze.compute_executive_brief(software_risk=sr_cfg)["axes"]
                 if a["axis"] == "Software risk")
     n_session = sum(1 for f in sr_cfg["findings"] if f["kind"] == S.SURFACE_KIND)

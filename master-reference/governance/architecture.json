@@ -25,6 +25,7 @@
       "paths": [
         "cisco_toolkit/capture_integrity.py",
         "cisco_toolkit/input_custody.py",
+        "cisco_toolkit/legacy_ssh.py",
         "cisco_toolkit/rest_collect.py"
       ]
     },
@@ -51,6 +52,7 @@
         "cisco_toolkit/parse.py",
         "cisco_toolkit/portdb.py",
         "cisco_toolkit/registry_integrity.py",
+        "cisco_toolkit/ssh_session.py",
         "cisco_toolkit/textutils.py"
       ]
     },

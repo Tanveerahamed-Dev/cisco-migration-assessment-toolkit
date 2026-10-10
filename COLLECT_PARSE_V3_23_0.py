@@ -3008,6 +3008,10 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
     input_rows = list(state.get("inputs") or [])
     devices_hash = next((r.get("sha256") for r in input_rows
                          if r.get("role") == "devices_file"), None)
+    # The snapshot's integrity block is read into its own name, so `meta` (the manifest's dict) is never assigned
+    # from an expression over that block: the integrity-key census (tests/test_ssot_owner_robustness.py) treats any
+    # such name as an alias of the block, and `ssh_transport_consent` (W59) is a manifest key, not an integrity key.
+    integrity_block = snap_dict.get("assessment_integrity") or {}
     meta = {
         "schema_version": _schema_version,
         "generated_at": state.get("generated_at") or snap_dict.get("generated_at"),
@@ -3018,7 +3022,7 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
         "raw_evidence": state.get("evidence") or {},
         "redaction": state.get("redaction") or {},
         "data_authorities": snap_dict.get("data_authorities") or {},
-        "assessment_integrity": snap_dict.get("assessment_integrity") or {},
+        "assessment_integrity": integrity_block,
         "producer_finalization": {
             "mandatory_prerequisites": (
                 "failed" if state.get("mandatory_failures") else "complete"),

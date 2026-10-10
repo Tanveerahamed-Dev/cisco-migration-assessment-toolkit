@@ -13006,11 +13006,16 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         swb = (swr or {}).get("train_band", "Unknown")
         if ssh_sevs and (swr is None or not swr.get("config_assessable")):
             # The session record stands without a running-config: checked BEFORE the not-assessable gates, so a
-            # device refused at collection (no captures at all) keeps its exposed finding.
-            ax("Software risk", "risk" if "High" in ssh_sevs or swb == "Replace/Upgrade" else "watch",
-               _DOSSIER_SSH_LABEL + "; configuration advisory surface not screened — no captured running-config"
-               + ("; software train end-of-era" if swb == "Replace/Upgrade" else "")
-               + (f" (software train {swb})" if swb and swb not in ("Unknown", "Replace/Upgrade") else ""))
+            # device refused at collection (no captures at all) keeps its exposed finding. Each exposure state is a
+            # literal at its call, so the projection's vocabulary inventory (tests/test_ui_projection_inventory.py,
+            # I12) can hold every one against ui_projection.EXPOSURE_STATES.
+            _ssh_why = (_DOSSIER_SSH_LABEL + "; configuration advisory surface not screened — no captured running-config"
+                        + ("; software train end-of-era" if swb == "Replace/Upgrade" else "")
+                        + (f" (software train {swb})" if swb and swb not in ("Unknown", "Replace/Upgrade") else ""))
+            if "High" in ssh_sevs or swb == "Replace/Upgrade":
+                ax("Software risk", "risk", _ssh_why)
+            else:
+                ax("Software risk", "watch", _ssh_why)
         elif swr is None or (not swr.get("config_assessable")
                              and str(swr.get("sw_version", "")).startswith("(not")):
             ax("Software risk", "na", "not assessable — no config or version evidence", "not_collected")
