@@ -168,14 +168,63 @@ def prepare_output(path: Path) -> StagedOutput:
     return StagedOutput(absolute, staging, target_was_empty)
 
 
-def deterministic_zip(entries: Mapping[str, bytes]) -> bytes:
-    """Build a byte-stable ZIP with fixed timestamps, ordering, and permissions."""
+@dataclass(frozen=True)
+class VerifiedFile:
+    """An archive entry held as a receipt, not as bytes.
 
-    import io
+    The file was read and hash-checked once before it became an entry.  Every
+    ``read`` re-reads it through ``read_bytes`` (canonical path, no symlink
+    component, stable size and mtime) and re-checks its byte count and SHA-256
+    against that receipt, so an entry can never carry bytes other than the
+    ones verified.  An archive therefore holds one entry's bytes at a time.
+    """
 
-    buffer = io.BytesIO()
+    root: Path
+    relative: str
+    sha256: str
+    byte_count: int
+    changed_message: str
+    unreadable_message: str | None = None
+
+    def read(self) -> bytes:
+        try:
+            value = read_bytes(self.root, self.relative)
+        except (OSError, ReleaseInputError):
+            if self.unreadable_message is None:
+                raise
+            raise ReleaseInputError(self.unreadable_message) from None
+        if len(value) != self.byte_count or sha256_bytes(value) != self.sha256:
+            raise ReleaseInputError(self.changed_message)
+        return value
+
+
+ArchiveEntry = bytes | VerifiedFile
+
+
+def entry_receipt(value: ArchiveEntry) -> dict[str, Any]:
+    """The bundle-receipt row of one archive entry, identical for both kinds."""
+
+    if isinstance(value, VerifiedFile):
+        return {"sha256": value.sha256, "bytes": value.byte_count}
+    return receipt(value)
+
+
+def _entry_bytes(value: ArchiveEntry) -> bytes:
+    return value.read() if isinstance(value, VerifiedFile) else value
+
+
+def _write_deterministic_zip(stream: Any, entries: Mapping[str, ArchiveEntry]) -> None:
+    """The one ZIP writer behind both ``deterministic_zip`` and the streamed form.
+
+    Entry order, timestamps, permissions, flags, compression and the
+    ``writestr`` call are unchanged from the original in-memory builder, so the
+    archive bytes depend only on the entry names and bytes, never on whether
+    the destination is memory or a file.  A ``VerifiedFile`` entry is read,
+    re-verified and released inside its own ``writestr`` call.
+    """
+
     with zipfile.ZipFile(
-        buffer,
+        stream,
         mode="w",
         compression=zipfile.ZIP_DEFLATED,
         compresslevel=9,
@@ -188,8 +237,41 @@ def deterministic_zip(entries: Mapping[str, bytes]) -> bytes:
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o644) << 16
             info.flag_bits |= 0x800
-            archive.writestr(info, entries[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            archive.writestr(info, _entry_bytes(entries[name]), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
+def deterministic_zip(entries: Mapping[str, ArchiveEntry]) -> bytes:
+    """Build a byte-stable ZIP with fixed timestamps, ordering, and permissions."""
+
+    import io
+
+    buffer = io.BytesIO()
+    _write_deterministic_zip(buffer, entries)
     return buffer.getvalue()
+
+
+def write_deterministic_zip(root: Path, relative: str, entries: Mapping[str, ArchiveEntry]) -> dict[str, Any]:
+    """Write ``deterministic_zip(entries)`` to ``root/relative`` entry by entry.
+
+    The archive is never held in memory: it is written straight to a new file
+    (refused, like ``write_bytes``, if the path already exists), and its
+    receipt is then computed from the bytes on disk.
+    """
+
+    relative = safe_relative(relative)
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise ReleaseInputError(f"release output already exists: {relative}")
+    with target.open("xb") as stream:
+        _write_deterministic_zip(stream, entries)
+    digest = hashlib.sha256()
+    size = 0
+    with target.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+            size += len(block)
+    return {"path": relative, "sha256": digest.hexdigest(), "bytes": size}
 
 
 def collect_output_bytes(root: Path, receipts: Iterable[Mapping[str, Any]]) -> dict[str, bytes]:
@@ -200,4 +282,28 @@ def collect_output_bytes(root: Path, receipts: Iterable[Mapping[str, Any]]) -> d
         if sha256_bytes(value) != item.get("sha256") or len(value) != item.get("bytes"):
             raise ReleaseInputError(f"generated artifact changed before packaging: {relative}")
         result[relative] = value
+    return result
+
+
+def verified_output_entries(root: Path, receipts: Iterable[Mapping[str, Any]]) -> dict[str, VerifiedFile]:
+    """``collect_output_bytes`` without keeping the bytes.
+
+    Each generated artifact is read and checked against its receipt now, as
+    before, and becomes a ``VerifiedFile`` that is re-checked when packaged.
+    """
+
+    result: dict[str, VerifiedFile] = {}
+    for item in receipts:
+        relative = safe_relative(str(item["path"]))
+        value = read_bytes(root, relative)
+        if sha256_bytes(value) != item.get("sha256") or len(value) != item.get("bytes"):
+            raise ReleaseInputError(f"generated artifact changed before packaging: {relative}")
+        result[relative] = VerifiedFile(
+            root,
+            relative,
+            sha256_bytes(value),
+            len(value),
+            changed_message=f"generated artifact changed before packaging: {relative}",
+        )
+        del value
     return result

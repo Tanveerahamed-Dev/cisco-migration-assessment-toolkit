@@ -167,3 +167,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
           overwrite: true
+      # W64a one-time A/B proof, removed again by the measured-ceiling
+      # follow-up (docs/w64a-streaming-intake-2026-10-10.md). It rebuilds the
+      # family from the same compiler output with the pre-W64a release code
+      # (the W64-0 head 2ac65468, read with git archive; the checkout is not
+      # touched) and requires every member to be byte-identical to the streamed
+      # build's. Its GNU time report is the same-runner peak-RSS baseline.
+      - name: Prove the streamed family equals the pre-W64a build (W64a, temporary)
+        run: |
+          legacy="$RUNNER_TEMP/w64a-pre-streaming"
+          rm -rf "$legacy" "$RUNNER_TEMP/atlas-release-pre-w64a"
+          mkdir -p "$legacy"
+          git archive --format=tar 2ac654684767effb894282817c6cf85a54931a58 master-reference | tar -x -C "$legacy"
+          status=0
+          (cd "$legacy/master-reference" && /usr/bin/time -v -o "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" python -m cli build --repo-root "$GITHUB_WORKSPACE" --compiler-output "$RUNNER_TEMP/atlas-compiler" --output "$RUNNER_TEMP/atlas-release-pre-w64a") || status=$?
+          if [ -f "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" ]; then cat "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time" >&2; fi
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          echo "peak RSS, streamed (W64a) build:"
+          grep "Maximum resident set size" "$RUNNER_TEMP/atlas-capacity/cli-build.time"
+          echo "peak RSS, pre-W64a build of the same compiler output:"
+          grep "Maximum resident set size" "$RUNNER_TEMP/atlas-capacity/cli-build-pre-w64a.time"
+          sha256sum "$RUNNER_TEMP/atlas-release/release-manifest.json" "$RUNNER_TEMP/atlas-release-pre-w64a/release-manifest.json"
+          diff -r "$RUNNER_TEMP/atlas-release" "$RUNNER_TEMP/atlas-release-pre-w64a"
+          echo "W64a A/B: every release family member is byte-identical to the pre-W64a build"
