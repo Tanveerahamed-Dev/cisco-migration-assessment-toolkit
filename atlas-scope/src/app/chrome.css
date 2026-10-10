@@ -474,6 +474,27 @@
   min-width: 0;
 }
 
+/* THE PREVIEW LABEL (PreviewLabel.tsx; owner decision 2026-10-09). A direct child of the bar, so
+   `.sb > *` keeps it from shrinking and the bar wraps it onto its own line when the width runs out:
+   it is never inside `.sb__rest`, the one region that scrolls sideways. About 200px at 11px, inside
+   the 288px a 320px viewport leaves the bar. Achromatic like the rest of the chrome: the word and
+   a control-grade edge carry it, not a colour. */
+.sb__preview {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.sb__preview-badge {
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-0);
+}
+
 /* LABELLED SEGMENTS, not debug output (blind-panel polish finding: "dim micro-type"). The key
    is a label in --text-muted at medium weight and the value beside it is --text, so each segment
    reads as "label: value" at 11px rather than as one grey run. */

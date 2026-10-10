@@ -229,7 +229,10 @@ describe("Snapshot cockpit", () => {
     expect(panel).not.toHaveTextContent("NOT ASSESSED");
     // the reason is the visible text beside the tag, so the tag is neither a tab stop nor a second copy of it
     expect(within(panel).queryByRole("button")).toBeNull();
-    expect(within(panel).queryByText(/No keystone devices flagged|dominates the fleet's dependency graph\.?$/)).toBeNull();
+    // One explicit negative per phrase (CodeQL js/regex/missing-regexp-anchor): an alternation would bind the `$`
+    // anchor to its second branch only, which reads as if both phrases were end-anchored.
+    expect(within(panel).queryByText(/No keystone devices flagged/)).toBeNull();
+    expect(within(panel).queryByText(/dominates the fleet's dependency graph\.?$/)).toBeNull();
   });
 
   // Unit 12: the explorer toggle announces its expanded/collapsed state non-visually.
