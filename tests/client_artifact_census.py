@@ -1668,6 +1668,58 @@ def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
     raise ValueError("unterminated browser call arguments")
 
 
+def _js_helper_parameters(text: str, tokens: list[_JsToken]) -> tuple[set[str], dict[str, int]]:
+    """Derive local declarations and direct filename-parameter forwarders, without name lists.
+
+    A wrapper constructing its filename inside its body does not make its ID/payload arguments
+    filename exits. Its emitted expression remains scanned. Native parameter forwarders retain
+    every direct caller as an obligation, even when the helper has no 'download' name prefix.
+    """
+    declarations = set()
+    forwarders = {}
+
+    def closing(start: int) -> int:
+        stack = []
+        for index in range(start, len(tokens)):
+            value = tokens[index].value
+            if value in {"(", "[", "{"}:
+                stack.append(value)
+            elif value in {")", "]", "}"}:
+                if not stack or stack.pop() != {")": "(", "]": "[", "}": "{"}[value]:
+                    raise ValueError("unbalanced browser function declaration")
+                if not stack:
+                    return index
+        raise ValueError("unterminated browser function declaration")
+
+    for index, token in enumerate(tokens):
+        if token.value != "function":
+            continue
+        name_index = index + 1
+        if name_index < len(tokens) and tokens[name_index].value == "*":
+            name_index += 1
+        if name_index + 1 >= len(tokens) or tokens[name_index + 1].value != "(":
+            continue  # anonymous or unsupported declaration; its body exits are still scanned
+        name = tokens[name_index].value
+        parameters = _js_arguments(text, tokens, name_index + 1)
+        parameter_names = [re.match(r"[A-Za-z_$][\w$]*", p) for p in parameters]
+        after = closing(name_index + 1) + 1
+        while after < len(tokens) and tokens[after].value not in {"{", ";"}:
+            after += 1
+        if after >= len(tokens) or tokens[after].value != "{":
+            continue
+        end = closing(after)
+        declarations.add(name)
+        for position in range(after + 1, end):
+            if (tokens[position].value == "download" and position > 0
+                    and tokens[position - 1].value in {".", "?."}
+                    and position + 1 < end and tokens[position + 1].value == "="):
+                expression, _stop = _js_expression(text, tokens, position + 2)
+                for argument, match in enumerate(parameter_names):
+                    if match and expression == match.group(0):
+                        forwarders[name] = argument
+    return declarations, forwarders
+
+
 def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
     if not relative.endswith(".py"):
         return [(1, source)]
@@ -1831,6 +1883,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
         for first_line, text in scripts:
             try:
                 tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
+                declarations, forwarders = _js_helper_parameters(text, tokens)
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
             for index, token in enumerate(tokens):
@@ -1870,14 +1923,17 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     continue
                 if index and tokens[index - 1].value == "function":
                     continue
-                if (value.startswith("download") or value == "saveAs"):
+                if value.startswith("download") or value == "saveAs" or value in forwarders:
+                    if value in declarations and value not in forwarders:
+                        continue  # local wrapper owns its constructed filename in the scanned body
                     arguments = _js_arguments(text, tokens, call_start)
-                    if len(arguments) < 2:
+                    argument = forwarders.get(value, 1)
+                    if len(arguments) <= argument:
                         if value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
                             found.append((f"{relative}:{first_line + token.line - 1}",
                                           "<implicit browser filename>", None))
                         continue  # event handlers with no filename parameter
-                    expression = arguments[1]
+                    expression = arguments[argument]
                 elif value == "setAttribute":
                     arguments = _js_arguments(text, tokens, call_start)
                     if not arguments or _download_template(arguments[0]) != "download":

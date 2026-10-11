@@ -1275,3 +1275,21 @@ def test_browser_python_docstrings_are_documentation_not_script_producers(tmp_pa
     source += "    return " + repr('<script>a.download = "private.json"</script>') + "\n"
     _write(tmp_path, "new-root/generated.py", source)
     assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_local_browser_wrapper_inputs_are_not_filenames_and_body_exits_stay_guarded(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'function downloadReceipt(value, id) {\n'
+           ' downloadJsonDocument(value, `safe-${id}.snapshot.json`);\n}\n'
+           'downloadReceipt(payload, identifier);\n')
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"safe-0.snapshot.json"}
+    _write(tmp_path, "new-root/export.mjs", 'function downloadReceipt(value, id) {\n'
+           ' downloadJsonDocument(value, "private.json");\n}\n'
+           'downloadReceipt(payload, identifier);\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+def test_filename_forwarder_discovery_does_not_depend_on_helper_name_prefix(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'function saveEvidence(blob, target) { a.download = target; }\n'
+           'saveEvidence(payload, "private.json");\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
