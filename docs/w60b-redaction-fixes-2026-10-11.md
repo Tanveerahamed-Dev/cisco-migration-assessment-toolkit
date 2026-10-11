@@ -181,3 +181,26 @@ independent verifier preserve `authentication pre-share` only deeper inside a co
 policy stanza, outside credential blocks/banners and without a pending credential. No global
 `pre-share` exemption is added. Fresh hosted evidence must verify these changes; earlier failures
 remain bound to e7e05409.
+
+## 85fc5a1f: byte identity verified; four focused assertions remain
+
+The [focused run 38145783395](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38145783395)
+completed **four failed / 730 passed** in 40.53 seconds. The full golden AND sample redacted views
+were byte-identical to BOTH immutable main oracles, with no changed leaves and the original
+SHA-256 values above. All protected files and upstream inherited Git entries passed custody.
+The 3,002-case archive replay checked 1,452 pre-W60 removed slots and 2,273 round-3 removed slots,
+with **zero regressions against both**. All engine-registry main-view and owner-binding tests passed.
+
+Remaining assertions identified an escaped public SNMP level being mistaken for an auth keyword;
+an extra ISAKMP policy operand accepted without scrubbing; and a corpus classification mistake.
+The `review:snmp_shape_quoted_4` fixture incorrectly called the `-3m` hex master-key operand
+structural. The original input and ID are retained; its assertion is strengthened to require removal
+of BOTH master key and community, while preserving the option, quotes and target host exactly.
+No private operand is permitted merely to obtain a passing structural assertion.
+
+The continuation observes known public protocol/version/level operands only in their actual argv
+slots and masks their raw quote/escape bytes from the generic keyword observer. Unknown values
+and actual private slots remain scrubbed. The independent verifier observes the original args.
+An admitted ISAKMP policy's unexpected authentication tail is scrubbed whole and must contain
+exactly the placeholder before certification. The strict corpus now has 699 rows; the original
+599 review inputs and both full-view oracles are retained. Fresh hosted verification is pending.

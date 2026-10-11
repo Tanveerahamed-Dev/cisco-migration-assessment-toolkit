@@ -671,9 +671,11 @@ _SWEEP_ARGV_OPTIONS = {
     "sshpass": (("-p", "value"),),
     "mysql": (("-p", "attached"),),
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
-             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol"),
+             ("-v", "version"), ("-l", "level")),
     "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"), ("-3M", "value"),
-                    ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value")),
+                    ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value"),
+                    ("-v", "version"), ("-l", "level")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
@@ -852,6 +854,8 @@ _TRUSTED_KEY_STATEMENT_RE = re.compile(_v(
 _ISAKMP_POLICY_HEADER_RE = re.compile(_v(
     r"^{h}*crypto{H}isakmp{H}policy{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
 _ISAKMP_AUTH_STATEMENT_RE = re.compile(_v(r"^{h}*authentication{H}pre-share{h}*\Z"), re.IGNORECASE)
+_ISAKMP_AUTH_EXTRA_RE = re.compile(_v(
+    r"^{h}*authentication{H}pre-share{H}(?P<v>.+?){h}*\Z"), re.IGNORECASE)
 _CHAP_HEADER_RE = re.compile(_v(r"^{h}*#{h}*client{H}server{H}secret(?={h}|\Z)"), re.IGNORECASE)
 _JSON_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*(?P<b>(?:[\[{]{h}*)+)\Z"""))
 _JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
@@ -1116,7 +1120,21 @@ def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
 
     # This is an NTP key identifier only in a complete algorithm/value statement.
     # The independent required-slot check still reads the original line's real key value.
-    return _SWEEP_NTP_ID_RE.sub(ntp_id, masked)
+    masked = _SWEEP_NTP_ID_RE.sub(ntp_id, masked)
+    public = [(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
+              if _sweep_public_operand(line[start:end], kind)]
+    if not public:
+        return masked
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in sorted(public):
+        if end <= cursor:
+            continue
+        start = max(start, cursor)
+        pieces.extend((masked[cursor:start], " " * (end - start)))
+        cursor = end
+    pieces.append(masked[cursor:])
+    return "".join(pieces)
 
 
 def _sweep_credential_name(name: str, quoted: bool) -> bool:
@@ -1711,6 +1729,20 @@ def _sweep_decode_word(raw: str) -> tuple[str, list[int]]:
     return "".join(text), positions
 
 
+def _sweep_public_operand(text: str, kind: str) -> bool:
+    """Only a positively recognized public parameter in its owned argv slot is structural.
+
+    Decoding an escaped 'authPriv' does not authenticate the same text as a password. The
+    option's independent operand kind is part of this check, and placeholders are not metadata.
+    """
+    if kind not in {"protocol", "version", "level"}:
+        return False
+    core = _sweep_decode_word(text)[0].casefold()
+    return (kind == "protocol" and core in _SWEEP_SNMP_PROTOCOLS
+            or kind == "version" and core in {"1", "2c", "3"}
+            or kind == "level" and core in {"noauthnopriv", "authnopriv", "authpriv"})
+
+
 def _sweep_snmp_shape(line: str) -> bool:
     """Recognize argument semantics, not their optional quote/escape spelling."""
     words = [_sweep_decode_word(m.group(0))[0] for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
@@ -1820,7 +1852,7 @@ def _sweep_operand_bad(text: str, kind: str) -> bool:
         if sep not in core:
             return False
         core = core.partition(sep)[2]
-    if kind == "protocol" and core.casefold() in _SWEEP_SNMP_PROTOCOLS:
+    if _sweep_public_operand(text, kind):
         return False
     return bool(core) and core != _PLACEHOLDER
 
@@ -2294,6 +2326,14 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
                     isakmp_indent = None
                 elif pending is None:
                     isakmp_auth = bool(_ISAKMP_AUTH_STATEMENT_RE.fullmatch(line))
+                    if not isakmp_auth:
+                        extra = _ISAKMP_AUTH_EXTRA_RE.fullmatch(line)
+                        if extra is not None:
+                            if _sweep_decode_word(extra.group("v"))[0] != _PLACEHOLDER:
+                                kinds.append("credential value (ISAKMP authentication method extra operand)")
+                            # The approved method and its independently checked extra slot
+                            # have both been examined; no generic stop-word exemption applies.
+                            isakmp_auth = True
         if keychain_member or isakmp_auth or (not forced and not banner and _TRUSTED_KEY_STATEMENT_RE.fullmatch(line)):
             # Complete key references and a policy's authentication method are structure only
             # in their validated statement contexts. Never extend this exemption to a

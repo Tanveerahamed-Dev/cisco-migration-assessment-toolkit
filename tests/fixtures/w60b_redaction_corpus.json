@@ -277,14 +277,18 @@
       "finding": "L1",
       "text": "poll-wrapper -3m \"0x1739ab\" -c JuniperBrook4 inlet-hill-4\n",
       "secrets": [
+        "0x1739ab",
         "JuniperBrook4"
       ],
       "structural": [
         "poll-wrapper",
-        "-3m \"0x1739ab\""
+        "-3m",
+        "inlet-hill-4"
       ],
       "mode": "must_redact",
-      "review_scenario": "snmp_shape_quoted_4"
+      "review_scenario": "snmp_shape_quoted_4",
+      "expect": "poll-wrapper -3m \"<redacted>\" -c <redacted> inlet-hill-4\n",
+      "note": "Fixture semantic correction: -3m owns a private master key, not a public recognition value. The original input is retained; both key and community are now required secrets, and the exact expectation retains option, quotes and host."
     },
     {
       "id": "review:snmp_shape_quoted_5",
@@ -9430,6 +9434,23 @@
       "secrets": ["SyntheticPolicy252"],
       "structural": ["crypto isakmp policy 14"],
       "mode": "must_redact"
+    },
+    {
+      "id": "protocol:escaped-public-options-with-private-slots",
+      "finding": "L1",
+      "text": "snmpget -v3 -l auth\\Priv -a S\\HA256 -x A\\ES192C -A W60bEscAuth253 -X W60bEscPriv253 query-host253\n",
+      "secrets": ["W60bEscAuth253", "W60bEscPriv253"],
+      "structural": ["-l auth\\Priv", "-a S\\HA256", "-x A\\ES192C", "query-host253"],
+      "mode": "must_redact",
+      "expect": "snmpget -v3 -l auth\\Priv -a S\\HA256 -x A\\ES192C -A <redacted> -X <redacted> query-host253\n"
+    },
+    {
+      "id": "protocol:escaped-single-weak-lookalike",
+      "finding": "L1",
+      "text": "protocol-probe -a S\\HA256 -c 5 query-host254\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep"
     }
   ],
   "review_differential": [

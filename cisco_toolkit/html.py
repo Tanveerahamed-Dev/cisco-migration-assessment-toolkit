@@ -4140,6 +4140,8 @@ _REDACT_TRUSTED_KEY_RE = re.compile(_g(
 _REDACT_ISAKMP_POLICY_RE = re.compile(_g(
     r"^{h}*crypto{H}isakmp{H}policy{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
 _REDACT_ISAKMP_AUTH_RE = re.compile(_g(r"^{h}*authentication{H}pre-share{h}*\Z"), re.IGNORECASE)
+_REDACT_ISAKMP_AUTH_TAIL_RE = re.compile(_g(
+    r"^{h}*authentication{H}pre-share(?P<tail>{H}[^\r\n]+)\Z"), re.IGNORECASE)
 
 
 #: Every grammar family names one of these words, so a line without any of them is skipped by the
@@ -4469,9 +4471,11 @@ _REDACT_ARGV_OPTIONS = {
     "mysql": (("-p", "attached"),),
     # snmpcmd(1): '-c COMMUNITY', '-A AUTHPASS', '-X PRIVPASS', and the USM keys '-3m|-3M|-3k|-3K 0xHEXKEY'
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
-             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+             ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol"),
+             ("-v", "version"), ("-l", "level")),
     "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"),
-                    ("-3M", "value"), ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value")),
+                    ("-3M", "value"), ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value"),
+                    ("-v", "version"), ("-l", "level")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
@@ -5055,9 +5059,16 @@ def _redact_sweep_bad_tokens(masked: str, anchor: int, delim: str = ""):
 def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
     masked = _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
     ids = [m.span("id") for m in _REDACT_NTP_KEY_ID_RE.finditer(line)] if config_slots else []
-    if ids:
+    public = ([(a, b) for a, b, kind in _redact_argv_walk(line)[0]
+               if kind in {"protocol", "version", "level"}
+               and _redact_public_argv_operand(kind, _redact_decode_word(line[a:b])[0])]
+              if config_slots and "-" in line else [])
+    if ids or public:
         parts, position = [], 0
-        for a, b in ids:
+        for a, b in heapq.merge(ids, public):
+            a = max(a, position)
+            if a >= b:
+                continue
             parts.extend((masked[position:a], " " * (b - a)))
             position = b
         parts.append(masked[position:])
@@ -5779,10 +5790,21 @@ def _redact_argv_option(text: str, options, shape_only: bool):
         elif decoded.startswith(option) and len(decoded) > len(option):
             rest = decoded[len(option):]
             if shape_only and not (option in ("-c", "-A", "-X")
-                                   or (option.startswith("-3") and re.fullmatch(r"(?:0x)?[0-9A-Fa-f]+", rest))):
+                                   or (option.startswith("-3") and re.fullmatch(r"(?:0x)?[0-9A-Fa-f]+", rest))
+                                   or _redact_public_argv_operand(kind, rest)):
                 continue
             return kind, positions[len(option)]
     return None
+
+
+def _redact_public_argv_operand(kind: str, word: str) -> bool:
+    """Known public values only in their semantically decoded argument slots."""
+    if kind not in {"protocol", "version", "level"}:
+        return False
+    folded = word.casefold()
+    return (kind == "protocol" and folded in _REDACT_SNMP_PROTOCOLS
+            or kind == "version" and folded in {"1", "2c", "3"}
+            or kind == "level" and folded in {"noauthnopriv", "authnopriv", "authpriv"})
 
 
 def _redact_operand_span(line: str, start: int, end: int, kind: str):
@@ -5820,8 +5842,8 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
         if sep + 1 >= len(positions):
             return None
         a, core = start + positions[sep + 1], core[sep + 1:]
-    if kind == "protocol" and core.casefold() in _REDACT_SNMP_PROTOCOLS:
-        return None                                          # '-a SHA', '-x AES': a protocol name
+    if _redact_public_argv_operand(kind, core):
+        return None                                          # validated protocol, version or security level
     if not core or core == _REDACT_PLACEHOLDER:
         return None
     return a, b
@@ -6253,6 +6275,17 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
             isakmp_indent = None
         if not forced and not banner and pending is None and _REDACT_ISAKMP_POLICY_RE.fullmatch(out):
             isakmp_indent = lead
+        if (not forced and not banner and isakmp_indent is not None and lead > isakmp_indent):
+            extra = _REDACT_ISAKMP_AUTH_TAIL_RE.fullmatch(out)
+            if extra:
+                start, end = extra.span("tail")
+                while start < end and out[start] in _REDACT_WS_CHARS:
+                    start += 1
+                while end > start and out[end - 1] in _REDACT_WS_CHARS:
+                    end -= 1
+                span = _redact_operand_span(out, start, end, "value")
+                if span is not None:
+                    out = _redact_replace_spans(out, [span])
         if not forced and not banner and _REDACT_KEYCHAIN_HEADER_RE.fullmatch(out):
             keychain_indent = lead
         if (not forced and not banner
