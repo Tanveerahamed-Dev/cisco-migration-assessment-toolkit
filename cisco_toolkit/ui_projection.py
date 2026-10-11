@@ -150,6 +150,7 @@ from cisco_toolkit.vlan_carriage import (
     CARRIAGE_INTERFACE_FIELDS, validate_vlan_carriage, vlan_row_identity, carriage_observation_admission,
     carriage_host_identity, carriage_port_identity, carriage_join_interface, carriage_role_index,
     carriage_role_rows, carriage_role_compatible, carriage_cable_binding, carriage_code_offsets,
+    carriage_allowance_admission, carriage_allowance_matches,
     carriage_row_cables, carriage_row_counts, carriage_end_char,
     decode_end as decode_carriage_end,
 )
@@ -4856,7 +4857,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
         return (toks, _get(ctx.s, toks)) if toks is not None else (None, _MISSING)
 
     static: Dict[Tuple[int, int, str], List[Tuple[Any, ...]]] = {}
-    configured: Dict[Tuple[int, int, str], bool] = {}
+    configured: Dict[Tuple[int, int, str], Optional[Tuple[Any, ...]]] = {}
     for cable in section["cables"]:
         if cable["scope"] != "assessed":
             continue
@@ -4895,8 +4896,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         end["allowance_pointer"] == end["interface_pointer"]
                         or carriage_join_interface(source_toks[-1]) != end["stp_interface"])):
                     bad.append(toks + ("allowance_pointer",))
-                configured[(ci, mi, side)] = source_values is not None and bool(
-                    source_values["trunk_allowed_vlans"].strip() or source_values["trunk_allowed_none"].strip())
+                configured[(ci, mi, side)] = carriage_allowance_admission(source)
                 for ri, pointer in enumerate(end["refs"]):
                     resolved, value = resolve(pointer)
                     valid = False
@@ -4944,10 +4944,12 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                               if end["stp_interface"] != end["port"] else [])
                     ok = (len(rows) == 1 and not beside and carriage_role_compatible(rows[0][1])
                           and rows[0][1]["state"] == decode_carriage_end(char)["signal"])
+                    ok = ok and carriage_allowance_matches(configured[key], row["vlan"],
+                                                           decode_carriage_end(char)["signal"])
                 if not ok:
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "stp_pointer"))
             elif char in configured_chars:
-                if not configured[key]:
+                if not carriage_allowance_matches(configured[key], row["vlan"], decode_carriage_end(char)["signal"]):
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "allowance_pointer"))
             else:
                 continue

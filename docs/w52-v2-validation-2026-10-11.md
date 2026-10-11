@@ -21,6 +21,12 @@ fixture. Independent source review found additional gaps. This continuation:
 - Joins the known identity and current scanned-host scope of every stored cable, including edges
   and unreadable rows; rejects stale same-count scope/identity changes.
 - Requires the owner's compatible role/state pair as well as matching state for typed witnesses.
+- Refutes a stored signal whose current allowance/mode basis contradicts it (changed range,
+  literal none, access mode, malformed/conflicting fields or typed/native exclusion). The owner
+  admits that basis once and the reader only holds contradictions; it never emits a replacement
+  carriage relation. The earlier applied-source clearance was withdrawn before publication when
+  this additional source-derived P2 was found. Its passing pre-push scans remain historical and
+  cannot qualify the corrected source.
 - Separates malformed off-scan cable shape from ordinary edge blind spots, preserving recognized
   scanned-port aliases and verbatim far-port text.
 - Shares one admitted carriage source between the inventory and lazy pages for each digest. The

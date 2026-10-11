@@ -386,6 +386,34 @@ def _allowed(kind: str, spans: tuple, vid: int) -> bool | None:
     return any(lo <= vid <= hi for lo, hi in spans)
 
 
+def carriage_allowance_admission(record: Any) -> tuple | None:
+    """Read one current allowance basis once, without producing a cable or VLAN relation.
+
+    A reader may only cite a current record beside an existing stored signal when its admitted basis agrees.
+    Invalid fields have no admitted basis; blank allowance remains distinct from explicit exclusion.
+    """
+    values = _interface_values(record)
+    if values is None:
+        return None
+    bad, kind, spans, native = _allowance(values)
+    return None if bad else (kind, spans, native, is_trunk_mode(values["switchport_mode"]))
+
+
+def carriage_allowance_matches(admission: tuple | None, vid: int, signal: str) -> bool:
+    """Refute a contradictory current basis for a stored signal; never emit a replacement relation."""
+    if admission is None:
+        return False
+    kind, spans, native, trunk = admission
+    allowed = _allowed(kind, spans, vid)
+    if native == vid and allowed is False:
+        return False
+    if signal in ("allowed", "excluded"):
+        return trunk and allowed is (signal == "allowed")
+    if signal == "forwarding":
+        return allowed is not False
+    return signal == "blocked"
+
+
 def _issue(code: str, pointer: str) -> dict:
     return {"state": _code_state(code), "reason": _ISSUES[code], "pointer": pointer}
 

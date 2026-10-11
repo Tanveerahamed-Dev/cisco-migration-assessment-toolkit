@@ -331,6 +331,65 @@ def test_held_relation_still_requires_original_identity_for_its_published_end(tm
     checked(snap)
 
 
+@pytest.mark.parametrize("damage", ["exclude_vlan", "literal_none", "access_mode", "bad_range", "two_allowances"])
+def test_current_allowance_cannot_be_cited_beside_a_contradictory_stored_positive(tmp_path, damage):
+    snap = snapshot(tmp_path)
+    assert summary(snap)["forwarding"]["value"] == 1
+    stored = deepcopy(snap["vlan_carriage"])
+    record = snap["interfaces"][A][PORT]
+    if damage == "exclude_vlan":
+        record["trunk_allowed_vlans"] = "20"
+    elif damage == "literal_none":
+        record["trunk_allowed_vlans"], record["trunk_allowed_none"] = "", "none"
+    elif damage == "access_mode":
+        record["switchport_mode"] = "Access"
+    elif damage == "bad_range":
+        record["trunk_allowed_vlans"] = "10,broken"
+    else:
+        record["trunk_allowed_none"] = "none"
+    assert snap["vlan_carriage"] == stored  # Deliberate source drift; the reader may only hold the old claim.
+    result = summary(snap)
+    assert result["state"] == UV and result["forwarding"]["value"] is None
+    item = page(snap)["page"]["items"][0]
+    assert item["relation"]["state"] == UV and item["relation"]["value"] is None
+    assert item["members"]["items"][0]["a"]["signal"]["value"] is None
+    checked(snap)
+
+
+def test_current_allowance_cannot_turn_a_stored_exclusion_into_a_live_allowance_claim(tmp_path):
+    snap = snapshot(tmp_path, ("none", "none"))
+    assert summary(snap)["not_carried"]["value"] == 1
+    record = snap["interfaces"][A][PORT]
+    record["trunk_allowed_vlans"], record["trunk_allowed_none"] = "10", ""
+    result = summary(snap)
+    assert result["state"] == UV and result["not_carried"]["value"] is None
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
+    checked(snap)
+
+
+@pytest.mark.parametrize("damage", ["exclude_forwarding", "native_exclusion", "malformed_range"])
+def test_current_allowance_conflict_cannot_leave_a_typed_signal_published(tmp_path, damage):
+    snap = snapshot(tmp_path, ("", ""), {A: _observation(), B: _observation()})
+    record = snap["interfaces"][A][PORT]
+    record["trunk_allowed_vlans"] = "20" if damage != "malformed_range" else "broken"
+    if damage == "native_exclusion":
+        record["trunk_native_vlan"] = "10"
+    result = summary(snap)
+    assert result["state"] == UV and result["forwarding"]["value"] is None
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
+    checked(snap)
+
+
+@pytest.mark.parametrize("mode", ["Trunk", "dynamic trunk", "trunk (802.1q)"])
+def test_admissible_configured_basis_spelling_preserves_the_stored_claim(tmp_path, mode):
+    snap = snapshot(tmp_path)
+    for host in (A, B):
+        snap["interfaces"][host][PORT]["switchport_mode"] = mode
+    assert summary(snap)["state"] == PUB and summary(snap)["forwarding"]["value"] == 1
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == "forwarding"
+    checked(snap)
+
+
 @pytest.mark.parametrize("damage", ["edge_scope", "edge_port", "edge_host", "unreadable_scope"])
 def test_every_stored_cable_scope_and_known_identity_must_join_current_sources(tmp_path, damage):
     snap = snapshot(tmp_path)
