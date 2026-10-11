@@ -4485,7 +4485,7 @@ _REDACT_SNMP_SHAPE_WEAK_RE = re.compile(_g(
 _REDACT_SNMP_DIRECTIVES = frozenset({"trapsess", "informsess", "proxy"})
 _REDACT_SNMP_POSITIONAL = {"usmuser": (7, 9), "smuxpeer": (1,)}
 _REDACT_SNMP_LINE_WORD_RE = re.compile(_g(
-    r"(?<![A-Za-z0-9_.])(?i:trapsess|informsess|proxy|usmuser|smuxpeer)(?={H})"))
+    r"(?<![A-Za-z0-9_.])(?:trapsess|informsess|proxy|(?i:usmuser|smuxpeer))(?={H})"), re.IGNORECASE)
 _REDACT_SNMP_FIELD_RE = re.compile(_g(r"\"[^\"\r\n]*\"|{S}+"))
 _REDACT_SNMP_OID_RE = re.compile(r"\.?\d{1,10}(?:\.\d{1,10}){0,127}")
 _REDACT_LINE_WORD_LEADS = "#+>:=(|"
