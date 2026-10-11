@@ -300,9 +300,10 @@ def write_primitive(call: ast.Call, qualify=None, resolve=None) -> tuple[str, li
         target = _argument(call, 1, "dst") or _argument(call, 1, "filename") or _argument(call, 1, "extract_dir")
         return name, [target] if target is not None else list(call.args)
     if name in {"tempfile.mkstemp", "tempfile.NamedTemporaryFile"}:
-        suffix = _argument(call, 0, "suffix") or ast.Constant("")
-        prefix = _argument(call, 1, "prefix") or ast.Constant("tmp")
-        directory = _argument(call, 2, "dir") or ast.Constant(None)
+        offset = 0 if name == "tempfile.mkstemp" else 4
+        suffix = _argument(call, offset, "suffix") or ast.Constant("")
+        prefix = _argument(call, offset + 1, "prefix") or ast.Constant("tmp")
+        directory = _argument(call, offset + 2, "dir") or ast.Constant(None)
         filename = ast.BinOp(left=ast.BinOp(left=prefix, op=ast.Add(), right=ast.Constant("0")),
                              op=ast.Add(), right=suffix)
         # Keep directory flow for writer derivation, but classify the composed leaf only.
