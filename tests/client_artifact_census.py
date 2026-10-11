@@ -590,8 +590,9 @@ class _Program:
         parameters = [*args.posonlyargs, *args.args]
         bindings = {parameter.arg: value for parameter, value in zip(parameters, call.args)}
         defaults = dict(zip([p.arg for p in parameters[-len(args.defaults):]], args.defaults)) if args.defaults else {}
+        default_scope = function.enclosing or self.file_of[function.key].top
         for name, value in defaults.items():
-            bindings.setdefault(name, value)
+            bindings.setdefault(name, self._expanded(default_scope, value, {}))
         if args.vararg:
             bindings[args.vararg.arg] = ast.Tuple(elts=call.args[len(parameters):], ctx=ast.Load())
         for keyword in call.keywords:
@@ -603,7 +604,7 @@ class _Program:
                 keys=[ast.Constant(k.arg) for k in extra], values=[k.value for k in extra])
         for parameter, default in zip(args.kwonlyargs, args.kw_defaults):
             if default is not None:
-                bindings.setdefault(parameter.arg, default)
+                bindings.setdefault(parameter.arg, self._expanded(default_scope, default, {}))
         return bindings
 
     def _expanded(self, function: _Function, node: ast.AST, bindings: dict[str, ast.AST],
@@ -627,6 +628,9 @@ class _Program:
             elif isinstance(value, list):
                 setattr(expanded, name, [self._expanded(function, v, bindings, seen)
                                         if isinstance(v, ast.AST) else v for v in value])
+        if (isinstance(expanded, ast.Subscript) and isinstance(expanded.value, (ast.Tuple, ast.List))
+                and isinstance(expanded.slice, ast.Constant) and isinstance(expanded.slice.value, int)):
+            return expanded.value.elts[expanded.slice.value]
         return expanded
 
     def _expanded_call(self, function: _Function, call: ast.Call,
@@ -681,7 +685,8 @@ class _Program:
             else:
                 callee = self.resolve_function(wrapper, inner.func)
                 if callee is not None and any(ast.dump(n, include_attributes=False) == identity
-                                              for a in expanded.args for n in ast.walk(a)):
+                                              for a in [*expanded.args, *(k.value for k in expanded.keywords)]
+                                              for n in ast.walk(a)):
                     targets.extend(self._callback_targets(callee, expanded, target, reference,
                                                           seen | {wrapper.key}))
         return targets

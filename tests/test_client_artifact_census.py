@@ -260,12 +260,14 @@ def test_unclassified_operator_and_non_client_names_stay_explicit(tmp_path, disp
 
 
 @pytest.mark.parametrize("filename,problem", [("delivery.snapshot.json", False), ("delivery.json", True)])
-def test_callback_projection_checks_targets_not_phase_or_payload_literals(tmp_path, filename, problem):
+@pytest.mark.parametrize("forward", ["phase(label, fn, *args, **kwargs)",
+                                    "phase(label=label, fn=fn, target=args[0], payload=args[1])"])
+def test_callback_projection_checks_targets_not_phase_or_payload_literals(tmp_path, filename, problem, forward):
     _write(tmp_path, "cisco_toolkit/writer.py",
            "from pathlib import Path\n\n"
            "def write(target, payload):\n    Path(target).write_text(payload)\n\n"
-           "def phase(label, fn, *args, **kwargs):\n    fn(*args, **kwargs)\n\n"
-           "def emit(label, kind, fn, *args, **kwargs):\n    phase(label, fn, *args, **kwargs)\n\n"
+           "def phase(label, fn, target, payload):\n    fn(target, payload)\n\n"
+           f"def emit(label, kind, fn, *args, **kwargs):\n    {forward}\n\n"
            f"def main():\n    emit('HTML Explorer', 'html', write, {filename!r}, 'literal payload')\n")
     rows = {
         "cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "path writer"),
@@ -276,6 +278,19 @@ def test_callback_projection_checks_targets_not_phase_or_payload_literals(tmp_pa
                          "cisco_toolkit/writer.py::main"] if problem else [])
     assert census.unclassified_site_literals(tmp_path) == (
         {"cisco_toolkit/writer.py::main": {filename}} if problem else {})
+
+
+def test_default_target_literal_is_resolved_in_its_defining_module(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\nDEFAULT_PATH = 'delivery.json'\n\n"
+           "def write(path=DEFAULT_PATH):\n    Path(path).write_text('payload')\n")
+    _write(tmp_path, "cisco_toolkit/caller.py",
+           "from cisco_toolkit.writer import write\nDEFAULT_PATH = 'safe.snapshot.json'\n\n"
+           "def emit():\n    write()\n")
+    rows = {"cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "writer"),
+            "cisco_toolkit/caller.py::emit": (1, census.CLIENT, ("snapshot",), "client data")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/caller.py::emit"]
 
 
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):
