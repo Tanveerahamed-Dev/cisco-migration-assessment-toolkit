@@ -1785,6 +1785,19 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
 def _download_template(expression: str) -> str | None:
     expression = expression.strip()
     while expression.startswith("(") and expression.endswith(")"):
+        tokens = _js_tokens(expression)
+        depth = 0
+        closing = -1
+        for index, token in enumerate(tokens):
+            if token.value == "(":
+                depth += 1
+            elif token.value == ")":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        if closing != len(tokens) - 1:
+            break  # (a) + (b) has two groups, not one enclosing pair
         expression = expression[1:-1].strip()
     parts = _js_parts(expression, 0, "", "+")
     templates = []
