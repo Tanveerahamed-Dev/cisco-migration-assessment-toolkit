@@ -67,7 +67,7 @@ def fleet_check(snapshot, fleet):
 
 
 def stage(stage_name, work):
-    from webapp.sample_data import build_scale
+    import webapp.sample_data.build_scale as build_scale
     out = work / stage_name
     if stage_name == "fixture":
         fleet = build_scale.build(out)

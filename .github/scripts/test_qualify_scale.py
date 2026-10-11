@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import sys
@@ -132,6 +133,14 @@ def test_workflows_have_no_automatic_pr_qualification():
 
 
 def test_architecture_dependencies_are_exact_harness_paths():
+    # Match the real import form, not just a hypothetical direct-module edge:
+    # a `from webapp.sample_data import ...` also targets the PEP 420 directory,
+    # which is intentionally not an admissible exact-file dependency.
+    source = ast.parse((ROOT / ".github/scripts/qualify_scale.py").read_text())
+    assert any(isinstance(node, ast.Import) and any(alias.name == "webapp.sample_data.build_scale"
+                                                  and alias.asname == "build_scale" for alias in node.names)
+               for node in ast.walk(source))
+    assert not any(isinstance(node, ast.ImportFrom) and node.module == "webapp.sample_data" for node in ast.walk(source))
     contract = json.loads((ROOT / "master-reference/governance/architecture.json").read_text())
     assert ["release_distribution", "assesshub_backend"] not in contract["allowed_edges"]
     assert ["release_distribution", "analysis"] not in contract["allowed_edges"]

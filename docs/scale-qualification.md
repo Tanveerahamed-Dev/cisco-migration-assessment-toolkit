@@ -113,3 +113,17 @@ exact source/target path pairs are now registered through the existing
 The broader release-to-analysis/backend component edges remain undeclared;
 the harness control pins that boundary. The initial architecture failure and
 its unmeasured downstream capacity walls are preserved, not a capacity pass.
+
+Run `38130706610` / source `1fd6f08c` subsequently passed the complete synthetic
+qualification: generation 3.891 s / 88.21 MiB / 88.17 MiB; CLI 186.225 s /
+984.75 MiB / 43.94 MiB; ingest 197.432 s / 1,104.01 MiB / 63.50 MiB;
+projection 44.226 s / 624.74 MiB / 34.93 MiB; Scope 1.952 s / 451.95 MiB /
+15.24 MiB. CLI and ingest each reconciled 300 managed devices, 200 VLANs and
+1,500 cables; Scope retained all 1,168 nodes and 1,500 links. Artifact
+`11699236519` retains the report. Its separate Master Reference check still
+refused one namespace-directory import: `from webapp.sample_data import
+build_scale` resolves the PEP 420 directory as well as import-bound calls.
+The harness now uses a direct fully-qualified module import, matching the
+existing exact-file registration; no directory-wide exception is added. A
+control checks the actual source AST import form. These successful measurements
+remain bound to `1fd6f08c`; the import-corrected head requires a fresh report.
