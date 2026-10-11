@@ -335,6 +335,9 @@ _CRED_KEY_RUN = (
 _SWEEP_NTP_ID_RE = re.compile(_v(
     r"(?<![\w.-])ntp{H}authentication-key{H}(?P<id>\d{1,10}){H}"
     + _CRED_HASH + r"{H}(?={S})"), re.IGNORECASE)
+_JUNOS_NTP_SLOT_RE = re.compile(_v(
+    r"^{h}*set{H}system{H}ntp{H}(?P<kw>authentication-key){H}(?P<id>\d{1,10}){H}type{H}"
+    + _CRED_HASH + r"{H}value{H}(?={S})"), re.IGNORECASE)
 _CRED_AUTH_MODE_RUN = (
     r"(?:" + _cred_step(_CRED_HASH + r"|simple|hmac-sha256") + r")?"
     r"(?:key-id{H}\d{1,10}{H}|\d{1,10}{H}(?={S}))?"
@@ -673,8 +676,8 @@ _SWEEP_ARGV_OPTIONS = {
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
              ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol"),
              ("-v", "version"), ("-l", "level")),
-    "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"), ("-3M", "value"),
-                    ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value"),
+    "snmp-create": (("-c", "value"), ("-A", "create-auth"), ("-X", "create-priv"), ("-3m", "value"), ("-3M", "value"),
+                    ("-3k", "value"), ("-3K", "value"), ("-a", "create-auth"), ("-x", "create-priv"),
                     ("-v", "version"), ("-l", "level")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
@@ -687,6 +690,8 @@ _SWEEP_SNMP_PROTOCOLS = frozenset({
     "md5", "sha", "sha1", "sha-1", "sha224", "sha-224", "sha256", "sha-256", "sha384", "sha-384", "sha512",
     "sha-512", "des", "3des", "aes", "aes128", "aes-128", "aes192", "aes-192", "aes256", "aes-256", "aes192c",
     "aes-192c", "aes256c", "aes-256c"})
+_SWEEP_CREATE_AUTH_ALGORITHMS = frozenset({"MD5", "SHA", "SHA-512", "SHA-384", "SHA-256", "SHA-224", "md5", "sha"})
+_SWEEP_CREATE_PRIV_ALGORITHMS = frozenset({"DES", "AES", "AES128", "des", "aes", "aes128"})
 _SWEEP_SNMP_SHAPE_STRONG_RE = re.compile(_v(
     r"(?<!{S})(?:-v{h}*2c|-l{h}*(?i:noauthnopriv|authnopriv|authpriv)|-3[mMkK]{h}*(?:0x)?[0-9A-Fa-f]+)(?!{S})"))
 _SWEEP_SNMP_SHAPE_WEAK_RE = re.compile(_v(
@@ -775,6 +780,10 @@ _SWEEP_EMPTY_AUTH_HEADER_RE = re.compile(_v(
 _SWEEP_CAPTURE_PREFIX_RE = re.compile(_v(
     r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _CRED_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _CRED_WS + r"]{1,256}:{H})?{h}*"))
+_PUBLIC_HTTP_HEADER_RE = re.compile(_v(
+    r"^{h}*(?:host{h}*:{h}*[A-Za-z0-9.\-:\[\]]{1,255}"
+    r"|accept{h}*:{h}*(?:\*|[A-Za-z0-9!#$&^_.+-]+)/(?:\*|[A-Za-z0-9!#$&^_.+-]+)"
+    r"(?:{h}*,{h}*(?:\*|[A-Za-z0-9!#$&^_.+-]+)/(?:\*|[A-Za-z0-9!#$&^_.+-]+))*){h}*\Z"), re.IGNORECASE)
 _SWEEP_SNMP_HOST_OPEN_RE = re.compile(_v(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
 #: Closed configuration command words (the producer's ``_REDACT_COMMAND_WORDS``) and clause-trailing
 #: words (``_REDACT_CONT_TRAILERS``): exact words, never a shape -- any other word is a wrapped value.
@@ -869,7 +878,7 @@ _CSV_HEADER_CHARS_RE = re.compile(r"[A-Za-z0-9 _.\-\"'<>,\t;|]+")
 #: Speed only: a line holding none of these substrings has no keyword, URL, XML element, armor or
 #: long token, so neither guarantee has anything to read on it (the producer skips it the same way).
 _SWEEP_PREFILTER = re.compile(
-    r"pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
+    r"-|pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
     r"cookie|trap|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
     r"groupname:|com2sec|_pw|-pw|credential|pkcs12|----|://|<|sink|cleartext|=\s*des|ldap|lte|pin|"
     r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw|"
@@ -965,6 +974,7 @@ _REQUIRED_PASSWORD_QUALIFIERS = frozenset({
     "hashed", "text", "fallback",
 })
 _REQUIRED_HASH_RE = re.compile(_v(_CRED_HASH), re.IGNORECASE)
+_REQUIRED_CLAUSE_END_RE = re.compile(_v(_CRED_CLAUSE_END), re.IGNORECASE)
 _REQUIRED_KEY_QUALIFIERS = frozenset({
     "enc", "encrypted", "clear", "ascii", "hex", "cipher", "plain", "text", "--", "config-key",
     "password-encrypt",
@@ -976,10 +986,22 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
 
     A global keyword stop list is deliberately not consulted. Here 'encryption', 'chain',
     an address, and punctuation are values, regardless of their meaning in another statement.
-    Qualifiers count only while a later value remains; a terminal type/ENC may instead wrap.
+    Password qualifiers precede at most one type; its following word is always private.
+    For passwords, a terminal type/ENC can wrap only before an encoding type has been consumed.
     """
     findings = []
+    junos = _JUNOS_NTP_SLOT_RE.match(line)
+    if junos is not None:
+        operand = _SWEEP_ARGV_WORD_RE.match(line, junos.end())
+        if operand is not None:
+            raw = operand.group(0)
+            value = _sweep_decode_word(raw)[0]
+            placeholder = value == _PLACEHOLDER if raw != value else _cred_is_placeholder(value, delim)
+            if value and not placeholder:
+                findings.append("credential value (Junos NTP required value slot)")
     for match in _REQUIRED_CONFIG_SLOT_RE.finditer(line):
+        if junos is not None and match.group("ntp"):
+            continue                                      # Junos has named type/value slots, not native NTP order
         if not _sweep_line_word_lead(line, match.start()):
             continue
         gap = _CRED_PLAIN_START_RE.match(line, match.end())
@@ -995,10 +1017,13 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
                 continue
             pos = 1
         if (match.group("password") and fields[pos].group(0).casefold() == "level"
-                and len(words) > pos + 2):
+                and len(words) > pos + 1):
             if fields[pos + 1].group(0).isdigit():
                 pos += 2
+        if pos == len(words):
+            continue                                      # complete level metadata, no value on this line
         qualifiers = _REQUIRED_PASSWORD_QUALIFIERS if match.group("password") else _REQUIRED_KEY_QUALIFIERS
+        password_type_consumed = False
         while pos + 1 < len(words):
             word = words[pos]
             # Required configuration slots use literal qualifier tokens. A quoted or
@@ -1006,12 +1031,23 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
             # 'md5', 'ENC', or a type digit after semantic decoding.
             if fields[pos].group(0) != word:
                 break
+            if (match.group("password") and word.casefold() == "is"
+                    and not _REQUIRED_CLAUSE_END_RE.match(line, fields[pos + 1].start())):
+                pos += 1                                  # show-output prose before its private value/type
+                continue
+            if match.group("password") and _CRED_TYPE_DIGIT_RE.fullmatch(word):
+                # One encoding type precedes one unconditional private value. In 'password
+                # 0 7' the second number is the password, even before another config line.
+                pos += 1
+                password_type_consumed = True
+                break
             if (word.casefold() in qualifiers or _REQUIRED_HASH_RE.fullmatch(word)
                     or _CRED_TYPE_DIGIT_RE.fullmatch(word)):
                 pos += 1
             else:
                 break
         if (has_next and pos + 1 == len(words)
+                and not password_type_consumed
                 and fields[pos].group(0) == words[pos]
                 and (_CRED_TYPE_DIGIT_RE.fullmatch(words[pos]) or words[pos] == "ENC")):
             continue
@@ -1031,6 +1067,7 @@ def _cred_clauses(line: str, artifact: bool,
     more lines follow is the type of a WRAPPED value, not the value (the line dangles instead)."""
     clauses = []
     folded = line.casefold()
+    junos = _JUNOS_NTP_SLOT_RE.match(line)
     for family in _CRED_FAMILIES:
         if artifact:
             matches = [found for found in (anchor.match(line) for anchor in family.artifact) if found]
@@ -1040,6 +1077,8 @@ def _cred_clauses(line: str, artifact: bool,
                 continue
             matches = list(family.anchor.finditer(line))
         for match in matches:
+            if family.name == "key" and junos is not None and match.end() == junos.end("kw"):
+                continue                                  # the independent named Junos value slot owns this key
             start = (_CRED_PROSE_START_RE if family.prose else _CRED_PLAIN_START_RE).match(line, match.end())
             if start is None:
                 continue                                  # 'password-encryption': not this keyword
@@ -1121,8 +1160,12 @@ def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
     # This is an NTP key identifier only in a complete algorithm/value statement.
     # The independent required-slot check still reads the original line's real key value.
     masked = _SWEEP_NTP_ID_RE.sub(ntp_id, masked)
+    junos = _JUNOS_NTP_SLOT_RE.match(line)
+    if junos is not None:
+        start, end = junos.span("id")
+        masked = masked[:start] + " " * (end - start) + masked[end:]
     public = [(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
-              if _sweep_public_operand(line[start:end], kind)]
+              if chr(92) in line[start:end] and _sweep_public_operand(line[start:end], kind)]
     if not public:
         return masked
     pieces: list[str] = []
@@ -1193,10 +1236,27 @@ def _sweep_complete_check_context(line: str, word: str, start: int, end: int) ->
 
 def _sweep_complete_password_structure(line: str, start: int, end: int) -> bool:
     """A structural follow-word exemption applies to a complete structural statement only."""
+    if line[start:end].casefold() != "password":
+        return False
+    complete = (
+        r"^{h}*password{H}(?:encryption{h}*:{h}*(?:enabled|disabled)"
+        r"|strength{H}check{H}is{H}(?:enabled|disabled)"
+        r"|expiry{H}warning{h}*:{h}*\d{1,5}{H}days){h}*\Z",
+        r"^{h}*ip{H}ssh{H}server{H}algorithm{H}authentication{H}"
+        r"(?:publickey|password|keyboard)(?:{H}(?:publickey|password|keyboard))*{h}*\Z",
+        r"^{h}*set{H}system{H}login{H}password{H}minimum-length{H}\d{1,5}{h}*\Z",
+    )
+    if any(re.fullmatch(_v(pattern), line, re.IGNORECASE) for pattern in complete):
+        return True
+    if (re.match(_v(r"^{h}*description{H}"), line, re.IGNORECASE)
+            and not any(char in line for char in ("\"", "'", "=", ":"))
+            and re.fullmatch(_v(r"{H}reset{H}kiosk{h}*"), line[end:], re.IGNORECASE)
+            and not any(match.end() == end for match in _REQUIRED_CONFIG_SLOT_RE.finditer(line))):
+        # A closed descriptive operation, not a blanket description or follow-word exemption.
+        # An embedded complete username/neighbor/enable password slot still takes precedence.
+        return True
     if not (_sweep_line_word_lead(line, start)
             or line[:start].strip(_CRED_WS_CHARS).casefold() == "feature"):
-        return False
-    if line[start:end].casefold() != "password":
         return False
     tail = _SWEEP_TOKEN_RE.findall(line, end)
     if not tail:
@@ -1224,7 +1284,7 @@ def _sweep_keyword_anchor(masked: str) -> int | None:
         prev = _sweep_last_token(masked, index, found.start()).strip(_SWEEP_EDGE).casefold()
         void_next = nxt in _SWEEP_VOID_NEXT.get(word, ())
         if word == "password":
-            void_next = void_next and _sweep_complete_password_structure(masked, found.start(), end)
+            void_next = _sweep_complete_password_structure(masked, found.start(), end)
         elif word == "weak-user-pw":
             void_next = _sweep_complete_check_context(masked, word, found.start(), end)
         if (void_next or prev in _SWEEP_VOID_PREV.get(word, ())
@@ -1465,7 +1525,12 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
         values = list(itertools.islice(_SWEEP_ARGV_WORD_RE.finditer(line, value_start), 1))
         if not values:
             return False
-        return _sweep_operand_bad(values[0].group(0), "value")
+        token = values[0].group(0)
+        # A wrapped JSON/header value may finish with its quote/comma/colon delimiter.
+        # None of those closures permits text beside the exact placeholder.
+        if _PLACEHOLDER in token and _sweep_token_ok(token):
+            return False
+        return _sweep_operand_bad(token, "value")
     masked = _sweep_masked(line)
     size_cut = len(tail) >= 2 and tail[-2] in _SWEEP_SIZE_WORDS and tail[-1].isdigit()
     after_vrf = kind == "snmp-host" and tail[-1:] == ["vrf"]
@@ -1735,9 +1800,14 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
     Decoding an escaped 'authPriv' does not authenticate the same text as a password. The
     option's independent operand kind is part of this check, and placeholders are not metadata.
     """
-    if kind not in {"protocol", "version", "level"}:
+    if kind not in {"protocol", "version", "level", "create-auth", "create-priv"}:
         return False
-    core = _sweep_decode_word(text)[0].casefold()
+    decoded = _sweep_decode_word(text)[0]
+    if kind == "create-auth":
+        return decoded in _SWEEP_CREATE_AUTH_ALGORITHMS
+    if kind == "create-priv":
+        return decoded in _SWEEP_CREATE_PRIV_ALGORITHMS
+    core = decoded.casefold()
     return (kind == "protocol" and core in _SWEEP_SNMP_PROTOCOLS
             or kind == "version" and core in {"1", "2c", "3"}
             or kind == "level" and core in {"noauthnopriv", "authnopriv", "authpriv"})
@@ -2342,6 +2412,9 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             prev = prev_nb = line
             expect = False
             continue
+        if (pending is not None and pending[0] in {"scheme", "header-value"}
+                and not forced and not banner and _PUBLIC_HTTP_HEADER_RE.fullmatch(line)):
+            pending = None                                # a complete public HTTP header starts its own field
         cont = pending if (pending is not None and not blank and not opener) else None
         csv_row = False
         if csv is not None and not blank:

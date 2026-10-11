@@ -204,3 +204,46 @@ and actual private slots remain scrubbed. The independent verifier observes the 
 An admitted ISAKMP policy's unexpected authentication tail is scrubbed whole and must contain
 exactly the placeholder before certification. The strict corpus now has 699 rows; the original
 599 review inputs and both full-view oracles are retained. Fresh hosted verification is pending.
+
+## 4cfe8bb2: focused pass and full-suite compatibility failures
+
+The [focused run 38147009070](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38147009070)
+passed **736 tests** in 47.48 seconds. Its 3,004 archive cases checked 1,452 pre-W60 removed slots
+and 2,275 round-3 removed slots with **zero regressions on both**. All four full golden/sample
+view comparisons were byte-identical to W60/current main with the hashes recorded above.
+Protected and inherited output custody, owner binding, and reported work-bound checks passed.
+
+The broader [CI run 38147009011](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38147009011)
+failed all six Python-version/platform suites and coverage. Python 3.12 on Linux reported
+**38 failed / 16,993 passed / 149 skipped / 3 xfailed**, with 26 passing subtests, in 2,439.78 seconds.
+Failures cover legacy registry parity, public structural/show statements, enable-password prose,
+Junos NTP container IDs, wrapped authorization certification, legacy sudo formatting, the new
+workflow's runner census, and two assertions pinning the over-redaction expressly being repaired.
+This full-suite failure remains evidence; a focused pass does not close it.
+
+The next repair keeps required-slot handling independent of the existing 32-family metadata and
+verifier registry. An ordered qualifier parser consumes at most one explicit password type; the
+following token is a required value even when it is another type digit or qualifier word. Terminal
+wrap behavior remains for the first type when its value actually follows on the next line.
+The verifier checks these required values independently. Complete Junos NTP statements preserve
+their numeric key ID and public type/hash/value markers, while the actual value remains required.
+Closed structural/show and descriptive statements preserve their whole public syntax without
+exempting a username/neighbor/enable value that spells the same word.
+
+Creator arguments follow the upstream `net-snmp-create-v3-user.in` script's exact dispatch:
+both `-A`/`-a` can name the script's supported auth algorithm or a private auth value; both `-X`/`-x`
+do the same for its supported privacy algorithm or a private privacy value. Unsupported aliases
+such as `SHA256` remain private in creator slots, even though ordinary snmpcmd uses a broader
+algorithm vocabulary. Only escaped public argv bytes require masking from the generic observer.
+Wrapped authorization checks accept a placeholder plus closing structural punctuation and
+recognize complete subsequent Host/Accept headers without accepting an unsanitized wrapped value.
+
+The strict corpus grows to **870 rows**, retaining all **599** original review inputs and every
+previous strict input. Typed numeric/qualifier values, valid first-type wraps, descriptions, and
+creator public/private look-alikes have exact byte assertions. The original 1,706 W60 inputs and
+private sentinel lists remain intact. Two historical expectations (`create-v3-user` public DES and
+`config-after-2c` public wrapper) are retained as history; explicit W60b expectations additionally
+require their complete public syntax to survive. No private-value assertion or byte oracle is
+weakened. The focused lane now executes the entire W60 suite as well as W60b and runner contracts.
+No local runtime, test, build, output generation or rebaseline occurred. Fresh exact-head all 15
+required contexts and the focused lane must pass before stopping for independent refutation.

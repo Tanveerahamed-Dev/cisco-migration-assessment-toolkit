@@ -3748,7 +3748,7 @@ def _redact_qualifier_step(step: str, ends: str = "") -> str:
 
 def _redact_family(anchor: str, qualifiers=(), stops=(), *, prose: bool = False,
                    value_guard: str = "", flags: int = 0, run: str = "", stop_unless: str = "",
-                   soft=(), ends: str = "", required: bool = False):
+                   soft=(), ends: str = "", required: bool = False, register: bool = True):
     """Compile one credential family: ANCHOR, an atomic qualifier run, then the value as group ``v``.
 
     ``run`` replaces the default "any of ``qualifiers``, repeated" with an ORDERED qualifier model
@@ -3792,8 +3792,9 @@ def _redact_family(anchor: str, qualifiers=(), stops=(), *, prose: bool = False,
         # The placeholder is taken on its own so a re-run leaves '<redacted>; ## SECRET-DATA' (Junos) and
         # '"password": <redacted>}' (JSON text) exactly as they are.
         + r"(?P<v>" + re.escape(_REDACT_PLACEHOLDER) + r"|" + _REDACT_SECRET_VALUE + ")")
-    _REDACT_SECRET_ANCHORS.append(re.compile(_g(anchor), re.IGNORECASE | flags))
-    _REDACT_SECRET_AFTER.append(re.compile(_g(after), re.IGNORECASE | flags))
+    if register:
+        _REDACT_SECRET_ANCHORS.append(re.compile(_g(anchor), re.IGNORECASE | flags))
+        _REDACT_SECRET_AFTER.append(re.compile(_g(after), re.IGNORECASE | flags))
     return re.compile(_g(anchor + after), re.IGNORECASE | flags)
 
 
@@ -3828,17 +3829,23 @@ _REDACT_AUTH_MODE_RUN = (
 # Required configuration value slots precede generic structural/prose exemptions. A password whose
 # value is 'encryption', 'policy' or 'required' is still a password. The bounded username options
 # cannot consume the password/secret keyword. These same expressions run in the long-line sweep.
+_REDACT_REQUIRED_PASSWORD_RUN = (
+    r"(?:" + _redact_qualifier_step(r"level{H}\d+") + r")?"
+    r"(?:" + _redact_qualifier_step(_REDACT_HASH + r"|scrypt|ENC|encrypted|clear|cipher|plain|simple|"
+                                   r"irreversible-cipher|hashed|text|fallback|is") + r")*"
+    r"(?:(?P<pwtype>" + _REDACT_TYPE_THEN_VALUE + r"){H})?")
 _REDACT_REQUIRED_RES = [
     _redact_family(
         r"\b(?:username{H}{S}+(?:{H}(?:privilege|role|algorithm-type|view){H}{S}+){0,8}{H}(?:password|secret)"
         r"|neighbor{H}{S}+{H}password|enable{H}(?:password|secret))",
-        (r"level{H}\d+", _REDACT_TYPE_THEN_VALUE, _REDACT_HASH, r"scrypt", r"ENC", r"encrypted",
-         r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text", r"fallback"),
-        required=True),
-    _redact_family(r"\b(?:ip{H}ospf|ntp){H}authentication-key", run=_REDACT_KEY_RUN, required=True),
-    _redact_family(r"\bcrypto{H}isakmp{H}key", run=_REDACT_KEY_RUN, required=True),
+        run=_REDACT_REQUIRED_PASSWORD_RUN, required=True, register=False),
+    _redact_family(r"\b(?:ip{H}ospf{H}authentication-key|(?P<ntp_key>ntp{H}authentication-key))",
+                   run=_REDACT_KEY_RUN, required=True, register=False),
+    _redact_family(r"\bcrypto{H}isakmp{H}key", run=_REDACT_KEY_RUN, required=True, register=False),
+    _redact_family(r"\bset{H}system{H}ntp{H}authentication-key{H}\d+{H}type{H}"
+                   + _REDACT_HASH + r"{H}value(?P<required_value>)", required=True, register=False),
 ]
-_REDACT_SECRET_RES = _REDACT_REQUIRED_RES + [
+_REDACT_SECRET_RES = [
     # FortiGate 'set <secret-attribute>[N] [ENC] <VALUE>'. The attribute set is CLOSED (a name containing
     # 'key' is not therefore a secret: 'keylife' is a timer); a numbered attribute ('password2' ..
     # 'password5' of 'config user fsso') is the same attribute.
@@ -3972,7 +3979,6 @@ _REDACT_SECRET_RES = _REDACT_REQUIRED_RES + [
 #: Speed only, aligned with `_REDACT_SECRET_RES`: a literal every match of that family's anchor contains
 #: (compared casefolded, a superset of IGNORECASE matching). A family is skipped on a line holding none.
 _REDACT_SECRET_NEEDLES = (
-    ("username", "neighbor", "enable"), ("authentication-key",), ("isakmp",),
     ("set",), ("snmp-server",), ("snmp-server",), ("v3user",), ("v3user",), ("snmp-server",),
     ("community",), ("community",), ("community",),
     ("community-map", "community-name", "snmp-community-string", "trap-group"), ("config",), ("config",),
@@ -3988,7 +3994,7 @@ assert len(_REDACT_SECRET_NEEDLES) == len(_REDACT_SECRET_RES) == len(_REDACT_SEC
 #: and (round 3) the free-string forms main never reached: NHRP 'authentication', FHRP 'authentication
 #: text', AireOS 'config radius|tacacs ... add' and 'config mgmtuser|netuser add'. FHRP 'authentication
 #: md5' and the SNMPv3 users are not: a 'vrrp 10 authentication md5' does not cost the next line a word.
-_REDACT_SECRET_CROSS = (True, True, True, True, False, False, False, False, True, True, True, True, False, True, True, True,
+_REDACT_SECRET_CROSS = (True, False, False, False, False, True, True, True, True, False, True, True, True,
                         False, True, True, False, True, False, False, False, True, True, False, False, False,
                         False, False, False, False, True, True)
 assert len(_REDACT_SECRET_CROSS) == len(_REDACT_SECRET_RES)
@@ -4114,12 +4120,15 @@ def _redact_grammar_sub(has_next: bool, delim: str = "", *, preserve_quotes: boo
     (group ``v``) becomes the placeholder. A trailing banner delimiter on the value is kept so the
     scrub can never delete the end of a banner body (`_REDACT_BANNER_RE`)."""
     def sub(m) -> str:
+        if _redact_required_is_junos_container(m):
+            return m.group(0)
         value = m.group("v")
         if (value == _REDACT_PLACEHOLDER
                 or len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]
                 and value[1:-1] == _REDACT_PLACEHOLDER):
             return m.group(0)
         if (has_next and (_REDACT_TYPE_DIGIT_RE.fullmatch(value) or value == _REDACT_WRAP_ENC)
+                and not _redact_required_value_ready(m)
                 and not _REDACT_WS_RE.sub("", m.string[m.end():])):
             return m.group(0)
         keep = delim if delim and value.endswith(delim) and value != delim else ""
@@ -4131,6 +4140,38 @@ def _redact_grammar_sub(has_next: bool, delim: str = "", *, preserve_quotes: boo
 
 
 _REDACT_GRAMMAR_SUBS = {False: _redact_grammar_sub(False), True: _redact_grammar_sub(True)}
+
+
+def _redact_required_value_ready(match) -> bool:
+    groups = match.groupdict()
+    return groups.get("pwtype") is not None or groups.get("required_value") is not None
+
+
+def _redact_required_is_junos_container(match) -> bool:
+    """A Junos set statement's key ID is a container reference, not its value."""
+    native = match.groupdict().get("ntp_key") is not None
+    if native:
+        pos, owners = match.start("ntp_key"), ("system", "set")
+    else:
+        pos = match.start() - len("authentication-")
+        if pos < 0 or match.string[pos:match.start()].casefold() != "authentication-":
+            return False
+        owners = ("ntp", "system", "set")
+    for word in owners:
+        while pos and match.string[pos - 1] in _REDACT_WS_CHARS:
+            pos -= 1
+        start = pos - len(word)
+        if start < 0 or match.string[start:pos].casefold() != word:
+            return False
+        if start and match.string[start - 1] not in _REDACT_WS_CHARS:
+            return False
+        pos = start
+    return native or _REDACT_REQUIRED_RES[3].match(match.string, pos) is not None
+
+
+_REDACT_JUNOS_NTP_ID_RE = re.compile(_g(
+    r"\bset{H}system{H}ntp{H}authentication-key{H}(?P<id>\d+){H}type{H}"
+    + _REDACT_HASH + r"{H}value{H}{S}"), re.IGNORECASE)
 _REDACT_NTP_KEY_ID_RE = re.compile(_g(
     r"\bntp{H}authentication-key{H}(?P<id>\d{1,10})(?={H}" + _REDACT_HASH + r"{H}{S})"), re.IGNORECASE)
 _REDACT_KEYCHAIN_HEADER_RE = re.compile(_g(r"^{h}*key{H}chain{H}{S}+{h}*\Z"), re.IGNORECASE)
@@ -4473,8 +4514,9 @@ _REDACT_ARGV_OPTIONS = {
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
              ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol"),
              ("-v", "version"), ("-l", "level")),
-    "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"),
-                    ("-3M", "value"), ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value"),
+    "snmp-create": (("-c", "value"), ("-A", "create-auth"), ("-X", "create-priv"), ("-3m", "value"),
+                    ("-3M", "value"), ("-3k", "value"), ("-3K", "value"),
+                    ("-a", "create-auth"), ("-x", "create-priv"),
                     ("-v", "version"), ("-l", "level")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
@@ -5059,8 +5101,10 @@ def _redact_sweep_bad_tokens(masked: str, anchor: int, delim: str = ""):
 def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
     masked = _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
     ids = [m.span("id") for m in _REDACT_NTP_KEY_ID_RE.finditer(line)] if config_slots else []
+    if config_slots:
+        ids = list(heapq.merge(ids, (m.span("id") for m in _REDACT_JUNOS_NTP_ID_RE.finditer(line))))
     public = ([(a, b) for a, b, kind in _redact_argv_walk(line)[0]
-               if kind in {"protocol", "version", "level"}
+               if chr(92) in line[a:b]
                and _redact_public_argv_operand(kind, _redact_decode_word(line[a:b])[0])]
               if config_slots and "-" in line else [])
     if ids or public:
@@ -5119,9 +5163,28 @@ def _redact_complete_check_context(line: str, word: str, start: int, end: int) -
 def _redact_complete_password_structure(line: str, start: int, end: int) -> bool:
     """A password follow-word is structure only in its complete standalone configuration statement."""
     prefix = line[:start].strip(_REDACT_WS_CHARS)
+    tail = line[end:].strip(_REDACT_WS_CHARS)
+    # A closed descriptive operation, not a credential value. Only this password
+    # anchor is void; another credential keyword still anchors the ordinary sweep.
+    # Actual username/neighbor/enable slots are scrubbed before this observer.
+    description = prefix.casefold()
+    if ((description == "description" or description.startswith("description")
+         and description[len("description"):len("description") + 1] in _REDACT_WS_CHARS)
+            and not any(ch in prefix for ch in ":=\"'\r\n")
+            and re.fullmatch(r"reset\s+kiosk", tail, re.IGNORECASE)):
+        return True
+    if re.fullmatch(r"\s*ip\s+ssh\s+server\s+algorithm\s+authentication\s+"
+                    r"(?:publickey|password|keyboard)(?:\s+(?:publickey|password|keyboard))*\s*",
+                    line, re.IGNORECASE):
+        return True
+    if re.fullmatch(_g(r"set{H}system{H}login"), prefix, re.IGNORECASE):
+        return bool(re.fullmatch(r"minimum-length\s+\d{1,5}", tail, re.IGNORECASE))
     if not (_redact_line_word_lead(line, start) or prefix.casefold() == "feature"):
         return False
-    tail = line[end:].strip(_REDACT_WS_CHARS)
+    if re.fullmatch(r"(?:encryption\s*:\s*(?:enabled|disabled)"
+                    r"|strength\s+check\s+is\s+(?:enabled|disabled)"
+                    r"|expiry\s+warning\s*:\s*\d{1,5}\s+days)", tail, re.IGNORECASE):
+        return True
     words = "|".join(map(re.escape, sorted(_REDACT_SWEEP_VOID_NEXT["password"])))
     return bool(re.fullmatch("(?:" + words + r")(?:\s+(?:aes|enable|disable|enabled|disabled|\d{1,5})){0,3}",
                              tail, re.IGNORECASE))
@@ -5146,7 +5209,7 @@ def _redact_keyword_anchor(masked: str):
         void_next = nxt in _REDACT_SWEEP_VOID_NEXT.get(word, ())
         if word in _ENGINE_SECURITY_CHECKS:
             void_next = _redact_complete_check_context(masked, word, found.start(), end)
-        elif word == "password" and void_next:
+        elif word == "password":
             void_next = _redact_complete_password_structure(masked, found.start(), end)
         if (void_next or prev in _REDACT_SWEEP_VOID_PREV.get(word, ())
                 or (end > found.end() and masked[found.start():end].casefold() in _REDACT_SWEEP_ALLOW)):
@@ -5799,6 +5862,12 @@ def _redact_argv_option(text: str, options, shape_only: bool):
 
 def _redact_public_argv_operand(kind: str, word: str) -> bool:
     """Known public values only in their semantically decoded argument slots."""
+    # The creator script dispatches both letter cases by these exact values;
+    # other strings, including snmpcmd-only aliases, are passphrases.
+    if kind == "create-auth":
+        return word in {"MD5", "SHA", "SHA-512", "SHA-384", "SHA-256", "SHA-224", "md5", "sha"}
+    if kind == "create-priv":
+        return word in {"DES", "AES", "AES128", "des", "aes", "aes128"}
     if kind not in {"protocol", "version", "level"}:
         return False
     folded = word.casefold()
@@ -6022,8 +6091,9 @@ def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bo
     """The residual sweep of ONE line (after the grammar)."""
     required = [_redact_operand_span(line, *m.span("v"), "value")
                 for regex in _REDACT_REQUIRED_RES for m in regex.finditer(line)
-                if m.group("v") != _REDACT_PLACEHOLDER and m.group("v") != _REDACT_WRAP_ENC
-                and not _REDACT_TYPE_DIGIT_RE.fullmatch(m.group("v"))]
+                if not _redact_required_is_junos_container(m) and m.group("v") != _REDACT_PLACEHOLDER
+                and (_redact_required_value_ready(m) or m.group("v") != _REDACT_WRAP_ENC
+                     and not _REDACT_TYPE_DIGIT_RE.fullmatch(m.group("v")))]
     required = [span for span in required if span is not None]
     if required:
         line = _redact_replace_spans(line, required)
@@ -6060,11 +6130,13 @@ def _redact_grammar_line(line: str, has_next: bool, delim: str = "") -> str:
     if len(line) > _REDACT_GRAMMAR_MAX_LINE or not _REDACT_LINE_PREFILTER.search(low):
         return line
     sub = _redact_grammar_sub(has_next, delim) if delim else _REDACT_GRAMMAR_SUBS[has_next]
-    for index, (rx, needles) in enumerate(zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES)):
+    required_sub = _redact_grammar_sub(has_next, delim, preserve_quotes=True)
+    for rx in _REDACT_REQUIRED_RES:
+        line = rx.sub(required_sub, line)
+    low = line.casefold()
+    for rx, needles in zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES):
         if any(needle in low for needle in needles):
-            replace = (_redact_grammar_sub(has_next, delim, preserve_quotes=True)
-                       if index < len(_REDACT_REQUIRED_RES) else sub)
-            scrubbed = rx.sub(replace, line)
+            scrubbed = rx.sub(sub, line)
             if scrubbed != line:
                 line, low = scrubbed, scrubbed.casefold()
     return line

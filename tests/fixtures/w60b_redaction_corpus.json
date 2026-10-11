@@ -9343,19 +9343,23 @@
       "id": "creator:algorithm-shaped-passwords",
       "finding": "R1",
       "text": "net-snmp-create-v3-user -a aes-192c -x aes-256c -A SHA256 -X AES qrCreatorUser\n",
-      "secrets": ["aes-192c", "aes-256c"],
-      "structural": ["-A SHA256", "-X AES", "qrCreatorUser"],
+      "secrets": ["aes-192c", "aes-256c", "SHA256"],
+      "structural": ["-A", "-X AES", "qrCreatorUser"],
       "mode": "must_redact",
-      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n"
+      "original_expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n",
+      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> -A <redacted> -X AES qrCreatorUser\n",
+      "note": "Strengthened helper semantics: SHA256 is not in the exact public creator auth-algorithm set. Both auth option spellings therefore own private values outside that set; the original input and earlier mistaken expectation are preserved."
     },
     {
       "id": "creator:net-snmp-config-password-slots",
       "finding": "R1",
       "text": "net-snmp-config --create-snmpv3-user -a aes-192c -x aes-256c -A SHA256 -X AES qrCreatorUser\n",
-      "secrets": ["aes-192c", "aes-256c"],
-      "structural": ["--create-snmpv3-user", "-A SHA256", "-X AES", "qrCreatorUser"],
+      "secrets": ["aes-192c", "aes-256c", "SHA256"],
+      "structural": ["--create-snmpv3-user", "-A", "-X AES", "qrCreatorUser"],
       "mode": "must_redact",
-      "expect": "net-snmp-config --create-snmpv3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n"
+      "original_expect": "net-snmp-config --create-snmpv3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n",
+      "expect": "net-snmp-config --create-snmpv3-user -a <redacted> -x <redacted> -A <redacted> -X AES qrCreatorUser\n",
+      "note": "The config create-user mode delegates to the helper. SHA256 is private under its exact public auth vocabulary; the original input and prior expectation remain recorded."
     },
     {
       "id": "named-snmp:attached-public-algorithms",
@@ -9451,6 +9455,2922 @@
       "secrets": [],
       "structural": [],
       "mode": "must_keep"
+    },
+    {
+      "id": "description:closed-password-reset-kiosk",
+      "finding": "R1",
+      "text": "description Reception console - password reset kiosk\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep"
+    },
+    {
+      "id": "description:password-reset-kiosk-secret-tail",
+      "finding": "R1",
+      "text": "description Reception console - password reset kiosk SyntheticReset255\n",
+      "secrets": ["SyntheticReset255"],
+      "structural": ["description Reception console"],
+      "mode": "must_redact"
+    },
+    {
+      "id": "description:password-reset-unknown-value",
+      "finding": "R1",
+      "text": "description Reception console - password reset SyntheticReset256\n",
+      "secrets": ["SyntheticReset256"],
+      "structural": ["description Reception console"],
+      "mode": "must_redact"
+    },
+    {
+      "id": "description:private-value-before-public-phrase",
+      "finding": "R1",
+      "text": "description Reception console - password SyntheticReset257 password reset kiosk\n",
+      "secrets": ["SyntheticReset257"],
+      "structural": ["description Reception console"],
+      "mode": "must_redact"
+    },
+    {
+      "id": "description:embedded-required-username-reset-value",
+      "finding": "R1",
+      "text": "description Reception console - username reset_console password reset kiosk\n",
+      "secrets": ["reset"],
+      "structural": ["description Reception console", "username reset_console", "password"],
+      "mode": "must_redact",
+      "note": "The required username password value is reset. The public-looking suffix cannot exempt its required value slot."
+    },
+    {
+      "id": "description:quoted-reset-kiosk-private-value",
+      "finding": "R1",
+      "text": "description Reception console - password \"reset kiosk\"\n",
+      "secrets": ["reset kiosk"],
+      "structural": ["description Reception console"],
+      "mode": "must_redact"
+    },
+    {
+      "id": "description:assigned-reset-private-value",
+      "finding": "R1",
+      "text": "description Reception console - password=reset kiosk\n",
+      "secrets": ["reset"],
+      "structural": ["description Reception console"],
+      "mode": "must_redact"
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:0",
+      "finding": "R1",
+      "text": "17002\tusername ordered_slot_user privilege 7 password 0 0\ninterface GigabitEthernet1/0/1\n description followup-control-27301\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17002\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/1\n description followup-control-27301\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17002\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/1\n description followup-control-27301\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:0",
+      "finding": "R1",
+      "text": "17003\tusername ordered_slot_user privilege 7 password 0 0 ordered-note-value\ninterface GigabitEthernet1/0/2\n description followup-control-27302\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17003\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/2\n description followup-control-27302\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:1",
+      "finding": "R1",
+      "text": "17004\tusername ordered_slot_user privilege 7 password 0 1\ninterface GigabitEthernet1/0/3\n description followup-control-27303\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17004\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/3\n description followup-control-27303\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17004\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/3\n description followup-control-27303\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:1",
+      "finding": "R1",
+      "text": "17005\tusername ordered_slot_user privilege 7 password 0 1 ordered-note-value\ninterface GigabitEthernet1/0/4\n description followup-control-27304\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17005\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/4\n description followup-control-27304\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:2",
+      "finding": "R1",
+      "text": "17006\tusername ordered_slot_user privilege 7 password 0 2\ninterface GigabitEthernet1/0/5\n description followup-control-27305\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17006\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/5\n description followup-control-27305\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17006\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/5\n description followup-control-27305\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:2",
+      "finding": "R1",
+      "text": "17007\tusername ordered_slot_user privilege 7 password 0 2 ordered-note-value\ninterface GigabitEthernet1/0/6\n description followup-control-27306\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17007\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/6\n description followup-control-27306\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:3",
+      "finding": "R1",
+      "text": "17008\tusername ordered_slot_user privilege 7 password 0 3\ninterface GigabitEthernet1/0/7\n description followup-control-27307\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17008\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/7\n description followup-control-27307\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17008\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/7\n description followup-control-27307\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:3",
+      "finding": "R1",
+      "text": "17009\tusername ordered_slot_user privilege 7 password 0 3 ordered-note-value\ninterface GigabitEthernet1/0/8\n description followup-control-27308\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17009\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/8\n description followup-control-27308\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:4",
+      "finding": "R1",
+      "text": "17010\tusername ordered_slot_user privilege 7 password 0 4\ninterface GigabitEthernet1/0/9\n description followup-control-27309\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17010\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/9\n description followup-control-27309\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17010\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/9\n description followup-control-27309\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:4",
+      "finding": "R1",
+      "text": "17011\tusername ordered_slot_user privilege 7 password 0 4 ordered-note-value\ninterface GigabitEthernet1/0/10\n description followup-control-27310\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17011\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/10\n description followup-control-27310\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:5",
+      "finding": "R1",
+      "text": "17012\tusername ordered_slot_user privilege 7 password 0 5\ninterface GigabitEthernet1/0/11\n description followup-control-27311\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17012\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/11\n description followup-control-27311\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17012\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/11\n description followup-control-27311\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:5",
+      "finding": "R1",
+      "text": "17013\tusername ordered_slot_user privilege 7 password 0 5 ordered-note-value\ninterface GigabitEthernet1/0/12\n description followup-control-27312\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17013\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/12\n description followup-control-27312\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:6",
+      "finding": "R1",
+      "text": "17014\tusername ordered_slot_user privilege 7 password 0 6\ninterface GigabitEthernet1/0/13\n description followup-control-27313\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17014\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/13\n description followup-control-27313\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17014\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/13\n description followup-control-27313\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:6",
+      "finding": "R1",
+      "text": "17015\tusername ordered_slot_user privilege 7 password 0 6 ordered-note-value\ninterface GigabitEthernet1/0/14\n description followup-control-27314\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17015\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/14\n description followup-control-27314\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:7",
+      "finding": "R1",
+      "text": "17016\tusername ordered_slot_user privilege 7 password 0 7\ninterface GigabitEthernet1/0/15\n description followup-control-27315\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17016\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/15\n description followup-control-27315\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17016\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/15\n description followup-control-27315\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:7",
+      "finding": "R1",
+      "text": "17017\tusername ordered_slot_user privilege 7 password 0 7 ordered-note-value\ninterface GigabitEthernet1/0/16\n description followup-control-27316\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17017\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/16\n description followup-control-27316\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:8",
+      "finding": "R1",
+      "text": "17018\tusername ordered_slot_user privilege 7 password 0 8\ninterface GigabitEthernet1/0/17\n description followup-control-27317\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17018\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/17\n description followup-control-27317\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17018\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/17\n description followup-control-27317\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:8",
+      "finding": "R1",
+      "text": "17019\tusername ordered_slot_user privilege 7 password 0 8 ordered-note-value\ninterface GigabitEthernet1/0/18\n description followup-control-27318\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17019\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/18\n description followup-control-27318\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:9",
+      "finding": "R1",
+      "text": "17020\tusername ordered_slot_user privilege 7 password 0 9\ninterface GigabitEthernet1/0/19\n description followup-control-27319\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17020\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/19\n description followup-control-27319\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17020\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/19\n description followup-control-27319\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:9",
+      "finding": "R1",
+      "text": "17021\tusername ordered_slot_user privilege 7 password 0 9 ordered-note-value\ninterface GigabitEthernet1/0/20\n description followup-control-27320\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17021\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/20\n description followup-control-27320\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:10",
+      "finding": "R1",
+      "text": "17022\tusername ordered_slot_user privilege 7 password 0 10\ninterface GigabitEthernet1/0/21\n description followup-control-27321\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17022\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/21\n description followup-control-27321\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17022\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/21\n description followup-control-27321\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:10",
+      "finding": "R1",
+      "text": "17023\tusername ordered_slot_user privilege 7 password 0 10 ordered-note-value\ninterface GigabitEthernet1/0/22\n description followup-control-27322\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17023\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/22\n description followup-control-27322\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:14",
+      "finding": "R1",
+      "text": "17024\tusername ordered_slot_user privilege 7 password 0 14\ninterface GigabitEthernet1/0/23\n description followup-control-27323\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17024\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/23\n description followup-control-27323\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17024\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/23\n description followup-control-27323\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:14",
+      "finding": "R1",
+      "text": "17025\tusername ordered_slot_user privilege 7 password 0 14 ordered-note-value\ninterface GigabitEthernet1/0/24\n description followup-control-27324\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17025\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/24\n description followup-control-27324\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:enc",
+      "finding": "R1",
+      "text": "17026\tusername ordered_slot_user privilege 7 password 0 enc\ninterface GigabitEthernet1/0/25\n description followup-control-27325\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17026\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/25\n description followup-control-27325\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17026\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/25\n description followup-control-27325\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:enc",
+      "finding": "R1",
+      "text": "17027\tusername ordered_slot_user privilege 7 password 0 enc ordered-note-value\ninterface GigabitEthernet1/0/26\n description followup-control-27326\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17027\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/26\n description followup-control-27326\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:md5",
+      "finding": "R1",
+      "text": "17028\tusername ordered_slot_user privilege 7 password 0 md5\ninterface GigabitEthernet1/0/27\n description followup-control-27327\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17028\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/27\n description followup-control-27327\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17028\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/27\n description followup-control-27327\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:md5",
+      "finding": "R1",
+      "text": "17029\tusername ordered_slot_user privilege 7 password 0 md5 ordered-note-value\ninterface GigabitEthernet1/0/28\n description followup-control-27328\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17029\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/28\n description followup-control-27328\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:next-statement:hash",
+      "finding": "R1",
+      "text": "17030\tusername ordered_slot_user privilege 7 password 0 hash\ninterface GigabitEthernet1/0/29\n description followup-control-27329\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17030\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/29\n description followup-control-27329\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17030\tusername ordered_slot_user privilege 7 password 0 <redacted>\ninterface GigabitEthernet1/0/29\n description followup-control-27329\n"
+    },
+    {
+      "id": "ordered-type:username-password:note-tail:hash",
+      "finding": "R1",
+      "text": "17031\tusername ordered_slot_user privilege 7 password 0 hash ordered-note-value\ninterface GigabitEthernet1/0/30\n description followup-control-27330\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17031\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/30\n description followup-control-27330\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-password:quoted-value7",
+      "finding": "R1",
+      "text": "17032\tusername ordered_slot_user privilege 7 password 0 \"7\"\ninterface GigabitEthernet1/0/31\n description followup-control-27331\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17032\tusername ordered_slot_user privilege 7 password 0 ",
+        "interface GigabitEthernet1/0/31\n description followup-control-27331\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "Only the quoted value is private after type 0. Its quote syntax and any public privilege 7 must remain.",
+      "expect": "17032\tusername ordered_slot_user privilege 7 password 0 \"<redacted>\"\ninterface GigabitEthernet1/0/31\n description followup-control-27331\n"
+    },
+    {
+      "id": "ordered-type:username-password:first-type7-wrap",
+      "finding": "R1",
+      "text": "17033\tusername ordered_slot_user privilege 7 password 7\nSyntheticOrderedWrap17033\ninterface GigabitEthernet1/0/32\n description followup-control-27332\n",
+      "secrets": [
+        "SyntheticOrderedWrap17033"
+      ],
+      "structural": [
+        "17033\tusername ordered_slot_user privilege 7 password 7\n",
+        "interface GigabitEthernet1/0/32\n description followup-control-27332\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "SyntheticOrderedWrap17033": 1
+      },
+      "note": "A first encoding type 7 can still carry a legitimate wrapped value. This is not the second digit after an already consumed type.",
+      "expect": "17033\tusername ordered_slot_user privilege 7 password 7\n<redacted>\ninterface GigabitEthernet1/0/32\n description followup-control-27332\n"
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:0",
+      "finding": "R1",
+      "text": "17034\tusername ordered_slot_user privilege 7 secret 0 0\ninterface GigabitEthernet1/0/33\n description followup-control-27333\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17034\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/33\n description followup-control-27333\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17034\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/33\n description followup-control-27333\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:0",
+      "finding": "R1",
+      "text": "17035\tusername ordered_slot_user privilege 7 secret 0 0 ordered-note-value\ninterface GigabitEthernet1/0/34\n description followup-control-27334\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17035\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/34\n description followup-control-27334\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:1",
+      "finding": "R1",
+      "text": "17036\tusername ordered_slot_user privilege 7 secret 0 1\ninterface GigabitEthernet1/0/35\n description followup-control-27335\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17036\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/35\n description followup-control-27335\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17036\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/35\n description followup-control-27335\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:1",
+      "finding": "R1",
+      "text": "17037\tusername ordered_slot_user privilege 7 secret 0 1 ordered-note-value\ninterface GigabitEthernet1/0/36\n description followup-control-27336\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17037\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/36\n description followup-control-27336\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:2",
+      "finding": "R1",
+      "text": "17038\tusername ordered_slot_user privilege 7 secret 0 2\ninterface GigabitEthernet1/0/37\n description followup-control-27337\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17038\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/37\n description followup-control-27337\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17038\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/37\n description followup-control-27337\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:2",
+      "finding": "R1",
+      "text": "17039\tusername ordered_slot_user privilege 7 secret 0 2 ordered-note-value\ninterface GigabitEthernet1/0/38\n description followup-control-27338\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17039\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/38\n description followup-control-27338\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:3",
+      "finding": "R1",
+      "text": "17040\tusername ordered_slot_user privilege 7 secret 0 3\ninterface GigabitEthernet1/0/39\n description followup-control-27339\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17040\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/39\n description followup-control-27339\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17040\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/39\n description followup-control-27339\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:3",
+      "finding": "R1",
+      "text": "17041\tusername ordered_slot_user privilege 7 secret 0 3 ordered-note-value\ninterface GigabitEthernet1/0/40\n description followup-control-27340\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17041\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/40\n description followup-control-27340\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:4",
+      "finding": "R1",
+      "text": "17042\tusername ordered_slot_user privilege 7 secret 0 4\ninterface GigabitEthernet1/0/41\n description followup-control-27341\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17042\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/41\n description followup-control-27341\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17042\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/41\n description followup-control-27341\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:4",
+      "finding": "R1",
+      "text": "17043\tusername ordered_slot_user privilege 7 secret 0 4 ordered-note-value\ninterface GigabitEthernet1/0/42\n description followup-control-27342\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17043\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/42\n description followup-control-27342\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:5",
+      "finding": "R1",
+      "text": "17044\tusername ordered_slot_user privilege 7 secret 0 5\ninterface GigabitEthernet1/0/43\n description followup-control-27343\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17044\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/43\n description followup-control-27343\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17044\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/43\n description followup-control-27343\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:5",
+      "finding": "R1",
+      "text": "17045\tusername ordered_slot_user privilege 7 secret 0 5 ordered-note-value\ninterface GigabitEthernet1/0/44\n description followup-control-27344\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17045\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/44\n description followup-control-27344\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:6",
+      "finding": "R1",
+      "text": "17046\tusername ordered_slot_user privilege 7 secret 0 6\ninterface GigabitEthernet1/0/45\n description followup-control-27345\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17046\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/45\n description followup-control-27345\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17046\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/45\n description followup-control-27345\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:6",
+      "finding": "R1",
+      "text": "17047\tusername ordered_slot_user privilege 7 secret 0 6 ordered-note-value\ninterface GigabitEthernet1/0/46\n description followup-control-27346\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17047\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/46\n description followup-control-27346\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:7",
+      "finding": "R1",
+      "text": "17048\tusername ordered_slot_user privilege 7 secret 0 7\ninterface GigabitEthernet1/0/47\n description followup-control-27347\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17048\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/47\n description followup-control-27347\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17048\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet1/0/47\n description followup-control-27347\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:7",
+      "finding": "R1",
+      "text": "17049\tusername ordered_slot_user privilege 7 secret 0 7 ordered-note-value\ninterface GigabitEthernet1/0/48\n description followup-control-27348\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17049\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet1/0/48\n description followup-control-27348\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:8",
+      "finding": "R1",
+      "text": "17050\tusername ordered_slot_user privilege 7 secret 0 8\ninterface GigabitEthernet2/0/1\n description followup-control-27349\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17050\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/1\n description followup-control-27349\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17050\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/1\n description followup-control-27349\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:8",
+      "finding": "R1",
+      "text": "17051\tusername ordered_slot_user privilege 7 secret 0 8 ordered-note-value\ninterface GigabitEthernet2/0/2\n description followup-control-27350\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17051\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/2\n description followup-control-27350\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:9",
+      "finding": "R1",
+      "text": "17052\tusername ordered_slot_user privilege 7 secret 0 9\ninterface GigabitEthernet2/0/3\n description followup-control-27351\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17052\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/3\n description followup-control-27351\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17052\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/3\n description followup-control-27351\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:9",
+      "finding": "R1",
+      "text": "17053\tusername ordered_slot_user privilege 7 secret 0 9 ordered-note-value\ninterface GigabitEthernet2/0/4\n description followup-control-27352\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17053\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/4\n description followup-control-27352\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:10",
+      "finding": "R1",
+      "text": "17054\tusername ordered_slot_user privilege 7 secret 0 10\ninterface GigabitEthernet2/0/5\n description followup-control-27353\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17054\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/5\n description followup-control-27353\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17054\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/5\n description followup-control-27353\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:10",
+      "finding": "R1",
+      "text": "17055\tusername ordered_slot_user privilege 7 secret 0 10 ordered-note-value\ninterface GigabitEthernet2/0/6\n description followup-control-27354\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17055\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/6\n description followup-control-27354\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:14",
+      "finding": "R1",
+      "text": "17056\tusername ordered_slot_user privilege 7 secret 0 14\ninterface GigabitEthernet2/0/7\n description followup-control-27355\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17056\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/7\n description followup-control-27355\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17056\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/7\n description followup-control-27355\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:14",
+      "finding": "R1",
+      "text": "17057\tusername ordered_slot_user privilege 7 secret 0 14 ordered-note-value\ninterface GigabitEthernet2/0/8\n description followup-control-27356\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17057\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/8\n description followup-control-27356\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:enc",
+      "finding": "R1",
+      "text": "17058\tusername ordered_slot_user privilege 7 secret 0 enc\ninterface GigabitEthernet2/0/9\n description followup-control-27357\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17058\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/9\n description followup-control-27357\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17058\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/9\n description followup-control-27357\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:enc",
+      "finding": "R1",
+      "text": "17059\tusername ordered_slot_user privilege 7 secret 0 enc ordered-note-value\ninterface GigabitEthernet2/0/10\n description followup-control-27358\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17059\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/10\n description followup-control-27358\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:md5",
+      "finding": "R1",
+      "text": "17060\tusername ordered_slot_user privilege 7 secret 0 md5\ninterface GigabitEthernet2/0/11\n description followup-control-27359\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17060\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/11\n description followup-control-27359\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17060\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/11\n description followup-control-27359\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:md5",
+      "finding": "R1",
+      "text": "17061\tusername ordered_slot_user privilege 7 secret 0 md5 ordered-note-value\ninterface GigabitEthernet2/0/12\n description followup-control-27360\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17061\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/12\n description followup-control-27360\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:next-statement:hash",
+      "finding": "R1",
+      "text": "17062\tusername ordered_slot_user privilege 7 secret 0 hash\ninterface GigabitEthernet2/0/13\n description followup-control-27361\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17062\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/13\n description followup-control-27361\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17062\tusername ordered_slot_user privilege 7 secret 0 <redacted>\ninterface GigabitEthernet2/0/13\n description followup-control-27361\n"
+    },
+    {
+      "id": "ordered-type:username-secret:note-tail:hash",
+      "finding": "R1",
+      "text": "17063\tusername ordered_slot_user privilege 7 secret 0 hash ordered-note-value\ninterface GigabitEthernet2/0/14\n description followup-control-27362\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17063\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/14\n description followup-control-27362\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:username-secret:quoted-value7",
+      "finding": "R1",
+      "text": "17064\tusername ordered_slot_user privilege 7 secret 0 \"7\"\ninterface GigabitEthernet2/0/15\n description followup-control-27363\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17064\tusername ordered_slot_user privilege 7 secret 0 ",
+        "interface GigabitEthernet2/0/15\n description followup-control-27363\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "Only the quoted value is private after type 0. Its quote syntax and any public privilege 7 must remain.",
+      "expect": "17064\tusername ordered_slot_user privilege 7 secret 0 \"<redacted>\"\ninterface GigabitEthernet2/0/15\n description followup-control-27363\n"
+    },
+    {
+      "id": "ordered-type:username-secret:first-type7-wrap",
+      "finding": "R1",
+      "text": "17065\tusername ordered_slot_user privilege 7 secret 7\nSyntheticOrderedWrap17065\ninterface GigabitEthernet2/0/16\n description followup-control-27364\n",
+      "secrets": [
+        "SyntheticOrderedWrap17065"
+      ],
+      "structural": [
+        "17065\tusername ordered_slot_user privilege 7 secret 7\n",
+        "interface GigabitEthernet2/0/16\n description followup-control-27364\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "SyntheticOrderedWrap17065": 1
+      },
+      "note": "A first encoding type 7 can still carry a legitimate wrapped value. This is not the second digit after an already consumed type.",
+      "expect": "17065\tusername ordered_slot_user privilege 7 secret 7\n<redacted>\ninterface GigabitEthernet2/0/16\n description followup-control-27364\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:0",
+      "finding": "R1",
+      "text": "17066\tneighbor 198.51.100.173 password 0 0\ninterface GigabitEthernet2/0/17\n description followup-control-27365\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17066\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/17\n description followup-control-27365\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17066\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/17\n description followup-control-27365\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:0",
+      "finding": "R1",
+      "text": "17067\tneighbor 198.51.100.173 password 0 0 ordered-note-value\ninterface GigabitEthernet2/0/18\n description followup-control-27366\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17067\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/18\n description followup-control-27366\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:1",
+      "finding": "R1",
+      "text": "17068\tneighbor 198.51.100.173 password 0 1\ninterface GigabitEthernet2/0/19\n description followup-control-27367\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17068\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/19\n description followup-control-27367\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17068\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/19\n description followup-control-27367\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:1",
+      "finding": "R1",
+      "text": "17069\tneighbor 198.51.100.173 password 0 1 ordered-note-value\ninterface GigabitEthernet2/0/20\n description followup-control-27368\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17069\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/20\n description followup-control-27368\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:2",
+      "finding": "R1",
+      "text": "17070\tneighbor 198.51.100.173 password 0 2\ninterface GigabitEthernet2/0/21\n description followup-control-27369\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17070\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/21\n description followup-control-27369\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17070\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/21\n description followup-control-27369\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:2",
+      "finding": "R1",
+      "text": "17071\tneighbor 198.51.100.173 password 0 2 ordered-note-value\ninterface GigabitEthernet2/0/22\n description followup-control-27370\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17071\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/22\n description followup-control-27370\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:3",
+      "finding": "R1",
+      "text": "17072\tneighbor 198.51.100.173 password 0 3\ninterface GigabitEthernet2/0/23\n description followup-control-27371\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17072\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/23\n description followup-control-27371\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17072\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/23\n description followup-control-27371\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:3",
+      "finding": "R1",
+      "text": "17073\tneighbor 198.51.100.173 password 0 3 ordered-note-value\ninterface GigabitEthernet2/0/24\n description followup-control-27372\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17073\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/24\n description followup-control-27372\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:4",
+      "finding": "R1",
+      "text": "17074\tneighbor 198.51.100.173 password 0 4\ninterface GigabitEthernet2/0/25\n description followup-control-27373\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17074\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/25\n description followup-control-27373\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17074\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/25\n description followup-control-27373\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:4",
+      "finding": "R1",
+      "text": "17075\tneighbor 198.51.100.173 password 0 4 ordered-note-value\ninterface GigabitEthernet2/0/26\n description followup-control-27374\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17075\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/26\n description followup-control-27374\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:5",
+      "finding": "R1",
+      "text": "17076\tneighbor 198.51.100.173 password 0 5\ninterface GigabitEthernet2/0/27\n description followup-control-27375\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17076\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/27\n description followup-control-27375\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17076\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/27\n description followup-control-27375\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:5",
+      "finding": "R1",
+      "text": "17077\tneighbor 198.51.100.173 password 0 5 ordered-note-value\ninterface GigabitEthernet2/0/28\n description followup-control-27376\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17077\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/28\n description followup-control-27376\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:6",
+      "finding": "R1",
+      "text": "17078\tneighbor 198.51.100.173 password 0 6\ninterface GigabitEthernet2/0/29\n description followup-control-27377\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17078\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/29\n description followup-control-27377\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17078\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/29\n description followup-control-27377\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:6",
+      "finding": "R1",
+      "text": "17079\tneighbor 198.51.100.173 password 0 6 ordered-note-value\ninterface GigabitEthernet2/0/30\n description followup-control-27378\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17079\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/30\n description followup-control-27378\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:7",
+      "finding": "R1",
+      "text": "17080\tneighbor 198.51.100.173 password 0 7\ninterface GigabitEthernet2/0/31\n description followup-control-27379\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17080\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/31\n description followup-control-27379\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17080\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/31\n description followup-control-27379\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:7",
+      "finding": "R1",
+      "text": "17081\tneighbor 198.51.100.173 password 0 7 ordered-note-value\ninterface GigabitEthernet2/0/32\n description followup-control-27380\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17081\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/32\n description followup-control-27380\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:8",
+      "finding": "R1",
+      "text": "17082\tneighbor 198.51.100.173 password 0 8\ninterface GigabitEthernet2/0/33\n description followup-control-27381\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17082\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/33\n description followup-control-27381\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17082\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/33\n description followup-control-27381\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:8",
+      "finding": "R1",
+      "text": "17083\tneighbor 198.51.100.173 password 0 8 ordered-note-value\ninterface GigabitEthernet2/0/34\n description followup-control-27382\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17083\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/34\n description followup-control-27382\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:9",
+      "finding": "R1",
+      "text": "17084\tneighbor 198.51.100.173 password 0 9\ninterface GigabitEthernet2/0/35\n description followup-control-27383\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17084\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/35\n description followup-control-27383\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17084\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/35\n description followup-control-27383\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:9",
+      "finding": "R1",
+      "text": "17085\tneighbor 198.51.100.173 password 0 9 ordered-note-value\ninterface GigabitEthernet2/0/36\n description followup-control-27384\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17085\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/36\n description followup-control-27384\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:10",
+      "finding": "R1",
+      "text": "17086\tneighbor 198.51.100.173 password 0 10\ninterface GigabitEthernet2/0/37\n description followup-control-27385\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17086\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/37\n description followup-control-27385\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17086\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/37\n description followup-control-27385\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:10",
+      "finding": "R1",
+      "text": "17087\tneighbor 198.51.100.173 password 0 10 ordered-note-value\ninterface GigabitEthernet2/0/38\n description followup-control-27386\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17087\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/38\n description followup-control-27386\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:14",
+      "finding": "R1",
+      "text": "17088\tneighbor 198.51.100.173 password 0 14\ninterface GigabitEthernet2/0/39\n description followup-control-27387\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17088\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/39\n description followup-control-27387\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17088\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/39\n description followup-control-27387\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:14",
+      "finding": "R1",
+      "text": "17089\tneighbor 198.51.100.173 password 0 14 ordered-note-value\ninterface GigabitEthernet2/0/40\n description followup-control-27388\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17089\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/40\n description followup-control-27388\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:enc",
+      "finding": "R1",
+      "text": "17090\tneighbor 198.51.100.173 password 0 enc\ninterface GigabitEthernet2/0/41\n description followup-control-27389\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17090\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/41\n description followup-control-27389\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17090\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/41\n description followup-control-27389\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:enc",
+      "finding": "R1",
+      "text": "17091\tneighbor 198.51.100.173 password 0 enc ordered-note-value\ninterface GigabitEthernet2/0/42\n description followup-control-27390\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17091\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/42\n description followup-control-27390\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:md5",
+      "finding": "R1",
+      "text": "17092\tneighbor 198.51.100.173 password 0 md5\ninterface GigabitEthernet2/0/43\n description followup-control-27391\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17092\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/43\n description followup-control-27391\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17092\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/43\n description followup-control-27391\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:md5",
+      "finding": "R1",
+      "text": "17093\tneighbor 198.51.100.173 password 0 md5 ordered-note-value\ninterface GigabitEthernet2/0/44\n description followup-control-27392\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17093\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/44\n description followup-control-27392\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:next-statement:hash",
+      "finding": "R1",
+      "text": "17094\tneighbor 198.51.100.173 password 0 hash\ninterface GigabitEthernet2/0/45\n description followup-control-27393\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17094\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/45\n description followup-control-27393\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17094\tneighbor 198.51.100.173 password 0 <redacted>\ninterface GigabitEthernet2/0/45\n description followup-control-27393\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:note-tail:hash",
+      "finding": "R1",
+      "text": "17095\tneighbor 198.51.100.173 password 0 hash ordered-note-value\ninterface GigabitEthernet2/0/46\n description followup-control-27394\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17095\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/46\n description followup-control-27394\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:neighbor-password:quoted-value7",
+      "finding": "R1",
+      "text": "17096\tneighbor 198.51.100.173 password 0 \"7\"\ninterface GigabitEthernet2/0/47\n description followup-control-27395\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17096\tneighbor 198.51.100.173 password 0 ",
+        "interface GigabitEthernet2/0/47\n description followup-control-27395\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "Only the quoted value is private after type 0. Its quote syntax and any public privilege 7 must remain.",
+      "expect": "17096\tneighbor 198.51.100.173 password 0 \"<redacted>\"\ninterface GigabitEthernet2/0/47\n description followup-control-27395\n"
+    },
+    {
+      "id": "ordered-type:neighbor-password:first-type7-wrap",
+      "finding": "R1",
+      "text": "17097\tneighbor 198.51.100.173 password 7\nSyntheticOrderedWrap17097\ninterface GigabitEthernet2/0/48\n description followup-control-27396\n",
+      "secrets": [
+        "SyntheticOrderedWrap17097"
+      ],
+      "structural": [
+        "17097\tneighbor 198.51.100.173 password 7\n",
+        "interface GigabitEthernet2/0/48\n description followup-control-27396\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "SyntheticOrderedWrap17097": 1
+      },
+      "note": "A first encoding type 7 can still carry a legitimate wrapped value. This is not the second digit after an already consumed type.",
+      "expect": "17097\tneighbor 198.51.100.173 password 7\n<redacted>\ninterface GigabitEthernet2/0/48\n description followup-control-27396\n"
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:0",
+      "finding": "R1",
+      "text": "17098\tenable password 0 0\ninterface GigabitEthernet3/0/1\n description followup-control-27397\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17098\tenable password 0 ",
+        "interface GigabitEthernet3/0/1\n description followup-control-27397\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17098\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/1\n description followup-control-27397\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:0",
+      "finding": "R1",
+      "text": "17099\tenable password 0 0 ordered-note-value\ninterface GigabitEthernet3/0/2\n description followup-control-27398\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17099\tenable password 0 ",
+        "interface GigabitEthernet3/0/2\n description followup-control-27398\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:1",
+      "finding": "R1",
+      "text": "17100\tenable password 0 1\ninterface GigabitEthernet3/0/3\n description followup-control-27399\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17100\tenable password 0 ",
+        "interface GigabitEthernet3/0/3\n description followup-control-27399\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17100\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/3\n description followup-control-27399\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:1",
+      "finding": "R1",
+      "text": "17101\tenable password 0 1 ordered-note-value\ninterface GigabitEthernet3/0/4\n description followup-control-27400\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17101\tenable password 0 ",
+        "interface GigabitEthernet3/0/4\n description followup-control-27400\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:2",
+      "finding": "R1",
+      "text": "17102\tenable password 0 2\ninterface GigabitEthernet3/0/5\n description followup-control-27401\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17102\tenable password 0 ",
+        "interface GigabitEthernet3/0/5\n description followup-control-27401\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17102\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/5\n description followup-control-27401\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:2",
+      "finding": "R1",
+      "text": "17103\tenable password 0 2 ordered-note-value\ninterface GigabitEthernet3/0/6\n description followup-control-27402\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17103\tenable password 0 ",
+        "interface GigabitEthernet3/0/6\n description followup-control-27402\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:3",
+      "finding": "R1",
+      "text": "17104\tenable password 0 3\ninterface GigabitEthernet3/0/7\n description followup-control-27403\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17104\tenable password 0 ",
+        "interface GigabitEthernet3/0/7\n description followup-control-27403\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17104\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/7\n description followup-control-27403\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:3",
+      "finding": "R1",
+      "text": "17105\tenable password 0 3 ordered-note-value\ninterface GigabitEthernet3/0/8\n description followup-control-27404\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17105\tenable password 0 ",
+        "interface GigabitEthernet3/0/8\n description followup-control-27404\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:4",
+      "finding": "R1",
+      "text": "17106\tenable password 0 4\ninterface GigabitEthernet3/0/9\n description followup-control-27405\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17106\tenable password 0 ",
+        "interface GigabitEthernet3/0/9\n description followup-control-27405\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17106\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/9\n description followup-control-27405\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:4",
+      "finding": "R1",
+      "text": "17107\tenable password 0 4 ordered-note-value\ninterface GigabitEthernet3/0/10\n description followup-control-27406\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17107\tenable password 0 ",
+        "interface GigabitEthernet3/0/10\n description followup-control-27406\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:5",
+      "finding": "R1",
+      "text": "17108\tenable password 0 5\ninterface GigabitEthernet3/0/11\n description followup-control-27407\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17108\tenable password 0 ",
+        "interface GigabitEthernet3/0/11\n description followup-control-27407\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17108\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/11\n description followup-control-27407\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:5",
+      "finding": "R1",
+      "text": "17109\tenable password 0 5 ordered-note-value\ninterface GigabitEthernet3/0/12\n description followup-control-27408\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17109\tenable password 0 ",
+        "interface GigabitEthernet3/0/12\n description followup-control-27408\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:6",
+      "finding": "R1",
+      "text": "17110\tenable password 0 6\ninterface GigabitEthernet3/0/13\n description followup-control-27409\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17110\tenable password 0 ",
+        "interface GigabitEthernet3/0/13\n description followup-control-27409\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17110\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/13\n description followup-control-27409\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:6",
+      "finding": "R1",
+      "text": "17111\tenable password 0 6 ordered-note-value\ninterface GigabitEthernet3/0/14\n description followup-control-27410\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17111\tenable password 0 ",
+        "interface GigabitEthernet3/0/14\n description followup-control-27410\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:7",
+      "finding": "R1",
+      "text": "17112\tenable password 0 7\ninterface GigabitEthernet3/0/15\n description followup-control-27411\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17112\tenable password 0 ",
+        "interface GigabitEthernet3/0/15\n description followup-control-27411\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17112\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/15\n description followup-control-27411\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:7",
+      "finding": "R1",
+      "text": "17113\tenable password 0 7 ordered-note-value\ninterface GigabitEthernet3/0/16\n description followup-control-27412\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17113\tenable password 0 ",
+        "interface GigabitEthernet3/0/16\n description followup-control-27412\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:8",
+      "finding": "R1",
+      "text": "17114\tenable password 0 8\ninterface GigabitEthernet3/0/17\n description followup-control-27413\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17114\tenable password 0 ",
+        "interface GigabitEthernet3/0/17\n description followup-control-27413\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17114\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/17\n description followup-control-27413\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:8",
+      "finding": "R1",
+      "text": "17115\tenable password 0 8 ordered-note-value\ninterface GigabitEthernet3/0/18\n description followup-control-27414\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17115\tenable password 0 ",
+        "interface GigabitEthernet3/0/18\n description followup-control-27414\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:9",
+      "finding": "R1",
+      "text": "17116\tenable password 0 9\ninterface GigabitEthernet3/0/19\n description followup-control-27415\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17116\tenable password 0 ",
+        "interface GigabitEthernet3/0/19\n description followup-control-27415\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17116\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/19\n description followup-control-27415\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:9",
+      "finding": "R1",
+      "text": "17117\tenable password 0 9 ordered-note-value\ninterface GigabitEthernet3/0/20\n description followup-control-27416\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17117\tenable password 0 ",
+        "interface GigabitEthernet3/0/20\n description followup-control-27416\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:10",
+      "finding": "R1",
+      "text": "17118\tenable password 0 10\ninterface GigabitEthernet3/0/21\n description followup-control-27417\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17118\tenable password 0 ",
+        "interface GigabitEthernet3/0/21\n description followup-control-27417\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17118\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/21\n description followup-control-27417\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:10",
+      "finding": "R1",
+      "text": "17119\tenable password 0 10 ordered-note-value\ninterface GigabitEthernet3/0/22\n description followup-control-27418\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17119\tenable password 0 ",
+        "interface GigabitEthernet3/0/22\n description followup-control-27418\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:14",
+      "finding": "R1",
+      "text": "17120\tenable password 0 14\ninterface GigabitEthernet3/0/23\n description followup-control-27419\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17120\tenable password 0 ",
+        "interface GigabitEthernet3/0/23\n description followup-control-27419\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17120\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/23\n description followup-control-27419\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:14",
+      "finding": "R1",
+      "text": "17121\tenable password 0 14 ordered-note-value\ninterface GigabitEthernet3/0/24\n description followup-control-27420\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17121\tenable password 0 ",
+        "interface GigabitEthernet3/0/24\n description followup-control-27420\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:enc",
+      "finding": "R1",
+      "text": "17122\tenable password 0 enc\ninterface GigabitEthernet3/0/25\n description followup-control-27421\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17122\tenable password 0 ",
+        "interface GigabitEthernet3/0/25\n description followup-control-27421\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17122\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/25\n description followup-control-27421\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:enc",
+      "finding": "R1",
+      "text": "17123\tenable password 0 enc ordered-note-value\ninterface GigabitEthernet3/0/26\n description followup-control-27422\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17123\tenable password 0 ",
+        "interface GigabitEthernet3/0/26\n description followup-control-27422\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:md5",
+      "finding": "R1",
+      "text": "17124\tenable password 0 md5\ninterface GigabitEthernet3/0/27\n description followup-control-27423\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17124\tenable password 0 ",
+        "interface GigabitEthernet3/0/27\n description followup-control-27423\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17124\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/27\n description followup-control-27423\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:md5",
+      "finding": "R1",
+      "text": "17125\tenable password 0 md5 ordered-note-value\ninterface GigabitEthernet3/0/28\n description followup-control-27424\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17125\tenable password 0 ",
+        "interface GigabitEthernet3/0/28\n description followup-control-27424\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:next-statement:hash",
+      "finding": "R1",
+      "text": "17126\tenable password 0 hash\ninterface GigabitEthernet3/0/29\n description followup-control-27425\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17126\tenable password 0 ",
+        "interface GigabitEthernet3/0/29\n description followup-control-27425\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17126\tenable password 0 <redacted>\ninterface GigabitEthernet3/0/29\n description followup-control-27425\n"
+    },
+    {
+      "id": "ordered-type:enable-password:note-tail:hash",
+      "finding": "R1",
+      "text": "17127\tenable password 0 hash ordered-note-value\ninterface GigabitEthernet3/0/30\n description followup-control-27426\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17127\tenable password 0 ",
+        "interface GigabitEthernet3/0/30\n description followup-control-27426\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-password:quoted-value7",
+      "finding": "R1",
+      "text": "17128\tenable password 0 \"7\"\ninterface GigabitEthernet3/0/31\n description followup-control-27427\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17128\tenable password 0 ",
+        "interface GigabitEthernet3/0/31\n description followup-control-27427\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "Only the quoted value is private after type 0. Its quote syntax and any public privilege 7 must remain.",
+      "expect": "17128\tenable password 0 \"<redacted>\"\ninterface GigabitEthernet3/0/31\n description followup-control-27427\n"
+    },
+    {
+      "id": "ordered-type:enable-password:first-type7-wrap",
+      "finding": "R1",
+      "text": "17129\tenable password 7\nSyntheticOrderedWrap17129\ninterface GigabitEthernet3/0/32\n description followup-control-27428\n",
+      "secrets": [
+        "SyntheticOrderedWrap17129"
+      ],
+      "structural": [
+        "17129\tenable password 7\n",
+        "interface GigabitEthernet3/0/32\n description followup-control-27428\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "SyntheticOrderedWrap17129": 1
+      },
+      "note": "A first encoding type 7 can still carry a legitimate wrapped value. This is not the second digit after an already consumed type.",
+      "expect": "17129\tenable password 7\n<redacted>\ninterface GigabitEthernet3/0/32\n description followup-control-27428\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:0",
+      "finding": "R1",
+      "text": "17130\tenable secret 0 0\ninterface GigabitEthernet3/0/33\n description followup-control-27429\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17130\tenable secret 0 ",
+        "interface GigabitEthernet3/0/33\n description followup-control-27429\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17130\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/33\n description followup-control-27429\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:0",
+      "finding": "R1",
+      "text": "17131\tenable secret 0 0 ordered-note-value\ninterface GigabitEthernet3/0/34\n description followup-control-27430\n",
+      "secrets": [
+        "0"
+      ],
+      "structural": [
+        "17131\tenable secret 0 ",
+        "interface GigabitEthernet3/0/34\n description followup-control-27430\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "0": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:1",
+      "finding": "R1",
+      "text": "17132\tenable secret 0 1\ninterface GigabitEthernet3/0/35\n description followup-control-27431\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17132\tenable secret 0 ",
+        "interface GigabitEthernet3/0/35\n description followup-control-27431\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17132\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/35\n description followup-control-27431\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:1",
+      "finding": "R1",
+      "text": "17133\tenable secret 0 1 ordered-note-value\ninterface GigabitEthernet3/0/36\n description followup-control-27432\n",
+      "secrets": [
+        "1"
+      ],
+      "structural": [
+        "17133\tenable secret 0 ",
+        "interface GigabitEthernet3/0/36\n description followup-control-27432\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "1": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:2",
+      "finding": "R1",
+      "text": "17134\tenable secret 0 2\ninterface GigabitEthernet3/0/37\n description followup-control-27433\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17134\tenable secret 0 ",
+        "interface GigabitEthernet3/0/37\n description followup-control-27433\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17134\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/37\n description followup-control-27433\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:2",
+      "finding": "R1",
+      "text": "17135\tenable secret 0 2 ordered-note-value\ninterface GigabitEthernet3/0/38\n description followup-control-27434\n",
+      "secrets": [
+        "2"
+      ],
+      "structural": [
+        "17135\tenable secret 0 ",
+        "interface GigabitEthernet3/0/38\n description followup-control-27434\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "2": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:3",
+      "finding": "R1",
+      "text": "17136\tenable secret 0 3\ninterface GigabitEthernet3/0/39\n description followup-control-27435\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17136\tenable secret 0 ",
+        "interface GigabitEthernet3/0/39\n description followup-control-27435\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17136\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/39\n description followup-control-27435\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:3",
+      "finding": "R1",
+      "text": "17137\tenable secret 0 3 ordered-note-value\ninterface GigabitEthernet3/0/40\n description followup-control-27436\n",
+      "secrets": [
+        "3"
+      ],
+      "structural": [
+        "17137\tenable secret 0 ",
+        "interface GigabitEthernet3/0/40\n description followup-control-27436\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "3": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:4",
+      "finding": "R1",
+      "text": "17138\tenable secret 0 4\ninterface GigabitEthernet3/0/41\n description followup-control-27437\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17138\tenable secret 0 ",
+        "interface GigabitEthernet3/0/41\n description followup-control-27437\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17138\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/41\n description followup-control-27437\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:4",
+      "finding": "R1",
+      "text": "17139\tenable secret 0 4 ordered-note-value\ninterface GigabitEthernet3/0/42\n description followup-control-27438\n",
+      "secrets": [
+        "4"
+      ],
+      "structural": [
+        "17139\tenable secret 0 ",
+        "interface GigabitEthernet3/0/42\n description followup-control-27438\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "4": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:5",
+      "finding": "R1",
+      "text": "17140\tenable secret 0 5\ninterface GigabitEthernet3/0/43\n description followup-control-27439\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17140\tenable secret 0 ",
+        "interface GigabitEthernet3/0/43\n description followup-control-27439\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17140\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/43\n description followup-control-27439\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:5",
+      "finding": "R1",
+      "text": "17141\tenable secret 0 5 ordered-note-value\ninterface GigabitEthernet3/0/44\n description followup-control-27440\n",
+      "secrets": [
+        "5"
+      ],
+      "structural": [
+        "17141\tenable secret 0 ",
+        "interface GigabitEthernet3/0/44\n description followup-control-27440\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:6",
+      "finding": "R1",
+      "text": "17142\tenable secret 0 6\ninterface GigabitEthernet3/0/45\n description followup-control-27441\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17142\tenable secret 0 ",
+        "interface GigabitEthernet3/0/45\n description followup-control-27441\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17142\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/45\n description followup-control-27441\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:6",
+      "finding": "R1",
+      "text": "17143\tenable secret 0 6 ordered-note-value\ninterface GigabitEthernet3/0/46\n description followup-control-27442\n",
+      "secrets": [
+        "6"
+      ],
+      "structural": [
+        "17143\tenable secret 0 ",
+        "interface GigabitEthernet3/0/46\n description followup-control-27442\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "6": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:7",
+      "finding": "R1",
+      "text": "17144\tenable secret 0 7\ninterface GigabitEthernet3/0/47\n description followup-control-27443\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17144\tenable secret 0 ",
+        "interface GigabitEthernet3/0/47\n description followup-control-27443\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17144\tenable secret 0 <redacted>\ninterface GigabitEthernet3/0/47\n description followup-control-27443\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:7",
+      "finding": "R1",
+      "text": "17145\tenable secret 0 7 ordered-note-value\ninterface GigabitEthernet3/0/48\n description followup-control-27444\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17145\tenable secret 0 ",
+        "interface GigabitEthernet3/0/48\n description followup-control-27444\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:8",
+      "finding": "R1",
+      "text": "17146\tenable secret 0 8\ninterface GigabitEthernet4/0/1\n description followup-control-27445\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17146\tenable secret 0 ",
+        "interface GigabitEthernet4/0/1\n description followup-control-27445\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17146\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/1\n description followup-control-27445\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:8",
+      "finding": "R1",
+      "text": "17147\tenable secret 0 8 ordered-note-value\ninterface GigabitEthernet4/0/2\n description followup-control-27446\n",
+      "secrets": [
+        "8"
+      ],
+      "structural": [
+        "17147\tenable secret 0 ",
+        "interface GigabitEthernet4/0/2\n description followup-control-27446\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "8": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:9",
+      "finding": "R1",
+      "text": "17148\tenable secret 0 9\ninterface GigabitEthernet4/0/3\n description followup-control-27447\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17148\tenable secret 0 ",
+        "interface GigabitEthernet4/0/3\n description followup-control-27447\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17148\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/3\n description followup-control-27447\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:9",
+      "finding": "R1",
+      "text": "17149\tenable secret 0 9 ordered-note-value\ninterface GigabitEthernet4/0/4\n description followup-control-27448\n",
+      "secrets": [
+        "9"
+      ],
+      "structural": [
+        "17149\tenable secret 0 ",
+        "interface GigabitEthernet4/0/4\n description followup-control-27448\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "9": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:10",
+      "finding": "R1",
+      "text": "17150\tenable secret 0 10\ninterface GigabitEthernet4/0/5\n description followup-control-27449\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17150\tenable secret 0 ",
+        "interface GigabitEthernet4/0/5\n description followup-control-27449\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17150\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/5\n description followup-control-27449\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:10",
+      "finding": "R1",
+      "text": "17151\tenable secret 0 10 ordered-note-value\ninterface GigabitEthernet4/0/6\n description followup-control-27450\n",
+      "secrets": [
+        "10"
+      ],
+      "structural": [
+        "17151\tenable secret 0 ",
+        "interface GigabitEthernet4/0/6\n description followup-control-27450\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "10": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:14",
+      "finding": "R1",
+      "text": "17152\tenable secret 0 14\ninterface GigabitEthernet4/0/7\n description followup-control-27451\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17152\tenable secret 0 ",
+        "interface GigabitEthernet4/0/7\n description followup-control-27451\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17152\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/7\n description followup-control-27451\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:14",
+      "finding": "R1",
+      "text": "17153\tenable secret 0 14 ordered-note-value\ninterface GigabitEthernet4/0/8\n description followup-control-27452\n",
+      "secrets": [
+        "14"
+      ],
+      "structural": [
+        "17153\tenable secret 0 ",
+        "interface GigabitEthernet4/0/8\n description followup-control-27452\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "14": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:enc",
+      "finding": "R1",
+      "text": "17154\tenable secret 0 enc\ninterface GigabitEthernet4/0/9\n description followup-control-27453\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17154\tenable secret 0 ",
+        "interface GigabitEthernet4/0/9\n description followup-control-27453\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17154\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/9\n description followup-control-27453\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:enc",
+      "finding": "R1",
+      "text": "17155\tenable secret 0 enc ordered-note-value\ninterface GigabitEthernet4/0/10\n description followup-control-27454\n",
+      "secrets": [
+        "enc"
+      ],
+      "structural": [
+        "17155\tenable secret 0 ",
+        "interface GigabitEthernet4/0/10\n description followup-control-27454\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "enc": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:md5",
+      "finding": "R1",
+      "text": "17156\tenable secret 0 md5\ninterface GigabitEthernet4/0/11\n description followup-control-27455\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17156\tenable secret 0 ",
+        "interface GigabitEthernet4/0/11\n description followup-control-27455\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17156\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/11\n description followup-control-27455\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:md5",
+      "finding": "R1",
+      "text": "17157\tenable secret 0 md5 ordered-note-value\ninterface GigabitEthernet4/0/12\n description followup-control-27456\n",
+      "secrets": [
+        "md5"
+      ],
+      "structural": [
+        "17157\tenable secret 0 ",
+        "interface GigabitEthernet4/0/12\n description followup-control-27456\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "md5": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:next-statement:hash",
+      "finding": "R1",
+      "text": "17158\tenable secret 0 hash\ninterface GigabitEthernet4/0/13\n description followup-control-27457\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17158\tenable secret 0 ",
+        "interface GigabitEthernet4/0/13\n description followup-control-27457\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An explicit encoding type 0 was consumed. The next operand is the required private value, even if numeric or qualifier-shaped; the following complete interface must remain byte-identical.",
+      "expect": "17158\tenable secret 0 <redacted>\ninterface GigabitEthernet4/0/13\n description followup-control-27457\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:note-tail:hash",
+      "finding": "R1",
+      "text": "17159\tenable secret 0 hash ordered-note-value\ninterface GigabitEthernet4/0/14\n description followup-control-27458\n",
+      "secrets": [
+        "hash"
+      ],
+      "structural": [
+        "17159\tenable secret 0 ",
+        "interface GigabitEthernet4/0/14\n description followup-control-27458\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "hash": 1
+      },
+      "note": "An encoding type cannot consume the next digit/qualifier-shaped password. The trailing note is not asserted public; required value removal and the next interface are asserted."
+    },
+    {
+      "id": "ordered-type:enable-secret:quoted-value7",
+      "finding": "R1",
+      "text": "17160\tenable secret 0 \"7\"\ninterface GigabitEthernet4/0/15\n description followup-control-27459\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17160\tenable secret 0 ",
+        "interface GigabitEthernet4/0/15\n description followup-control-27459\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "Only the quoted value is private after type 0. Its quote syntax and any public privilege 7 must remain.",
+      "expect": "17160\tenable secret 0 \"<redacted>\"\ninterface GigabitEthernet4/0/15\n description followup-control-27459\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:first-type7-wrap",
+      "finding": "R1",
+      "text": "17161\tenable secret 7\nSyntheticOrderedWrap17161\ninterface GigabitEthernet4/0/16\n description followup-control-27460\n",
+      "secrets": [
+        "SyntheticOrderedWrap17161"
+      ],
+      "structural": [
+        "17161\tenable secret 7\n",
+        "interface GigabitEthernet4/0/16\n description followup-control-27460\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "SyntheticOrderedWrap17161": 1
+      },
+      "note": "A first encoding type 7 can still carry a legitimate wrapped value. This is not the second digit after an already consumed type.",
+      "expect": "17161\tenable secret 7\n<redacted>\ninterface GigabitEthernet4/0/16\n description followup-control-27460\n"
+    },
+    {
+      "id": "ordered-type:enable-password:level7-type0-value7",
+      "finding": "R1",
+      "text": "17162\tenable password level 7 0 7\ninterface GigabitEthernet4/0/17\n description followup-control-27461\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17162\tenable password level 7 0 ",
+        "interface GigabitEthernet4/0/17\n description followup-control-27461\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "The level 7 is public metadata and type 0 is the one encoding type. Exactly one private occurrence of 7 must disappear; the level 7 and next interface must remain.",
+      "expect": "17162\tenable password level 7 0 <redacted>\ninterface GigabitEthernet4/0/17\n description followup-control-27461\n"
+    },
+    {
+      "id": "ordered-type:enable-secret:level7-type0-value7",
+      "finding": "R1",
+      "text": "17163\tenable secret level 7 0 7\ninterface GigabitEthernet4/0/18\n description followup-control-27462\n",
+      "secrets": [
+        "7"
+      ],
+      "structural": [
+        "17163\tenable secret level 7 0 ",
+        "interface GigabitEthernet4/0/18\n description followup-control-27462\n"
+      ],
+      "mode": "must_redact",
+      "value_occurrences_removed": {
+        "7": 1
+      },
+      "note": "The level 7 is public metadata and type 0 is the one encoding type. Exactly one private occurrence of 7 must disappear; the level 7 and next interface must remain.",
+      "expect": "17163\tenable secret level 7 0 <redacted>\ninterface GigabitEthernet4/0/18\n description followup-control-27462\n"
+    },
+    {
+      "id": "creator:exact-public-hyphen-auth-algorithm",
+      "finding": "R1",
+      "text": "net-snmp-create-v3-user -a CreatorAuth275 -x CreatorPriv275 -A SHA-256 -X AES128 creatorPublic275\n",
+      "secrets": ["CreatorAuth275", "CreatorPriv275"],
+      "structural": ["-A SHA-256", "-X AES128", "creatorPublic275"],
+      "mode": "must_redact",
+      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> -A SHA-256 -X AES128 creatorPublic275\n"
+    },
+    {
+      "id": "creator:lowercase-public-options-uppercase-passwords",
+      "finding": "R1",
+      "text": "net-snmp-config --create-snmpv3-user -a sha -x aes -A CreatorAuth276 -X CreatorPriv276 creatorPublic276\n",
+      "secrets": ["CreatorAuth276", "CreatorPriv276"],
+      "structural": ["--create-snmpv3-user", "-a sha", "-x aes", "creatorPublic276"],
+      "mode": "must_redact",
+      "expect": "net-snmp-config --create-snmpv3-user -a sha -x aes -A <redacted> -X <redacted> creatorPublic276\n"
     }
   ],
   "review_differential": [

@@ -118,6 +118,32 @@ def test_w60b_corpus_retains_review_and_every_required_stop_word():
         assert row["mode"] in {"must_redact", "must_keep"}
         if row["mode"] == "must_redact":
             assert row["secrets"] and all(_slot_count(secret, row["text"]) for secret in row["secrets"]), row
+        for secret, count in row.get("value_occurrences_removed", {}).items():
+            assert secret in row["secrets"] and count == 1 and _slot_count(secret, row["text"]) >= count, row
+
+
+def test_w60b_ordered_type_matrix_covers_each_private_value_without_reusing_a_fixture_line():
+    typed = {row["id"]: row for row in ROWS if row["id"].startswith("ordered-type:")}
+    forms = ("username-password", "username-secret", "neighbor-password", "enable-password", "enable-secret")
+    values = [str(number) for number in range(10)] + ["10", "14", "enc", "md5", "hash"]
+    for form in forms:
+        for value in values:
+            for variant in ("next-statement", "note-tail"):
+                assert f"ordered-type:{form}:{variant}:{value}" in typed
+        for variant in ("quoted-value7", "first-type7-wrap"):
+            assert f"ordered-type:{form}:{variant}" in typed
+    for form in ("enable-password", "enable-secret"):
+        assert f"ordered-type:{form}:level7-type0-value7" in typed
+    assert len(typed) == 162
+    old = _restore(json.loads((ROOT / "tests/fixtures/redaction_grammar_corpus.json").read_text(encoding="utf-8")))
+    prior_texts = [row["line"] for group in ("must_redact", "must_keep", "over_redacted", "qualifier_shaped")
+                   for row in old[group]]
+    prior_texts.extend(row["text"] for row in CORPUS["review_differential"])
+    prior_texts.extend(row["text"] for row in ROWS if row["id"] not in typed)
+    prior_lines = {line.strip() for text in prior_texts for line in text.splitlines() if line.strip()}
+    fresh_lines = [line.strip() for row in typed.values() for line in row["text"].splitlines() if line.strip()]
+    assert len(fresh_lines) == len(set(fresh_lines)), "an ordered-type source line is repeated"
+    assert not prior_lines.intersection(fresh_lines), "an ordered-type source line reuses an older corpus fixture"
 
 
 @pytest.mark.parametrize("row", ROWS, ids=[row["id"] for row in ROWS])
@@ -135,6 +161,10 @@ def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
         assert result[1] == 1, row["id"]
         for secret in row["secrets"]:
             assert _slot_count(secret, output) < _slot_count(secret, row["text"]), (row["id"], secret, output)
+            if secret in row.get("value_occurrences_removed", {}):
+                removed = _slot_count(secret, row["text"]) - _slot_count(secret, output)
+                assert removed == row["value_occurrences_removed"][secret], (
+                    row["id"], "removed a public type/level/privilege occurrence or retained the private value", secret, output)
         if "expect" in row:
             assert output == row["expect"], row["id"]
         for structural in row["structural"]:
