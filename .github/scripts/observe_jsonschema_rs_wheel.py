@@ -21,13 +21,13 @@ import urllib.request
 import zipfile
 import zlib
 
-VERSION = "0.58.5"
-FILENAME = "jsonschema_rs-0.58.5-cp310-abi3-win_amd64.whl"
-WHEEL_SHA256 = "f1e7d341ba53fc112a5c645f5f71834d9418f360c1d6f422c8c5314e95a65717"
-METADATA_URL = "https://pypi.org/pypi/jsonschema-rs/0.58.5/json"
-UPSTREAM_COMMIT = "13ab58cf82ab0ae5192762efbfc2850078ccff7a"
+VERSION = "0.58.6"
+FILENAME = "jsonschema_rs-0.58.6-cp310-abi3-win_amd64.whl"
+WHEEL_SHA256 = "b4319d634748d57a21017753838a663e08f58b69227170b994ac2da07677c519"
+METADATA_URL = "https://pypi.org/pypi/jsonschema-rs/0.58.6/json"
+UPSTREAM_COMMIT = "65092240629860ac2423a1f41fb265d49cc8d9ad"
 LICENSE_URL = f"https://raw.githubusercontent.com/Stranger6667/jsonschema/{UPSTREAM_COMMIT}/LICENSE"
-DIST_INFO = "jsonschema_rs-0.58.5.dist-info/"
+DIST_INFO = "jsonschema_rs-0.58.6.dist-info/"
 REQUIRED = (DIST_INFO + "METADATA", DIST_INFO + "WHEEL", DIST_INFO + "RECORD", DIST_INFO + "sboms/jsonschema-py.cyclonedx.json")
 SELF = ".github/scripts/observe_jsonschema_rs_wheel.py"
 TEST = "tests/test_jsonschema_rs_observation.py"

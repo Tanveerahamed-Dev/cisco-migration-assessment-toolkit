@@ -34,7 +34,7 @@ def files_fixture(license_present=True):
     files = {
         "jsonschema_rs/__init__.py": b"raise RuntimeError('PACKAGE CODE MUST NOT EXECUTE')\n",
         "jsonschema_rs/jsonschema_rs.pyd": b"synthetic native bytes\x00\xff",
-        observer.DIST_INFO + "METADATA": b"Metadata-Version: 2.4\nName: jsonschema_rs\nVersion: 0.58.5\nLicense: MIT\n\nFixture\n",
+        observer.DIST_INFO + "METADATA": b"Metadata-Version: 2.4\nName: jsonschema_rs\nVersion: 0.58.6\nLicense: MIT\n\nFixture\n",
         observer.DIST_INFO + "WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp310-abi3-win_amd64\n\n",
         observer.DIST_INFO + "sboms/jsonschema-py.cyclonedx.json": b'{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"name":"synthetic-fixture"}]}\n',
     }
@@ -67,7 +67,7 @@ def wheel_fixture(files=None, method=zipfile.ZIP_DEFLATED, streamed=False, extra
 
 
 def metadata_fixture():
-    return {"info": {"name": "jsonschema-rs", "version": "0.58.5"}, "urls": [{
+    return {"info": {"name": "jsonschema-rs", "version": "0.58.6"}, "urls": [{
         "filename": observer.FILENAME, "packagetype": "bdist_wheel", "yanked": False,
         "size": 6000000, "digests": {"sha256": observer.WHEEL_SHA256},
         "url": "https://files.pythonhosted.org/packages/aa/bb/cc/" + observer.FILENAME,
@@ -79,7 +79,7 @@ class SelectionTests(unittest.TestCase):
     def test_exact_public_target_selected_before_bytes(self):
         selected = observer.selected_distribution(metadata_fixture())
         self.assertEqual(selected["sha256"], observer.WHEEL_SHA256)
-        self.assertEqual(selected["filename"], "jsonschema_rs-0.58.5-cp310-abi3-win_amd64.whl")
+        self.assertEqual(selected["filename"], "jsonschema_rs-0.58.6-cp310-abi3-win_amd64.whl")
 
     def test_changed_target_identity_or_ambiguous_census_refused(self):
         for key, value in (("size", True), ("yanked", True), ("packagetype", "sdist"), ("digests", {"sha256": "0" * 64})):
@@ -143,7 +143,7 @@ class WheelDataTests(unittest.TestCase):
         self.assertEqual(set(selected), set(observer.REQUIRED))
 
     def test_wrong_name_version_platform_or_missing_sbom_refused(self):
-        for member, old, new in (("METADATA", b"jsonschema_rs", b"other"), ("METADATA", b"0.58.5", b"0.58.4"),
+        for member, old, new in (("METADATA", b"jsonschema_rs", b"other"), ("METADATA", b"0.58.6", b"0.58.4"),
                                  ("WHEEL", b"win_amd64", b"manylinux_x86_64")):
             with self.subTest(member=member, new=new):
                 files = files_fixture()

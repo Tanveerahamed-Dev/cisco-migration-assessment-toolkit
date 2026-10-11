@@ -1,10 +1,10 @@
 # Atlas bounded braces
 
 This local package replaces `braces` on exactly one dependency edge of the
-Master Reference build: Vinext 0.0.50 -> vite-plugin-commonjs 0.10.4 ->
+Master Reference build: Vinext 0.2.1 -> vite-plugin-commonjs 0.10.4 ->
 vite-plugin-dynamic-import 1.6.0 -> its nested fast-glob 3.3.3 ->
 micromatch 4.0.8 -> braces. The override in `master-reference/package.json`
-sits inside the `vinext@0.0.50` object, and no other lock record resolves
+sits inside the `vinext@0.2.1` object, and no other lock record resolves
 `braces`.
 
 ## Why it exists

@@ -132,14 +132,14 @@ _IMAGE_SIZE_HIGH_ADVISORIES = (
 )
 _NANOID_HIGH_ADVISORY = "GHSA-2v37-7h3g-55p8"
 _SHARP_HIGH_ADVISORY = "GHSA-wq5f-xc86-pv6w"
-_SHARP_MINIFLARE_VERSION = "5.20260801.1-alpha"
+_SHARP_MINIFLARE_VERSION = "5.20261006.0-alpha"
 _SHARP_PATCHED_VERSION = "0.35.5"
 _SHARP_LIBVIPS_PATCHED_VERSION = "1.3.4"
 _SHARP_INTEGRITY = (
     "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g=="
 )
 _SHARP_MINIFLARE_INTEGRITY = (
-    "sha512-BHPVzIDA6mbx7LefxpvkXW7DHx9FKB9GorZatbnrrFTt3CVMU8zuUpbgyCuebwDKcTTOZos43ta8GQ0eMVEpxA=="
+    "sha512-UP3qIeQKHba59GHxBqD8H2GateacluT4vrjIpqEgH78kCSUxdu8jA0f7MH7ftRSAnnB1oOvEsDtav3xevQDbpQ=="
 )
 _SHARP_PLATFORM_COMPONENTS = (
     "sharp-darwin-arm64",
@@ -268,11 +268,11 @@ class _BoundedLocalSubstitution:
         return f"{PurePosixPath(self.lockfile).parent.as_posix()}/{self.target}/"
 
 
-_VINEXT_0_0_50 = _NpmLockIdentity(
+_VINEXT_0_2_1 = _NpmLockIdentity(
     name="vinext",
-    version="0.0.50",
+    version="0.2.1",
     lockfile_path="node_modules/vinext",
-    integrity="sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig==",
+    integrity="sha512-QvafNbaDCWeXIRd9+8zvTMDXdByjeLGpJXx8CnmcrPRJHjqHUZj5SgjWueadUukKZA96kzjFdsCTUqJM6GkQsg==",
 )
 _MICROMATCH_4_0_8 = _NpmLockIdentity(
     name="micromatch",
@@ -288,9 +288,9 @@ _BOUNDED_LOCAL_SUBSTITUTIONS: tuple[_BoundedLocalSubstitution, ...] = (
     _BoundedLocalSubstitution(
         label="bounded image replacement",
         package="image-size",
-        scope=_VINEXT_0_0_50,
-        scope_label="Vinext 0.0.50",
-        consumer=_VINEXT_0_0_50,
+        scope=_VINEXT_0_2_1,
+        scope_label="Vinext 0.2.1",
+        consumer=_VINEXT_0_2_1,
         target="vendor/bounded-image-size",
         target_name="@atlas/bounded-image-size",
         target_version="1.0.0",
@@ -312,16 +312,16 @@ _BOUNDED_LOCAL_SUBSTITUTIONS: tuple[_BoundedLocalSubstitution, ...] = (
     _BoundedLocalSubstitution(
         label="bounded braces replacement",
         package="braces",
-        scope=_VINEXT_0_0_50,
-        scope_label="Vinext 0.0.50",
+        scope=_VINEXT_0_2_1,
+        scope_label="Vinext 0.2.1",
         consumer=_MICROMATCH_4_0_8,
         target="vendor/bounded-braces",
         target_name="@atlas/bounded-braces",
         target_version="3.0.3",
         target_license="MIT",
-        source_digest="404d828fe39b042ef982e5038c26f4f782c75996ce0373be80c558cbfa48b70c",
+        source_digest="8ef6724e80ee5077ef006c092bf021a12f569b89141c4acccf9bf14343af848b",
         source_files="10",
-        source_bytes="29684",
+        source_bytes="29682",
         advisories=(_BRACES_HIGH_ADVISORY,),
         provenance=(
             "Released npm braces 3.0.3 (tarball "

@@ -41,9 +41,9 @@ def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
         [raw, {"x-snapshot-sha256": hashlib.sha256(raw).hexdigest(), "x-snapshot-bytes": str(len(raw)),
                "x-snapshot-digest-form": "assesshub-store-blob", "cache-control": "no-store"}],
         [{**context, "payload": overview}, {"cache-control": "no-store",
-                                            "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
+                                            "x-atlas-native-validation": "jsonschema-rs/0.58.6"}],
         [{**context, "list": later}, {"cache-control": "no-store",
-                                      "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
+                                      "x-atlas-native-validation": "jsonschema-rs/0.58.6"}],
     ]
     if mutate:
         mutate(responses)

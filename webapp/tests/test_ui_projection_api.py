@@ -1160,7 +1160,7 @@ def native_body(client, sample):
 
 def test_native_transport_pins_provider_schema_and_preserves_public_errors(native_body):
     from backend import ui_projection_api as api
-    assert api.version("jsonschema-rs") == "0.58.5"
+    assert api.version("jsonschema-rs") == "0.58.6"
     assert api._native_schema_hash(api._VIEW_SCHEMA) == api._NATIVE_SCHEMA_HASHES["view"]
     assert api._native_schema_hash(api._LIST_SCHEMA) == api._NATIVE_SCHEMA_HASHES["list"]
     schema = deepcopy(api._VIEW_SCHEMA)
@@ -1910,7 +1910,7 @@ def test_native_full_document_declines_and_exceptions_replay_original_stock(clie
 def test_native_full_document_requires_literal_version_private_copy_and_full_schema(client, tmp_path, monkeypatch):
     from backend import ui_projection_api as api
     document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
-    assert api.version("jsonschema-rs") == "0.58.5"
+    assert api.version("jsonschema-rs") == "0.58.6"
     assert api._NATIVE_SCHEMA_HASHES["document"] == "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7"
     for replacement in (None, "0" * 64, api._NATIVE_SCHEMA_HASHES["carriage"]):
         with monkeypatch.context() as changed:
@@ -2016,7 +2016,7 @@ def test_native_document_success_never_certifies_a_nonnative_transport(tmp_path,
             assert "X-Atlas-Native-Validation" not in response.headers
         positive = client.get(path, params=params, headers=headers)
         assert positive.status_code == 200
-        assert positive.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.5"
+        assert positive.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.6"
         assert "X-Atlas-Native-Validation" not in client.get(path, params=params).headers
 
 
@@ -2024,7 +2024,7 @@ def _carriage_native_triplet(api, body, bad):
     schema = deepcopy(api._CARRIAGE_SCHEMA)
     validator, calls, exceptions = _native_observed(api, schema, "carriage")
     stock = api._stock_validator(schema)
-    assert api.version("jsonschema-rs") == "0.58.5"
+    assert api.version("jsonschema-rs") == "0.58.6"
     assert api._native_instance_allowed(body) and api._native_instance_allowed(bad)
     assert validator.is_valid(body) and stock.is_valid(body)
     assert calls == [True] and exceptions == []
@@ -2195,7 +2195,7 @@ def test_native_lazy_carriage_requires_the_reviewed_literal_version_and_owned_wh
     from backend import ui_projection_api as api
     body = _whole_native_carriage_body(client, tmp_path, "forwarding")
     provider = api._native_provider()
-    assert provider is not None and api.version("jsonschema-rs") == "0.58.5"
+    assert provider is not None and api.version("jsonschema-rs") == "0.58.6"
     real, constructions = provider.Draft202012Validator, []
 
     def observed(schema, **options):
@@ -2219,7 +2219,7 @@ def test_native_lazy_carriage_requires_the_reviewed_literal_version_and_owned_wh
             altered.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
             assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "carriage")._NativeTransportValidator__native is None
     original_version = api.version
-    for rejected in ("0.58.3", "0.58.4", "0.58.6", None):
+    for rejected in ("0.58.3", "0.58.4", "0.58.5", "0.58.7", None):
         def version(name):
             if name != "jsonschema-rs":
                 return original_version(name)
@@ -2350,7 +2350,7 @@ def test_lazy_carriage_native_nonce_proof_requires_request_local_complete_guards
         sid = seed(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
         endpoint, params = _carriage_url(sid), {"vlan_index": 0, "limit": 1}
         accepted = client.get(endpoint, params=params, headers=headers)
-        assert accepted.status_code == 200 and accepted.headers[proof] == "jsonschema-rs/0.58.5"
+        assert accepted.status_code == 200 and accepted.headers[proof] == "jsonschema-rs/0.58.6"
         assert proof not in client.get(endpoint, params=params).headers
         assert proof not in client.get(endpoint, params=params, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
         assert proof not in client.get(endpoint, params=params, headers=[*headers.items(), *headers.items()]).headers
@@ -2385,7 +2385,7 @@ def test_lazy_carriage_native_nonce_proof_requires_request_local_complete_guards
             refused = client.get(endpoint, params=params, headers=headers)
             assert refused.status_code == 500 and proof not in refused.headers
         restored = client.get(endpoint, params=params, headers=headers)
-        assert restored.status_code == 200 and restored.headers[proof] == "jsonschema-rs/0.58.5"
+        assert restored.status_code == 200 and restored.headers[proof] == "jsonschema-rs/0.58.6"
 
 
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
@@ -2875,7 +2875,7 @@ def test_native_schema_version_and_owned_copy_are_checked_before_compilation(mon
     assert api._NativeTransportValidator(changed, "view")._NativeTransportValidator__native is None
     assert api._NativeTransportValidator(api._OWNER, "view")._NativeTransportValidator__native is None
     assert api._NativeTransportValidator(api._VIEW_SCHEMA, "list")._NativeTransportValidator__native is None
-    for refused_version in ("0.58.3", "0.58.4"):
+    for refused_version in ("0.58.3", "0.58.4", "0.58.5"):
         with monkeypatch.context() as altered:
             altered.setattr(api, "version", lambda _name: refused_version)
             assert api._native_provider() is None
@@ -3078,8 +3078,8 @@ def test_native_smoke_proof_is_request_local_and_requires_complete_validation(tm
                     raise_server_exceptions=False) as client:
         sid = seed(client, sample)
         path = url(sid)
-        assert client.get(path, headers=headers).headers[proof] == "jsonschema-rs/0.58.5"
-        assert client.get(url(sid, "findings") + "/lists?pointer=/rows&limit=200", headers=headers).headers[proof] == "jsonschema-rs/0.58.5"
+        assert client.get(path, headers=headers).headers[proof] == "jsonschema-rs/0.58.6"
+        assert client.get(url(sid, "findings") + "/lists?pointer=/rows&limit=200", headers=headers).headers[proof] == "jsonschema-rs/0.58.6"
         assert proof not in client.get(path).headers
         assert proof not in client.get(path, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
         assert proof not in client.get(path, headers=[*headers.items(), *headers.items()]).headers
@@ -3296,7 +3296,7 @@ def test_reaudited_topology_lists_use_native_and_float_views_stay_python(tmp_pat
             response = client.get(url(sid, "topology") + "/lists", params={"pointer": pointer, "limit": 50},
                                   headers=headers)
             assert response.status_code == 200
-            assert response.headers.get(proof) == "jsonschema-rs/0.58.5", pointer
+            assert response.headers.get(proof) == "jsonschema-rs/0.58.6", pointer
         topology = client.get(url(sid, "topology"), params={"limit": 200}, headers=headers)
         structural = client.get(url(sid, "topology") + "/lists", params={"pointer": "/structural_links"},
                                 headers=headers)
