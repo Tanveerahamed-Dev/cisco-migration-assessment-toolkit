@@ -997,6 +997,7 @@ def test_storage_companion_owner_is_delete_and_has_no_attached_database_family()
     ('"%.*s" % (7, "private.json")', "private"),
     ('"{}".format("%s" % "private.json")', "private.json"),
     ('"{0}".format("private.json", dynamic())', "private.json"),
+    ('"{1}".format(dynamic(), "private.json")', "private.json"),
     ('"{}".format("PRIVATE.JSON".lower())', "private.json"),
     ('"{}".format(f"private.json")', "private.json"),
     ('"%s" % f"private.json"', "private.json"),

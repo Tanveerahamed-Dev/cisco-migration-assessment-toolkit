@@ -790,6 +790,7 @@ def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
 
 
 _NOT_CLOSED = object()
+_UNKNOWN_STAR = object()
 
 
 def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = frozenset()) -> list[object] | None:
@@ -936,7 +937,7 @@ def _format_bound(spec: str) -> None:
 
 
 def _has_unknown(value: object) -> bool:
-    if value is _NOT_CLOSED:
+    if value is _NOT_CLOSED or value is _UNKNOWN_STAR:
         return True
     if isinstance(value, dict):
         return any(_has_unknown(k) or _has_unknown(v) for k, v in value.items())
@@ -1018,7 +1019,7 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
                     raise NameModelLimit("closed format star operand is not a deterministic sequence")
                 choices.append(tuple(value))
             else:
-                choices.append((value,))
+                choices.append((_UNKNOWN_STAR if expanded and value is _NOT_CLOSED else value,))
         positional = _bounded_names([a + b for a, b in _name_product(positional, choices)])
     keywords = [{}]
     for keyword in node.keywords:
@@ -1040,7 +1041,7 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
 
     class FilenameFormatter(string.Formatter):
         def get_value(self, key, args, kwargs):
-            if isinstance(key, int) and any(v is _NOT_CLOSED for v in args[:key + 1]):
+            if isinstance(key, int) and any(v is _UNKNOWN_STAR for v in args[:key + 1]):
                 raise UnknownOperand
             if isinstance(key, str) and key not in kwargs and "__census_unknown_keywords__" in kwargs:
                 raise UnknownOperand
