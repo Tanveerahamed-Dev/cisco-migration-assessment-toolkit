@@ -262,6 +262,18 @@ def test_partial_names_remain_uncertainty_and_known_formatted_literals_are_check
     assert census.unresolved_site_templates(tmp_path) == {"cisco_toolkit/writer.py::dynamic": {"0.txt"}}
 
 
+def test_receipt_partial_extension_is_not_an_input_stem_suffix_obligation(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit(extension):\n"
+           "    original = Path('delivery.snapshot.json')\n"
+           "    staged = f'.{original.stem}.receipt-0.previous{extension}'\n"
+           "    Path(staged).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("receipt-previous-html",), "receipt staging")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["receipt-previous-html"]) == []
+    assert census.unresolved_site_templates(tmp_path) == {
+        "cisco_toolkit/writer.py::emit": {".0.receipt-0.previous0"}}
+
+
 @pytest.mark.parametrize("marker_name", ["probe.marker", "delivery.json"])
 @pytest.mark.parametrize("marker_first", [True, False])
 def test_non_client_helper_provenance_does_not_erase_client_literal_refusal(tmp_path, monkeypatch,

@@ -727,13 +727,27 @@ def _references(node: ast.AST, names: set[str]) -> bool:
 
 
 def _identifying_suffix(node: ast.AST, resolve, seen: frozenset[str] = frozenset()) -> bool:
-    """An explicit sidecar suffix remains an obligation even when its stem is unknown."""
-    for leaf in ast.walk(node):
-        if isinstance(leaf, ast.Constant) and isinstance(leaf.value, str) and _SUFFIX_LITERAL.match(leaf.value):
-            return True
-        if isinstance(leaf, ast.Name) and leaf.id not in seen:
-            if any(_identifying_suffix(value, resolve, seen | {leaf.id}) for value in resolve(leaf)):
-                return True
+    """Only a terminal sidecar suffix is an obligation, never literals inside an input stem."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return bool(_SUFFIX_LITERAL.match(node.value))
+    if isinstance(node, ast.Name) and node.id not in seen:
+        return any(_identifying_suffix(value, resolve, seen | {node.id}) for value in resolve(node))
+    if isinstance(node, ast.JoinedStr) and node.values:
+        return _identifying_suffix(node.values[-1], resolve, seen)
+    if isinstance(node, ast.FormattedValue):
+        return _identifying_suffix(node.value, resolve, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+        return _identifying_suffix(node.right, resolve, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return bool(_SUFFIX_LITERAL.match(_tail(_constant_text(node.left) or "")))
+    if isinstance(node, ast.Call) and node.args:
+        if isinstance(node.func, ast.Name) and node.func.id in {"Path", "PurePath", "PurePosixPath", "str"}:
+            return _identifying_suffix(node.args[-1], resolve, seen)
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"join", "with_suffix", "with_name"}:
+                return _identifying_suffix(node.args[-1], resolve, seen)
+            if node.func.attr == "format":
+                return bool(_SUFFIX_LITERAL.match(_tail(_constant_text(node.func.value) or "")))
     return False
 
 
