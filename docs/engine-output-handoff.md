@@ -142,6 +142,12 @@ The hosted producer (`before` / `after`):
   `git status` runs, so no configured clean or process filter is ever selected.
 - Records the before-phase producer run, attempt and interpreter and refuses an after phase that
   differs.
+- Records the sorted resolved third-party distribution set through `importlib.metadata`: each
+  normalized name, version and SHA-256 of its exact ordinary wheel `RECORD` file. The repository's
+  editable distribution remains in the Git/installer ledgers. A missing RECORD, unreadable metadata
+  or duplicate normalized provider name refuses admission. The complete set must remain equal at
+  both post-generation observations and at manifest capture; a changed version, provider or RECORD
+  refuses even when the source and output bytes are otherwise unchanged.
 - Executes the canonical marker policy only from the admitted Git bytes of its four-file closure
   in a fresh private namespace, without project module-cache or bytecode fallback (see the
   receiver). Unadmitted relative project imports refuse; the owner's unused `import tomllib`
@@ -152,8 +158,9 @@ The hosted producer (`before` / `after`):
   untracked file that appeared or vanished.
 - Refuses CR bytes, non-strict JSON (duplicate keys, non-finite numbers, BOM) and the canonical
   client-marker scan. The repository privacy verifier also runs over the regenerated tree.
-- Writes closed `engine_output_handoff/2` `manifest.json` (`source_commit`, `tree`, complete
+- Writes closed `engine_output_handoff/3` `manifest.json` (`source_commit`, `tree`, complete
   `source_inputs` and `installer_inputs` ledgers, `files` with `path`, `sha256` and `bytes`,
+  the closed `resolved_distributions` before/after ledgers and their canonical-list SHA-256,
   `changed_from_source`, the producer run, `allow_golden_shrink`, a nonpromoting status) plus
   `files/<path>`. The workflow uploads them as one artifact, only on success, named
   `engine-output-handoff-<sha>-<run>-<attempt>`.
@@ -201,10 +208,15 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
   `installer_inputs` ledger inside the fixed profile, the closed file list, and every member's size
   and SHA-256. It recomputes `changed_from_source` from the source commit. Like the producer, it
   refuses a content filter or hidden index flag before `git status` runs.
+- Validates the producer's closed distribution binding, requiring sorted unique normalized names,
+  version/RECORD digests, equal before/after ledgers and their matching canonical-list digest. The
+  receipt copies that exact record and reports every provider and the ledger digest. The receiver
+  does not compare it to its own stdlib-only environment, which intentionally differs from the
+  installed regeneration environment.
 - Applies the same content policy. The canonical marker policy executes only from the admitted Git
   bytes of its four-file closure in a private namespace. No `sys.path` entry, already-imported
   module, working-tree file or bytecode cache can supply it, and it holds no TOML capability.
-- Writes `receipt.json` and `files/<path>` into a fresh directory under the runner's temporary
+- Writes closed-version `engine_output_receipt/2` `receipt.json` and `files/<path>` into a fresh directory under the runner's temporary
   directory, outside the checkout, and never writes the checkout. The receipt records each output's
   size, SHA-256 and Git blob name, and carries `acceptance` and `release_authority` false.
 - With `verify_import`, it writes `receipt.json` only, after proving that every output at the
@@ -216,7 +228,10 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
 ## Known properties
 
 - **Observation limits.** Physical before/after ledgers do not measure transient changes restored
-  between observations. They are producer evidence, not independent release custody. New source
+  between observations. A wheel RECORD digest binds the recorded installed provider metadata,
+  rather than independently re-hashing every installed provider file or authenticating a wheel.
+  The distribution record is producer evidence, not a signature, independent archive custody or
+  a guarantee that a later dispatch resolves the same versions. New source
   controls require execution on the published candidate; source review alone is not a hosted pass.
 
 - **Goldens.** Regenerating the current goldens should be byte-identical: the harness pins its
@@ -338,7 +353,7 @@ G14 (#631, Codex) hardened the same producer before W54 merged; the Claude takeo
 `claude/g14-cable-vlan-carriage` merged both. Where they overlapped, both checks run; where they
 differed, the stricter fail-closed behaviour was kept:
 
-- **Manifest and source schemas** are `engine_output_handoff/2` and `engine_output_source/2`, carrying
+- **Manifest and source schemas at that reconciliation** were `engine_output_handoff/2` and `engine_output_source/2`, carrying
   G14's `source_inputs` and `installer_inputs` ledgers. The hosted receiver joins `source_inputs` to the
   source commit's committed files (G14's receiver check, moved into W54's hosted `receive`).
 - **Refutation controls** (G14) run as a required producer step before the source is bound; W54's
@@ -365,10 +380,11 @@ replaces each: the local-write and dry-run tests (the receipt never writes the c
 `test_bound_policy_loads_this_repository_closure_from_git`). G14's tests now check W54's private
 namespace prefix, so their cleanup assertions are not empty.
 
-## G14 v2 route follow-ups (2026-10-10)
+## G14 v2 route follow-ups (2026-10-11)
 
-The #646 refutation named five route P3s; G14 v2 (`claude/g14-cable-vlan-carriage`) closes them
-in source, with tests written for their first hosted execution:
+The #646 refutation's route findings are addressed in source on `codex/g14-carriage-v2`;
+the partial inherited changes and the new distribution binding still require fresh hosted controls
+and the real producer, receipt and import-verification runs:
 
 - **Skip.** The `BOUND_POLICY` skip in `tests/test_engine_output_handoff.py` is removed; the seven
   bound-policy controls now run on Python 3.10 too (see disposition 4 above).
@@ -387,6 +403,18 @@ in source, with tests written for their first hosted execution:
   verifier (`.github/scripts/verify_repository_privacy.py :: _escape_decoded`) adds a
   `\uXXXX`-decoded pass to both its worktree and its index scans, with tests in
   `tests/test_repository_privacy.py`.
+- **Resolved providers.** The before record is now `engine_output_source/3`; the manifest is
+  `engine_output_handoff/3` and the receipt is `engine_output_receipt/2`. Their new closed provider
+  binding records normalized names, versions and physical RECORD SHA-256 digests, requires an
+  unchanged sorted set before/after regeneration and capture, and reports the producer ledger at
+  receipt/import verification. Real metadata fixtures exercise the producer and receiver round
+  trip, version/RECORD/census/capture drift, duplicate names, missing RECORD and malformed ledger
+  refusals. The receiver is explicitly tested without querying its different installed environment.
+- **Sample and import execution.** This v2 task must import the newly admitted receipt sample,
+  re-bind Atlas Scope from its fresh producer family, and execute `verify_import` on the committed
+  imported bytes. The older pre-W54 sample custody note and first-use `verify_import` gap remain
+  historical until the actual new hosted runs and outcomes are recorded. Source controls alone do
+  not close either finding.
 
 ## What it is not
 

@@ -1339,6 +1339,7 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
                "cisco_toolkit.vlan_carriage:carriage_code_offsets", "cisco_toolkit.vlan_carriage:carriage_row_cables",
                "cisco_toolkit.vlan_carriage:carriage_row_counts", "cisco_toolkit.vlan_carriage:carriage_end_char",
                "cisco_toolkit.vlan_carriage:decode_end",
+               "cisco_toolkit.vlan_carriage:carriage_role_compatible", "cisco_toolkit.vlan_carriage:carriage_cable_binding",
                "cisco_toolkit.protocol_assurance:BoundSnapshot",
                "cisco_toolkit.protocol_assurance:bound_snapshot_source"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}

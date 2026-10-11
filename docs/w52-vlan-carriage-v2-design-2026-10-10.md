@@ -197,6 +197,14 @@ Re-bind only, from `scope-compiler-handoff` (`docs/engine-output-handoff.md:114-
 
 ## (h) Regeneration
 
+**2026-10-11 continuation:** the full #646 findings also require resolved third-party producer
+dependencies to be bound. The source continuation records canonical name/version/ordinary RECORD
+digests before and after generation and carries their equal, closed ledger into the hosted receipt.
+This is metadata observation, not authenticated package or recursive installed-file custody. The
+stdlib-only receiver verifies the producer ledger; its different environment is not compared.
+Current hosted execution and receipt/import verification remain mandatory. Detailed outcomes are
+recorded in `w52-v2-validation-2026-10-11.md`.
+
 1. Commit; pass the privacy and marker gates; push (owner authority).
 2. Adopt `openapi.ts` (`api:check`, `.github/workflows/webapp-ci.yml:307`) and the pins from `ui-projection-contract`
    (`:296-303`).

@@ -480,6 +480,16 @@ def test_allowance_does_not_imply_an_unobserved_or_contradictory_trunk_mode(tmp_
     assert row["state"] == state and row["relation"] is None
 
 
+@pytest.mark.parametrize("mode", ["Trunk", "dynamic trunk", "trunk (802.1q)"])
+def test_carriage_uses_the_shared_trunk_mode_predicate_for_supplied_records(tmp_path, mode):
+    interfaces = _link(tmp_path, ("10", True), ("10", True))
+    stored = _stored(interfaces)
+    for host in (A, B):
+        stored[host][PORT]["switchport_mode"] = mode  # Declared alternate supplied-snapshot spelling.
+    row = _row(_compute(interfaces, stored=stored))
+    assert row["state"] == "published" and row["relation"] == "forwarding"
+
+
 @pytest.mark.parametrize("value", [True, None, 10, [10], "10,broken", "10-foo", "40-10", "4095", "0",
                                    "10,,20", "10," + "9" * 5000])
 def test_malformed_mixed_ranges_and_wrong_types_never_become_a_false_exclusion(tmp_path, value):
@@ -1001,6 +1011,45 @@ def test_a_vlan_state_is_its_own_never_inherited_from_another_vlans_cable(tmp_pa
     assert validate_vlan_carriage(doc) == (True, "ok")
     assert [row["state"] for row in doc["rows"]] == ["published", "unverified"]
     assert doc["rows"][0]["reason"] is None and doc["state"] == "unverified"
+
+
+@pytest.mark.parametrize("damage", ["missing_members", "missing_pc", "bad_scanned_port", "outer_mismatch"])
+def test_off_scan_identity_does_not_hide_a_malformed_cable_as_an_ordinary_edge(tmp_path, damage):
+    interfaces = _link(tmp_path)
+    cables = compute_cable_map(interfaces)
+    stored = _stored(interfaces)
+    del stored[B]  # The real cable now addresses an off-scan peer.
+    cable = cables["cables"][0]
+    if damage == "missing_members":
+        cable["members"] = []
+    elif damage == "missing_pc":
+        del cable["is_pc"]
+    elif damage == "bad_scanned_port":
+        cable["a_port"] = cable["members"][0]["a_port"] = "not-a-port"
+    else:
+        cable["a_port"] = "Gi1/0/2"
+    doc = _compute(interfaces, cables=cables, stored=stored)
+    assert validate_vlan_carriage(doc) == (True, "ok")
+    assert doc["cables"][0]["scope"] == "unreadable"
+    assert doc["coverage"]["edge_cables"] == 0 and doc["coverage"]["unreadable_cables"] == 1
+    assert doc["rows"][0]["state"] == "unverified"
+    assert "unverified" in doc["rows"][0]["reason"] and doc["state"] == "unverified"
+
+
+def test_an_edge_keeps_equivalent_scanned_port_aliases_and_exact_far_port_text(tmp_path):
+    interfaces = _link(tmp_path)
+    cables = compute_cable_map(interfaces)
+    stored = _stored(interfaces)
+    del stored[B]
+    cable = cables["cables"][0]
+    cable["a_port"] = LONG  # Declared equivalent supplied-cable spelling, not a new port.
+    cable["b_port"] = cable["members"][0]["b_port"] = "Gi0"
+    doc = _compute(interfaces, cables=cables, stored=stored)
+    assert validate_vlan_carriage(doc) == (True, "ok")
+    assert doc["cables"][0]["scope"] == "edge" and doc["coverage"]["edge_cables"] == 1
+    assert doc["cables"][0]["ends"]["a_port"] == LONG
+    assert doc["cables"][0]["ends"]["b_port"] == "Gi0"
+    assert doc["rows"][0]["codes"] == "" and doc["state"] == "not_collected"
 
 
 def test_every_unheld_row_stores_one_character_per_cable_and_three_per_member_from_the_owner_alphabets(tmp_path):

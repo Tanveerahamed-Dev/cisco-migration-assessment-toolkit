@@ -50,12 +50,37 @@ RUN_ID = 41
 ARTIFACT_ID = 9001
 # Built from fragments so this source never carries the marker it proves is refused.
 MARKER_TEXT = "al" + "jazeera" + " campus"
+_PROVIDER_RECORDS = {"example-parser": b"example_parser/__init__.py,sha256=provider,10\n"
+                                          b"example_parser-1.2.dist-info/RECORD,,\n",
+                     "example-reader": b"example_reader/__init__.py,sha256=provider,20\n"
+                                          b"example_reader-2.0.dist-info/RECORD,,\n"}
 
 
 @pytest.fixture(autouse=True)
-def reviewed_python(monkeypatch):
+def reviewed_python(monkeypatch, tmp_path):
     # Both hosted ends require the reviewed Python 3.12 profile; this suite runs on every supported version.
     monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    # Real importlib.metadata providers and physical RECORD files, independent of the test runner's
+    # dependencies. The source-derived editable repository distribution has no wheel RECORD and is
+    # intentionally kept in the already-existing Git/installer ledgers instead.
+    providers = tmp_path / "installed-providers"
+    providers.mkdir()
+    distributions = []
+    for name, version, raw_name in (("example-reader", "2.0", "Example_Reader"),
+                                    ("example-parser", "1.2", "example-parser")):
+        directory = providers / f"{name.replace('-', '_')}-{version}.dist-info"
+        directory.mkdir()
+        (directory / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {raw_name}\nVersion: {version}\n",
+                                            encoding="utf-8")
+        (directory / "RECORD").write_bytes(_PROVIDER_RECORDS[name])
+        distributions.append(handoff.distribution_metadata.Distribution.at(directory))
+    local = providers / "cisco_migration_assessment_toolkit.egg-info"
+    local.mkdir()
+    (local / "PKG-INFO").write_text("Metadata-Version: 2.1\nName: cisco-migration-assessment-toolkit\n"
+                                  "Version: 8.2.4\n", encoding="utf-8")
+    distributions.append(handoff.distribution_metadata.Distribution.at(local))
+    monkeypatch.setattr(handoff.distribution_metadata, "distributions", lambda: iter(distributions))
+    return SimpleNamespace(providers=providers, distributions=distributions)
 
 
 def _sha(data: bytes) -> str:
@@ -143,6 +168,8 @@ def _manifest(root: Path, outputs: dict, source: str, run_id: int = RUN_ID, atte
             if path not in handoff.OUTPUT_PATHS
         },
         "installer_inputs": {},
+        "resolved_distributions": handoff.distribution_binding(handoff.resolved_distribution_inputs(),
+                                                                handoff.resolved_distribution_inputs()),
         "files": [{"path": p, "sha256": _sha(outputs[p]), "bytes": len(outputs[p])} for p in handoff.OUTPUT_PATHS],
         "changed_from_source": sorted(p for p in handoff.OUTPUT_PATHS if outputs[p] != _blob(root, source, p)),
         "producer": {"workflow": handoff.WORKFLOW, "run_id": str(run_id), "run_attempt": str(attempt),
@@ -1384,6 +1411,8 @@ def test_producer_round_trip_is_admitted_by_the_receiver(repo, produced):
     result, _lines = _receive(repo, FakeAPI(archive, manifest["source_commit"]))
     assert result["status"] == handoff.RECEIPT_STATUS and _review_files(repo) == outputs
     assert [row["identical_to_source"] for row in result["outputs"]] == [True, False, False]
+    assert result["resolved_distributions"] == manifest["resolved_distributions"]
+    assert any("producer distributions: 2 third-party providers" in line for line in _lines)
 
 
 def test_producer_reports_byte_identical_regeneration(repo, produced):
@@ -1494,6 +1523,107 @@ def test_source_ledger_has_every_non_output_file(repo, produced):
     manifest = produced.after()
     assert manifest["source_inputs"] == before["inputs"]
     assert manifest["installer_inputs"] == {}
+    assert manifest["resolved_distributions"]["before"] == before["resolved_distributions"]
+    assert manifest["resolved_distributions"]["after"] == before["resolved_distributions"]
+
+
+def test_resolved_providers_use_sorted_normalized_metadata_and_exact_record_bytes(repo, produced):
+    before = json.loads((produced.state / "source-before.json").read_bytes())
+    assert before["resolved_distributions"] == [
+        {"name": name, "version": version, "record_sha256": _sha(_PROVIDER_RECORDS[name])}
+        for name, version in (("example-parser", "1.2"), ("example-reader", "2.0"))
+    ]
+    manifest = produced.after()
+    ledger = manifest["resolved_distributions"]
+    assert set(ledger) == {"schema", "before", "after", "sha256"}
+    assert ledger["sha256"] == _sha(handoff.canonical_json(before["resolved_distributions"]))
+
+
+@pytest.mark.parametrize("mutation", ["version", "record", "missing-provider", "extra-provider"])
+def test_producer_refuses_changed_resolved_distribution_set(repo, produced, reviewed_python, mutation):
+    directory = reviewed_python.providers / "example_parser-1.2.dist-info"
+    if mutation == "version":
+        (directory / "METADATA").write_text("Metadata-Version: 2.1\nName: example-parser\nVersion: 1.3\n",
+                                            encoding="utf-8")
+    elif mutation == "record":
+        (directory / "RECORD").write_bytes(_PROVIDER_RECORDS["example-parser"] + b"new_file.py,,\n")
+    elif mutation == "missing-provider":
+        reviewed_python.distributions.pop(0)
+    else:
+        directory = reviewed_python.providers / "example_extra-1.0.dist-info"
+        directory.mkdir()
+        (directory / "METADATA").write_text("Metadata-Version: 2.1\nName: example-extra\nVersion: 1.0\n",
+                                            encoding="utf-8")
+        (directory / "RECORD").write_bytes(b"example_extra-1.0.dist-info/RECORD,,\n")
+        reviewed_python.distributions.append(handoff.distribution_metadata.Distribution.at(directory))
+    with pytest.raises(handoff.HandoffRefusal, match="resolved third-party distributions changed"):
+        produced.after()
+    assert not produced.output.exists()
+
+
+def test_provider_drift_during_output_capture_refuses_the_manifest(repo, produced, monkeypatch):
+    original, calls = handoff.resolved_distribution_inputs, []
+
+    def drifting():
+        rows = original()
+        calls.append(None)
+        if len(calls) == 2:  # the second _closed_effect observes the post-copy provider set
+            rows[0]["version"] = "1.3"
+        return rows
+
+    monkeypatch.setattr(handoff, "resolved_distribution_inputs", drifting)
+    with pytest.raises(handoff.HandoffRefusal, match="resolved third-party distributions changed"):
+        produced.after()
+    assert not (produced.output / handoff.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing-record", "foreign-record", "duplicate-name", "bad-name", "blank-version"])
+def test_resolved_provider_census_cannot_omit_unreadable_or_ambiguous_metadata(reviewed_python, mutation):
+    directory = reviewed_python.providers / "example_parser-1.2.dist-info"
+    if mutation == "missing-record":
+        (directory / "RECORD").unlink()
+    elif mutation == "foreign-record":
+        (directory / "RECORD").write_bytes(b"example_reader-2.0.dist-info/RECORD,,\n")
+    elif mutation == "duplicate-name":
+        reviewed_python.distributions.append(reviewed_python.distributions[1])
+    else:
+        name = "bad provider" if mutation == "bad-name" else "example-parser"
+        version = "1.2" if mutation == "bad-name" else ""
+        (directory / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+                                            encoding="utf-8")
+    with pytest.raises(handoff.HandoffRefusal):
+        handoff.resolved_distribution_inputs()
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda binding: binding.update(extra=True),
+    lambda binding: binding.update(sha256="0" * 64),
+    lambda binding: binding["after"][0].update(version="1.3"),
+    lambda binding: binding["before"].reverse(),
+    lambda binding: binding["before"].append(binding["before"][0]),
+    lambda binding: binding["before"][0].update(record_sha256="invalid"),
+    lambda binding: binding["before"][0].update(extra=True),
+    lambda binding: binding.update(before=[], after=[]),
+])
+def test_receiver_refuses_nonclosed_or_unequal_producer_distribution_binding(repo, mutation):
+    def edit(manifest):
+        mutation(manifest["resolved_distributions"])
+
+    with pytest.raises(handoff.HandoffRefusal):
+        _receive(repo, _api(repo, edit_manifest=edit))
+    assert not _review_dir(repo).exists()
+
+
+def test_receipt_reports_producer_ledger_without_comparing_its_different_environment(repo, monkeypatch):
+    api = _api(repo)
+
+    def forbidden():
+        raise AssertionError("a stdlib-only receiver must not inventory itself as the producer")
+
+    monkeypatch.setattr(handoff.distribution_metadata, "distributions", forbidden)
+    receipt, lines = _receive(repo, api)
+    assert receipt["resolved_distributions"]["before"] == receipt["resolved_distributions"]["after"]
+    assert any("provider example-parser 1.2: RECORD sha256" in line for line in lines)
 
 
 @pytest.mark.parametrize("path", ["build.log", "shadow.py", "cisco_toolkit/__pycache__/shadow.pyc",

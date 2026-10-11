@@ -286,7 +286,7 @@ def test_carriage_does_not_borrow_legacy_count_coercion_for_its_selector(tmp_pat
 
 
 @pytest.mark.parametrize("damage", ["missing_interface", "malformed_interface", "missing_field", "typed_role",
-                                   "typed_role_mismatch", "host_alias", "port_alias"])
+                                   "typed_role_mismatch", "typed_role_incompatible", "host_alias", "port_alias"])
 def test_missing_or_ambiguous_current_basis_cannot_leave_a_published_stored_claim(tmp_path, damage):
     typed = damage.startswith("typed_role")
     snap = snapshot(tmp_path, ("", "") if typed else ("10", "10"),
@@ -303,6 +303,9 @@ def test_missing_or_ambiguous_current_basis_cannot_leave_a_published_stored_clai
     elif damage == "typed_role_mismatch":
         # Still an ordinary supported state token, but it is not the stored end signal.
         snap["stp_topology_observations"][A]["roles"][0]["state"] = "blocked"
+        snap["stp_topology_observations"][A]["roles"][0]["role"] = "alternate"
+    elif damage == "typed_role_incompatible":
+        # The state still matches the stored signal; its role cannot certify that state.
         snap["stp_topology_observations"][A]["roles"][0]["role"] = "alternate"
     elif damage == "host_alias":
         snap["interfaces"][A + ".example.invalid"] = deepcopy(snap["interfaces"][A])
@@ -325,6 +328,35 @@ def test_held_relation_still_requires_original_identity_for_its_published_end(tm
     snap["cable_map"]["cables"][0]["members"][0]["a_port"] = "Gi1/0/2"  # Declared hostile mutation.
     result = summary(snap)
     assert result["state"] == UV and page(snap)["page"]["items"] == []
+    checked(snap)
+
+
+@pytest.mark.parametrize("damage", ["edge_scope", "edge_port", "edge_host", "unreadable_scope"])
+def test_every_stored_cable_scope_and_known_identity_must_join_current_sources(tmp_path, damage):
+    snap = snapshot(tmp_path)
+    peer = deepcopy(snap["interfaces"][B])
+    if damage == "unreadable_scope":
+        snap["cable_map"]["cables"][0]["is_pc"] = "invalid"  # Declared unreadable source.
+    else:
+        del snap["interfaces"][B]  # Declared off-scan peer in an otherwise real producer cable.
+    snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
+        snap["cable_map"], snap["interfaces"], None, snap["vlan_cutover"])
+    assert vlan_carriage.validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    stored = deepcopy(snap["vlan_carriage"])
+    if damage == "edge_scope":
+        snap["interfaces"][B] = peer
+    elif damage == "edge_port":
+        cable = snap["cable_map"]["cables"][0]
+        cable["b_port"] = cable["members"][0]["b_port"] = "Gi0"
+    elif damage == "edge_host":
+        snap["cable_map"]["cables"][0]["b"] = "another-off-scan-peer"
+    else:
+        snap["cable_map"]["cables"][0]["is_pc"] = False
+    assert snap["vlan_carriage"] == stored
+    result = summary(snap)
+    assert result["state"] == UV and "does not join" in result["reason"]
+    assert all(state == UV and value is None for state, value in counts(result).values())
+    assert page(snap)["page"]["items"] == []
     checked(snap)
 
 

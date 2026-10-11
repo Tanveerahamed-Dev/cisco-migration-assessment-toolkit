@@ -220,7 +220,6 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     raw1, binding1 = store.get_snapshot_blob(with_id)
     _document, without_ms = _timed(lambda: cache.document(raw0, binding0["sha256"], None))
     document, with_ms = _timed(lambda: cache.document(raw1, binding1["sha256"], None))
-    first, first_page_ms = _timed(lambda: api.carriage_page(cache, raw1, binding1, with_id, 0, 0, api.MAX_PAGE_SIZE))
 
     def warm():
         response = api.carriage_page(cache, raw1, binding1, with_id, 0, 0, api.MAX_PAGE_SIZE)
@@ -228,6 +227,7 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         api._require_carriage_page(response["payload"])
         return response
 
+    first, first_page_ms = _timed(warm)
     response, page_ms = _timed(warm)
     assert response == first and response["payload"]["page"]["returned"] == api.MAX_PAGE_SIZE
     assert response["payload"]["summary"] == document["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
@@ -239,3 +239,4 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
         assert measured["page_ms"] <= BUDGET["page_ms"]
+        assert measured["first_page_ms"] <= BUDGET["page_ms"]

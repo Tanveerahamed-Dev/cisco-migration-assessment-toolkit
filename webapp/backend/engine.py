@@ -28,11 +28,11 @@ from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 sch
 from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
 from cisco_toolkit import ui_projection as _ui_projection  # noqa: E402
 
-def ui_projection(snapshot: Any, host: str | None = None) -> Dict[str, Any]:
+def ui_projection(snapshot: Any, host: str | None = None, carriage: Any = None) -> Dict[str, Any]:
     """Delegate a whole document to its engine owner; do not reconstruct view context."""
     if host is not None:
         return _ui_projection.project_device(snapshot, host)
-    return _ui_projection.project(snapshot)
+    return _ui_projection.project(snapshot, carriage=carriage)
 
 
 def ui_projection_schema() -> Dict[str, Any]:

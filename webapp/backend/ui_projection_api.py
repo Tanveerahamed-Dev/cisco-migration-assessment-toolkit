@@ -646,7 +646,12 @@ class _ProjectionCache:
                 entry.snapshot = engine.bind_ui_projection_snapshot(raw)
             # A producer may retain its input too. Its later mutation must not
             # poison the private bound source used by another lazy host document.
-            produced = engine.ui_projection(deepcopy(entry.snapshot), host)
+            if host is None:
+                if entry.carriage is None:
+                    entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
+                produced = engine.ui_projection(deepcopy(entry.snapshot), host, entry.carriage)
+            else:
+                produced = engine.ui_projection(deepcopy(entry.snapshot), host)
             # The producer may retain aliases. Cache only an owned complete document
             # after both guards succeed; an exception leaves this host retryable.
             _require_json_native(produced)

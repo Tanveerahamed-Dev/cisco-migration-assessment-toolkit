@@ -337,9 +337,9 @@ def test_projection_reads_one_bound_source_and_no_legacy_backfill(client, monkey
         parsed.append(raw)
         assert raw is calls[-1][0]
         return bind(raw)
-    def projection(snapshot, host=None):
+    def projection(snapshot, host=None, carriage=None):
         produced.append(bound_snapshot_source(snapshot))
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(store, "get_snapshot_blob", bound)
     monkeypatch.setattr(engine, "bind_ui_projection_snapshot", bound_bytes)
     monkeypatch.setattr(engine, "ui_projection", projection)
@@ -491,9 +491,9 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
     sid = seed(client, {"devices": {"edge": {}, " edge ": {}}})
     projected, bound, validated = [], [], []
     project, bind = engine.ui_projection, engine.bind_ui_projection_snapshot
-    def projection(snapshot, host=None):
+    def projection(snapshot, host=None, carriage=None):
         projected.append(host)
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     def binding(raw):
         bound.append(raw)
         return bind(raw)
@@ -532,11 +532,11 @@ def test_cache_single_flight_on_concurrent_views(client, monkeypatch):
     project = engine.ui_projection
     entered, release = Event(), Event()
     calls = []
-    def slow(snapshot, host=None):
+    def slow(snapshot, host=None, carriage=None):
         calls.append(host)
         entered.set()
         assert release.wait(10)
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", slow)
     with ThreadPoolExecutor(max_workers=4) as pool:
         first = pool.submit(client.get, url(sid))
@@ -554,12 +554,12 @@ def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_
     project = engine.ui_projection
     entered, release = Event(), Event()
     calls = []
-    def held(snapshot, host=None):
+    def held(snapshot, host=None, carriage=None):
         calls.append(host)
         assert host == "cold", "already-cached documents must not be recomputed"
         entered.set()
         assert release.wait(30), "test must release the held producer"
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", held)
     with ThreadPoolExecutor(max_workers=3) as pool:
         cold = pool.submit(client.get, url(sid, "device"), params={"host": "cold"})
@@ -583,9 +583,9 @@ def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch)
     from backend import ui_projection_api as api
     calls = []
     project = engine.ui_projection
-    def counted(snapshot, host=None):
+    def counted(snapshot, host=None, carriage=None):
         calls.append(snapshot.get("generated_at"))
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", counted)
     snapshots = [seed(client, {"generated_at": str(index)}) for index in range(12)]
     for sid in [*snapshots, *reversed(snapshots)]:
@@ -599,9 +599,9 @@ def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch)
 def test_cache_reuses_equal_bytes_but_identity_and_store_lifetime_are_separate(client, tmp_path, monkeypatch):
     calls = []
     project = engine.ui_projection
-    def counted(snapshot, host=None):
+    def counted(snapshot, host=None, carriage=None):
         calls.append(host)
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", counted)
     first, duplicate, different = seed(client), seed(client), seed(client, {"devices": {"other": {}}})
     bodies = [client.get(url(sid)).json() for sid in (first, duplicate, different)]
@@ -639,9 +639,9 @@ def test_failed_cache_admission_is_retried_and_does_not_poison_other_hosts(clien
     sid = seed(client)
     project = engine.ui_projection
     calls = []
-    def initially_broken(snapshot, host=None):
+    def initially_broken(snapshot, host=None, carriage=None):
         calls.append(host)
-        result = project(snapshot, host)
+        result = project(snapshot, host, carriage)
         if len(calls) == 1:
             result["overview"]["posture_statement"]["state"] = "invented"
         return result
@@ -689,9 +689,9 @@ def test_cache_owns_bound_source_when_producer_retains_and_mutates_its_input(cli
     expected = owner.project_device(snapshot, "edge")
     retained = []
     project = engine.ui_projection
-    def retaining(source, host=None):
+    def retaining(source, host=None, carriage=None):
         retained.append(source)
-        return project(source, host)
+        return project(source, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", retaining)
     assert client.get(url(sid)).status_code == 200
     retained[0]["devices"].clear()
@@ -1488,7 +1488,12 @@ def test_carriage_page_bounds_and_unknown_rows_are_refused(client, tmp_path, par
 def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(client, tmp_path, monkeypatch):
     sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}), trunks=2))
     admit, page = engine.ui_projection_carriage_admission, engine.ui_projection_carriage
-    admissions, sources = [], []
+    admissions, sources, gap_checks = [], [], []
+    gaps = owner._carriage_gaps
+
+    def counted_gaps(ctx, section):
+        gap_checks.append(section)
+        return gaps(ctx, section)
 
     def counted_admission(snapshot):
         admissions.append(snapshot)
@@ -1502,11 +1507,13 @@ def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(cli
         return result
 
     monkeypatch.setattr(engine, "ui_projection_carriage_admission", counted_admission)
+    monkeypatch.setattr(owner, "_carriage_gaps", counted_gaps)
     monkeypatch.setattr(engine, "ui_projection_carriage", checked_page)
     for vlan_index, offset in ((0, 0), (0, 1), (1, 0)):
         response = client.get(_carriage_url(sid), params={"vlan_index": vlan_index, "offset": offset, "limit": 1})
         assert response.status_code == 200, response.text[:300]
     assert len(admissions) == 1 and len(sources) == 3
+    assert len(gap_checks) == 1  # Inventory and all lazy pages share the actual full basis join.
     assert all(source is admissions[0] for source in sources)  # No copy of the snapshot per page.
 
 

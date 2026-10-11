@@ -29,6 +29,7 @@ import argparse
 import builtins
 import contextlib
 import hashlib
+from importlib import metadata as distribution_metadata
 from importlib.machinery import ModuleSpec
 import io
 import json
@@ -51,8 +52,8 @@ WORKFLOW = ".github/workflows/engine-output-handoff.yml"
 JOB_NAME = "Regenerate engine outputs for review (manual)"
 RUNNER_LABELS = ("ubuntu-24.04",)
 ARTIFACT_PREFIX = "engine-output-handoff"
-MANIFEST_SCHEMA = "engine_output_handoff/2"
-SOURCE_SCHEMA = "engine_output_source/2"
+MANIFEST_SCHEMA = "engine_output_handoff/3"
+SOURCE_SCHEMA = "engine_output_source/3"
 STATUS = "GENERATED_INPUT_FOR_REVIEW_ONLY"
 # The engine stamps local time into some outputs (the sample's collected_at offset); the producer
 # runs under one canonical zone so that stamp is a property of the handoff, not of a runner image.
@@ -105,7 +106,7 @@ RECEIPT_STEPS = (
 RECEIPT_PREFIX = "engine-output-receipt"
 RECEIPT_DIRECTORY = "engine-output-receipt"
 RECEIPT_NAME = "receipt.json"
-RECEIPT_SCHEMA = "engine_output_receipt/1"
+RECEIPT_SCHEMA = "engine_output_receipt/2"
 RECEIPT_STATUS = "ADMITTED_REVIEW_DATA_ONLY"
 IMPORT_STATUS = "IMPORT_MATCHES_ADMITTED_BYTES_REVIEW_ONLY"
 
@@ -121,7 +122,7 @@ ALLOWED_DIRECTORIES = frozenset(
 )
 MANIFEST_KEYS = frozenset({"schema", "source_commit", "tree", "files", "changed_from_source",
                            "producer", "allow_golden_shrink", "status", "release_authority", "source_inputs",
-                           "installer_inputs"})
+                           "installer_inputs", "resolved_distributions"})
 PRODUCER_KEYS = frozenset({"workflow", "run_id", "run_attempt", "runner_os", "python", "tz"})
 FILE_KEYS = frozenset({"path", "sha256", "bytes"})
 # Source-derived setuptools editable-install profile. These are captured installer
@@ -130,6 +131,12 @@ INSTALLER_ROOT = "cisco_migration_assessment_toolkit.egg-info/"
 INSTALLER_PATHS = frozenset(INSTALLER_ROOT + name for name in (
     "PKG-INFO", "SOURCES.txt", "dependency_links.txt", "entry_points.txt", "requires.txt", "top_level.txt",
 ))
+LOCAL_DISTRIBUTION = "cisco-migration-assessment-toolkit"
+DISTRIBUTIONS_SCHEMA = "engine_output_distributions/1"
+DISTRIBUTION_KEYS = frozenset({"name", "version", "record_sha256"})
+MAX_DISTRIBUTIONS = 1024
+MAX_RECORD_BYTES = 4 * 1024 * 1024
+_DISTRIBUTION_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 # The canonical client-marker policy and its exact import closure, executed only from admitted Git
@@ -574,6 +581,82 @@ def validate_installer_ledger(value: object) -> None:
     need(total <= MAX_API_BYTES, "installer input ledger exceeds its aggregate bound")
 
 
+def validate_distribution_ledger(value: object) -> None:
+    """A closed, sorted inventory of the producer's installed third-party distributions."""
+    need(type(value) is list and 0 < len(value) <= MAX_DISTRIBUTIONS,
+         "resolved distribution ledger is empty or exceeds its bound")
+    names = []
+    for row in value:
+        need(type(row) is dict and set(row) == DISTRIBUTION_KEYS,
+             "resolved distribution record is not closed")
+        name, version, record_hash = row["name"], row["version"], row["record_sha256"]
+        need(type(name) is str and len(name) <= 200 and _DISTRIBUTION_NAME.fullmatch(name)
+             and name != LOCAL_DISTRIBUTION,
+             "resolved distribution name is not canonical third-party metadata")
+        need(type(version) is str and 0 < len(version) <= 200 and version.isascii()
+             and all(33 <= ord(char) <= 126 for char in version),
+             "resolved distribution version is unreadable")
+        need(type(record_hash) is str and HEX64.fullmatch(record_hash),
+             "resolved distribution RECORD digest is malformed")
+        names.append(name)
+    need(names == sorted(set(names)), "resolved distribution ledger is not sorted or has duplicate names")
+
+
+def resolved_distribution_inputs() -> list[dict]:
+    """Read metadata, never import installed providers. Hash the exact ordinary RECORD bytes.
+
+    The editable repository distribution belongs to the existing Git/installer ledgers, not this
+    third-party inventory. An installed provider without a unique wheel RECORD refuses admission;
+    a guessed digest or an incomplete metadata census is not a reproduction binding.
+    """
+    rows = []
+    for count, distribution in enumerate(distribution_metadata.distributions(), start=1):
+        need(count <= MAX_DISTRIBUTIONS + 1, "resolved distribution census exceeds its bound")
+        raw_name = distribution.metadata.get("Name")
+        need(type(raw_name) is str and 0 < len(raw_name) <= 200 and raw_name.isascii()
+             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", raw_name),
+             "installed distribution has no readable Name")
+        name = re.sub(r"[-_.]+", "-", raw_name).lower()
+        if name == LOCAL_DISTRIBUTION:
+            continue
+        version = distribution.version
+        files = distribution.files
+        need(files is not None, f"{name}: installed distribution has no RECORD file inventory")
+        records = [entry for entry in files if PurePosixPath(str(entry)).name == "RECORD"
+                   and len(PurePosixPath(str(entry)).parts) == 2
+                   and PurePosixPath(str(entry)).parts[0].endswith(".dist-info")]
+        need(len(records) == 1, f"{name}: installed distribution has no unique wheel RECORD")
+        record_owner = PurePosixPath(str(records[0])).parts[0][:-len(".dist-info")].rsplit("-", 1)
+        need(len(record_owner) == 2 and re.sub(r"[-_.]+", "-", record_owner[0]).lower() == name,
+             f"{name}: wheel RECORD belongs to another distribution")
+        record_path = Path(distribution.locate_file(records[0]))
+        need(record_path.is_absolute(), f"{name}: RECORD is not an absolute installed path")
+        for parent in record_path.parents:
+            _ordinary_directory(parent)
+        record = read_regular(record_path, MAX_RECORD_BYTES)
+        need(record, f"{name}: installed distribution RECORD is empty")
+        rows.append({"name": name, "version": version, "record_sha256": digest(record)})
+    rows.sort(key=lambda row: row["name"])
+    validate_distribution_ledger(rows)
+    return rows
+
+
+def distribution_binding(before: object, after: object) -> dict:
+    validate_distribution_ledger(before)
+    validate_distribution_ledger(after)
+    need(before == after, "resolved third-party distributions changed during regeneration or capture")
+    return {"schema": DISTRIBUTIONS_SCHEMA, "before": before, "after": after,
+            "sha256": digest(canonical_json(before))}
+
+
+def validate_distribution_binding(value: object) -> None:
+    need(type(value) is dict and set(value) == {"schema", "before", "after", "sha256"}
+         and value["schema"] == DISTRIBUTIONS_SCHEMA,
+         "resolved distribution binding is not the closed supported shape")
+    expected = distribution_binding(value["before"], value["after"])
+    need(value == expected, "resolved distribution binding digest differs from its ledger")
+
+
 def _compiled_python(paths: list[str]) -> list[str]:
     """Untracked bytecode can shadow tracked source when the regeneration imports it."""
     return [path for path in paths if path.endswith((".pyc", ".pyo")) or "__pycache__" in path.split("/")]
@@ -882,7 +965,7 @@ def phase_before(root: Path, state: Path, environ=None) -> dict:
     metadata = installer_inputs(root)
     need(sorted(metadata) == census, "the untracked census changed while the installer profile was read")
     record = {"schema": SOURCE_SCHEMA, **bound, "producer_context": env, "untracked": census,
-              "installer_inputs": metadata}
+              "installer_inputs": metadata, "resolved_distributions": resolved_distribution_inputs()}
     state.mkdir()
     write_new(state / "source-before.json", canonical_json(record))
     return record
@@ -913,6 +996,7 @@ def _closed_effect(root: Path, before: dict) -> list[str]:
     need(not appeared and not vanished, "regeneration changed the untracked file set: appeared "
          + ", ".join(appeared[:12]) + "; vanished " + ", ".join(vanished[:12]))
     need(installer_inputs(root) == before["installer_inputs"], "installer metadata bytes or modes changed")
+    distribution_binding(before["resolved_distributions"], resolved_distribution_inputs())
     return changed
 
 
@@ -928,12 +1012,13 @@ def phase_after(root: Path, state: Path, output: Path, environ=None, patterns_fo
     before = strict_json(read_regular(state / "source-before.json", MAX_API_BYTES), "source-before.json")
     need(isinstance(before, dict) and before.get("schema") == SOURCE_SCHEMA
          and set(before) == {"schema", "source_commit", "tree", "outputs", "untracked", "inputs", "installer_inputs",
-                            "producer_context"},
+                            "producer_context", "resolved_distributions"},
          "the before-phase record has an unsupported shape")
     need(before["source_commit"] == context["expected"], "the before-phase record names another source")
     need(before["producer_context"] == context, "the producer run, attempt or interpreter changed between phases")
     validate_source_ledger(before["inputs"])
     validate_installer_ledger(before["installer_inputs"])
+    validate_distribution_ledger(before["resolved_distributions"])
     need(before["untracked"] == sorted(before["installer_inputs"]), "installer metadata and untracked census differ")
     need(output.is_absolute() and _outside(output, root) and _outside(output, state),
          "the handoff output must be absolute and outside the checkout and state")
@@ -961,12 +1046,14 @@ def phase_after(root: Path, state: Path, output: Path, environ=None, patterns_fo
     for path in OUTPUT_PATHS:
         need(read_output(root, path) == produced[path],
              f"{path} changed during capture")
+    distributions = distribution_binding(before["resolved_distributions"], resolved_distribution_inputs())
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "source_commit": before["source_commit"],
         "tree": before["tree"],
         "source_inputs": before["inputs"],
         "installer_inputs": before["installer_inputs"],
+        "resolved_distributions": distributions,
         "files": [{"path": path, "sha256": digest(produced[path]), "bytes": len(produced[path])}
                   for path in OUTPUT_PATHS],
         "changed_from_source": differs,
@@ -1194,6 +1281,7 @@ def admit_manifest(manifest: object, *, source_commit: str, tree: str, run_id: i
     validate_source_ledger(manifest["source_inputs"])
     need(manifest["source_inputs"] == expected_inputs, "the manifest source input ledger differs from Git")
     validate_installer_ledger(manifest["installer_inputs"])
+    validate_distribution_binding(manifest["resolved_distributions"])
     producer = manifest["producer"]
     need(isinstance(producer, dict) and set(producer) == PRODUCER_KEYS, "the producer record keys are not closed")
     need(producer["workflow"] == WORKFLOW and producer["run_id"] == str(run_id)
@@ -1468,6 +1556,7 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
                      "run_attempt": context["run_attempt"]},
         "commits_after_source_touch": between,
         "allow_golden_shrink": manifest["allow_golden_shrink"],
+        "resolved_distributions": manifest["resolved_distributions"],
         "outputs": report,
         "acceptance": False,
         "release_authority": False,
@@ -1477,6 +1566,11 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
     out(f"ADMITTED {artifact['name']} (archive sha256 {artifact['sha256']})")
     out(f"source {source} tree {tree}" + ("" if source == head else
                                           f"; {head} differs only in: {', '.join(between) or 'no paths'}"))
+    distributions = manifest["resolved_distributions"]
+    out(f"producer distributions: {len(distributions['before'])} third-party providers; "
+        f"ledger sha256 {distributions['sha256']}; before/after identical")
+    for row in distributions["before"]:
+        out(f"  provider {row['name']} {row['version']}: RECORD sha256 {row['record_sha256']}")
     if manifest["allow_golden_shrink"]:
         out("WARNING: produced under ALLOW_GOLDEN_SHRINK=1; the golden contract may have lost surface")
     for row in report:

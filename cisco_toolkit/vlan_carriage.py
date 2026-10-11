@@ -24,7 +24,7 @@ from .analyze import _canon_host
 from .model import InterfaceData
 from .ssot import ABSTENTION_STATES, ANALYSIS_UNAVAILABLE
 from .stp_topology import ROLE_EVIDENCE_INTEGRITY_CODES, validate_stp_topology_observation
-from .textutils import is_valid_iface, normalize_ifname
+from .textutils import is_trunk_mode, is_valid_iface, normalize_ifname
 
 SCHEMA = "vlan_carriage/2"
 BASIS = "cisco_toolkit.vlan_carriage:compute_vlan_carriage"
@@ -416,7 +416,7 @@ def carriage_observation_admission(observation: Any) -> tuple[str, str | None, A
     return "published", None, observation
 
 
-def _compatible(role: dict) -> bool:
+def carriage_role_compatible(role: dict) -> bool:
     return ((role["state"] == "forwarding" and role["role"] in ("root", "designated", "boundary"))
             or (role["state"] == "blocked" and role["role"] in ("alternate", "backup", "boundary")))
 
@@ -542,7 +542,7 @@ class _Inputs:
             # The observation is cited only as the basis or as the witness that it holds no row.
             out["stp_pointer"] = _pointer("stp_topology_observations", host)
         mode = source["switchport_mode"].strip().casefold()
-        mode_char = None if mode == "trunk" else _E["trunk_mode_missing" if not mode else "trunk_mode_conflict"]
+        mode_char = None if is_trunk_mode(mode) else _E["trunk_mode_missing" if not mode else "trunk_mode_conflict"]
         index = self.role_index(host, observation) if state == "published" else None
         roles = observation["roles"] if index is not None else None
         return out, (index, roles, carriage_join_interface(out["stp_interface"]), member_join, kind, spans,
@@ -612,7 +612,7 @@ def _end_char(evaluator: tuple, vid: int) -> str:
             return _E["role_ambiguous"]
         if hits:
             role = roles[hits[0]]
-            if not _compatible(role):
+            if not carriage_role_compatible(role):
                 return _E["role_unstable"]
             if role["state"] == "forwarding" and allowed is False:
                 return _E["evidence_conflict"]
@@ -647,6 +647,28 @@ def _strongest(*codes: str | None) -> str | None:
             if _code_state(code) == state:
                 return code
     return present[0] if present else None
+
+
+def carriage_cable_binding(raw: Any, interfaces: Any) -> tuple[dict, list, str]:
+    """The owner's stored identity and scope join, without evaluating VLAN carriage.
+
+    Even edge and unreadable rows must still bind their known endpoint/member identity and scanned-host scope.
+    Unsupported identity values remain null; this does not authenticate or repair a supplied cable.
+    """
+    ends, members, good = _cable_identity(raw)
+    edge = (type(interfaces) is dict and _text(ends["a"]) and _text(ends["b"]) and ends["a"] != ends["b"]
+            and (ends["a"] not in interfaces or ends["b"] not in interfaces))
+    if edge:
+        edge = (type(ends["is_pc"]) is bool and bool(members) and (ends["is_pc"] or len(members) == 1)
+                and all(type(member) is dict and set(member) == {"a_port", "b_port"}
+                        and all(_port(member[side + "_port"]) is not None if ends[side] in interfaces
+                                else _text(member[side + "_port"]) for side in ("a", "b")) for member in members)
+                and all(_port(ends[side + "_port"]) == _port(members[0][side + "_port"])
+                        if ends[side] in interfaces else ends[side + "_port"] == members[0][side + "_port"]
+                        for side in ("a", "b")))
+    ports = [{side: member.get(side + "_port") if type(member) is dict and _text(member.get(side + "_port"))
+              else None for side in ("a", "b")} for member in members]
+    return ends, ports, "edge" if edge else "assessed" if good else "unreadable"
 
 
 def _first_state(entries: list) -> tuple[str | None, str | None]:
@@ -711,11 +733,7 @@ def compute_vlan_carriage(cable_map: Any, interfaces: Any, stp_topology_observat
     identities = [_cable_identity(raw) for raw in cables] if type(cables) is list else []
     ctx = _Inputs(interfaces, stp_topology_observations, failed)
     scanned = interfaces if type(interfaces) is dict else None
-    scopes = []
-    for ends, _members, good in identities:
-        edge = (scanned is not None and _text(ends["a"]) and _text(ends["b"]) and ends["a"] != ends["b"]
-                and (ends["a"] not in scanned or ends["b"] not in scanned))
-        scopes.append("edge" if edge else "assessed" if good else "unreadable")
+    scopes = [carriage_cable_binding(raw, interfaces)[2] for raw in cables] if type(cables) is list else []
     member_owners: dict[tuple, list[tuple[int, int]]] = defaultdict(list)
     for ci, ((ends, members, _good), scope) in enumerate(zip(identities, scopes)):
         if scope == "unreadable":
@@ -1005,8 +1023,15 @@ def validate_vlan_carriage(value: Any) -> tuple[bool, str]:
                                           member["b"]["host"], member["b"]["port"])
                 if pair is not None:
                     seen_members[pair].append((index, mi))
-            if scope == "edge" and not (_text(ends["a"]) and _text(ends["b"]) and ends["a"] != ends["b"]):
-                return False, "edge_identity"
+            if scope == "edge":
+                if not (_text(ends["a"]) and _text(ends["b"]) and ends["a"] != ends["b"]
+                        and type(ends["is_pc"]) is bool and bool(members) and (ends["is_pc"] or len(members) == 1)
+                        and all(_text(member[side]["port"]) for member in members for side in ("a", "b"))
+                        and all(ends[side + "_port"] == members[0][side]["port"] or (
+                            _port(ends[side + "_port"]) is not None
+                            and _port(ends[side + "_port"]) == _port(members[0][side]["port"]))
+                            for side in ("a", "b"))):
+                    return False, "edge_identity"
             if scope == "assessed":
                 identity_ok = (bool(members) and _text(ends["a"]) and _text(ends["b"]) and ends["a"] != ends["b"]
                                and type(ends["is_pc"]) is bool and (ends["is_pc"] or len(members) == 1)

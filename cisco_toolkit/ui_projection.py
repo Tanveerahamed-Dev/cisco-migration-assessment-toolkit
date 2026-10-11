@@ -149,7 +149,8 @@ from cisco_toolkit.vlan_carriage import (
     BASES as CARRIAGE_BASES, EVIDENCE_SHAPES as CARRIAGE_EVIDENCE_SHAPES,
     CARRIAGE_INTERFACE_FIELDS, validate_vlan_carriage, vlan_row_identity, carriage_observation_admission,
     carriage_host_identity, carriage_port_identity, carriage_join_interface, carriage_role_index,
-    carriage_role_rows, carriage_code_offsets, carriage_row_cables, carriage_row_counts, carriage_end_char,
+    carriage_role_rows, carriage_role_compatible, carriage_cable_binding, carriage_code_offsets,
+    carriage_row_cables, carriage_row_counts, carriage_end_char,
     decode_end as decode_carriage_end,
 )
 from cisco_toolkit.protocol_assurance import BoundSnapshot, bound_snapshot_source
@@ -1190,6 +1191,7 @@ class _Ctx:
 
     def __init__(self, snap: Any) -> None:
         self.s: Dict[str, Any] = snap if isinstance(snap, dict) else {}
+        self.carriage: Optional[_CarriageAdmission] = None
         self.faults: Dict[str, str] = {}
         direct, unattributed = self._call("ssot.failed_sections", ssot.failed_sections, (frozenset(), True))
         self.direct = frozenset(k for k in direct if _is_text(k))
@@ -4940,7 +4942,8 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     rows = carriage_role_rows(observation, end["stp_interface"], row["vlan"], index=index)
                     beside = (carriage_role_rows(observation, end["port"], row["vlan"], index=index)
                               if end["stp_interface"] != end["port"] else [])
-                    ok = len(rows) == 1 and not beside and rows[0][1]["state"] == decode_carriage_end(char)["signal"]
+                    ok = (len(rows) == 1 and not beside and carriage_role_compatible(rows[0][1])
+                          and rows[0][1]["state"] == decode_carriage_end(char)["signal"])
                 if not ok:
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "stp_pointer"))
             elif char in configured_chars:
@@ -4979,17 +4982,13 @@ def _carriage_source(ctx: _Ctx) -> _CarriageAdmission:
               # Stored selector consistency, not a root election or a new VLAN universe.
               and all(vlan_row_identity(vlans[row["vlan_index"]]) == row["vlan"] for row in raw["rows"]))
     for cable in (raw["cables"] if joined else ()):
-        if cable["scope"] != "assessed":
-            continue
         # Compare stored identities only. Do not orient, repair, range-parse or
         # derive a replacement relation from current raw interface evidence.
         current = cables[cable["index"]]
-        if (not isinstance(current, dict) or any(cable["ends"][key] != current.get(key) for key in cable["ends"])
-                or not isinstance(current.get("members"), list)
-                or len(current["members"]) != len(cable["members"])
-                or any(not isinstance(original, dict) or member["a"]["port"] != original.get("a_port")
-                       or member["b"]["port"] != original.get("b_port")
-                       for member, original in zip(cable["members"], current["members"]))):
+        ends, members, scope = carriage_cable_binding(current, ctx.s.get("interfaces"))
+        if (cable["ends"] != ends or cable["scope"] != scope or len(members) != len(cable["members"])
+                or any(member["a"]["port"] != original["a"] or member["b"]["port"] != original["b"]
+                       for member, original in zip(cable["members"], members))):
             joined = False
             break
     if not joined:
@@ -6046,7 +6045,7 @@ def _vlan_gateways(ctx: _Ctx, src: Tuple[str, Optional[str], Any], ok: bool, vid
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
-    carriage = _carriage_source(ctx)
+    carriage = ctx.carriage if ctx.carriage is not None else _carriage_source(ctx)
     src_roots, ok_roots = _source(ctx, ("stp_roots",), ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", want=dict)
     source_roots = ctx.s.get("stp_roots")
     root_pointers = [json_pointer("stp_roots", host, key)
@@ -8568,10 +8567,11 @@ def _vocab() -> Dict[str, Any]:
     return {"schema": VOCAB_SCHEMA, "classes": list(VOCAB_CLASSES), "ranked": ranked, "unranked": unranked}
 
 
-def project(snap: Any) -> Dict[str, Any]:
+def project(snap: Any, *, carriage: Optional[_CarriageAdmission] = None) -> Dict[str, Any]:
     """The whole ``ui_projection/1`` payload for one snapshot (device pages are separate documents:
     :func:`project_device`). Pure and total."""
     ctx = _Ctx(snap)
+    ctx.carriage = carriage
     return {"schema": SCHEMA, "engine": _engine(ctx), "overview": _overview(ctx), "trust": _trust(ctx),
             "inventory": _inventory(ctx), "findings": _findings(ctx), "topology": _topology(ctx),
             "vocab": _vocab()}
