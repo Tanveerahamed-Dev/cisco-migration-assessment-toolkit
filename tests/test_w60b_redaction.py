@@ -6,6 +6,7 @@ separate hosted W60b lane; ordinary corpus and work-bound tests also run in ever
 required Python leg. Nothing regenerates a repository artifact.
 """
 import ast
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -19,7 +20,7 @@ import time
 
 import pytest
 
-from cisco_toolkit import html
+from cisco_toolkit import analyze, html, parse
 from webapp.backend import redaction_verify as rv
 
 
@@ -28,6 +29,7 @@ FIXTURE_PATH = ROOT / "tests/fixtures/w60b_redaction_corpus.json"
 BASE = "0b411c16347a0f1651b88cae52b58555701e4db3"
 MAIN = "2c927d0209e4c4928c3f29d8747d648f930ddade"
 ROUND3 = "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
+CURRENT_MAIN = "3f1d844cfabd60b901a0adb68a246bd45bdcf1d0"
 _SURROGATE = re.compile(r"\{\{U\+(DC[89A-F][0-9A-F])\}\}")
 
 
@@ -214,6 +216,107 @@ wall-clock noise. This test also catches work hidden in regexes or other helpers
     assert medians[-1] <= max(0.20, medians[0]) * 24, (family["id"], receipts)
 
 
+def _canonical_registry_snapshot():
+    """Independent test input from every registry check and all real projections."""
+    findings = [{"id": check, "title": title, "severity": severity, "cis_ref": reference,
+                 "remediation": remediation, "status": "fail", "detail": "Synthetic registry coverage"}
+                for check, (title, severity, reference, remediation) in parse._SEC_CHECKS.items()]
+    security = {"owner_scope": {"findings": findings}}
+    return {"security": security,
+            "framework_coverage": analyze.compute_framework_coverage(security),
+            "punchlist": analyze.compute_migration_punchlist([], security, {}, [], [], [], {}, [], []),
+            "remediation_plan": analyze.compute_remediation_plan(security=security)}
+
+
+def test_w60b_preserves_all_owner_registry_titles_in_every_real_projection():
+    snapshot = _canonical_registry_snapshot()
+    pristine = deepcopy(snapshot)
+    redacted = html.redact_snapshot(snapshot)
+    assert snapshot == pristine, "owner input was mutated"
+    source = snapshot["security"]["owner_scope"]["findings"]
+    result = redacted["security"]["owner_scope"]["findings"]
+    assert {row["id"] for row in source} == set(parse._SEC_CHECKS)
+    assert [(row["id"], row["title"]) for row in result] == [(row["id"], row["title"]) for row in source]
+    covered = set()
+    for framework, block in snapshot["framework_coverage"]["frameworks"].items():
+        originals = block["controls"]
+        transformed = redacted["framework_coverage"]["frameworks"][framework]["controls"]
+        assert [(row["check"], row["title"], row["control"]) for row in transformed] == [
+            (row["check"], row["title"], row["control"]) for row in originals]
+        covered.update(row["check"] for row in originals)
+    assert covered == set(parse._SEC_CHECKS), "the real framework input does not cover every check"
+    assert [(row["category"], row["title"]) for row in redacted["punchlist"]] == [
+        (row["category"], row["title"]) for row in snapshot["punchlist"]]
+    assert {row["title"] for row in snapshot["punchlist"]} == {row["title"] for row in source}
+    for field in ("items", "by_device"):
+        original = snapshot["remediation_plan"][field]
+        transformed = redacted["remediation_plan"][field]
+        if field == "by_device":
+            original = [row for rows in original.values() for row in rows]
+            transformed = [row for rows in transformed.values() for row in rows]
+        assert [(row["category"], row["title"]) for row in transformed] == [
+            (row["category"], row["title"]) for row in original]
+        assert {row["title"] for row in original} == {row["title"] for row in source}
+    assert html.redact_snapshot(redacted) == redacted, "owner-vocabulary result is not idempotent"
+
+
+@pytest.mark.parametrize("context", ["security-id", "security-title-tail", "framework-id", "arbitrary-title",
+                                    "credential-container", "punch-reference", "remediation-source", "remediation-verify"])
+def test_w60b_owner_vocabulary_cannot_authenticate_an_unowned_context(context):
+    snapshot = _canonical_registry_snapshot()
+    check = "weak-user-pw"
+    title = parse._SEC_CHECKS[check][0]
+    findings = snapshot["security"]["owner_scope"]["findings"]
+    index = next(index for index, row in enumerate(findings) if row["id"] == check)
+    target = ("security", "owner_scope", "findings", index, "title")
+    if context == "security-id":
+        findings[index]["id"] = "unowned-corpus-check"
+    elif context == "security-title-tail":
+        findings[index]["title"] = title + " password SyntheticOwner242"
+    elif context == "framework-id":
+        controls = snapshot["framework_coverage"]["frameworks"]["CIS"]["controls"]
+        control_index = next(index for index, row in enumerate(controls) if row["check"] == check)
+        controls[control_index]["check"] = "unowned-corpus-check"
+        target = ("framework_coverage", "frameworks", "CIS", "controls", control_index, "title")
+    elif context == "arbitrary-title":
+        snapshot = {"arbitrary": {"title": title}}
+        target = ("arbitrary", "title")
+    elif context == "credential-container":
+        snapshot = {"password": snapshot}
+        target = ("password",) + target
+    elif context == "punch-reference":
+        punch_index = next(index for index, row in enumerate(snapshot["punchlist"]) if row["title"] == title)
+        snapshot["punchlist"][punch_index]["evidence_refs"] = [
+            {"ref": "/security/owner_scope/findings/99999", "kind": "device_fact", "role": "derived_from"}]
+        target = ("punchlist", punch_index, "title")
+    else:
+        items = snapshot["remediation_plan"]["items"]
+        item_index = next(index for index, row in enumerate(items) if row["title"] == title)
+        key = "source" if context == "remediation-source" else "verify"
+        items[item_index][key] = "unowned-corpus-context"
+        target = ("remediation_plan", "items", item_index, "title")
+    result = html.redact_snapshot(snapshot)
+    changed = result
+    for part in target:
+        changed = changed[part]
+    assert changed != title, (context, "owner text was exempted at an unauthenticated role")
+    if context == "credential-container":
+        assert changed == "<redacted>", "credential-container priority was lost"
+    if context == "security-title-tail":
+        assert "SyntheticOwner242" not in json.dumps(result), "a mutated title authenticated its credential tail"
+
+
+def test_w60b_exact_owner_title_is_not_an_exemption_in_a_raw_capture(tmp_path):
+    title = parse._SEC_CHECKS["weak-user-pw"][0]
+    capture = _capture(tmp_path, title + "\n")
+    assert not _verify(tmp_path)["accepted"], "the snapshot-owner exception escaped into raw capture verification"
+    assert html.redact_collection_dir(str(tmp_path)) == (1, 1)
+    assert capture.read_bytes() != (title + "\n").encode("utf-8")
+    proof = _verify(tmp_path)
+    assert proof["accepted"] and proof["proof"]["files"] == 1 and proof["proof"]["uncovered"] == []
+    assert html.redact_collection_dir(str(tmp_path)) == (1, 0)
+
+
 _BATCH_SCRIPT = r'''
 import json, logging, pathlib, sys
 sys.dont_write_bytecode = True
@@ -291,7 +394,7 @@ def archival_replay(tmp_path_factory):
     cases = _all_differential_cases()
     case_path = scratch / "cases.json"
     case_path.write_text(json.dumps(cases, ensure_ascii=True), encoding="utf-8")
-    sources = {ref: _archive(ref, scratch) for ref in (MAIN, ROUND3, BASE)}
+    sources = {ref: _archive(ref, scratch) for ref in (MAIN, ROUND3, BASE, CURRENT_MAIN)}
     sources["candidate"] = ROOT
     results = {}
     for ref in (MAIN, ROUND3, "candidate"):
@@ -379,23 +482,33 @@ def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_re
     inputs = []
     for name in ("tests/golden/snapshot.json", "webapp/sample_data/sample_fleet.snapshot.json"):
         raw = subprocess.check_output(["git", "show", BASE + ":" + name], cwd=ROOT)
+        current_raw = subprocess.check_output(["git", "show", CURRENT_MAIN + ":" + name], cwd=ROOT)
+        assert current_raw == raw, ("STOP: current-main persisted input differs from W60 baseline", name, CURRENT_MAIN)
         assert (ROOT / name).read_bytes().replace(b"\r\n", b"\n") == raw
         path = scratch / Path(name).name
         path.write_bytes(raw)
         inputs.append(str(path))
     outputs = {}
-    for ref in (BASE, "candidate"):
+    for ref in (BASE, CURRENT_MAIN, "candidate"):
         destination = scratch / (ref + "-views")
         destination.mkdir()
         subprocess.run([sys.executable, "-I", "-B", "-c", _SNAPSHOT_SCRIPT, str(sources[ref]),
                         json.dumps(inputs), str(destination)], cwd=scratch, check=True, timeout=180)
         outputs[ref] = destination
-    for path in inputs:
-        name = Path(path).name + ".redacted.json"
-        before = (outputs[BASE] / name).read_bytes()
-        after = (outputs["candidate"] / name).read_bytes()
-        changed_leaves = _changed_leaf_paths(json.loads(before), json.loads(after)) if before != after else []
-        print(json.dumps({"view": name, "before_sha256": hashlib.sha256(before).hexdigest(),
-                          "after_sha256": hashlib.sha256(after).hexdigest(), "changed_leaf_paths": changed_leaves}))
-        assert before == after, ("STOP: existing redacted engine view would move; do not rebaseline", name,
-                                 hashlib.sha256(before).hexdigest(), hashlib.sha256(after).hexdigest(), changed_leaves)
+    verdicts = []
+    for ref in (BASE, CURRENT_MAIN):
+        for path in inputs:
+            name = Path(path).name + ".redacted.json"
+            before = (outputs[ref] / name).read_bytes()
+            after = (outputs["candidate"] / name).read_bytes()
+            changed_leaves = _changed_leaf_paths(json.loads(before), json.loads(after)) if before != after else []
+            verdict = {"baseline_ref": ref, "view": name, "byte_identical": before == after,
+                       "before_sha256": hashlib.sha256(before).hexdigest(),
+                       "after_sha256": hashlib.sha256(after).hexdigest(), "changed_leaf_paths": changed_leaves}
+            verdicts.append(verdict)
+            print(json.dumps(verdict))
+    # Collect golden AND sample on BOTH immutable oracles before refusing. The
+    # all-views byte equality gate is unchanged; failure diagnostics hold paths
+    # and digests instead of dumping the complete synthetic engine snapshots.
+    failures = [verdict for verdict in verdicts if not verdict["byte_identical"]]
+    assert failures == [], ("STOP: existing redacted engine view would move; do not rebaseline", failures)

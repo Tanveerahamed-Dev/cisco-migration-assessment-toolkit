@@ -112,3 +112,26 @@ This stop record and the board update are committed locally only, avoiding a new
 the stop. Published code remains at `894c8175`. The next permitted step is an owner-reviewed
 continuation decision: preserve the ten existing engine-authored leaves, close the remaining
 behavior/differential failures, and re-run every unchanged hosted gate before independent refutation.
+
+## Owner-delegated continuation after 2e213e72
+
+The supervisor explicitly authorized continuation and publication of the stop record with the next
+repair. The ten changed leaves are over-redaction of engine vocabulary, not credential material.
+Their two literals originate in `parse._SEC_CHECKS` and the framework catalog. The repair derives
+exact vocabulary from trusted registry findings passed through the actual framework, punch-list
+and remediation builders. Only structurally bound snapshot fields with matching owner values
+are exempted. Raw collection text, altered titles, unbound title fields and credential containers
+remain subject to scrubbing. No output is regenerated or rebaselined.
+
+The continuation also gives ISAKMP key values a required slot, including incomplete `chain` and
+`14` operands; admits quoted/escaped argument witnesses to the semantic observer; handles case
+variants of complete directives; preserves quotes around required-slot placeholders; and removes
+explicit argv/positional credential contents before the generic keyword observer can mistake an
+embedded `Auth` for an anchor that consumes later options and the target host. The verifier's
+required-slot and recognition checks remain independent. Existing assertions are retained.
+
+Hosted custody will compare both full golden and sample redacted views with the original W60
+main and current main `3f1d844cfabd60b901a0adb68a246bd45bdcf1d0`, printing both verdicts before
+asserting. Relevant redaction owners and snapshot inputs are unchanged between those revisions.
+The original protected-output guard and both zero-regression differentials remain in place.
+This source repair is pending hosted validation; earlier failures and cancellations remain evidence.

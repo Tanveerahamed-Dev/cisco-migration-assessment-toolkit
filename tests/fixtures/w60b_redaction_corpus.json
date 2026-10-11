@@ -9361,6 +9361,58 @@
       "structural": ["-v3", "-aSHA256", "-xAES192C", "query-birch-229"],
       "mode": "must_redact",
       "expect": "snmpget -v3 -aSHA256 -xAES192C -A <redacted> -X <redacted> query-birch-229\n"
+    },
+    {
+      "id": "isakmp:incomplete-chain-value",
+      "finding": "R1",
+      "text": "crypto isakmp key chain\n",
+      "secrets": ["chain"],
+      "structural": ["crypto isakmp key"],
+      "mode": "must_redact",
+      "expect": "crypto isakmp key <redacted>\n"
+    },
+    {
+      "id": "isakmp:incomplete-numeric-value",
+      "finding": "R1",
+      "text": "crypto isakmp key 14\n",
+      "secrets": ["14"],
+      "structural": ["crypto isakmp key"],
+      "mode": "must_redact",
+      "expect": "crypto isakmp key <redacted>\n"
+    },
+    {
+      "id": "isakmp:complete-chain-value",
+      "finding": "R1",
+      "text": "crypto isakmp key chain address 198.51.100.231\n",
+      "secrets": ["chain"],
+      "structural": ["crypto isakmp key", "address 198.51.100.231"],
+      "mode": "must_redact",
+      "expect": "crypto isakmp key <redacted> address 198.51.100.231\n"
+    },
+    {
+      "id": "isakmp:complete-numeric-value",
+      "finding": "R1",
+      "text": "crypto isakmp key 14 address 198.51.100.232\n",
+      "secrets": ["14"],
+      "structural": ["crypto isakmp key", "address 198.51.100.232"],
+      "mode": "must_redact",
+      "expect": "crypto isakmp key <redacted> address 198.51.100.232\n"
+    },
+    {
+      "id": "isakmp:structural-key-chain-control",
+      "finding": "R1",
+      "text": "key chain CORPUS_ISAKMP_CHAIN\n key 14\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep"
+    },
+    {
+      "id": "isakmp:structural-policy-control",
+      "finding": "R1",
+      "text": "crypto isakmp policy 14\n authentication pre-share\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep"
     }
   ],
   "review_differential": [

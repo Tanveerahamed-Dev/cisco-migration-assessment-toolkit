@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from functools import lru_cache
 from pathlib import PurePath
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +21,9 @@ from openpyxl.utils import get_column_letter
 
 from cisco_toolkit import __version__
 from cisco_toolkit.analyze import (PROTOCOL_ASSESSABILITY_STATES, _protocol_assessability_conclusion,
-                                   compute_current_baseline_gate, normalize_routing_adjacency_state)
+                                   compute_current_baseline_gate, normalize_routing_adjacency_state,
+                                   compute_framework_coverage, compute_migration_punchlist,
+                                   compute_remediation_plan)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import _SEC_CHECKS as _ENGINE_SECURITY_CHECKS   # W60: engine check IDs
 from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
@@ -3832,6 +3835,7 @@ _REDACT_REQUIRED_RES = [
          r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text", r"fallback"),
         required=True),
     _redact_family(r"\b(?:ip{H}ospf|ntp){H}authentication-key", run=_REDACT_KEY_RUN, required=True),
+    _redact_family(r"\bcrypto{H}isakmp{H}key", run=_REDACT_KEY_RUN, required=True),
 ]
 _REDACT_SECRET_RES = _REDACT_REQUIRED_RES + [
     # FortiGate 'set <secret-attribute>[N] [ENC] <VALUE>'. The attribute set is CLOSED (a name containing
@@ -3967,7 +3971,7 @@ _REDACT_SECRET_RES = _REDACT_REQUIRED_RES + [
 #: Speed only, aligned with `_REDACT_SECRET_RES`: a literal every match of that family's anchor contains
 #: (compared casefolded, a superset of IGNORECASE matching). A family is skipped on a line holding none.
 _REDACT_SECRET_NEEDLES = (
-    ("username", "neighbor", "enable"), ("authentication-key",),
+    ("username", "neighbor", "enable"), ("authentication-key",), ("isakmp",),
     ("set",), ("snmp-server",), ("snmp-server",), ("v3user",), ("v3user",), ("snmp-server",),
     ("community",), ("community",), ("community",),
     ("community-map", "community-name", "snmp-community-string", "trap-group"), ("config",), ("config",),
@@ -3983,7 +3987,7 @@ assert len(_REDACT_SECRET_NEEDLES) == len(_REDACT_SECRET_RES) == len(_REDACT_SEC
 #: and (round 3) the free-string forms main never reached: NHRP 'authentication', FHRP 'authentication
 #: text', AireOS 'config radius|tacacs ... add' and 'config mgmtuser|netuser add'. FHRP 'authentication
 #: md5' and the SNMPv3 users are not: a 'vrrp 10 authentication md5' does not cost the next line a word.
-_REDACT_SECRET_CROSS = (True, True, True, False, False, False, False, True, True, True, True, False, True, True, True,
+_REDACT_SECRET_CROSS = (True, True, True, True, False, False, False, False, True, True, True, True, False, True, True, True,
                         False, True, True, False, True, False, False, False, True, True, False, False, False,
                         False, False, False, False, True, True)
 assert len(_REDACT_SECRET_CROSS) == len(_REDACT_SECRET_RES)
@@ -4104,17 +4108,24 @@ _REDACT_TYPE_DIGIT_RE = re.compile(r"(?:10|[0-9])")
 _REDACT_WRAP_ENC = "ENC"
 
 
-def _redact_grammar_sub(has_next: bool, delim: str = ""):
+def _redact_grammar_sub(has_next: bool, delim: str = "", *, preserve_quotes: bool = False):
     """The grammar's replacement: everything the family matched before its value is kept and the value
     (group ``v``) becomes the placeholder. A trailing banner delimiter on the value is kept so the
     scrub can never delete the end of a banner body (`_REDACT_BANNER_RE`)."""
     def sub(m) -> str:
         value = m.group("v")
+        if (value == _REDACT_PLACEHOLDER
+                or len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]
+                and value[1:-1] == _REDACT_PLACEHOLDER):
+            return m.group(0)
         if (has_next and (_REDACT_TYPE_DIGIT_RE.fullmatch(value) or value == _REDACT_WRAP_ENC)
                 and not _REDACT_WS_RE.sub("", m.string[m.end():])):
             return m.group(0)
         keep = delim if delim and value.endswith(delim) and value != delim else ""
-        return m.group(0)[:m.start("v") - m.start()] + _REDACT_PLACEHOLDER + keep
+        replacement = _REDACT_PLACEHOLDER
+        if preserve_quotes and len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+            replacement = value[0] + replacement + value[-1]
+        return m.group(0)[:m.start("v") - m.start()] + replacement + keep
     return sub
 
 
@@ -4560,7 +4571,7 @@ _REDACT_DIGEST_KEY_RE = re.compile(
     r"sha1|sha224|sha256|sha384|sha512|md5|digest|hash|fingerprint|checksum|thumbprint|ids?\Z")
 #: Speed only: a line with none of these substrings has nothing for the sweep to anchor on.
 _REDACT_SWEEP_PREFILTER = re.compile(
-    r"pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
+    r"-|pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
     r"cookie|trap|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
     r"groupname:|com2sec|_pw|-pw|credential|pkcs12|----|://|<|sink|cleartext|=\s*des|ldap|lte|pin|"
     r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw|"
@@ -5699,7 +5710,7 @@ def _redact_directive_config(line: str, directive) -> bool:
     if not targets or not targets[0] or any(c in _REDACT_WS_CHARS for c in targets[0]):
         return False
     if spelling.casefold() in {"trapsess", "informsess"}:
-        return len(targets) == 1
+        return len(targets) == 1 or len(targets) == 2 and bool(_REDACT_SNMP_OID_RE.fullmatch(targets[1]))
     return len(targets) in {2, 3} and all(_REDACT_SNMP_OID_RE.fullmatch(oid) for oid in targets[1:])
 
 
@@ -5983,23 +5994,29 @@ def _redact_table_cells(line: str, table) -> str:
 def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bool,
                        prose=None, delim: str = "", join=None) -> str:
     """The residual sweep of ONE line (after the grammar)."""
-    required = [m.span("v") for regex in _REDACT_REQUIRED_RES for m in regex.finditer(line)
+    required = [_redact_operand_span(line, *m.span("v"), "value")
+                for regex in _REDACT_REQUIRED_RES for m in regex.finditer(line)
                 if m.group("v") != _REDACT_PLACEHOLDER and m.group("v") != _REDACT_WRAP_ENC
                 and not _REDACT_TYPE_DIGIT_RE.fullmatch(m.group("v"))]
+    required = [span for span in required if span is not None]
     if required:
         line = _redact_replace_spans(line, required)
     if "://" in line:
         line = _redact_sweep_url(line)
     if "<" in line:
         line = _redact_sweep_xml(line)
+    # Explicit argv/positional operands own their bytes. Remove their contents before
+    # the generic observer can read a keyword inside a credential (e.g. W60bAuth229)
+    # as an anchor and erase the following options and target host.
+    operands = _redact_argv_spans(line) if "-" in line or "net" in line.casefold() else []
+    operands.extend(_redact_snmp_positional_spans(line))
+    if operands:
+        line = _redact_replace_spans(line, operands)
     masked = _redact_sweep_masked(line, config_slots=not forced)
     anchor = 0 if forced else _redact_sweep_anchor(line, masked, forti, prose, join)
     spans = []
     if anchor is not None:
         spans.extend(_redact_sweep_bad_tokens(masked, anchor, delim))
-    if "-" in line or "net" in line.casefold():
-        spans.extend(_redact_argv_spans(line))
-    spans.extend(_redact_snmp_positional_spans(line))
     if ":" in line:
         spans.extend(_redact_shell_spans(line))
     if spans:
@@ -6017,9 +6034,11 @@ def _redact_grammar_line(line: str, has_next: bool, delim: str = "") -> str:
     if len(line) > _REDACT_GRAMMAR_MAX_LINE or not _REDACT_LINE_PREFILTER.search(low):
         return line
     sub = _redact_grammar_sub(has_next, delim) if delim else _REDACT_GRAMMAR_SUBS[has_next]
-    for rx, needles in zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES):
+    for index, (rx, needles) in enumerate(zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES)):
         if any(needle in low for needle in needles):
-            scrubbed = rx.sub(sub, line)
+            replace = (_redact_grammar_sub(has_next, delim, preserve_quotes=True)
+                       if index < len(_REDACT_REQUIRED_RES) else sub)
+            scrubbed = rx.sub(replace, line)
             if scrubbed != line:
                 line, low = scrubbed, scrubbed.casefold()
     return line
@@ -6372,6 +6391,71 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
     return "".join(parts)
 
 
+@lru_cache(maxsize=1)
+def _redact_engine_vocabulary():
+    """Exact security vocabulary from its owners, including the real title projections.
+
+    Only trusted registry data enters the builders. Incoming snapshot prose cannot
+    declare itself engine vocabulary. This exception is used only at owned snapshot
+    fields; collection text and credential-named containers retain ordinary scrubbing.
+    """
+    titles = {cid: title for cid, (title, _sev, _ref, _rem) in _ENGINE_SECURITY_CHECKS.items()}
+    security = {"owner": {"findings": [
+        {"id": cid, "title": title, "severity": sev, "cis_ref": ref,
+         "remediation": rem, "status": "fail"}
+        for cid, (title, sev, ref, rem) in _ENGINE_SECURITY_CHECKS.items()]}}
+    frameworks = compute_framework_coverage(security)["frameworks"]
+    controls = {(fw, row["check"]): {key: row[key] for key in ("title", "control")}
+                for fw, framework in frameworks.items() for row in framework["controls"]}
+    punch = compute_migration_punchlist([], security, {}, [], [], [], {}, [], [])
+    punch_titles = frozenset((row["category"], row["title"]) for row in punch)
+    remediation = compute_remediation_plan(security=security)
+    remediation_titles = frozenset((row["category"], row["source"], row["title"], row["verify"])
+                                  for row in remediation["items"])
+    return titles, controls, punch_titles, remediation_titles
+
+
+def _redact_owned_snapshot_vocabulary(snap, path, row, value: str) -> bool:
+    """Preserve an exact owner value only at its structurally bound projection."""
+    if not isinstance(row, dict) or path[-1:] not in (("title",), ("control",)):
+        return False
+    titles, controls, punch_titles, remediation_titles = _redact_engine_vocabulary()
+    cid = row.get("id")
+    if len(path) == 5 and path[0] == "security" and path[2] == "findings" and path[-1] == "title":
+        return isinstance(cid, str) and titles.get(cid) == value
+    if len(path) == 6 and path[:2] == ("framework_coverage", "frameworks") and path[3] == "controls":
+        check = row.get("check")
+        return (isinstance(check, str)
+                and controls.get((path[2], check), {}).get(path[-1]) == value)
+    category = row.get("category")
+    if len(path) == 3 and path[0] == "punchlist" and path[-1] == "title":
+        if not isinstance(category, str) or (category, value) not in punch_titles:
+            return False
+        refs = row.get("evidence_refs")
+        for ref in refs if isinstance(refs, list) else ():
+            pointer = ref.get("ref") if isinstance(ref, dict) else None
+            if not isinstance(pointer, str):
+                continue
+            parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
+            if len(parts) != 4 or parts[0] != "security" or parts[2] != "findings" or not parts[3].isdigit():
+                continue
+            finding = snap
+            try:
+                for part in parts:
+                    finding = finding[int(part)] if isinstance(finding, list) else finding[part]
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            if isinstance(finding, dict) and isinstance(finding.get("id"), str):
+                if titles.get(finding["id"]) == value and finding.get("title") == value:
+                    return True
+        return False
+    if (path[0] == "remediation_plan" and path[-1] == "title"
+            and (len(path) == 4 and path[1] == "items" or len(path) == 5 and path[1] == "by_device")):
+        fields = (category, row.get("source"), value, row.get("verify"))
+        return all(isinstance(field, str) for field in fields) and fields in remediation_titles
+    return False
+
+
 def redact_snapshot(snap: dict) -> dict:
     """Return a copy of the snapshot with IPs, MACs, serial numbers, and emails consistently
     pseudonymized for sharing the single-file deliverable. Same input maps to the same
@@ -6524,7 +6608,7 @@ def redact_snapshot(snap: dict) -> dict:
         if isinstance(o, str): return _REDACT_PLACEHOLDER if o else o
         return o
 
-    def _walk(o, key=None):
+    def _walk(o, key=None, path=(), parent=None):
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
@@ -6533,16 +6617,18 @@ def redact_snapshot(snap: dict) -> dict:
                     # secret-named key over a CONTAINER -> scrub every leaf
                     safe_value = _redact_all(v)
                 else:
-                    safe_value = _walk(v, k)
+                    safe_value = _walk(v, k, path + (k,), o)
                 _store_preserving_key(out, safe_key, safe_value)
             return out
         if isinstance(o, list):
-            return [_walk(v, key) for v in o]
+            return [_walk(v, key, path + (index,), parent) for index, v in enumerate(o)]
         if isinstance(o, str):
             if key in _REDACT_SERIAL_KEYS: return _serial(o)
             if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
             if o and _is_secret_key(key):
                 return _REDACT_PLACEHOLDER   # a secret stored as a JSON value under a credential-named key
+            if _redact_owned_snapshot_vocabulary(snap, path, parent, o):
+                return o
             return _scrub(o, digest_value=bool(_REDACT_DIGEST_KEY_RE.search(_norm_key(key))))
         return o
 

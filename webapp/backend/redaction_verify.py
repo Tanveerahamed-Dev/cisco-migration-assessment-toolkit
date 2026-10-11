@@ -946,7 +946,8 @@ _REQUIRED_CONFIG_SLOT_RE = re.compile(_v(
     r"(?:{H}(?:privilege|role|algorithm-type|view){H}{S}+)*{H}(?:password|secret)"
     r"|neighbor{H}{S}+{H}password|enable{H}(?:password|secret))"
     r"|(?<![\w.-])(?P<ospf>ip{H}ospf{H}authentication-key)"
-    r"|(?<![\w.-])(?P<ntp>ntp{H}authentication-key)"), re.IGNORECASE)
+    r"|(?<![\w.-])(?P<ntp>ntp{H}authentication-key)"
+    r"|(?<![\w.-])(?P<isakmp>crypto{H}isakmp{H}key)"), re.IGNORECASE)
 _REQUIRED_PASSWORD_QUALIFIERS = frozenset({
     "scrypt", "enc", "encrypted", "clear", "cipher", "plain", "simple", "irreversible-cipher",
     "hashed", "text", "fallback",
@@ -959,7 +960,7 @@ _REQUIRED_KEY_QUALIFIERS = frozenset({
 
 
 def _required_config_findings(line: str, *, has_next: bool = False, delim: str = "") -> list[str]:
-    """Check real username/neighbor/enable and authentication-key value slots independently.
+    """Check username/neighbor/enable, authentication-key and ISAKMP key slots independently.
 
     A global keyword stop list is deliberately not consulted. Here 'encryption', 'chain',
     an address, and punctuation are values, regardless of their meaning in another statement.
@@ -981,21 +982,30 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
             if not (words[0].isdigit() or words[0] == _PLACEHOLDER) or len(words) < 2:
                 continue
             pos = 1
-        if match.group("password") and words[pos].casefold() == "level" and len(words) > pos + 2:
-            if words[pos + 1].isdigit():
+        if (match.group("password") and fields[pos].group(0).casefold() == "level"
+                and len(words) > pos + 2):
+            if fields[pos + 1].group(0).isdigit():
                 pos += 2
         qualifiers = _REQUIRED_PASSWORD_QUALIFIERS if match.group("password") else _REQUIRED_KEY_QUALIFIERS
         while pos + 1 < len(words):
             word = words[pos]
+            # Required configuration slots use literal qualifier tokens. A quoted or
+            # escaped word occupying that slot is a value even when it spells 'clear',
+            # 'md5', 'ENC', or a type digit after semantic decoding.
+            if fields[pos].group(0) != word:
+                break
             if (word.casefold() in qualifiers or _REQUIRED_HASH_RE.fullmatch(word)
                     or _CRED_TYPE_DIGIT_RE.fullmatch(word)):
                 pos += 1
             else:
                 break
         if (has_next and pos + 1 == len(words)
+                and fields[pos].group(0) == words[pos]
                 and (_CRED_TYPE_DIGIT_RE.fullmatch(words[pos]) or words[pos] == "ENC")):
             continue
-        if words[pos] and not _cred_is_placeholder(words[pos], delim):
+        placeholder = (words[pos].casefold() == _PLACEHOLDER if fields[pos].group(0) != words[pos]
+                       else _cred_is_placeholder(words[pos], delim))
+        if words[pos] and not placeholder:
             findings.append("credential value (required configuration slot)")
     return findings
 
@@ -1750,7 +1760,7 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
     if not targets or not targets[0] or any(c in _CRED_WS_CHARS for c in targets[0]):
         return False
     if spelling.casefold() in {"trapsess", "informsess"}:
-        return len(targets) == 1
+        return len(targets) == 1 or (len(targets) == 2 and bool(_SWEEP_SNMP_OID_RE.fullmatch(targets[1])))
     return len(targets) in {2, 3} and all(_SWEEP_SNMP_OID_RE.fullmatch(oid) for oid in targets[1:])
 
 
@@ -2314,7 +2324,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
         low = line.casefold()
         if (forced or prose is not None or join is not None or row is not None or forti[index]
                 or _SWEEP_PREFILTER.search(low) or _SWEEP_RUN_RE.search(line) or _CRED_PREFILTER_RE.search(low)
-                or _SWEEP_IGNORABLE_RE.search(line)):
+                or _SWEEP_IGNORABLE_RE.search(line) or "-" in line):
             kinds.extend(_sweep_url_findings(line))
             if "<" in line:
                 kinds.extend(_sweep_xml_findings(line))
