@@ -272,7 +272,7 @@ const PR_72_LIB_DIFF_LINES = Object.freeze([
 // which the reconstruction test below proves; README.md and package.json are Atlas-authored.
 const VENDORED_SHA256 = Object.freeze({
   LICENSE: "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2",
-  "README.md": "e1bc416ea24f0964c292d05f86c024d0b26a3144bebce65b2e01b2396f30ed0e",
+  "README.md": "e6d58892eba9a626ff9ff9716928f55a2850b0d8c1a763022d0ce40d136c4dfb",
   "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
   "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
   "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
