@@ -849,6 +849,9 @@ _KEYCHAIN_HEADER_RE = re.compile(_v(
 _KEYCHAIN_MEMBER_RE = re.compile(_v(r"^{h}*key{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
 _TRUSTED_KEY_STATEMENT_RE = re.compile(_v(
     r"^{h}*ntp{H}trusted-key{H}\d{1,10}(?:{H}\d{1,10})*{h}*\Z"), re.IGNORECASE)
+_ISAKMP_POLICY_HEADER_RE = re.compile(_v(
+    r"^{h}*crypto{H}isakmp{H}policy{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
+_ISAKMP_AUTH_STATEMENT_RE = re.compile(_v(r"^{h}*authentication{H}pre-share{h}*\Z"), re.IGNORECASE)
 _CHAP_HEADER_RE = re.compile(_v(r"^{h}*#{h}*client{H}server{H}secret(?={h}|\Z)"), re.IGNORECASE)
 _JSON_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*(?P<b>(?:[\[{]{h}*)+)\Z"""))
 _JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
@@ -935,6 +938,11 @@ def _cred_value_is_structural(value: str, end: int, family: _CredFamily, line: s
 def _cred_is_placeholder(token: str, delim: str = "") -> bool:
     """The placeholder, allowing the punctuation a config or JSON line closes it with (and, inside a
     banner, the banner delimiter the scrub keeps after it)."""
+    if token[:1] in {"\"", "'"}:
+        # Quotes belong to the value token. Accept precisely one complete outer pair
+        # around the placeholder; a placeholder prefix with any quoted residue is a leak.
+        return (len(token) == len(_PLACEHOLDER) + 2 and token[-1] == token[0]
+                and token[1:-1].casefold() == _PLACEHOLDER)
     token = token.rstrip(";,)}]\"'")
     if delim and token.endswith(delim) and token != delim:
         token = token[:len(token) - len(delim)]
@@ -2246,6 +2254,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
     expect = False
     banner = ""
     keychain_indent: int | None = None
+    isakmp_indent: int | None = None
     prev: str | None = None
     for index, line in enumerate(lines):
         blank = not _CRED_WS_RE.sub("", line)
@@ -2254,6 +2263,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
                 region = table[index]
             pending, block, csv, prev_nb = None, None, None, None
             keychain_indent = None
+            isakmp_indent = None
             prev = line
             continue
         in_block = block is not None and _block_holds(block, line)
@@ -2264,8 +2274,10 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             or bool(_CHAP_HEADER_RE.match(line)))
         forced = not blank and in_block
         keychain_member = False
+        isakmp_auth = False
         if forced or banner:
             keychain_indent = None
+            isakmp_indent = None
         elif not blank:
             indentation = _SWEEP_LEAD_RE.match(line).end()
             if _KEYCHAIN_HEADER_RE.fullmatch(line):
@@ -2275,10 +2287,17 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
                     keychain_indent = None
                 else:
                     keychain_member = bool(_KEYCHAIN_MEMBER_RE.fullmatch(line))
-        if keychain_member or (not forced and not banner and _TRUSTED_KEY_STATEMENT_RE.fullmatch(line)):
-            # A complete numeric key reference is structure only in its validated statement
-            # context. Never extend this exemption to a credential block, arbitrary digits,
-            # or any line that also carries a key-string/value clause.
+            if pending is None and _ISAKMP_POLICY_HEADER_RE.fullmatch(line):
+                isakmp_indent = indentation
+            elif isakmp_indent is not None:
+                if indentation <= isakmp_indent:
+                    isakmp_indent = None
+                elif pending is None:
+                    isakmp_auth = bool(_ISAKMP_AUTH_STATEMENT_RE.fullmatch(line))
+        if keychain_member or isakmp_auth or (not forced and not banner and _TRUSTED_KEY_STATEMENT_RE.fullmatch(line)):
+            # Complete key references and a policy's authentication method are structure only
+            # in their validated statement contexts. Never extend this exemption to a
+            # credential block, arbitrary digits, or a line that also carries a value clause.
             pending = None
             prev = prev_nb = line
             expect = False

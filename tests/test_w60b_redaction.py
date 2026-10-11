@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from cisco_toolkit import analyze, html, parse
+from cisco_toolkit import analyze, design_kb, html, parse
 from webapp.backend import redaction_verify as rv
 
 
@@ -228,43 +228,102 @@ def _canonical_registry_snapshot():
             "remediation_plan": analyze.compute_remediation_plan(security=security)}
 
 
-def test_w60b_preserves_all_owner_registry_titles_in_every_real_projection():
+def _owner_structural_password_collision(value):
+    words = html._REDACT_SWEEP_VOID_NEXT["password"]
+    return any(match.group(1).casefold() in words
+               for match in re.finditer(r"\bpassword\s+([A-Za-z0-9_-]+)\b", value, re.IGNORECASE))
+
+
+def _registry_owned_text_fields(snapshot):
+    fields = []
+    for host, block in snapshot["security"].items():
+        fields.extend((f"security/{host}/{row['id']}/title", row["title"])
+                      for row in block["findings"])
+    for framework, block in snapshot["framework_coverage"]["frameworks"].items():
+        fields.extend((f"framework/{framework}/{row['check']}/{key}", row[key])
+                      for row in block["controls"] for key in ("title", "control"))
+    fields.extend((f"punchlist/{index}/title", row["title"])
+                  for index, row in enumerate(snapshot["punchlist"]))
+    fields.extend((f"remediation/items/{index}/title", row["title"])
+                  for index, row in enumerate(snapshot["remediation_plan"]["items"]))
+    for host, rows in snapshot["remediation_plan"]["by_device"].items():
+        fields.extend((f"remediation/by_device/{host}/{index}/title", row["title"])
+                      for index, row in enumerate(rows))
+    return fields
+
+
+def test_w60b_owner_collision_exception_preserves_only_existing_structural_password_words():
+    snapshot = _canonical_registry_snapshot()
+    expected = {path: value for path, value in _registry_owned_text_fields(snapshot)
+                if _owner_structural_password_collision(value)}
+    assert expected, "no owner field exercises an existing password structural exemption"
+    redacted = dict(_registry_owned_text_fields(html.redact_snapshot(snapshot)))
+    assert {path: redacted[path] for path in expected} == expected
+    print(json.dumps({"owner_policy": "exact-main-views; structural-password-collisions-only",
+                      "collision_fields_checked": sorted(expected), "collision_fields": len(expected)}))
+
+
+def test_w60b_all_owner_registry_projections_match_the_real_archived_main_view(archival_replay):
+    """Latest owner directive: preserve exact main views, including prior scrubbing.
+
+    All registry rows remain covered. Expected values come from the real BASE
+    producer on the independently builder-authored snapshot in hosted scratch.
+    The former broad raw-title exception is expressly outside this requirement.
+    """
+    _cases, _results, sources, scratch = archival_replay
     snapshot = _canonical_registry_snapshot()
     pristine = deepcopy(snapshot)
+    input_path = scratch / "canonical-owner-registry.snapshot.json"
+    input_path.write_text(json.dumps(pristine, ensure_ascii=False), encoding="utf-8")
+    destination = scratch / "canonical-owner-main-views"
+    destination.mkdir()
+    subprocess.run([sys.executable, "-I", "-B", "-c", _SNAPSHOT_SCRIPT, str(sources[BASE]),
+                    json.dumps([str(input_path)]), str(destination)], cwd=scratch, check=True, timeout=180)
+    baseline = json.loads((destination / (input_path.name + ".redacted.json")).read_text(encoding="utf-8"))
     redacted = html.redact_snapshot(snapshot)
     assert snapshot == pristine, "owner input was mutated"
     source = snapshot["security"]["owner_scope"]["findings"]
     result = redacted["security"]["owner_scope"]["findings"]
+    expected = baseline["security"]["owner_scope"]["findings"]
     assert {row["id"] for row in source} == set(parse._SEC_CHECKS)
-    assert [(row["id"], row["title"]) for row in result] == [(row["id"], row["title"]) for row in source]
+    assert [(row["id"], row["title"]) for row in result] == [(row["id"], row["title"]) for row in expected]
     covered = set()
     for framework, block in snapshot["framework_coverage"]["frameworks"].items():
         originals = block["controls"]
         transformed = redacted["framework_coverage"]["frameworks"][framework]["controls"]
+        expected = baseline["framework_coverage"]["frameworks"][framework]["controls"]
         assert [(row["check"], row["title"], row["control"]) for row in transformed] == [
-            (row["check"], row["title"], row["control"]) for row in originals]
+            (row["check"], row["title"], row["control"]) for row in expected]
         covered.update(row["check"] for row in originals)
     assert covered == set(parse._SEC_CHECKS), "the real framework input does not cover every check"
     assert [(row["category"], row["title"]) for row in redacted["punchlist"]] == [
-        (row["category"], row["title"]) for row in snapshot["punchlist"]]
+        (row["category"], row["title"]) for row in baseline["punchlist"]]
     assert {row["title"] for row in snapshot["punchlist"]} == {row["title"] for row in source}
     for field in ("items", "by_device"):
         original = snapshot["remediation_plan"][field]
         transformed = redacted["remediation_plan"][field]
+        expected = baseline["remediation_plan"][field]
         if field == "by_device":
             original = [row for rows in original.values() for row in rows]
             transformed = [row for rows in transformed.values() for row in rows]
+            expected = [row for rows in expected.values() for row in rows]
         assert [(row["category"], row["title"]) for row in transformed] == [
-            (row["category"], row["title"]) for row in original]
+            (row["category"], row["title"]) for row in expected]
         assert {row["title"] for row in original} == {row["title"] for row in source}
     assert html.redact_snapshot(redacted) == redacted, "owner-vocabulary result is not idempotent"
+    print(json.dumps({"owner_policy": "exact-main-views; structural-password-collisions-only",
+                      "reference": BASE, "registry_checks": sorted(parse._SEC_CHECKS),
+                      "projected_fields_checked": len(_registry_owned_text_fields(pristine))}))
 
 
 @pytest.mark.parametrize("context", ["security-id", "security-title-tail", "framework-id", "arbitrary-title",
                                     "credential-container", "punch-reference", "remediation-source", "remediation-verify"])
-def test_w60b_owner_vocabulary_cannot_authenticate_an_unowned_context(context):
+@pytest.mark.parametrize("owner_class", ["prior-main-scrub", "structural-password-collision"])
+def test_w60b_owner_vocabulary_cannot_authenticate_an_unowned_context(context, owner_class):
     snapshot = _canonical_registry_snapshot()
-    check = "weak-user-pw"
+    check = ("weak-user-pw" if owner_class == "prior-main-scrub" else
+             next(cid for cid, (title, _severity, _reference, _remediation) in parse._SEC_CHECKS.items()
+                  if _owner_structural_password_collision(title)))
     title = parse._SEC_CHECKS[check][0]
     findings = snapshot["security"]["owner_scope"]["findings"]
     index = next(index for index, row in enumerate(findings) if row["id"] == check)
@@ -315,6 +374,69 @@ def test_w60b_exact_owner_title_is_not_an_exemption_in_a_raw_capture(tmp_path):
     proof = _verify(tmp_path)
     assert proof["accepted"] and proof["proof"]["files"] == 1 and proof["proof"]["uncovered"] == []
     assert html.redact_collection_dir(str(tmp_path)) == (1, 0)
+
+
+def _canonical_owner_action_snapshot():
+    principle = next(row for row in design_kb.all_principles()
+                     if row["id"] == "security-device-hardening-baseline")
+    row = {"id": principle["id"], "domain": principle["domain"],
+           "recommended_action": principle["recommended_action"]}
+    decision = {**row, "principle": {"id": principle["id"]}}
+    return principle, {"design_blueprint": {"decisions": [decision],
+                                           "doctrine": {principle["domain"]: [row]}}}
+
+
+def test_w60b_exact_structural_owner_action_keeps_both_registered_projections():
+    principle, snapshot = _canonical_owner_action_snapshot()
+    original = deepcopy(snapshot)
+    redacted = html.redact_snapshot(snapshot)["design_blueprint"]
+    assert snapshot == original
+    action = principle["recommended_action"]
+    assert redacted["decisions"][0]["recommended_action"] == action
+    assert redacted["doctrine"][principle["domain"]][0]["recommended_action"] == action
+    print(json.dumps({"owner_policy": "exact-main-views; bound-structural-owner-actions-only",
+                      "principle_id": principle["id"], "domain": principle["domain"],
+                      "action_sha256": hashlib.sha256(action.encode("utf-8")).hexdigest(),
+                      "projection_roles": ["design_blueprint.decisions", "design_blueprint.doctrine"]}))
+
+
+@pytest.mark.parametrize("context", ["decision-id", "decision-domain", "decision-principle-id", "doctrine-id",
+                                    "doctrine-domain", "action-tail", "arbitrary-path", "credential-container"])
+def test_w60b_owner_action_cannot_exempt_an_unbound_or_mutated_statement(context):
+    principle, snapshot = _canonical_owner_action_snapshot()
+    action = principle["recommended_action"]
+    decision = snapshot["design_blueprint"]["decisions"][0]
+    doctrine = snapshot["design_blueprint"]["doctrine"][principle["domain"]][0]
+    target = ("design_blueprint", "decisions", 0, "recommended_action")
+    if context == "decision-id":
+        decision["id"] = "unowned-corpus-principle"
+    elif context == "decision-domain":
+        decision["domain"] = "unowned-corpus-domain"
+    elif context == "decision-principle-id":
+        decision["principle"]["id"] = "unowned-corpus-principle"
+    elif context == "doctrine-id":
+        doctrine["id"] = "unowned-corpus-principle"
+        target = ("design_blueprint", "doctrine", principle["domain"], 0, "recommended_action")
+    elif context == "doctrine-domain":
+        snapshot["design_blueprint"]["doctrine"] = {"unowned-corpus-domain": [doctrine]}
+        target = ("design_blueprint", "doctrine", "unowned-corpus-domain", 0, "recommended_action")
+    elif context == "action-tail":
+        decision["recommended_action"] = action + " password SyntheticAction251"
+    elif context == "arbitrary-path":
+        snapshot = {"arbitrary": {"recommended_action": action}}
+        target = ("arbitrary", "recommended_action")
+    elif context == "credential-container":
+        snapshot = {"password": snapshot}
+        target = ("password",) + target
+    result = html.redact_snapshot(snapshot)
+    changed = result
+    for part in target:
+        changed = changed[part]
+    assert changed != action, (context, "an unbound or mutated owner action bypassed ordinary scrubbing")
+    if context == "action-tail":
+        assert "SyntheticAction251" not in json.dumps(result), "a mutated owner action authenticated a secret"
+    if context == "credential-container":
+        assert changed == "<redacted>", "an owner action overrode credential-container priority"
 
 
 _BATCH_SCRIPT = r'''
@@ -472,6 +594,28 @@ def _changed_leaf_paths(before, after, path="$"):
     return [] if before == after else [path]
 
 
+def _synthetic_changed_leaf_values(before, after, path="$"):
+    """Bounded scalar previews for retained synthetic fixtures only, never a dump."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        return [change for key in sorted(set(before) & set(after))
+                for change in _synthetic_changed_leaf_values(before[key], after[key],
+                                                            path + "[" + json.dumps(key, ensure_ascii=True) + "]")]
+    if isinstance(before, list) and isinstance(after, list):
+        return [change for index, (left, right) in enumerate(zip(before, after))
+                for change in _synthetic_changed_leaf_values(left, right, path + f"[{index}]")]
+    if before == after:
+        return []
+    def preview(value):
+        if isinstance(value, str):
+            return {"value": value if len(value) <= 512 else value[:352] + "..." + value[-128:],
+                    "truncated": len(value) > 512, "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()}
+        if isinstance(value, (dict, list)):
+            return {"type": type(value).__name__, "sha256": hashlib.sha256(
+                json.dumps(value, ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()}
+        return {"value": value}
+    return [{"path": path, "before": preview(before), "after": preview(after)}]
+
+
 def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_replay):
     _cases, _results, sources, scratch = archival_replay
     protected_prefixes = ("tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/")
@@ -528,6 +672,10 @@ def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_re
                        "after_sha256": hashlib.sha256(after).hexdigest(), "changed_leaf_paths": changed_leaves}
             verdicts.append(verdict)
             print(json.dumps(verdict))
+            if before != after:
+                print(json.dumps({"synthetic_view": name, "baseline_ref": ref,
+                                  "changed_scalar_values": _synthetic_changed_leaf_values(
+                                      json.loads(before), json.loads(after))}, ensure_ascii=True))
     # Collect golden AND sample on BOTH immutable oracles before refusing. The
     # all-views byte equality gate is unchanged; failure diagnostics hold paths
     # and digests instead of dumping the complete synthetic engine snapshots.

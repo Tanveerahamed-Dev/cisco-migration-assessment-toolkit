@@ -9413,6 +9413,23 @@
       "secrets": [],
       "structural": [],
       "mode": "must_keep"
+    },
+    {
+      "id": "isakmp:authentication-outside-policy",
+      "finding": "R1",
+      "text": "interface Ethernet3/241\n authentication pre-share\n",
+      "secrets": ["pre-share"],
+      "structural": ["interface Ethernet3/241"],
+      "mode": "must_redact",
+      "expect": "interface Ethernet3/241\n authentication <redacted>\n"
+    },
+    {
+      "id": "isakmp:authentication-extra-operand",
+      "finding": "R1",
+      "text": "crypto isakmp policy 14\n authentication pre-share SyntheticPolicy252\n",
+      "secrets": ["SyntheticPolicy252"],
+      "structural": ["crypto isakmp policy 14"],
+      "mode": "must_redact"
     }
   ],
   "review_differential": [

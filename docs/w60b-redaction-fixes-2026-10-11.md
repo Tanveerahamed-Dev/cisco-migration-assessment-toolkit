@@ -146,3 +146,38 @@ No engine output was regenerated. Output custody binds the candidate to current 
 published files and separately proves every protected difference introduced upstream is inherited
 byte-for-byte. The original golden/sample input equality and both full redacted-view oracles
 remain unchanged. Both pre-W60 and round-3 zero-regression requirements remain unchanged.
+
+## e7e05409 hosted evidence and narrowed owner decision
+
+The [focused run 38144605136](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38144605136)
+completed **151 failed / 563 passed** in 46.50 seconds. It checked 3,000 archive cases:
+pre-W60 main had 1,452 removed slots checked with **zero regressions**; round 3 had 2,272
+removed slots checked with **zero regressions**. The quoted recognition witness, uppercase
+directive and attached public-algorithm assertions passed. Both original pathological mechanisms
+and all three scaling families passed. The original ten changed leaves no longer differ.
+
+Broad owner-vocabulary preservation exposed prior main redactions instead: golden changed eleven
+leaves and sample changed thirty-one. Those include the `weak-user-pw` title/control projections,
+the STIG `SNMPv3 auth/priv` control, and two sample design recommended-action projections.
+Golden SHA-256 was `4ff3faf51118a9961adc2eed7192620f5822201010991fa40ff9645fb5140bee` versus
+main `6fb01cc4781e1db9b637722f2a6e1e9dbe6724a3140e007306baffd27f150445`; sample was
+`2017137e08678c09239c140e63b8024f642631c9106ade476d28eead4ab839fc` versus main
+`67debf50b2fb6ee09471c181b4d876acd59b4b50f683a7554880f57cd72c2552`. Both immutable
+main oracles agreed. Tracked outputs remained unchanged; no baseline was moved.
+
+The supervisor resolved the conflict explicitly: **“Keep exact main views; narrow the vocabulary
+requirement.”** Preservation is therefore limited to exact, structurally bound engine vocabulary
+whose password follow-word belongs to the existing structural registry. Other engine vocabulary
+retains main's existing transform. The two design actions are derived from `design_kb.all_principles()`
+and require their real decision/doctrine projection IDs and domains. No title or action is hand-listed.
+All eleven security checks remain covered against the real archived main projection; the earlier
+broad all-raw-title assertion is replaced to reflect this explicit owner decision. Secret corpus
+assertions and the full golden/sample byte oracles are unchanged.
+
+Other failures were quoted placeholder rejection by the legacy verifier, after the producer had
+already met exact quote expectations, and a new complete IKE policy structural control. The verifier
+now accepts only one balanced quote pair containing exactly the placeholder. The producer and
+independent verifier preserve `authentication pre-share` only deeper inside a complete ISAKMP
+policy stanza, outside credential blocks/banners and without a pending credential. No global
+`pre-share` exemption is added. Fresh hosted evidence must verify these changes; earlier failures
+remain bound to e7e05409.

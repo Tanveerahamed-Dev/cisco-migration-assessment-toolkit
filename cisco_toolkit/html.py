@@ -28,6 +28,7 @@ from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import _SEC_CHECKS as _ENGINE_SECURITY_CHECKS   # W60: engine check IDs
 from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
+from cisco_toolkit.design_kb import all_principles
 from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
 from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
 
@@ -4136,6 +4137,9 @@ _REDACT_KEYCHAIN_HEADER_RE = re.compile(_g(r"^{h}*key{H}chain{H}{S}+{h}*\Z"), re
 _REDACT_KEYCHAIN_MEMBER_RE = re.compile(_g(r"^{h}*key{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
 _REDACT_TRUSTED_KEY_RE = re.compile(_g(
     r"^{h}*ntp{H}trusted-key{H}\d{1,10}(?:{H}\d{1,10})*{h}*\Z"), re.IGNORECASE)
+_REDACT_ISAKMP_POLICY_RE = re.compile(_g(
+    r"^{h}*crypto{H}isakmp{H}policy{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
+_REDACT_ISAKMP_AUTH_RE = re.compile(_g(r"^{h}*authentication{H}pre-share{h}*\Z"), re.IGNORECASE)
 
 
 #: Every grammar family names one of these words, so a line without any of them is skipped by the
@@ -6215,6 +6219,7 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
     prev = None                 # the previous SCRUBBED line
     prev_raw = prev_nb_raw = None   # the same two lines as they were read (before this scrub)
     keychain_indent = None         # a complete key-chain statement owns deeper-indented member IDs
+    isakmp_indent = None            # a complete IKE policy owns its pre-share authentication statement
     changed = False
     for index, line in enumerate(lines):
         blank = not _REDACT_WS_RE.sub("", line)
@@ -6244,12 +6249,18 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         lead = _REDACT_LEAD_RE.match(out).end()
         if not blank and keychain_indent is not None and lead <= keychain_indent:
             keychain_indent = None
+        if not blank and isakmp_indent is not None and lead <= isakmp_indent:
+            isakmp_indent = None
+        if not forced and not banner and pending is None and _REDACT_ISAKMP_POLICY_RE.fullmatch(out):
+            isakmp_indent = lead
         if not forced and not banner and _REDACT_KEYCHAIN_HEADER_RE.fullmatch(out):
             keychain_indent = lead
         if (not forced and not banner
                 and (keychain_indent is not None and lead > keychain_indent
                      and _REDACT_KEYCHAIN_MEMBER_RE.fullmatch(out)
-                     or _REDACT_TRUSTED_KEY_RE.fullmatch(out))):
+                     or _REDACT_TRUSTED_KEY_RE.fullmatch(out)
+                     or pending is None and isakmp_indent is not None and lead > isakmp_indent
+                     and _REDACT_ISAKMP_AUTH_RE.fullmatch(out))):
             pending = None
             prev, prev_raw = out, line
             prev_nb, prev_nb_raw = out, line
@@ -6393,7 +6404,7 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
 
 @lru_cache(maxsize=1)
 def _redact_engine_vocabulary():
-    """Exact security vocabulary from its owners, including the real title projections.
+    """Exact owner vocabulary, including real title and registered action projections.
 
     Only trusted registry data enters the builders. Incoming snapshot prose cannot
     declare itself engine vocabulary. This exception is used only at owned snapshot
@@ -6412,14 +6423,38 @@ def _redact_engine_vocabulary():
     remediation = compute_remediation_plan(security=security)
     remediation_titles = frozenset((row["category"], row["source"], row["title"], row["verify"])
                                   for row in remediation["items"])
-    return titles, controls, punch_titles, remediation_titles
+    actions = frozenset((row["id"], row["domain"], row["recommended_action"]) for row in all_principles())
+    return titles, controls, punch_titles, remediation_titles, actions
+
+
+def _redact_owned_password_structure(value: str) -> bool:
+    """The owner narrowed preservation to the structural follow-word collision.
+
+    Other engine vocabulary keeps main's existing transform. The selector is the
+    structural registry, not a list of titles or permission for arbitrary prose.
+    """
+    for found in _REDACT_SWEEP_KW_RE.finditer(value):
+        if found.group("kw").casefold() == "password":
+            following = _REDACT_SWEEP_TOKEN_RE.search(value, found.end())
+            if following and following.group(0).strip(_REDACT_SWEEP_EDGE).casefold() in _REDACT_SWEEP_VOID_NEXT["password"]:
+                return True
+    return False
 
 
 def _redact_owned_snapshot_vocabulary(snap, path, row, value: str) -> bool:
     """Preserve an exact owner value only at its structurally bound projection."""
-    if not isinstance(row, dict) or path[-1:] not in (("title",), ("control",)):
+    if (not isinstance(row, dict) or path[-1:] not in (("title",), ("control",), ("recommended_action",))
+            or not _redact_owned_password_structure(value)):
         return False
-    titles, controls, punch_titles, remediation_titles = _redact_engine_vocabulary()
+    titles, controls, punch_titles, remediation_titles, actions = _redact_engine_vocabulary()
+    if len(path) == 4 and path[:2] == ("design_blueprint", "decisions") and path[-1] == "recommended_action":
+        fields = (row.get("id"), row.get("domain"), value)
+        principle = row.get("principle")
+        return (all(isinstance(field, str) for field in fields) and fields in actions
+                and isinstance(principle, dict) and principle.get("id") == fields[0])
+    if len(path) == 5 and path[:2] == ("design_blueprint", "doctrine") and path[-1] == "recommended_action":
+        fields = (row.get("id"), path[2], value)
+        return all(isinstance(field, str) for field in fields) and fields in actions
     cid = row.get("id")
     if len(path) == 5 and path[0] == "security" and path[2] == "findings" and path[-1] == "title":
         return isinstance(cid, str) and titles.get(cid) == value
