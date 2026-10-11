@@ -129,6 +129,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import marshal
 import re
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
@@ -4832,6 +4833,62 @@ def _carriage_record_values(record: Any) -> Optional[Dict[str, str]]:
     return values if all(_is_text(value) for value in values.values()) else None
 
 
+def _carriage_observation_key(record: Any) -> Optional[bytes]:
+    """Optional complete current value key, never an observation-validity claim or a persistent receipt.
+
+    Keep the original exact finite plain-JSON eligibility/count/depth/codepoint limits. Lazy iterator frames
+    count every value/container occurrence (including repeated aliases), never bulk-enqueue a wide container.
+    Full fresh same-process marshal-v2 bytes distinguish value types; dictionary order changes conservatively
+    miss reuse. Every noneligible/encoding/resource case retains the unchanged owner-admission path.
+    """
+    if type(record) is not dict:
+        return None
+    nodes, characters = 0, 0
+    frames = [(iter((record,)), 0)]
+    try:
+        while frames:
+            iterator, depth = frames[-1]
+            try:
+                node = next(iterator)
+            except StopIteration:
+                frames.pop()
+                continue
+            nodes += 1
+            if nodes > 65_536 or depth > 32:
+                return None
+            kind = type(node)
+            if kind is dict:
+                for key in node:
+                    if type(key) is not str:
+                        return None
+                    characters += len(key)
+                    if characters > 1_000_000:
+                        return None
+                frames.append((iter(node.values()), depth + 1))
+            elif kind is list:
+                frames.append((iter(node), depth + 1))
+            elif kind is str:
+                characters += len(node)
+                if characters > 1_000_000:
+                    return None
+            elif node is None or kind in (bool, int):
+                continue
+            elif kind is float and math.isfinite(node):
+                continue
+            else:
+                return None
+    except (TypeError, ValueError, RuntimeError, RecursionError, OverflowError, MemoryError):
+        return None
+    try:
+        encoded = marshal.dumps(record, 2)
+    except Exception:
+        # An optional stdlib encoder/audit refusal (e.g. OSError) cannot replace full owner admission.
+        # Process-control BaseExceptions intentionally propagate rather than being hidden as a cache miss.
+        return None
+    # This only bounds optional retained data. It never limits a source the full owner may admit.
+    return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
+
+
 def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[Tuple[Any, ...], ...]],
                                                                     Dict[str, Tuple[Any, Any]]]:
     """Check each published end claim's declared witnesses once per snapshot, without re-evaluating an allowance or
@@ -4851,56 +4908,15 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
     observations: Dict[str, Any] = {}
     indexes: Dict[str, Any] = {}
-    observation_answers: Dict[Tuple[Any, ...], Tuple[str, Optional[str], bool, int]] = {}
+    observation_answers: Dict[bytes, Tuple[str, Optional[str], bool, int]] = {}
     observation_ids: Dict[str, int] = {}
     shared_indexes: Dict[int, Mapping[Any, Tuple[int, ...]]] = {}
     shared_hosts: Dict[str, int] = {}
 
-    def observation_key(record: Any) -> Optional[Tuple[Any, ...]]:
-        """An optional complete typed key, not a valid-observation claim. Noneligible records keep owner admission.
-
-        Only immutable key data are retained, and the answer cache lives in this read-only admission. Bound the
-        optional work/retention without bounding the accepted source; the owner's full validator remains fallback.
-        """
-        if type(record) is not dict:
-            return None
-        nodes, characters = 0, 0
-
-        def typed(node: Any, depth: int) -> Tuple[Any, ...]:
-            nonlocal nodes, characters
-            nodes += 1
-            if nodes > 65_536 or depth > 32:
-                raise ValueError("optional observation key exceeds its construction bound")
-            kind = type(node)
-            if kind is dict:
-                if not all(type(key) is str for key in node):
-                    raise TypeError("optional observation key requires exact text keys")
-                characters += sum(len(key) for key in node)
-                if characters > 1_000_000:
-                    raise ValueError("optional observation key exceeds its text construction bound")
-                return (dict, tuple((key, typed(node[key], depth + 1)) for key in sorted(node)))
-            if kind is list:
-                return (list, tuple(typed(child, depth + 1) for child in node))
-            if kind is str:
-                characters += len(node)
-                if characters > 1_000_000:
-                    raise ValueError("optional observation key exceeds its text construction bound")
-                return (str, node)
-            if node is None or kind in (bool, int):
-                return (kind, node)
-            if kind is float and math.isfinite(node):
-                return (float, node.hex())
-            raise TypeError("optional observation key requires exact finite JSON types")
-
-        try:
-            return typed(record, 0)
-        except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
-            return None
-
     def admitted(host: str) -> Any:
         if host not in observations:
             record = _get(ctx.s, ("stp_topology_observations", host))
-            key = observation_key(record)
+            key = _carriage_observation_key(record)
             answer = observation_answers.get(key) if key is not None else None
             if answer is None:
                 result = carriage_observation_admission(record)

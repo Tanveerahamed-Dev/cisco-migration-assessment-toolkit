@@ -762,3 +762,203 @@ def test_nonstandard_real_owner_queries_never_retain_shared_positions_or_foreign
     assert uip.project(snap, carriage=admission) == expected
     assert uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission) == expected_page
     checked(snap)
+
+
+def _old_observation_key_eligible(record):
+    """Frozen pre-bytes key domain/count oracle; dict keys contribute characters but never extra nodes."""
+    if type(record) is not dict:
+        return False
+    nodes, characters = 0, 0
+
+    def typed(node, depth):
+        nonlocal nodes, characters
+        nodes += 1
+        if nodes > 65_536 or depth > 32:
+            raise ValueError("old optional count/depth limit")
+        kind = type(node)
+        if kind is dict:
+            if not all(type(key) is str for key in node):
+                raise TypeError("old exact key types")
+            characters += sum(len(key) for key in node)
+            if characters > 1_000_000:
+                raise ValueError("old character limit")
+            return (dict, tuple((key, typed(node[key], depth + 1)) for key in sorted(node)))
+        if kind is list:
+            return (list, tuple(typed(child, depth + 1) for child in node))
+        if kind is str:
+            characters += len(node)
+            if characters > 1_000_000:
+                raise ValueError("old character limit")
+            return (str, node)
+        if node is None or kind in (bool, int):
+            return (kind, node)
+        if kind is float and uip.math.isfinite(node):
+            return (float, node.hex())
+        raise TypeError("old exact finite JSON types")
+
+    try:
+        typed(record, 0)
+    except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
+        return False
+    return True
+
+
+def test_complete_observation_bytes_distinguish_types_values_sign_and_extra_fields():
+    base = {"value": 0, "extra": [True, None, "text"]}
+    cases = [base, {**base, "value": False}, {**base, "value": 0.0}, {**base, "value": -0.0},
+             {**base, "value": 1}, {**base, "new": "unadmitted"}, {**base, "extra": [None, True, "text"]}]
+    keys = []
+    for record in cases:
+        assert _old_observation_key_eligible(record)
+        key = uip._carriage_observation_key(record)
+        assert type(key) is bytes
+        keys.append(key)
+    assert len(set(keys)) == len(cases)
+
+
+def test_complete_observation_encoding_reads_the_entire_current_record_on_every_host(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    original, calls = uip.marshal.dumps, []
+
+    def observed(record, version):
+        assert version == 2 and any(record is current for current in observations.values())
+        calls.append(record)
+        return original(record, version)
+
+    monkeypatch.setattr(uip.marshal, "dumps", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 2 and calls[0] is observations[A] and calls[1] is observations[B]
+    assert admission.observations[A][0] is observations[A] and admission.observations[B][0] is observations[B]
+    calls.clear()
+    uip.carriage_admission(snap)
+    assert len(calls) == 2  # Fresh full encodings; never a previous request/result or metadata-only key.
+
+
+def test_observation_dictionary_reordering_is_only_a_conservative_owner_cache_miss(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    expected, expected_page = checked(snap), uip.project_vlan_carriage(snap, 0, 0, 200)
+    record = observations[B]
+    key = next(iter(record))
+    record[key] = record.pop(key)
+    assert observations[A] == observations[B]
+    assert uip._carriage_observation_key(observations[A]) != uip._carriage_observation_key(observations[B])
+    original, calls = uip.carriage_observation_admission, []
+
+    def observed(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(uip, "carriage_observation_admission", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 2
+    assert uip.project(snap, carriage=admission) == expected
+    assert uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission) == expected_page
+
+
+@pytest.mark.parametrize("value", [b"bytes", bytearray(b"bytes"), memoryview(b"bytes"), float("inf"),
+                                  float("nan"), type("ForeignString", (str,), {})("text")])
+def test_observation_bytes_key_keeps_the_old_noneligible_value_domain(value):
+    record = {"value": value}
+    assert not _old_observation_key_eligible(record)
+    assert uip._carriage_observation_key(record) is None
+
+
+def test_nonplain_buffer_value_is_rejected_before_encoder_or_buffer_protocol_hooks(monkeypatch):
+    hooks, encodings = [], []
+
+    class ForeignBuffer:
+        def __buffer__(self, _flags):
+            hooks.append(True)
+            raise AssertionError("Optional key eligibility invoked a nonplain buffer capability")
+
+    def forbidden(*_args):
+        encodings.append(True)
+        pytest.fail("Nonplain observation value reached the full marshal encoder")
+
+    record = {"value": ForeignBuffer()}
+    assert not _old_observation_key_eligible(record)
+    monkeypatch.setattr(uip.marshal, "dumps", forbidden)
+    assert uip._carriage_observation_key(record) is None
+    assert hooks == [] and encodings == []
+
+
+def test_observation_key_node_and_dictionary_key_count_boundaries_match_the_old_domain():
+    # root + list + 65,534 values is exactly65,536; dict keys do not contribute extra counted nodes.
+    for record in ({"value": [None] * 65_534}, {str(i): None for i in range(65_535)}):
+        assert _old_observation_key_eligible(record)
+        assert type(uip._carriage_observation_key(record)) is bytes
+    record = {"value": [None] * 65_535}
+    assert not _old_observation_key_eligible(record) and uip._carriage_observation_key(record) is None
+
+
+def test_repeated_aliases_are_counted_per_occurrence_and_cycles_keep_owner_fallback():
+    shared = [None] * 32_766
+    record = {"first": shared, "second": shared}
+    assert _old_observation_key_eligible(record) and type(uip._carriage_observation_key(record)) is bytes
+    shared.append(None)
+    assert not _old_observation_key_eligible(record) and uip._carriage_observation_key(record) is None
+    cycle = []
+    cycle.append(cycle)
+    record = {"value": cycle}
+    assert not _old_observation_key_eligible(record) and uip._carriage_observation_key(record) is None
+
+
+def test_observation_depth_and_codepoint_boundaries_are_unchanged():
+    at_depth = 0
+    for _ in range(31):
+        at_depth = [at_depth]
+    record = {"value": at_depth}  # root0, scalar32
+    assert _old_observation_key_eligible(record) and type(uip._carriage_observation_key(record)) is bytes
+    record = {"value": [at_depth]}
+    assert not _old_observation_key_eligible(record) and uip._carriage_observation_key(record) is None
+    for suffix, eligible in (("", True), ("x", False)):
+        record = {"k": "a" * 999_999 + suffix}
+        assert _old_observation_key_eligible(record) is eligible
+        assert (uip._carriage_observation_key(record) is not None) is eligible
+
+
+def test_a_large_container_stops_at_old_node_eligibility_before_full_encoding(monkeypatch):
+    record = {"value": [None] * 1_000_000}
+    assert not _old_observation_key_eligible(record)
+
+    def forbidden(*_args):
+        pytest.fail("Node-ineligible large container reached the full encoder")
+
+    monkeypatch.setattr(uip.marshal, "dumps", forbidden)
+    assert uip._carriage_observation_key(record) is None
+
+
+@pytest.mark.parametrize("failure", ["type", "resource", "audit-oserror", "bytearray", "byte-subclass", "retained-bytes"])
+def test_observation_encoder_errors_and_optional_byte_limit_preserve_full_owner_policy(tmp_path, monkeypatch, failure):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    expected, expected_page = checked(snap), uip.project_vlan_carriage(snap, 0, 0, 200)
+    original, calls = uip.carriage_observation_admission, []
+
+    def observed(record):
+        calls.append(record)
+        return original(record)
+
+    def unadmitted(_record, version):
+        assert version == 2
+        if failure == "type":
+            raise TypeError("deliberate optional encoding refusal")
+        if failure == "resource":
+            raise MemoryError("deliberate optional resource refusal")
+        if failure == "audit-oserror":
+            raise OSError("deliberate marshal audit-hook refusal")
+        if failure == "bytearray":
+            return bytearray(b"unadmitted")
+        if failure == "byte-subclass":
+            return type("ForeignBytes", (bytes,), {})(b"unadmitted")
+        return b"x" * (8 * 1024 * 1024 + 1)
+
+    monkeypatch.setattr(uip.marshal, "dumps", unadmitted)
+    monkeypatch.setattr(uip, "carriage_observation_admission", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 2
+    assert admission.observations[A][0] is observations[A] and admission.observations[B][0] is observations[B]
+    assert uip.project(snap, carriage=admission) == expected
+    assert uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission) == expected_page
