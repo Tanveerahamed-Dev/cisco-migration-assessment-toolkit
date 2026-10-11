@@ -3967,6 +3967,7 @@ _REDACT_SECRET_RES = _REDACT_REQUIRED_RES + [
 #: Speed only, aligned with `_REDACT_SECRET_RES`: a literal every match of that family's anchor contains
 #: (compared casefolded, a superset of IGNORECASE matching). A family is skipped on a line holding none.
 _REDACT_SECRET_NEEDLES = (
+    ("username", "neighbor", "enable"), ("authentication-key",),
     ("set",), ("snmp-server",), ("snmp-server",), ("v3user",), ("v3user",), ("snmp-server",),
     ("community",), ("community",), ("community",),
     ("community-map", "community-name", "snmp-community-string", "trap-group"), ("config",), ("config",),
@@ -3982,7 +3983,7 @@ assert len(_REDACT_SECRET_NEEDLES) == len(_REDACT_SECRET_RES) == len(_REDACT_SEC
 #: and (round 3) the free-string forms main never reached: NHRP 'authentication', FHRP 'authentication
 #: text', AireOS 'config radius|tacacs ... add' and 'config mgmtuser|netuser add'. FHRP 'authentication
 #: md5' and the SNMPv3 users are not: a 'vrrp 10 authentication md5' does not cost the next line a word.
-_REDACT_SECRET_CROSS = (True, False, False, False, False, True, True, True, True, False, True, True, True,
+_REDACT_SECRET_CROSS = (True, True, True, False, False, False, False, True, True, True, True, False, True, True, True,
                         False, True, True, False, True, False, False, False, True, True, False, False, False,
                         False, False, False, False, True, True)
 assert len(_REDACT_SECRET_CROSS) == len(_REDACT_SECRET_RES)

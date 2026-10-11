@@ -41,3 +41,17 @@ refutes the final source before the supervisor considers merge. CI is implementa
 not privacy certification, field acceptance, release approval or authority to merge.
 
 Hosted results and any failures will be recorded here and in the live board before handoff.
+
+## First hosted head: e411b50f (negative evidence)
+
+Draft [PR #656](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/656)
+is published after complete Rule-7 privacy and history/publication marker scans passed.
+The [focused run 38131711274](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38131711274)
+failed during collection: the two new required-slot families were missing their corresponding
+prefilter and cross-line metadata entries, and the unchanged length assertion refused import.
+The portable/full-source run and distribution contract also failed on that import assertion.
+No behavioral, archival differential or persisted-view custody pass is claimed for this head.
+
+The correction adds the two aligned metadata entries; it does not remove or relax the assertion.
+All earlier failures remain bound to `e411b50f`. Fresh hosted checks must validate the corrected
+head. The corpus now contains 689 strict rows plus the complete 599-row review corpus.
