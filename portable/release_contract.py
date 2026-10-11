@@ -65,7 +65,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "isoduration": "20.11.0",
     "jsonpointer": "3.1.1",
     "jsonschema": "4.26.0",
-    "jsonschema-rs": "0.58.5",
+    "jsonschema-rs": "0.58.6",
     "jsonschema-specifications": "2025.9.1",
     "lark": "1.3.1",
     "lxml": "6.1.3",
@@ -120,7 +120,7 @@ EXPECTED_BUNDLED_FRONTEND_DIGEST = (
 #: release: tests/test_portable_release_workflow.py pins both to the real lock.
 EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT = 8
 EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST = (
-    "4c32e63ee3fd4e3791a5af85c20de09e6715cd39b8531af87da1d317a3b43736"
+    "6e59203341364e3b4827fb4e3f406f492f2ebe259864b8f370e7c1c6855afe98"
 )
 #: The toolchain receipt's npm inventories: field -> (npm project, notice-key namespace). Every
 #: project whose build output ships in the bundle must appear here (bundled_npm_inventories checks
@@ -164,7 +164,7 @@ def _reviewed_npm_inventory(field: str) -> tuple[int, str]:
 #: tests/test_portable_release_workflow.py derives both sets from real builds.
 EXPECTED_BUILD_ONLY_NPM_PACKAGES = {
     "bundled_frontend": ("node_modules/rolldown@1.2.5", "node_modules/vite@8.2.4"),
-    "bundled_scope_frontend": ("node_modules/rolldown@1.2.9", "node_modules/vite@8.2.1"),
+    "bundled_scope_frontend": ("node_modules/rolldown@1.2.9", "node_modules/vite@8.2.4"),
 }
 
 MANIFEST_SCHEMA = "atlas.portable-member-manifest/1"
@@ -2408,7 +2408,7 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         "pyinstaller": PYINSTALLER_VERSION,
         "cyclonedx-python-lib": "11.12.0",
         "jsonschema": "4.26.0",
-        "jsonschema-rs": "0.58.5",
+        "jsonschema-rs": "0.58.6",
         "referencing": "0.37.0",
     }.items():
         if versions.get(name) != expected:

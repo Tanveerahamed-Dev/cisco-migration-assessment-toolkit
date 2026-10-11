@@ -25,7 +25,7 @@ DEVELOPMENT_PACKAGES = {
     "@types/node": "24.19.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.1",
+    "@vitejs/plugin-react": "6.1.2",
     "vite": "8.2.4",
 }
 
@@ -259,6 +259,8 @@ def _dependabot_npm_gaps(config, directories):
     for update, directory in zip(updates, configured):
         if update.get("schedule") != {"interval": "weekly"}:
             gaps.append(f"{directory} is not scheduled weekly")
+        if type(update.get("open-pull-requests-limit")) is not int or update["open-pull-requests-limit"] != 1:
+            gaps.append(f"{directory} can queue more than one version-update proposal")
         if SEMVER_MAJOR_IGNORE not in (update.get("ignore") or []):
             gaps.append(f"{directory} would receive semver-major proposals")
         if [group.get("patterns") for group in (update.get("groups") or {}).values()] != [["*"]]:
@@ -295,6 +297,7 @@ DEPENDABOT_DRIFT = {
     "major_proposals": lambda config: _npm_entry(config, "/webapp/frontend")["ignore"].remove(SEMVER_MAJOR_IGNORE),
     "monthly_schedule": lambda config: _npm_entry(config, "/master-reference").update(schedule={"interval": "monthly"}),
     "ungrouped": lambda config: _npm_entry(config, "/atlas-scope").pop("groups"),
+    "runner_flood": lambda config: _npm_entry(config, "/atlas-scope").update({"open-pull-requests-limit": 5}),
 }
 
 
@@ -303,3 +306,41 @@ def test_dependabot_npm_contract_rejects_coverage_and_policy_drift(drift):
     config = _dependabot_config()
     DEPENDABOT_DRIFT[drift](config)
     assert _dependabot_npm_gaps(config, _tracked_npm_package_dirs()), f"{drift} was not detected"
+
+
+def _ecosystem_update_gaps(config):
+    gaps = []
+    updates = config.get("updates", [])
+    for ecosystem in ("pip", "github-actions"):
+        entries = [entry for entry in updates if entry.get("package-ecosystem") == ecosystem]
+        if len(entries) != 1:
+            gaps.append(f"{ecosystem} must have one update entry")
+            continue
+        entry = entries[0]
+        if entry.get("directory") != "/" or entry.get("schedule") != {"interval": "weekly"}:
+            gaps.append(f"{ecosystem} is not a weekly root update")
+        if type(entry.get("open-pull-requests-limit")) is not int or entry["open-pull-requests-limit"] != 1:
+            gaps.append(f"{ecosystem} can queue more than one version-update proposal")
+        if list((entry.get("groups") or {}).values()) != [{"patterns": ["*"]}]:
+            gaps.append(f"{ecosystem} does not group all production and development updates")
+    return gaps
+
+
+def test_dependabot_groups_python_and_actions_weekly_with_one_open_version_update():
+    assert _ecosystem_update_gaps(_dependabot_config()) == []
+
+
+@pytest.mark.parametrize("ecosystem", ("pip", "github-actions"))
+@pytest.mark.parametrize("drift", ("ungrouped", "runner_flood", "daily", "production_only"))
+def test_dependabot_ecosystem_group_contract_rejects_runner_flood_and_incomplete_groups(ecosystem, drift):
+    config = _dependabot_config()
+    entry = next(entry for entry in config["updates"] if entry["package-ecosystem"] == ecosystem)
+    if drift == "ungrouped":
+        entry.pop("groups")
+    elif drift == "runner_flood":
+        entry["open-pull-requests-limit"] = 5
+    elif drift == "daily":
+        entry["schedule"]["interval"] = "daily"
+    else:
+        next(iter(entry["groups"].values()))["dependency-type"] = "production"
+    assert _ecosystem_update_gaps(config), f"{ecosystem}: {drift} was not detected"

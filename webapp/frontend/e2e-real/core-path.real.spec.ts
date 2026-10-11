@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { SYNTHETIC_COLLECTION_MANIFEST, SYNTHETIC_COLLECTION_ZIP } from "./paths";
 
@@ -45,17 +46,22 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Every string (and object key) any /api JSON body carried: the engine-authored text on screen. */
+/** Every string (and object key) a completed /api JSON body carried: engine-authored text. */
 class EngineText {
   private readonly strings = new Set<string>();
   private readonly pending: Promise<void>[] = [];
 
   watch(page: Page): void {
-    page.on("response", (response) => {
-      if (!new URL(response.url()).pathname.startsWith("/api/")) return;
-      if (!(response.headers()["content-type"] || "").includes("json")) return;
-      // Read at once: a body can become unavailable after a later navigation.
-      this.pending.push(response.text().then((body) => this.add(JSON.parse(body), 0)).catch(() => undefined));
+    page.on("requestfinished", (request) => {
+      if (!new URL(request.url()).pathname.startsWith("/api/")) return;
+      // `response` only admits headers. A navigation can interrupt its body and leave
+      // response.text() pending indefinitely. Read at once after the body is complete;
+      // unread/interrupted bodies never supply an exception to the leak assertion.
+      this.pending.push((async () => {
+        const response = await request.response();
+        if (!response || !(response.headers()["content-type"] || "").includes("json")) return;
+        this.add(JSON.parse(await response.text()), 0);
+      })().catch(() => undefined));
     });
   }
 
@@ -80,6 +86,29 @@ class EngineText {
     return [...this.strings].filter((value) => LEAK.test(value)).sort((a, b) => b.length - a.length);
   }
 }
+
+test("engine text does not wait for an interrupted body or exempt its leak tokens", async () => {
+  test.setTimeout(5_000);
+  const events = new EventEmitter();
+  const engine = new EngineText();
+  engine.watch(events as unknown as Page);
+  const interrupted = {
+    url: () => "http://127.0.0.1/api/interrupted",
+    headers: () => ({ "content-type": "application/json" }),
+    text: () => new Promise<string>(() => {}),
+  };
+  events.emit("response", interrupted);
+  events.emit("requestfailed", { url: interrupted.url, failure: () => ({ errorText: "net::ERR_ABORTED" }) });
+  events.emit("requestfinished", {
+    url: () => "http://127.0.0.1/api/completed",
+    response: async () => ({
+      headers: () => ({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ note: "engine-authored undefined text" }),
+    }),
+  });
+  expect(await engine.withLeakTokens()).toEqual(["engine-authored undefined text"]);
+  expect(await engine.withLeakTokens()).toEqual(["engine-authored undefined text"]);
+});
 
 /** Text nodes and accessible-name attributes under `scope` that carry a client-side placeholder. */
 async function expectNoClientLeaks(scope: Locator, engine: EngineText, where: string): Promise<void> {
