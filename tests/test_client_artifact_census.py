@@ -1205,3 +1205,15 @@ def test_browser_python_method_uses_module_binding_not_class_local(tmp_path):
            "class Surface:\n    SCRIPT = 'a.download = \\\"flow-frames.txt\\\"'\n"
            "    def render(self):\n        return f'<script>{SCRIPT}</script>'\n")
     assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_python_regex_lookbehind_is_not_a_browser_document(tmp_path):
+    _write(tmp_path, "new-root/regex.py", "def pattern(name):\n"
+           "    return rf'(?<![\\w.-]){name}(?![\\w-])'\n")
+    assert census.download_names(tmp_path) == []
+
+
+def test_python_generated_script_string_pieces_are_assembled_before_lexing(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def html(value):\n"
+           + "    return f\"<script>const text='{value}'; a.download='private.json';</script>\"\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}

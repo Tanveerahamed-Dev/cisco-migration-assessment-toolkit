@@ -1492,7 +1492,10 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
 
     def contains_html(node: ast.AST, seen: frozenset[str] = frozenset()) -> bool:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return "<" in node.value
+            # '<' in a regex lookbehind or arithmetic prose is not an HTML boundary.
+            # A bare trailing '<' can still introduce an interpolated tag name.
+            return bool(re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|!DOCTYPE\b|!--)",
+                                  node.value, re.I)) or node.value.endswith("<")
         if isinstance(node, ast.Name) and node.id not in seen:
             return any(contains_html(value, seen | {node.id}) for value in bindings(node.id))
         return any(contains_html(child, seen) for child in ast.iter_child_nodes(node))
@@ -1537,8 +1540,19 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
             for text in expand(node):
                 if "<" in text:
                     documents.append((getattr(node, "lineno", 1), text))
-            # Also retain independently assembled child fragments. Deduplication is performed
-            # after obligations are found, never by discarding possible name alternatives.
+            # These literal pieces are one assembled language document, not independent scripts.
+            # In particular '<script>const x="' is not a complete JS string by itself.
+            # Still visit embedded expressions, which may contain separate literal documents.
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if isinstance(part, ast.FormattedValue):
+                        visit(part.value)
+                return
+            if isinstance(node, ast.BinOp):
+                for child in (node.left, node.right):
+                    if not isinstance(child, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+                        visit(child)
+                return
         for child in ast.iter_child_nodes(node):
             visit(child)
         if scope:
