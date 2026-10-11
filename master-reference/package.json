@@ -29,7 +29,7 @@
     "@vitejs/plugin-rsc": "0.5.36",
     "miniflare": "5.20261006.0-alpha",
     "node-html-parser": "9.0.4",
-    "oxlint": "1.87.0",
+    "oxlint": "1.76.0",
     "react-server-dom-webpack": "19.3.0",
     "typescript": "5.9.3",
     "vinext": "0.2.1",
