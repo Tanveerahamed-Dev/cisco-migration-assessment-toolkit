@@ -67,7 +67,7 @@ def test_actual_child_failure_is_retained(tmp_path, monkeypatch, failure):
 
 
 def test_fleet_has_distinct_physical_ports_and_reciprocal_inventory():
-    from webapp.sample_data.build_scale import ROLE_COUNTS, VLAN_IDS, layout
+    from webapp.sample_data.build_scale import ROLE_COUNTS, VLAN_IDS, addresses_for, layout
     roles, links = layout()
     assert len(roles) == sum(ROLE_COUNTS.values()) == 300
     assert len(VLAN_IDS) == 200 and len(links) == 1500
@@ -76,12 +76,15 @@ def test_fleet_has_distinct_physical_ports_and_reciprocal_inventory():
     assert all(link["a"] != link["b"] for link in links)
     assert sum(link["b"] not in roles for link in links) == 868
     assert layout() == (roles, links)
+    addresses = addresses_for(roles, links)
+    assert len(addresses) == len(set(addresses.values())) == 1168
+    assert addresses == addresses_for(roles, links)
 
 
 def test_captures_are_substantial_deterministic_and_pod_consistent():
-    from webapp.sample_data.build_scale import captures, layout
+    from webapp.sample_data.build_scale import addresses_for, captures, layout
     roles, links = layout()
-    addresses = {host: "192.0.2.1" for host in roles}
+    addresses = addresses_for(roles, links)
     outputs = []
     for host, idx in (("access001", 0), ("distribution001", 240)):
         neighbours = []
@@ -100,6 +103,7 @@ def test_captures_are_substantial_deterministic_and_pod_consistent():
     assert "Device ID: access001.lab" in outputs[1]["show cdp neighbors detail"]
     assert "Device ID: phone-001-1\n" in outputs[0]["show cdp neighbors detail"]
     assert "Platform: cisco IP Phone 8841," in outputs[0]["show cdp neighbors detail"]
+    assert "IP address: 10.0.102.100" in outputs[0]["show cdp neighbors detail"]
 
 
 def test_workflows_have_no_automatic_pr_qualification():

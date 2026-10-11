@@ -22,7 +22,9 @@ Show outputs contain 48/64/96 switch ports, 512–4,096 MAC rows on bridging dev
 250 ARP rows on SVI devices and actual peer entries on routed devices,
 200–1,000 routes and 1,000 logging records per device, plus WLC AP/summary and
 ASA HA/resource/connection captures. Routed links use reciprocal unique /30
-subnets and interface config/brief share their address records. Unsupported vendor-specific records remain raw
+subnets and interface config/brief share their address records. Managed and
+phone management addresses are unique; phone addresses match their access
+VLAN instead of using one repeated fallback IP. Unsupported vendor-specific records remain raw
 capture load, never invented parsed coverage. Captures use fixed identities,
 order, LF bytes and collection instant; ZIP headers have fixed timestamps.
 The report includes capture/ZIP digests, capture-size ranges and parsed fleet

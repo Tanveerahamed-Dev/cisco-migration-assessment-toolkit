@@ -63,6 +63,22 @@ def _mac(value):
     return ".".join(text[i:i + 4] for i in (0, 4, 8))
 
 
+def addresses_for(roles, links):
+    """Unique managed addresses and phone DHCP addresses in their access VLAN."""
+    addresses = {h: f"10.255.{i // 250}.{i % 250 + 1}" for i, h in enumerate(roles)}
+    ordinal = {h: i for i, h in enumerate(roles)}
+    for link in links:
+        if link["b"] in roles:
+            continue
+        idx = ordinal[link["a"]]
+        port = int(link["a_port"].rsplit("/", 1)[1])
+        vlan = VLAN_IDS[(idx // 12) * 10 + (port - 1) % 10]
+        addresses[link["b"]] = f"10.{vlan // 256}.{vlan % 256}.{100 + (idx % 12) * 4 + port - 3}"
+    if len(addresses) != 1168 or len(set(addresses.values())) != len(addresses):
+        raise AssertionError("Synthetic management/endpoint address identities overlap")
+    return addresses
+
+
 def captures(host, role, idx, neighbours, roles, addresses):
     """Substantial valid records, rather than padding one small fixture with comments."""
     pod = idx // 12 if role == "access" else (idx - 240) // 2 if role == "distribution" else idx - 288 if role == "wlc" else idx % 20
@@ -191,7 +207,7 @@ def captures(host, role, idx, neighbours, roles, addresses):
 
 def build(root: Path):
     roles, links = layout()
-    addresses = {h: f"10.255.{i // 250}.{i % 250 + 1}" for i, h in enumerate(roles)}
+    addresses = addresses_for(roles, links)
     neighbours = defaultdict(list)
     for link in links:
         a, b = link["a"], link["b"]
