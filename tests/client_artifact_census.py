@@ -384,6 +384,10 @@ class _File:
 _UNTAINTED_PARAMETERS = frozenset({"self", "cls", "argv"})
 
 
+class _UnknownValue(ast.AST):
+    """Internal uncertainty is distinct from an actual literal None or zero filename."""
+
+
 class _BodyWalker(ast.NodeVisitor):
     """Collect one scope's assignments, calls and name references, without entering nested defs."""
 
@@ -631,12 +635,12 @@ class _Program:
             if node.id in bindings:
                 return bindings[node.id]  # this expression belongs to the caller's scope
             if node.id in seen:
-                return ast.Constant(None)
+                return _UnknownValue()
             values = self.resolver(function)(node)
             if values:
                 expanded = [self._expanded(function, v, bindings, seen | {node.id}) for v in values]
                 return expanded[0] if len(expanded) == 1 else ast.BoolOp(op=ast.Or(), values=expanded)
-            return ast.Constant(None)
+            return _UnknownValue()
         expanded = copy.copy(node)
         for name, value in ast.iter_fields(node):
             if isinstance(node, ast.Call) and name == "func":
@@ -764,6 +768,52 @@ def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
                          and getattr(left, "complete", True) and getattr(right, "complete", True))
 
 
+def _closed_values(node: ast.AST, resolve, depth: int) -> list[object] | None:
+    if depth > 8:
+        return None
+    if isinstance(node, ast.Name):
+        values = resolve(node)
+        if not values:
+            return None
+        out: list[object] = []
+        for value in values:
+            closed = _closed_values(value, resolve, depth + 1)
+            if closed is None:
+                return None
+            out.extend(closed)
+        return out[:16]
+    try:
+        return [ast.literal_eval(node)]
+    except (ValueError, TypeError, SyntaxError):
+        return None
+
+
+def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str | None]:
+    values = _closed_values(part.value, resolve, depth)
+    if values is None:
+        return [None]
+    specs = ([_NameTemplate("")] if part.format_spec is None
+             else _templates(part.format_spec, resolve, depth + 1))
+    if any(s is None or not getattr(s, "complete", True) for s in specs):
+        return [None]
+    out: list[str | None] = []
+    for value in values:
+        if part.conversion == ord("r"):
+            value = repr(value)
+        elif part.conversion == ord("s"):
+            value = str(value)
+        elif part.conversion == ord("a"):
+            value = ascii(value)
+        for spec in specs:
+            if len(spec) > 64 or any(int(n) > 4096 for n in re.findall(r"\d+", spec)):
+                raise ValueError("formatted filename specification exceeds the bounded name model")
+            try:
+                out.append(_NameTemplate(format(value, spec)))
+            except (ValueError, TypeError):
+                out.append(None)
+    return out[:16]
+
+
 def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
     """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
     if depth > 4:
@@ -774,7 +824,7 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
     if isinstance(node, ast.JoinedStr):
         out: list[str | None] = [_NameTemplate("")]
         for part in node.values:
-            pieces = (_templates(part.value, resolve, depth + 1) if isinstance(part, ast.FormattedValue)
+            pieces = (_formatted_names(part, resolve, depth + 1) if isinstance(part, ast.FormattedValue)
                       else _templates(part, resolve, depth + 1))
             out = [_combine_names(a, b) for a in out for b in pieces][:16]
         return out
@@ -1797,6 +1847,7 @@ _ANALYSES: dict[str, tuple[dict[str, int], set[str], dict[str, set[str]]]] = {}
 _UNCLASSIFIED_LITERALS: dict[str, dict[str, set[str]]] = {}
 _UNRESOLVED_NAME_TEMPLATES: dict[str, dict[str, set[str]]] = {}
 _NON_CLIENT_LITERAL_ORIGINS: dict[str, dict[tuple[str, str], str]] = {}
+_CLIENT_LITERAL_OBLIGATIONS: dict[str, dict[str, set[str]]] = {}
 
 
 def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set[str]]]:
@@ -1809,6 +1860,7 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         unclassified: dict[str, set[str]] = {}
         unresolved: dict[str, set[str]] = {}
         non_client: dict[tuple[str, str], str] = {}
+        client_literals: dict[str, set[str]] = {}
         _classes, classify = _registry()
         for file in program.files:
             for function in [file.top, *file.functions]:
@@ -1834,10 +1886,13 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                                     origin = getattr(target, "census_non_client_origin", None)
                                     if origin is not None:
                                         non_client[(function.key, leaf)] = origin
+                                    else:
+                                        client_literals.setdefault(function.key, set()).add(leaf)
         _ANALYSES[key] = (dict(sorted(counts.items())), set(program.writers), resolved)
         _UNCLASSIFIED_LITERALS[key] = unclassified
         _UNRESOLVED_NAME_TEMPLATES[key] = unresolved
         _NON_CLIENT_LITERAL_ORIGINS[key] = non_client
+        _CLIENT_LITERAL_OBLIGATIONS[key] = client_literals
     return _ANALYSES[key]
 
 
@@ -1864,7 +1919,6 @@ def census_problems(
         registry_keys = [row[0] for row in _registry()[0]]
     known = frozenset(registry_keys)
     observed, writers, resolved = analysis(root)
-    unclassified = unclassified_site_literals(root)
     problems: list[str] = []
     for key in sorted(set(observed) - set(census)):
         problems.append(f"unclassified write site: {key} ({observed[key]} write(s))")
@@ -1881,9 +1935,8 @@ def census_problems(
         if disposition == CLIENT and not keys:
             problems.append(f"client write site names no registry class: {key}")
         if disposition == CLIENT:
-            for leaf in sorted(unclassified.get(key, set())):
-                if (key, leaf) not in _NON_CLIENT_LITERAL_ORIGINS[str(Path(root).resolve())]:
-                    problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
+            for leaf in sorted(_CLIENT_LITERAL_OBLIGATIONS[str(Path(root).resolve())].get(key, set())):
+                problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
         for class_key in keys:
             if class_key not in known:
                 problems.append(f"write site names an unregistered class {class_key!r}: {key}")

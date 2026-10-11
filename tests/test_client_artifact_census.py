@@ -262,18 +262,37 @@ def test_partial_names_remain_uncertainty_and_known_formatted_literals_are_check
     assert census.unresolved_site_templates(tmp_path) == {"cisco_toolkit/writer.py::dynamic": {"0.txt"}}
 
 
-def test_non_client_helper_provenance_does_not_erase_client_literal_refusal(tmp_path, monkeypatch):
+@pytest.mark.parametrize("marker_name", ["probe.marker", "delivery.json"])
+@pytest.mark.parametrize("marker_first", [True, False])
+def test_non_client_helper_provenance_does_not_erase_client_literal_refusal(tmp_path, monkeypatch,
+                                                                        marker_name, marker_first):
+    statements = [f"    marker({marker_name!r})\n", "    Path('delivery.json').write_text('payload')\n"]
+    if not marker_first:
+        statements.reverse()
     _write(tmp_path, "cisco_toolkit/writer.py",
            "from pathlib import Path\n\n"
            "def marker(path):\n    Path(path).write_bytes(b'ok')\n\n"
-           "def main():\n    marker('probe.marker')\n    Path('delivery.json').write_text('payload')\n")
+           "def main():\n" + "".join(statements))
     rows = {"cisco_toolkit/writer.py::marker": (1, census.NON_CLIENT, (), "fixed marker bytes only"),
             "cisco_toolkit/writer.py::main": (2, census.CLIENT, ("snapshot",), "client payload plus probe")}
     monkeypatch.setattr(census, "WRITE_SITE_CENSUS", rows)
     assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
         "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
     assert census.unclassified_site_literals(tmp_path)["cisco_toolkit/writer.py::main"] == {
-        "delivery.json", "probe.marker"}
+        "delivery.json", marker_name}
+
+
+@pytest.mark.parametrize("expression,filename", [
+    ("f'{name!r}'", "'delivery.snapshot.json'"), ("f'{7}.json'", "7.json"),
+    ("f'{7:04d}.json'", "0007.json"),
+])
+def test_closed_formatted_literals_use_actual_conversion_and_format_spec(tmp_path, expression, filename):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit():\n    name = 'delivery.snapshot.json'\n"
+           f"    Path({expression}).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        f"client write site resolves to unclassified name {filename!r}: cisco_toolkit/writer.py::emit"]
 
 
 @pytest.mark.parametrize("filename,problem", [("client.db", False), ("client.json", True)])
