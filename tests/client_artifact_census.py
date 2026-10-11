@@ -1424,6 +1424,14 @@ class _HtmlDownloads(HTMLParser):
         self.scripts: list[tuple[int, str]] = []
         self.in_script = False
 
+    def parse_html_declaration(self, index: int) -> int:
+        try:
+            return super().parse_html_declaration(index)
+        except AssertionError:
+            # HTML treats unknown <! declarations as bogus comments. Python's marked-section
+            # assertion must not abort discovery of a real exit following that declaration.
+            return self.parse_bogus_comment(index)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
         if tag == "script":
@@ -1806,6 +1814,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
             parser = _HtmlDownloads()
             if relative.endswith((".html", ".py")):
                 parser.feed(text)
+                parser.close()
                 found.extend((f"{relative}:{first_line + line - 1}", expression, template)
                              for line, expression, template in parser.names)
                 scripts.extend((first_line + line - 1, script) for line, script in parser.scripts)
