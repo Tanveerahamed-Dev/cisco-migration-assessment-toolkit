@@ -36,6 +36,9 @@ This module closes the class from the producer side, statically (every file is p
   ``non-client`` row must resolve to none (:func:`resolved_site_classes`).
   Resolved literals that match no class are retained (:func:`unclassified_site_literals`) and
   refused for ``client`` rows; keeping the write count unchanged cannot hide a renamed artifact.
+  Partial templates retain their uncertainty separately (:func:`unresolved_site_templates`);
+  an explicit sidecar suffix remains a class obligation. Targets projected from a reviewed
+  ``non-client`` helper retain that helper's provenance, rather than becoming client payloads.
 * **Suffix literals.** :func:`suffix_literals` collects every literal appended to an output stem
   (``+``, f-string tails, ``%`` and ``.format`` templates, ``with_suffix``/``with_name``,
   ``str.join``), and each one must be a registered class or a :data:`NON_CLIENT_SUFFIX_LITERALS`
@@ -69,6 +72,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable, Mapping
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -311,6 +315,11 @@ def write_primitive(call: ast.Call, qualify=None, resolve=None) -> tuple[str, li
     if name in _TARGET_FIRST:
         targets = [first] if first is not None else []
         targets += [item.value for item in call.keywords if item.arg in {"dir", "prefix", "suffix", "filename", "base_name", "database"}]
+        if name == "sqlite3.connect" and targets and any(
+            k.arg == "uri" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords
+        ):
+            targets = [ast.Call(func=ast.Name(id="__census_sqlite_path", ctx=ast.Load()),
+                                args=[targets[0]], keywords=[])]
         return name, targets
     if name == "logging.basicConfig":
         target = _argument(call, 99, "filename")
@@ -673,7 +682,13 @@ class _Program:
         for inner in function.calls:
             primitive = write_primitive(inner, file.imports.qualify, self.resolver(function))
             if primitive:
-                targets.extend(self._expanded(function, t, bindings) for t in primitive[1])
+                for target in primitive[1]:
+                    expanded = self._expanded(function, target, bindings)
+                    row = WRITE_SITE_CENSUS.get(function.key)
+                    if row is not None and row[1] == NON_CLIENT:
+                        expanded = copy.copy(expanded)
+                        expanded.census_non_client_origin = function.key
+                    targets.append(expanded)
             else:
                 callee = self.resolve_function(function, inner.func)
                 if callee is not None and callee.key in self.writers:
@@ -707,6 +722,17 @@ def _references(node: ast.AST, names: set[str]) -> bool:
     return any(isinstance(leaf, ast.Name) and leaf.id in names for leaf in ast.walk(node))
 
 
+def _identifying_suffix(node: ast.AST, resolve, seen: frozenset[str] = frozenset()) -> bool:
+    """An explicit sidecar suffix remains an obligation even when its stem is unknown."""
+    for leaf in ast.walk(node):
+        if isinstance(leaf, ast.Constant) and isinstance(leaf.value, str) and _SUFFIX_LITERAL.match(leaf.value):
+            return True
+        if isinstance(leaf, ast.Name) and leaf.id not in seen:
+            if any(_identifying_suffix(value, resolve, seen | {leaf.id}) for value in resolve(leaf)):
+                return True
+    return False
+
+
 def scan(root: Path = ROOT) -> tuple[dict[str, int], set[str]]:
     """Return ``({"path::qualname": write count}, {path-parameter writer keys})``."""
     counts, writers, _resolved = analysis(root)
@@ -719,26 +745,46 @@ def write_sites(root: Path = ROOT) -> dict[str, int]:
 
 # --------------------------------------------------------------------------- resolved names
 
+class _NameTemplate(str):
+    """Keep literal certainty separate from the placeholder text used for name-class matching."""
+
+    complete: bool
+
+    def __new__(cls, text: str, complete: bool = True):
+        value = str.__new__(cls, text)
+        value.complete = complete
+        return value
+
+
+def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
+    if left is None and right is None:
+        return None
+    return _NameTemplate((left if left is not None else "0") + (right if right is not None else "0"),
+                         left is not None and right is not None
+                         and getattr(left, "complete", True) and getattr(right, "complete", True))
+
+
 def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
     """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
     if depth > 4:
         return [None]
     text = _constant_text(node)
     if text is not None:
-        return [text]
+        return [_NameTemplate(text)]
     if isinstance(node, ast.JoinedStr):
-        if not any(isinstance(p, ast.Constant) and p.value for p in node.values):
-            return [None]
-        parts = [p.value if isinstance(p, ast.Constant) else "0" for p in node.values]
-        return ["".join(str(p) for p in parts)]
+        out: list[str | None] = [_NameTemplate("")]
+        for part in node.values:
+            pieces = (_templates(part.value, resolve, depth + 1) if isinstance(part, ast.FormattedValue)
+                      else _templates(part, resolve, depth + 1))
+            out = [_combine_names(a, b) for a in out for b in pieces][:16]
+        return out
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [(a if a is not None else "0") + (b if b is not None else "0")
-                if a or b else None for a in _templates(node.left, resolve, depth + 1)
+        return [_combine_names(a, b) for a in _templates(node.left, resolve, depth + 1)
                 for b in _templates(node.right, resolve, depth + 1)][:16]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _templates(node.right, resolve, depth + 1)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and _constant_text(node.left):
-        return [re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left))]
+        return [_NameTemplate(re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left)), False)]
     if isinstance(node, ast.Name):
         values = resolve(node)
         out = [t for value in values for t in _templates(value, resolve, depth + 1)]
@@ -748,10 +794,14 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
             return _templates(node.args[-1], resolve, depth + 1)
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
-            return ["0" + t if func.attr == "with_suffix" and t is not None else t
+            return [_NameTemplate("0" + t, False) if func.attr == "with_suffix" and t is not None else t
                     for t in _templates(node.args[0], resolve, depth + 1)]
         if isinstance(func, ast.Attribute) and func.attr == "format" and _constant_text(func.value):
-            return [re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value))]
+            return [_NameTemplate(re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value)), False)]
+        if isinstance(func, ast.Name) and func.id == "__census_sqlite_path" and node.args:
+            return [_NameTemplate(unquote(t.removeprefix("file:").split("?", 1)[0]),
+                                  getattr(t, "complete", True)) if t is not None else None
+                    for t in _templates(node.args[0], resolve, depth + 1)]
         if isinstance(func, ast.Name) and func.id in {"Path", "PurePath", "PurePosixPath", "str"} and node.args:
             return _templates(node.args[-1], resolve, depth + 1)
     if isinstance(node, ast.IfExp):
@@ -1192,11 +1242,11 @@ _SYNTHETIC = (
 WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     # ---- engine CLI (COLLECT_PARSE_V3_23_0.py) --------------------------------------------------
     "COLLECT_PARSE_V3_23_0.py::collect": (
-        4, CLIENT, _CAPTURES + _COLLECTION_SIDECARS,
+        4, CLIENT, (_CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging',),
         "live collector: one <command>.txt capture per command under <collection>/<host>/, plus "
         "device_info.json, command_index.json and _capture_meta.json through write_json_file"),
     "COLLECT_PARSE_V3_23_0.py::main.collect_one": (
-        1, CLIENT, _CAPTURES + _COLLECTION_SIDECARS, "runs collect() for one device"),
+        1, CLIENT, (_CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging',), "runs collect() for one device"),
     "COLLECT_PARSE_V3_23_0.py::setup_logging": (
         1, CLIENT, ("engine-log",),
         "engine audit log cisco_migration_autofill_v<version>.log (cisco_toolkit.engine_log_path); "
@@ -1212,28 +1262,28 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, DELEGATED, (), "generic os.replace with retries; the caller names source and destination"),
     "COLLECT_PARSE_V3_23_0.py::main": (
         20, CLIENT,
-        ("pre-change-certificate", "comparison-receipt", "trend-comparisons", "explorer",
+        (("pre-change-certificate", "comparison-receipt", "trend-comparisons", "explorer",
          "topology-mermaid", "topology-graphviz", "engagement-gate-state")
-        + _OFFICE + _CAPTURES + _COLLECTION_SIDECARS,
+        + _OFFICE + _CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging', 'incomplete-marker', 'protocol-assurance-export', 'receipt-authority-probe', 'run-manifest'),
         "--compare writes <diff>.xlsx, <diff>.precert.json and <diff>.comparison.json; --trend writes "
         "<trend>.xlsx and <trend>.trend-comparisons.json; the assessment run collects, then writes "
         "topology.mmd/.dot, <output>_explorer.html and the DOCX/PPTX family, consulting the gate "
         "ledger, before _stage_finalize"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize": (
         14, CLIENT,
-        ("protocol-assurance-export", "explorer", "phase-timings", "run-manifest", "snapshot",
+        (("protocol-assurance-export", "explorer", "phase-timings", "run-manifest", "snapshot",
          "incomplete-marker", "word-document", "workbook", "redaction-staging")
-        + _RAW_CAPTURE_SHAPES,
+        + _RAW_CAPTURE_SHAPES) + ('atomic-staging', 'receipt-authority-probe'),
         "<output>.protocol-assurance.json, the BOUND explorer/runbook/MOP/workbook refresh, "
         "<output>.phase_timings.json, <output>.run_manifest.json and <output>.incomplete.json, plus "
         "the --redact-collection in-place scrub"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize._publish_snapshot": (
-        1, CLIENT, ("snapshot",), "<output>.snapshot.json, the parsed estate"),
+        1, CLIENT, (("snapshot",)) + ('atomic-staging',), "<output>.snapshot.json, the parsed estate"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize._save_workbook": (
         1, CLIENT, ("workbook",),
         "the assessment workbook <output>.xlsx (staged as .<stem>.receipt-<nonce>.tmp.xlsx)"),
     "COLLECT_PARSE_V3_23_0.py::_write_incomplete_marker": (
-        1, CLIENT, ("incomplete-marker",),
+        1, CLIENT, (("incomplete-marker",)) + ('atomic-staging',),
         "<output>.incomplete.json: the run's custody and failure record, written before the seal"),
     "COLLECT_PARSE_V3_23_0.py::_atomic_receipt_refresh": (
         6, CLIENT,
@@ -1310,17 +1360,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, ("engagement-gate-state", "atomic-staging"),
         "locked read-modify-write of the engagement gate ledger"),
     "cisco_toolkit/gate_state.py::_append_audit": (
-        1, CLIENT, ("engagement-gate-state",), "appends an audit line to the gate ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "appends an audit line to the gate ledger"),
     "cisco_toolkit/gate_state.py::_record_refusal": (
-        1, CLIENT, ("engagement-gate-state",), "records a refused gate in the ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records a refused gate in the ledger"),
     "cisco_toolkit/gate_state.py::record_decision": (
-        1, CLIENT, ("engagement-gate-state",), "records an approval or revocation in the ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records an approval or revocation in the ledger"),
     "cisco_toolkit/gate_state.py::bind_engagement": (
-        1, CLIENT, ("engagement-gate-state",), "binds the ledger to an engagement identifier"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "binds the ledger to an engagement identifier"),
     "cisco_toolkit/gate_state.py::enforce": (
-        3, CLIENT, ("engagement-gate-state",), "records an override or refusal in the ledger"),
+        3, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records an override or refusal in the ledger"),
     "cisco_toolkit/gate_state.py::main": (
-        2, CLIENT, ("engagement-gate-state",), "the gate-ledger CLI (bind, approve, revoke)"),
+        2, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "the gate-ledger CLI (bind, approve, revoke)"),
     "cisco_toolkit/recall.py::log_query": (
         1, CLIENT, ("query-log",),
         "docs/quality/query_log.jsonl: real retrieval queries, which can name client tokens"),
@@ -1366,16 +1416,16 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "cisco_toolkit/registry_integrity.py::_write_temp_bytes": (
         1, NON_CLIENT, ("atomic-staging",), "staging for " + _REFERENCE_PACKS),
     "cisco_toolkit/registry_integrity.py::publish_pack_and_manifest": (
-        7, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/registry_integrity.py::update_manifest": (2, NON_CLIENT, (), _REFERENCE_PACKS),
+        7, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/registry_integrity.py::update_manifest": (2, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
     "cisco_toolkit/registry_integrity.py::_restore_snapshot": (
-        2, NON_CLIENT, (), "rollback of " + _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::write_registry": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::build_authoritative": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::_legacy_main": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::main": (2, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/data/gen_port_registry.py::build": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/data/gen_port_registry.py::main": (1, NON_CLIENT, (), _REFERENCE_PACKS),
+        2, NON_CLIENT, (()) + ('atomic-staging',), "rollback of " + _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::write_registry": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::build_authoritative": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::_legacy_main": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::main": (2, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/data/gen_port_registry.py::build": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/data/gen_port_registry.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
     "cisco_toolkit/transition_legacy.py::_run_pinned_release1_driver": (
         1, NON_CLIENT, (), "materialises the verified release-1 driver source bundle; " + _TRANSITION),
     "cisco_toolkit/transition_legacy.py::_validate_release1_comparison": (1, NON_CLIENT, (), _TRANSITION),
@@ -1468,9 +1518,9 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/ingest.py::run_redaction_folder": (
         2, CLIENT, _REDACTION_RUN, "takes the output lock and runs the field redaction"),
     "webapp/backend/ingest.py::_output_dir_lock": (
-        1, NON_CLIENT, (), ".atlas-redaction.lock is an empty lock token; it never holds data"),
+        1, NON_CLIENT, (), ".atlas-redaction.lock holds only a fixed NUL marker, never client data"),
     "webapp/backend/serve.py::_writable_failure": (
-        1, NON_CLIENT, (), "an empty write probe, unlinked immediately"),
+        1, NON_CLIENT, (), "a fixed 'ok' write probe, unlinked immediately; no client data"),
     "webapp/backend/serve.py::run_selftest": (2, NON_CLIENT, (), "write probes of the data folders"),
     "webapp/backend/serve.py::run_redaction": (
         1, CLIENT, _REDACTION_RUN, "Atlas.exe --redact-folder runs the field redaction"),
@@ -1517,11 +1567,11 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/build_atlas.py::_detach_runtime_data": (
         1, NON_CLIENT, (),
         "moves the SMOKE copy's data directory, created by the synthetic field-layout smoke run"),
-    "portable/build_release.py::build_release": (2, NON_CLIENT, (), _RELEASE),
-    "portable/build_release.py::main": (2, NON_CLIENT, (), _RELEASE),
+    "portable/build_release.py::build_release": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/build_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
     "portable/package_signed_release.py::_independent_authenticode": (1, NON_CLIENT, (), _RELEASE),
-    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (), _RELEASE),
-    "portable/package_signed_release.py::main": (2, NON_CLIENT, (), _RELEASE),
+    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/package_signed_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
     "portable/prepare_signing.py::prepare": (3, NON_CLIENT, (), _RELEASE),
     "portable/prepare_signing.py::main": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::_record_build_modules": (1, NON_CLIENT, (), _RELEASE),
@@ -1531,7 +1581,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/release_contract.py::_write_deterministic_zip": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::build_portable_release": (9, NON_CLIENT, (), _RELEASE),
     "portable/qualify_atlas.py::qualify": (3, NON_CLIENT, ("database", "capture-show", "config-file-cfg"), _RELEASE + "; " + _SYNTHETIC),
-    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (), "the qualification receipt"),
+    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), "the qualification receipt"),
     "portable/qualify_atlas.py::_redaction": (
         5, NON_CLIENT, ("capture-show", "config-file-cfg"),
         "redaction canaries (SYNTHETIC-CORE1, TEST-ONLY) in a qualification collection; " + _SYNTHETIC),
@@ -1556,10 +1606,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/frontend_artifact_receive.py::GitHub.archive": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::bridge": (
         3, NON_CLIENT, ("engine-log",), _CI_EVIDENCE + "; <step>.stderr.log is a bridge's stderr"),
-    ".github/scripts/frontend_artifact_receive.py::select_registry": (3, NON_CLIENT, (), _CI_EVIDENCE),
-    ".github/scripts/frontend_artifact_receive.py::candidate": (1, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::select_registry": (3, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::candidate": (1, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::patch": (3, NON_CLIENT, (), _CI_EVIDENCE),
-    ".github/scripts/frontend_artifact_receive.py::main": (11, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::main": (11, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
     ".github/scripts/frontend_build_handoff.py::main": (3, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_candidate_materials.py::write_new": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_candidate_materials.py::emit": (1, NON_CLIENT, (), _CI_EVIDENCE),
@@ -1573,7 +1623,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/refresh_visual_baseline_pins.py::_write_atomic": (
         2, NON_CLIENT, ("atomic-staging",), "rewrites the synthetic visual-baseline pins in place"),
     ".github/scripts/refresh_visual_baseline_pins.py::main": (
-        1, NON_CLIENT, (), "rewrites the synthetic visual-baseline pins in place"),
+        1, NON_CLIENT, (()) + ('atomic-staging',), "rewrites the synthetic visual-baseline pins in place"),
     ".github/scripts/scope_compile_handoff.py::_write": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/scope_compile_handoff.py::main": (2, NON_CLIENT, (), _CI_EVIDENCE),
     "atlas-scope/tools/fixtures/engine-sparse-interfaces.py::<module>": (
@@ -1608,12 +1658,12 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "research_lane/producer.py::run": (
         2, NON_CLIENT, ("atomic-staging",),
         "the public-advisory intel feed docs/intel/feed-<date>.jsonl, staged as .intel-feed-*.tmp"),
-    "research_lane/producer.py::main": (1, NON_CLIENT, (), "the intel feed CLI"),
+    "research_lane/producer.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), "the intel feed CLI"),
     "research_lane/vault_digest.py::run": (
         2, NON_CLIENT, ("atomic-staging",),
         "the Rule-3-sanitised vault digest docs/vault-digest/digest-<date>.jsonl (git-ignored, "
         "ADR 0001 Amendment 1), staged as .vault-digest-*.tmp; sanitisation strips client identifiers"),
-    "research_lane/vault_digest.py::main": (1, NON_CLIENT, (), "the vault digest CLI"),
+    "research_lane/vault_digest.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), "the vault digest CLI"),
     "tools/build_atlas_r2_authority_candidate.py::_exact_blob_archive": (1, NON_CLIENT, (), _TRANSITION),
     "tools/build_atlas_r2_authority_candidate.py::build_package": (1, NON_CLIENT, (), _TRANSITION),
     "tools/build_atlas_r2_authority_candidate.py::main": (1, NON_CLIENT, (), _TRANSITION),
@@ -1653,7 +1703,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "tools/generate_prior_database_fixture.py::build_fixture": (
         3, NON_CLIENT, ("database",), "the prior-release database fixture; " + _SYNTHETIC),
     "tools/generate_prior_database_fixture.py::main": (
-        1, NON_CLIENT, (), "the prior-release database fixture; " + _SYNTHETIC),
+        1, NON_CLIENT, (()) + ('database',), "the prior-release database fixture; " + _SYNTHETIC),
     "tools/graphify_guarded.py::_producer_lock": (
         1, NON_CLIENT, (), "the guarded Graphify producer's empty lock token"),
     "tools/graphify_guarded.py::_write_refresh_receipt": (
@@ -1665,9 +1715,9 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "tools/graphify_guarded.py::_maybe_tree_equivalent_rebind": (
         1, NON_CLIENT, (), "the repository's AST code graph and report"),
     "tools/graphify_guarded.py::_handle_refresh_receipt": (
-        1, NON_CLIENT, (), "the guarded Graphify refresh receipt (digests only)"),
+        1, NON_CLIENT, (()) + ('atomic-staging',), "the guarded Graphify refresh receipt (digests only)"),
     "tools/graphify_guarded.py::main": (
-        4, NON_CLIENT, (), "the guarded Graphify producer over the repository's own source"),
+        4, NON_CLIENT, (()) + ('atomic-staging',), "the guarded Graphify producer over the repository's own source"),
     "tools/measure_transition_dsl_prototype.py::main": (1, NON_CLIENT, (), _TRANSITION),
     "tools/smoke_installed_transition_runtime.py::main": (2, NON_CLIENT, (), _TRANSITION),
 }
@@ -1745,6 +1795,8 @@ def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:
 
 _ANALYSES: dict[str, tuple[dict[str, int], set[str], dict[str, set[str]]]] = {}
 _UNCLASSIFIED_LITERALS: dict[str, dict[str, set[str]]] = {}
+_UNRESOLVED_NAME_TEMPLATES: dict[str, dict[str, set[str]]] = {}
+_NON_CLIENT_LITERAL_ORIGINS: dict[str, dict[tuple[str, str], str]] = {}
 
 
 def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set[str]]]:
@@ -1755,6 +1807,8 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         counts: Counter[str] = Counter()
         resolved: dict[str, set[str]] = {}
         unclassified: dict[str, set[str]] = {}
+        unresolved: dict[str, set[str]] = {}
+        non_client: dict[tuple[str, str], str] = {}
         _classes, classify = _registry()
         for file in program.files:
             for function in [file.top, *file.functions]:
@@ -1773,10 +1827,17 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                                 class_key = classify(f"customer-output/{leaf}")
                                 if class_key:
                                     resolved.setdefault(function.key, set()).add(class_key)
+                                elif not getattr(template, "complete", True) and not _identifying_suffix(target, resolve):
+                                    unresolved.setdefault(function.key, set()).add(leaf)
                                 else:
                                     unclassified.setdefault(function.key, set()).add(leaf)
+                                    origin = getattr(target, "census_non_client_origin", None)
+                                    if origin is not None:
+                                        non_client[(function.key, leaf)] = origin
         _ANALYSES[key] = (dict(sorted(counts.items())), set(program.writers), resolved)
         _UNCLASSIFIED_LITERALS[key] = unclassified
+        _UNRESOLVED_NAME_TEMPLATES[key] = unresolved
+        _NON_CLIENT_LITERAL_ORIGINS[key] = non_client
     return _ANALYSES[key]
 
 
@@ -1784,6 +1845,12 @@ def unclassified_site_literals(root: Path = ROOT) -> dict[str, set[str]]:
     """Keep resolved names that match no class, including extension-less fixed names."""
     analysis(root)
     return _UNCLASSIFIED_LITERALS[str(Path(root).resolve())]
+
+
+def unresolved_site_templates(root: Path = ROOT) -> dict[str, set[str]]:
+    """Partially known, unclassified names stay uncertainty evidence rather than invented literals."""
+    analysis(root)
+    return _UNRESOLVED_NAME_TEMPLATES[str(Path(root).resolve())]
 
 
 def census_problems(
@@ -1815,7 +1882,8 @@ def census_problems(
             problems.append(f"client write site names no registry class: {key}")
         if disposition == CLIENT:
             for leaf in sorted(unclassified.get(key, set())):
-                problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
+                if (key, leaf) not in _NON_CLIENT_LITERAL_ORIGINS[str(Path(root).resolve())]:
+                    problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
         for class_key in keys:
             if class_key not in known:
                 problems.append(f"write site names an unregistered class {class_key!r}: {key}")

@@ -250,6 +250,42 @@ def test_same_count_client_filename_replacement_is_rejected(tmp_path, name, prob
         {"cisco_toolkit/writer.py::emit": {name}} if problem else {})
 
 
+def test_partial_names_remain_uncertainty_and_known_formatted_literals_are_checked(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def dynamic(stem):\n    Path(stem + '.txt').write_text('x')\n\n"
+           "def fixed():\n    name = 'delivery.json'\n    Path(f'{name}').write_text('x')\n")
+    rows = {"cisco_toolkit/writer.py::dynamic": (1, census.CLIENT, ("capture-show",), "collector-shaped input"),
+            "cisco_toolkit/writer.py::fixed": (1, census.CLIENT, ("snapshot",), "client bytes")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["capture-show", "snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::fixed"]
+    assert census.unresolved_site_templates(tmp_path) == {"cisco_toolkit/writer.py::dynamic": {"0.txt"}}
+
+
+def test_non_client_helper_provenance_does_not_erase_client_literal_refusal(tmp_path, monkeypatch):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def marker(path):\n    Path(path).write_bytes(b'ok')\n\n"
+           "def main():\n    marker('probe.marker')\n    Path('delivery.json').write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::marker": (1, census.NON_CLIENT, (), "fixed marker bytes only"),
+            "cisco_toolkit/writer.py::main": (2, census.CLIENT, ("snapshot",), "client payload plus probe")}
+    monkeypatch.setattr(census, "WRITE_SITE_CENSUS", rows)
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
+    assert census.unclassified_site_literals(tmp_path)["cisco_toolkit/writer.py::main"] == {
+        "delivery.json", "probe.marker"}
+
+
+@pytest.mark.parametrize("filename,problem", [("client.db", False), ("client.json", True)])
+def test_sqlite_uri_is_a_database_path_not_a_query_shaped_filename(tmp_path, filename, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           f"import sqlite3\n\ndef emit():\n    sqlite3.connect('file:{filename}?mode=ro', uri=True)\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("database",), "may create client companions")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["database"]) == (
+        [f"client write site resolves to unclassified name {filename!r}: cisco_toolkit/writer.py::emit"]
+        if problem else [])
+
+
 @pytest.mark.parametrize("disposition", [census.NON_CLIENT, census.OPERATOR_PATH, census.DELEGATED])
 def test_unclassified_operator_and_non_client_names_stay_explicit(tmp_path, disposition):
     _write(tmp_path, "cisco_toolkit/writer.py",
