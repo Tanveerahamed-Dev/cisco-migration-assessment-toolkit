@@ -98,6 +98,8 @@ def test_captures_are_substantial_deterministic_and_pod_consistent():
         outputs.append(first)
     assert "Device ID: distribution001.lab" in outputs[0]["show cdp neighbors detail"]
     assert "Device ID: access001.lab" in outputs[1]["show cdp neighbors detail"]
+    assert "Device ID: phone-001-1\n" in outputs[0]["show cdp neighbors detail"]
+    assert "Platform: cisco IP Phone 8841," in outputs[0]["show cdp neighbors detail"]
 
 
 def test_workflows_have_no_automatic_pr_qualification():

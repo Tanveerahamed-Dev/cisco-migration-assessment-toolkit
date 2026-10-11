@@ -87,3 +87,19 @@ history/per-parent patch and publication-body marker scans precede every push.
 No local engine, test, build or measurement is permitted. Claude reviews and
 merges after hosted checks are green. Large discovered defects get their own
 board row with the failing source/run and closing evidence.
+
+## Preserved first-attempt evidence
+
+Hosted run `38128370382`, job `114437377020`, source `61e97838`, passed all
+11 harness controls. Generation passed at 2.625 s / 88.37 MiB peak RSS /
+88.16 MiB output. The CLI completed its mandatory checks within budget at
+124.137 s / 967.88 MiB / 43.29 MiB, but the harness correctly failed because
+only 632 of 1,500 expected cables appeared. Ingest/projection/Scope were skipped.
+Artifact `11698590962` retains the failed report and logs. Source inspection
+identified a corpus-dialect error: phone platforms omitted the real CDP `cisco`
+prefix (the existing topology owner's infrastructure-neighbour predicate
+therefore excluded them), and uncollected CDP IDs had a synthetic `.lab` suffix
+that the owner correctly preserves. The capture generator now emits the
+actual Cisco phone platform and the intended literal uncollected identity.
+No engine logic, cable gate or budget was weakened. This attempt is not scale
+qualification and its measurements do not qualify the corrected source.

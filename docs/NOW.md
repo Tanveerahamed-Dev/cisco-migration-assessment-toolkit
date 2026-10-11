@@ -274,6 +274,8 @@ protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
 
+- **2026-10-11 (Codex, W70 first hosted attempt):** PR #654 is open. Run `38128370382` / source `61e97838` passed 11 harness controls and generation; the CLI completed its mandatory checks at 124.137 s / 967.88 MiB peak RSS / 43.29 MiB output but the harness failed the exact cable join (632 / 1,500), so later stages are skipped. Failed artifact `11698590962` is preserved. Source review attributes the missing endpoint rows to inaccurate synthetic CDP phone platform/identity spelling; the generator is corrected without changing engine logic, budgets or the census gate. A fresh hosted run on the corrected exact source remains required; prior numbers do not qualify it.
+
 - **2026-10-11 (Codex, W70 scale qualification):** Owner authorized branch `codex/scale-qualification-300` from fetched main `0b411c16`, push/hosted dispatch/PR and stop before Claude review/merge. The original active checkout is preserved. Added a synthetic capture generator, real offline CLI + AssessHub ingest/API + Scope compiler measurements, fixed wall/RSS/output ceilings and retained failure reports. Weekly/manual workflow and opt-in existing-CI bootstrap share one action; qualification never runs on a PR. Local work is source editing and permitted static syntax/privacy/history scans only. Exact measured source/run and final hosted verdict live in the PR body and JSON artifact; real infrastructure and acceptance remain separate.
 
 - **2026-10-10 (Claude, W60 round 4b on PR #647):** An independent max-effort refutation of `7d210752` found one P2 and seven P3 (none a regression against main). All are closed in the owner and its restatement:

@@ -123,8 +123,9 @@ def captures(host, role, idx, neighbours, roles, addresses):
         config.append(cfg)
         brief.append(f"{long_port:<26}{address:<17} YES NVRAM {'up' if live else 'down'} {'up' if live else 'down'}")
         if peer:
-            peer_model = MODELS[roles[peer]] if peer in roles else "IP Phone 8841"
-            cdp.append(f"-------------------------\nDevice ID: {peer}.lab\nEntry address(es):\n"
+            peer_model = MODELS[roles[peer]] if peer in roles else "cisco IP Phone 8841"
+            advertised = f"{peer}.lab" if peer in roles else peer
+            cdp.append(f"-------------------------\nDevice ID: {advertised}\nEntry address(es):\n"
                        f"  IP address: {addresses.get(peer, '192.0.2.1')}\n"
                        f"Platform: {peer_model},  Capabilities: {'Router Switch' if peer in roles else 'Phone'}\n"
                        f"Interface: {long_port},  Port ID (outgoing port): {remote}\nHoldtime : 150 sec\n")
