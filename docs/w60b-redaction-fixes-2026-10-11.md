@@ -55,3 +55,60 @@ No behavioral, archival differential or persisted-view custody pass is claimed f
 The correction adds the two aligned metadata entries; it does not remove or relax the assertion.
 All earlier failures remain bound to `e411b50f`. Fresh hosted checks must validate the corrected
 head. The corpus now contains 689 strict rows plus the complete 599-row review corpus.
+
+## STOP: golden engine view moves at 894c8175
+
+The [focused hosted run 38132545956](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38132545956)
+tested exact head `894c8175e101a48cd2ec8cb569abd95ef94d9158` and ended with **157 failed,
+541 passed**, in 181.38 seconds. The user explicitly requires stopping if an existing engine
+output would move. Implementation is therefore stopped; no output or assertion is rebaselined.
+
+The tracked golden/sample/compiled/distribution output files are unchanged. The hosted comparison
+of the existing golden snapshot's **redacted view** failed with ten changed leaves:
+
+- `$["framework_coverage"]["frameworks"]["CIS"]["controls"][0]["title"]`
+- `$["framework_coverage"]["frameworks"]["NIST"]["controls"][8]["title"]`
+- `$["framework_coverage"]["frameworks"]["PCI"]["controls"][7]["title"]`
+- `$["framework_coverage"]["frameworks"]["STIG"]["controls"][9]["control"]`
+- `$["framework_coverage"]["frameworks"]["STIG"]["controls"][9]["title"]`
+- `$["punchlist"][32]["title"]`
+- `$["remediation_plan"]["by_device"]["access1"][1]["title"]`
+- `$["remediation_plan"]["items"][6]["title"]`
+- `$["security"]["access1"]["findings"][0]["title"]`
+- `$["security"]["core1"]["findings"][0]["title"]`
+
+Serialized-view SHA-256 before: `6fb01cc4781e1db9b637722f2a6e1e9dbe6724a3140e007306baffd27f150445`.
+After: `ef5d0dc0a0d3a03199911b7e9fc603e38b1963d1d013b398457b8bb9185ef562`.
+The first failed view assertion prevents a completed sample-view comparison verdict; sample-view
+identity remains **not verified**. The views were generated only in hosted scratch, never imported.
+
+### Other decisive hosted evidence
+
+- Both reported R1 unquoted P0 cases (`review:p0_user_plain`, `review:p0_bgp_plain`) passed the real
+  producer/verifier test. This focused result does not qualify the whole change.
+- The archive replay covered 2,994 cases. Against pre-W60 `2c927d02`, 1,449 removed secret slots
+  were checked and **two differential failures** remain (`crypto isakmp key chain`, `crypto isakmp
+  key 14`, originally incomplete-command probes). Against `d05ff1aa`, 2,270 removed slots were
+  checked and **zero regressions** were observed. The requested zero-regression gate on both is
+  not met; the incomplete probes are retained, not silently removed from the differential.
+- A quoted recognition-witness example still leaked and certified: `poll-wrapper -v "2c" -c
+  JuniperBrook0 inlet-hill-0` was unchanged and accepted. The remaining quoted-shape and uppercase
+  directive failures are not closed. Root cause is **unconfirmed**; the raw prefilter/semantic
+  recognition boundary is a specific source-review lead.
+- Quoted required-value output assertions and the attached public-algorithm structural assertion
+  failed. Their exact outputs/expectations are retained in the hosted log; no assertion is weakened.
+- The deterministic copy-work bound and all three real producer/verifier scaling tests passed.
+  Eight-times input yielded about eight-times median time: SMUX 86,952 to 709,784 bytes, about
+  0.0338 to 0.2685 seconds; labelled digest 21,505 to 172,033 bytes, about 0.0244 to 0.1905 seconds;
+  unlabelled entropy 17,409 to 139,265 bytes, about 0.0225 to 0.1720 seconds. These are focused
+  regression results, not universal linearity or privacy qualification.
+
+The remaining four exact-head workflows were requested cancelled after revalidating their branch
+and SHA, because the user stop condition had fired. Cancellation is incomplete validation, not a
+passing gate. PR #656 remains open **draft**, with no merge or release action. All 15 required
+contexts are **not GREEN**. No local test, reproduction, measurement or build ran.
+
+This stop record and the board update are committed locally only, avoiding a new hosted run after
+the stop. Published code remains at `894c8175`. The next permitted step is an owner-reviewed
+continuation decision: preserve the ten existing engine-authored leaves, close the remaining
+behavior/differential failures, and re-run every unchanged hosted gate before independent refutation.
