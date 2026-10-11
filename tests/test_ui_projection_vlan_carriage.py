@@ -524,9 +524,9 @@ def test_a_typed_end_signal_cites_the_role_row_the_owner_join_names(tmp_path):
     checked(snap)
 
 
-def _routing_outputs(snap):
+def _routing_outputs(snap, *, admission=None):
     """Full public outputs from one real checked admission, including complete and sliced lazy pages."""
-    admission = uip.carriage_admission(snap)
+    admission = uip.carriage_admission(snap) if admission is None else admission
     document = uip.project(snap, carriage=admission)
     pages = [uip.project_vlan_carriage(snap, vi, offset, limit, admission=admission)
              for vi in range(len(snap["vlan_cutover"])) for offset, limit in ((0, 200), (0, 1), (1, 1))]
@@ -637,6 +637,7 @@ def test_optional_routing_keeps_real_owner_foreign_shapes_and_error_fallback(tmp
     observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]}) for host in (A, B)}
     seed = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
     original_index, original_rows, results = uip.carriage_role_index, uip.carriage_role_rows, []
+    failures, calls = [], []
 
     class ForeignIndex(dict):
         pass
@@ -645,9 +646,11 @@ def test_optional_routing_keeps_real_owner_foreign_shapes_and_error_fallback(tmp
         pass
 
     def observed_index(record):
+        index = original_index(record)  # The real owner reads this current producer record BEFORE fault injection.
+        calls.append(record)
         if shape == "owner-error":
             raise RuntimeError("declared real owner callback refusal")
-        return ForeignIndex(original_index(record))
+        return ForeignIndex(index)
 
     def observed_rows(record, interface, vid, *, index=None):
         rows = original_rows(record, interface, vid, index=index)
@@ -658,6 +661,8 @@ def test_optional_routing_keeps_real_owner_foreign_shapes_and_error_fallback(tmp
         return [(i, dict(row)) for i, row in rows]
 
     for enabled in (False, True):
+        snap = deepcopy(seed)
+        calls.clear()
         with monkeypatch.context() as patch:
             if not enabled:
                 patch.setattr(uip, "_carriage_routing_plan", lambda: None)
@@ -665,9 +670,54 @@ def test_optional_routing_keeps_real_owner_foreign_shapes_and_error_fallback(tmp
                 patch.setattr(uip, "carriage_role_index", observed_index)
             else:
                 patch.setattr(uip, "carriage_role_rows", observed_rows)
-            results.append(_routing_outputs(deepcopy(seed)))
+            if shape == "owner-error":
+                # RuntimeError is deliberately OUTSIDE the unchanged _OWNER_FAULTS. Both the original
+                # dispatch and optional plan must propagate it, not invent a held result or repair/retry.
+                with pytest.raises(RuntimeError) as raised:
+                    _routing_outputs(snap)
+                failures.append((type(raised.value), raised.value.args))
+                first_host = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]["host"]
+                assert len(calls) == 1 and calls[0] is snap["stp_topology_observations"][first_host]
+            else:
+                results.append(_routing_outputs(snap))
+    if shape == "owner-error":
+        assert failures == [(RuntimeError, ("declared real owner callback refusal",))] * 2
+    else:
+        assert results[0] == results[1] and not results[1][0]
+
+
+def test_declared_owner_typeerror_holds_the_whole_admission_before_separate_lazy_rendering(tmp_path, monkeypatch):
+    observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]}) for host in (A, B)}
+    seed = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    original, results = uip.carriage_role_index, []
+    assert TypeError in uip._OWNER_FAULTS and RuntimeError not in uip._OWNER_FAULTS
+    for enabled in (False, True):
+        snap, calls = deepcopy(seed), []
+
+        def refused(record):
+            original(record)  # Genuine current owner domain, not an invented index or a malformed fixture.
+            calls.append(record)
+            raise TypeError("declared guarded owner refusal")
+
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            patch.setattr(uip, "carriage_role_index", refused)
+            admission = uip.carriage_admission(snap)
+            first_host = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]["host"]
+            assert len(calls) == 1 and calls[0] is snap["stp_topology_observations"][first_host]
+            assert admission.source["state"] == UV and list(admission.gaps) == [0, 1]
+            assert dict(admission.observations) == {}  # No partial checked index/observation is retained.
+        # Rendering is a SEPARATE owner call domain. Restore the real callback before lazy role witnesses;
+        # no renderer catch is assumed or added, and the original admission's holds must remain in its output.
+        result = _routing_outputs(snap, admission=admission)
+        rows = result[1]["inventory"]["vlans"]["rows"]["items"]
+        assert all(row["selections"]["carriage"]["state"] == UV for row in rows)
+        assert all(row["selections"]["carriage"]["forwarding"]["value"] is None for row in rows)
+        for page_result in result[2]:
+            assert all(item["relation"]["value"] is None for item in page_result["carriage"]["page"]["items"])
+        results.append(result)
     assert results[0] == results[1]
-    assert bool(results[1][0]) is (shape == "owner-error")
 
 
 @pytest.mark.parametrize("owner", ["admission", "index"])

@@ -76,6 +76,9 @@ _NATIVE_SCHEMA_HASHES = MappingProxyType({
     # W52 v2 whole Carriage: actual hosted 64986339/tree8719 observer material,
     # independently reviewed complete schema/domain; never populated at runtime.
     "carriage": "54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0",
+    # Full OWNER root from actual hosted fe8fc0ea/treecc26610d, independently
+    # reviewed with all 251 definitions. Internal admission never marks transport smoke.
+    "document": "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -617,7 +620,7 @@ def _require_json_native(value: Any) -> None:
     visit(value)
 
 
-_DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
+_DOCUMENT_VALIDATOR = _NativeTransportValidator(_OWNER, "document", transport_proof=False)
 _DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
 _PATH_DOCUMENT_VALIDATOR = _compiled_validator({"$ref": "#/$defs/PathDocument", "$defs": _DEFS})
 _PROJECTION_VERSION = (

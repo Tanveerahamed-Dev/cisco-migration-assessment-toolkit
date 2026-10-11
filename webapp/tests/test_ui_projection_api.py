@@ -881,12 +881,12 @@ def test_compiled_source_and_transport_match_canonical_owner(client):
                 assert compiled.is_valid(bad) == stock.is_valid(bad) is False
 
 
-def _validation_errors(validator, value):
+def _validation_errors(validator, value, *context):
     def record(error):
         return {"message": error.message, "validator": error.validator,
                 "path": list(error.absolute_path), "schema_path": list(error.absolute_schema_path),
                 "context": [record(child) for child in error.context]}
-    return [record(error) for error in validator.iter_errors(value)]
+    return [record(error) for error in validator.iter_errors(value, *context)]
 
 
 @pytest.mark.parametrize("flavor", ["properties", "unique_oneof"])
@@ -1189,22 +1189,25 @@ def test_native_transport_pins_provider_schema_and_preserves_public_errors(nativ
     error = next(validator.iter_errors(bad))
     assert error.schema is schema
     assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
-    assert not hasattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native")
+    assert api._DOCUMENT_VALIDATOR._NativeTransportValidator__native is not None
+    assert api._native_schema_hash(api._OWNER) == api._NATIVE_SCHEMA_HASHES["document"]
     assert not hasattr(api._DEVICE_VALIDATOR, "_NativeTransportValidator__native")
 
 
-def test_document_observer_bootstrap_has_no_pin_or_provider_admission(client, sample, monkeypatch):
+def test_document_missing_pin_has_no_provider_admission_and_keeps_whole_python(client, sample, monkeypatch):
     from backend import ui_projection_api as api
 
     def forbidden():
         pytest.fail("Unreviewed document candidate reached a native provider")
 
-    assert "document" not in api._NATIVE_SCHEMA_HASHES
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7"
+    monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES",
+                        {key: value for key, value in api._NATIVE_SCHEMA_HASHES.items() if key != "document"})
     monkeypatch.setattr(api, "_native_provider", forbidden)
     candidate = api._NativeTransportValidator(api._OWNER, "document")
     assert candidate._NativeTransportValidator__native is None
-    # The original whole-document Python validator stays in production during the bootstrap.
-    assert not hasattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native")
+    # The already admitted original instance remains separate from this deliberately unpinned constructor.
+    assert api._DOCUMENT_VALIDATOR._NativeTransportValidator__native is not None
     sid = seed(client, sample)
     raw, binding = client.app.state.store.get_snapshot_blob(sid)
     produced = api._ProjectionCache().document(raw, binding["sha256"], None)
@@ -1245,7 +1248,8 @@ def test_internal_native_validation_cannot_mark_a_transport_proof(native_body):
         assert validator.is_valid(bad) is False
         assert trace == {"native": False}
         assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._VIEW_SCHEMA), bad)
-        assert calls == [True, False, False] and exceptions == []
+        assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+        assert exceptions == []
         # The same genuine complete transport retains the existing positive smoke behavior.
         api._NativeTransportValidator(api._VIEW_SCHEMA, "view").validate(native_body)
         assert trace["native"] is True
@@ -1703,6 +1707,317 @@ def _whole_native_carriage_body(client, tmp_path, case="one_end"):
     response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 200})
     assert response.status_code == 200, response.text[:300]
     return response.json()
+
+
+def _whole_native_document(client, snapshot):
+    from backend import ui_projection_api as api
+    sid = seed(client, snapshot)
+    raw, binding = client.app.state.store.get_snapshot_blob(sid)
+    document = api._ProjectionCache().document(raw, binding["sha256"], None)
+    api._require_json_native(document)
+    return document
+
+
+@pytest.mark.parametrize("case", ["forwarding", "not_carried", "stp_blocked", "one_end",
+                                "empty_universe", "two_member_bundle"])
+def test_native_full_document_real_producers_have_direct_true_false_false_stock_proof(client, tmp_path, case):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, case))
+    assert api._native_instance_allowed(document)
+    schema = deepcopy(api._OWNER)
+    assert api._native_schema_hash(schema) == api._NATIVE_SCHEMA_HASHES["document"]
+    validator = api._NativeTransportValidator(schema, "document")
+    native = validator._NativeTransportValidator__native
+    assert native is not None
+    calls, exceptions = [], []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(type(error).__name__)
+                raise
+            calls.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        assert validator.is_valid(document) is True
+        api._stock_validator(schema).validate(document)
+        bad = deepcopy(document)
+        del bad["vocab"]
+        assert validator.is_valid(bad) is False
+        assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+        assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+        assert exceptions == []
+        assert trace == {"native": False}  # Internal acceptance is never complete transport proof.
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
+@pytest.mark.parametrize("damage", ["missing_root", "extra_root", "missing_nested", "extra_nested",
+                                    "wrong_count", "wrong_state", "lost_pointer", "unknown_vocab"])
+def test_native_full_document_root_and_nested_refusals_match_whole_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    assert api._native_instance_allowed(document)
+    bad = deepcopy(document)
+    summary = bad["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
+    if damage == "missing_root":
+        del bad["topology"]
+    elif damage == "extra_root":
+        bad["unexpected"] = True
+    elif damage == "missing_nested":
+        del summary["forwarding"]
+    elif damage == "extra_nested":
+        summary["unexpected"] = True
+    elif damage == "wrong_count":
+        summary["assessed"]["value"] = True
+    elif damage == "wrong_state":
+        summary["state"] = "invented"
+    elif damage == "lost_pointer":
+        summary["refs"][0]["pointer"] = "not-a-pointer"
+    else:
+        bad["vocab"]["unexpected"] = ["invented"]
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    native = validator._NativeTransportValidator__native
+    assert native is not None
+    observed = []
+
+    class Observed:
+        def is_valid(self, value):
+            accepted = native.is_valid(value)
+            observed.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    assert validator.is_valid(document) is True
+    assert validator.is_valid(bad) is False
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._OWNER), bad)
+    assert len(observed) == 3 and observed[0] is True and observed[1] is False and observed[2] is False
+
+
+@pytest.mark.parametrize("damage", ["last_count", "last_ref"])
+def test_native_full_document_rejects_the_last_nested_row_of_a_real_multivlan_multicable_document(
+        client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    snapshot = _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}, {"vlan": 30}), trunks=3)
+    document = _whole_native_document(client, snapshot)
+    rows = document["inventory"]["vlans"]["rows"]["items"]
+    assert len(rows) == 3 and len(document["topology"]["cables"]["items"]) == 3
+    last_index = len(rows) - 1
+    summary = rows[last_index]["selections"]["carriage"]
+    assert summary["vlan_index"] == last_index
+    assert summary["assessed"]["value"] == 3 and type(summary["assessed"]["value"]) is int
+    assert summary["not_carried"]["value"] == 3 and type(summary["not_carried"]["value"]) is int
+    assert len(summary["refs"]) >= 2
+    assert summary["refs"][0]["pointer"] == f"/vlan_carriage/rows/{last_index}"
+    bad = deepcopy(document)
+    last = bad["inventory"]["vlans"]["rows"]["items"][last_index]["selections"]["carriage"]
+    if damage == "last_count":
+        last["not_carried"]["value"] = True
+        tail = ["not_carried", "value"]
+    else:
+        last["refs"][-1]["pointer"] = "not-a-pointer"
+        tail = ["refs", len(last["refs"]) - 1, "pointer"]
+    assert api._native_instance_allowed(document) and api._native_instance_allowed(bad)
+    validator, calls, exceptions = _native_observed(api, api._OWNER, "document")
+    stock = api._stock_validator(api._OWNER)
+    assert validator.is_valid(document) is True and stock.is_valid(document) is True
+    assert validator.is_valid(bad) is False and stock.is_valid(bad) is False
+    errors = _validation_errors(validator, bad)
+    assert errors == _validation_errors(stock, bad)
+    expected_path = ["inventory", "vlans", "rows", "items", last_index, "selections", "carriage", *tail]
+
+    def nested_errors(records):
+        for error in records:
+            yield error
+            yield from nested_errors(error["context"])
+
+    expected_validator = "type" if damage == "last_count" else "pattern"
+    assert any(error["path"] == expected_path and error["validator"] == expected_validator
+               for error in nested_errors(errors))
+    assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+    assert exceptions == []
+
+
+@pytest.mark.parametrize("damage", ["float", "large_integer", "newline", "surrogate", "tuple",
+                                    "foreign_dict", "nonstring_key", "nan", "cycle", "deep"])
+def test_native_full_document_unsupported_instances_preserve_complete_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _value):
+            pytest.fail("Unsupported document reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    if damage == "float":
+        document["engine"]["snapshot_bytes"]["value"] = 1.0
+    elif damage == "large_integer":
+        document["engine"]["snapshot_bytes"]["value"] = 2**53
+    elif damage == "newline":
+        document["engine"]["code_schema_version"] = "line\n"
+    elif damage == "surrogate":
+        document["engine"]["code_schema_version"] = "\ud800"
+    elif damage == "tuple":
+        document = tuple(document)
+    elif damage == "foreign_dict":
+        document = type("ForeignDocument", (dict,), {})(document)
+    elif damage == "nonstring_key":
+        document[1] = True
+    elif damage == "nan":
+        document["engine"]["snapshot_bytes"]["value"] = float("nan")
+    elif damage == "cycle":
+        document["unexpected"] = document
+    else:
+        nested = True
+        for _ in range(130):
+            nested = [nested]
+        document["unexpected"] = nested
+    assert not api._native_instance_allowed(document)
+    assert _validation_errors(validator, document) == _validation_errors(api._stock_validator(api._OWNER), document)
+
+
+@pytest.mark.parametrize("outcome", [False, 1, "true", "exception"])
+def test_native_full_document_declines_and_exceptions_replay_original_stock(client, tmp_path, outcome):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    assert validator._NativeTransportValidator__native is not None
+    calls = []
+
+    class Declined:
+        def is_valid(self, value):
+            calls.append(value)
+            if outcome == "exception":
+                raise RuntimeError("Native document provider refused")
+            return outcome
+
+    validator._NativeTransportValidator__native = Declined()
+    assert validator.is_valid(document) is True
+    bad = deepcopy(document)
+    del bad["schema"]
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._OWNER), bad)
+    assert calls == [document, bad]
+
+
+def test_native_full_document_requires_literal_version_private_copy_and_full_schema(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    assert api.version("jsonschema-rs") == "0.58.5"
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7"
+    for replacement in (None, "0" * 64, api._NATIVE_SCHEMA_HASHES["carriage"]):
+        with monkeypatch.context() as changed:
+            pins = dict(api._NATIVE_SCHEMA_HASHES)
+            if replacement is None:
+                del pins["document"]
+            else:
+                pins["document"] = replacement
+            changed.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+            candidate = api._NativeTransportValidator(api._OWNER, "document")
+            assert candidate._NativeTransportValidator__native is None
+            candidate.validate(document)
+    actual_version = api.version
+    with monkeypatch.context() as changed:
+        changed.setattr(api, "version", lambda name: "0.0.0" if name == "jsonschema-rs" else actual_version(name))
+        assert api._NativeTransportValidator(api._OWNER, "document")._NativeTransportValidator__native is None
+    public = deepcopy(api._OWNER)
+    original_copy = api.deepcopy
+
+    def corrupt_copy(value, *args, **kwargs):
+        copied = original_copy(value, *args, **kwargs)
+        if value is public:
+            copied["required"].remove("vocab")
+        return copied
+
+    with monkeypatch.context() as changed:
+        changed.setattr(api, "deepcopy", corrupt_copy)
+        candidate = api._NativeTransportValidator(public, "document")
+        assert candidate._NativeTransportValidator__native is None
+        candidate.validate(document)
+        assert _validation_errors(candidate, document) == _validation_errors(api._stock_validator(public), document) == []
+        bad = original_copy(document)
+        del bad["vocab"]
+        errors = _validation_errors(candidate, bad)
+        assert errors == _validation_errors(api._stock_validator(public), bad)
+        assert errors and any(error["validator"] == "required" and "vocab" in error["message"] for error in errors)
+        assert candidate.is_valid(bad) is False
+    assert api._NativeTransportValidator(api._OWNER, "carriage")._NativeTransportValidator__native is None
+
+
+@pytest.mark.parametrize("mutation", ["nested", "reassignment"])
+def test_native_full_document_current_schema_and_explicit_context_remain_stock(client, tmp_path, mutation):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    schema = deepcopy(api._OWNER)
+    validator = api._NativeTransportValidator(schema, "document")
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _value):
+            pytest.fail("Changed document schema or context reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    assert _validation_errors(validator, document, {}) == _validation_errors(api._stock_validator(schema), document, {})
+    evolved = validator.evolve(schema={"type": "integer"})
+    assert evolved.is_valid(1) and not evolved.is_valid("1")
+    if mutation == "nested":
+        schema["properties"]["schema"] = {"const": "changed"}
+    else:
+        validator.schema = {"type": "string"}
+    assert _validation_errors(validator, document) == _validation_errors(api._stock_validator(validator.schema), document)
+
+
+@pytest.mark.parametrize("surface", ["view", "list", "carriage"])
+@pytest.mark.parametrize("outcome", ["absent", False, "nonboolean", "exception"])
+def test_native_document_success_never_certifies_a_nonnative_transport(tmp_path, monkeypatch, surface, outcome):
+    from backend import ui_projection_api as api
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "document-transport-boundary")
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    app = create_app(db_path=str(tmp_path / "doc-transport.db"), scope_dist_dir=None)
+    original_doc = api._DOCUMENT_VALIDATOR._NativeTransportValidator__native
+    assert original_doc is not None
+    document_results = []
+
+    class ActualDocument:
+        def is_valid(self, value):
+            accepted = original_doc.is_valid(value)
+            document_results.append(accepted)
+            return accepted
+
+    class Declined:
+        def is_valid(self, _value):
+            if outcome == "exception":
+                raise RuntimeError("Transport provider refused")
+            return 1 if outcome == "nonboolean" else False
+
+    headers = {"X-Atlas-Native-Smoke-Nonce": "document-transport-boundary"}
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
+        sid = seed(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+        if surface == "carriage":
+            validator, path, params = api._CARRIAGE_VALIDATOR, _carriage_url(sid), {"vlan_index": 0}
+        elif surface == "list":
+            validator, path, params = api._VALIDATORS["list"], url(sid, "inventory") + "/lists", {"pointer": "/vlans/rows"}
+        else:
+            validator, path, params = api._VALIDATORS["view"], url(sid, "inventory"), {}
+        with monkeypatch.context() as changed:
+            changed.setattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native", ActualDocument())
+            changed.setattr(validator, "_NativeTransportValidator__native", None if outcome == "absent" else Declined())
+            response = client.get(path, params=params, headers=headers)
+            assert response.status_code == 200, response.text[:300]
+            assert len(document_results) == 1 and document_results[0] is True  # Genuine provider, exact boolean.
+            assert "X-Atlas-Native-Validation" not in response.headers
+        positive = client.get(path, params=params, headers=headers)
+        assert positive.status_code == 200
+        assert positive.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.5"
+        assert "X-Atlas-Native-Validation" not in client.get(path, params=params).headers
 
 
 def _carriage_native_triplet(api, body, bad):

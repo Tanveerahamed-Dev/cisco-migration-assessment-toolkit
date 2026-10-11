@@ -1196,7 +1196,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/observe_ui_projection_contract.py::emit": (
         1, NON_CLIENT, (), "UI projection schema observations generated from code"),
     "webapp/backend/observe_ui_projection_contract.py::main": (
-        5, NON_CLIENT, (), "UI projection schema observations generated from code"),
+        6, NON_CLIENT, (), "UI projection schema observations generated from code, including the full document root"),
     "webapp/sample_data/build_sample.py::_write_collection": (
         1, NON_CLIENT, (), "the synthetic sample collection; " + _SYNTHETIC),
     "webapp/sample_data/build_sample.py::_make_template": (

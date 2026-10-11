@@ -1318,7 +1318,9 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # Stored carriage adds only its public vocabulary, selectors, validators and identity joins, and (G14 v2) the
     # owner's read-only code decoders, its interface-field tuple and its PVST role join (carriage_role_rows).
     # Its compute function and whole module remain outside this exact read-only import boundary.
-    allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    # marshal writes fresh same-process complete observation keys after the unchanged JSON eligibility walk;
+    # no deserialization, persistent cache, hashing or project producer import is admitted.
+    allowed = {"math", "re", "ipaddress", "marshal", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",
