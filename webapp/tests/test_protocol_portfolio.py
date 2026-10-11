@@ -432,7 +432,7 @@ def test_subject_cap_is_disclosed_and_complete_export_is_uncapped(client):
     exported = client.get(section["complete_export"]["url"])
     assert exported.status_code == 200, exported.text
     assert exported.headers["content-disposition"].endswith(
-        f'protocol-assurance-snapshot-{snapshot_id}.json"'
+        f'snapshot-{snapshot_id}.protocol-assurance.json"'
     )
     payload = exported.json()
     assert payload["schema"] == "protocol_single_snapshot_export/1"

@@ -1,0 +1,18 @@
+# Reviewed SYNTHETIC collection fixtures the repository privacy gate admits by exact path and
+# content (W65). Format: <sha256 of the LF-normalised bytes>  <path>. A capture-shaped file under
+# tests/ that is not listed here, or whose bytes changed, is refused: review the new bytes as
+# synthetic, then add or update its line. Owner: cisco_toolkit/distribution_verify.py ::
+# CLIENT_FIXTURE_MANIFEST; tests/test_client_artifact_census.py keeps this list exact.
+532cc9a6eb5fe4735edcb57cf2b39ef4620365b85ba4ccad8f64c39824139f3a  tests/fixtures/etherchannel/ios/show_etherchannel_summary.txt
+f8ae4ce52b9e35bc8c785d16d53ec42d6662b042d206f3d4ed0ea65041b5c0e6  tests/fixtures/etherchannel/ios/show_interface_status.txt
+9d4ba90f105fa2854210c76de20e538c7979d82a6d6cee42e379aacaf6d838e7  tests/fixtures/etherchannel/ios/show_interfaces.txt
+1b2bcb72068d8540383e48ae1bd9be4606a286e2527d48d9853818417d684078  tests/fixtures/etherchannel/ios/show_lacp_neighbor.txt
+ea7f85c2b271a72d0877a14f5d995acb0dc96582fae54080b46c026fbcfc2f90  tests/fixtures/etherchannel/ios/show_running_config.txt
+5c89c84092433cb8cf9766e5e7fa6f1874ca16a6530809bab0631dd164b82fa2  tests/fixtures/etherchannel/ios/show_running_config_scoped.txt
+c24501f8eba2dfc43cba899f904f4241a71e1b89f6c28fbb1495450c37c6ae91  tests/fixtures/etherchannel/nxos/show_interface.txt
+98059d6d501836c457ca29395529cfdcd41f87308df1f3eb72f11b3457dc4761  tests/fixtures/etherchannel/nxos/show_interface_status.txt
+2f4e53c03e33e715e937025a97eb407b276a23ce7c5574dded636246686c4241  tests/fixtures/etherchannel/nxos/show_lacp_neighbor.txt
+7ed28f588c135029f87345f2cc9d5bbae4016deb9bcfc004d8ce6fd8a091e2ed  tests/fixtures/etherchannel/nxos/show_port_channel_summary.txt
+8eaa5f6e7a421699ba7c020680774b0a6d83c685679b3f0a6ca131a13993dd8a  tests/fixtures/etherchannel/nxos/show_running_config.txt
+e14b5629c53fb354f4581c52843d7b0a997ebd4ce07dd202f8b5d52e2395746b  tests/fixtures/etherchannel/nxos/show_running_config_interface.txt
+5b1d666dc542bee47f87f30d1501d500165337370bcf64217dde011c5518d4d2  tests/fixtures/vtp/nxos/show_running_config.txt
