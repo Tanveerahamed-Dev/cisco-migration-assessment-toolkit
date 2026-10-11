@@ -1,0 +1,35 @@
+name: scale-qualification
+
+# The expensive qualification never runs on a pull request. The opt-in CI job
+# bootstraps its hosted pre-merge measurement through this same composite action.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_commit:
+        description: Full commit SHA that the selected ref must point at
+        required: true
+        type: string
+  schedule:
+    - cron: "23 2 * * 1" # Monday 05:23 Asia/Qatar (UTC+03)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Synthetic 300-device scale budgets (weekly or manual)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/scale-qualification
+        with:
+          expected_source_commit: ${{ github.event_name == 'schedule' && github.sha || inputs.expected_source_commit }}

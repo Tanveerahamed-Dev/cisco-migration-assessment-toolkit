@@ -2360,6 +2360,9 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/sample_data/build_sample.py::main": (
         4, NON_CLIENT, ("devices-inventory", "workbook"),
         "builds webapp/sample_data/sample_fleet.snapshot.json; " + _SYNTHETIC),
+    "webapp/sample_data/build_scale.py::build": (
+        4, NON_CLIENT, ("devices-inventory", "workbook"),
+        "the hosted scale build's fixed generated corpus and empty template; " + _SYNTHETIC),
     "webapp/frontend/e2e-real/serve_real_backend.py::fresh_run_dir": (
         1, NON_CLIENT, (), "the real-backend E2E run marker; " + _SYNTHETIC),
     "webapp/frontend/e2e-real/serve_real_backend.py::write_collection": (
@@ -2441,6 +2444,20 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, (()) + ('atomic-staging',), "rewrites the synthetic visual-baseline pins in place"),
     ".github/scripts/scope_compile_handoff.py::_write": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/scope_compile_handoff.py::main": (2, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/qualify_scale.py::write_json": (
+        1, DELEGATED, (), "path-parameter JSON writer; filenames belong to classified callers"),
+    ".github/scripts/qualify_scale.py::stage": (
+        10, NON_CLIENT, ("snapshot", "workbook"),
+        "the hosted scale workflow's fixed generated corpus, API and compiler evidence; " + _SYNTHETIC),
+    ".github/scripts/qualify_scale.py::stage.request": (
+        1, NON_CLIENT, (),
+        "projection responses from the fixed generated hosted scale corpus; " + _SYNTHETIC),
+    ".github/scripts/qualify_scale.py::measured": (
+        1, NON_CLIENT, ("engine-log",),
+        "stdout/stderr of fixed synthetic hosted scale stages; " + _SYNTHETIC),
+    ".github/scripts/qualify_scale.py::main": (
+        6, NON_CLIENT, (),
+        "hosted scale budgets, source metadata and measurements of the fixed generated corpus; " + _SYNTHETIC),
     "atlas-scope/tools/fixtures/engine-sparse-interfaces.py::<module>": (
         1, NON_CLIENT, (), "the Atlas Scope sparse-interfaces fixture; " + _SYNTHETIC),
     "embed_qbank.py::main": (
