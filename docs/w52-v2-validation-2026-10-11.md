@@ -173,3 +173,54 @@ compilation and full late runtime proof. An initial copy path used `files/` inst
 actual `members/` and refused all four before any data overwrite; the actual inventory was
 then read and the exact four member paths copied. This is a local file-tool error, not a
 compiler or transport failure. No local compiler, digest, schema or receipt controller ran.
+
+## Actual eligible control findings and bounded performance correction
+
+Current f8 hosted Python 3.12 job `114449585329` / run `38132498779` executed the complete
+four-file selection: 8 failed / 323 passed in 71.92 seconds. Seven failures are the stale live
+W50 corpus pairs; every frozen control in that selection passed, with fixtures, pins and
+assertions unchanged. The real admitted corpus pairs were independently reviewed and adopted:
+
+| Corpus | Actual corpus SHA | Operator evidence | Complete comparison |
+|---|---|---|---|
+| golden | `6070729ee19d162d025bdbe3b9e16b7983348c775d1c86ddc1eb831d7c50846b` | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `d9620f944bf03b700afbe969030fcf4a49844b46124334d92eb1eaef57db7ccf` |
+| sample | `a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5` | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `13ec9b289d38df57ec1e7990cab3ccb07d64d10298d2ba9e6657f0264eedf14b` |
+
+Both operator digests remain unchanged; this receipt-first measured companion follows the
+real full import and verify_import, with no locally calculated digest or old qualification.
+Fresh current live/frozen controls must still pass after adoption.
+
+The eighth failure is still the unchanged API budget: document growth 2,707.4 ms against
+2,000 ms. Cold 745.0 / warm 745.2 ms page observations exceed 300 ms; the later page assertions
+were not reached. Full default suite and UTC sample steps were skipped. Inclusive diagnostics
+show basis checks 2,270 ms, admission 2,494 ms, per-page mutation-sensitive identity about
+303 ms and complete page validation about 334 ms. Engine compute 1,479.2 / section validation
+208.8 ms and the preceding byte/growth/page-size assertions passed; these are distinct controls.
+
+The correction interns exact immutable owner allowance tuples and memoizes only their
+VLAN/signal answers within one read-only admission. Every end still applies its own static
+and current evidence. Four real-producer hostile controls distinguish ranges, mode, literal
+none and native-VLAN cross-end contamination. Complete private Python property plans retain
+every child validator, exact root context, mutable-schema fingerprint and stock error replay;
+overlapping property keywords and literal property names extend the existing differential
+controls. No native Carriage profile or schema/literal change is introduced. The eligible
+early selection also includes the existing identity and complete API test files; the complete
+default suite, real UTC sample, whole backend and all other contexts remain mandatory.
+
+Source review is not timing recovery. The 2,000/300 ms limits and all caps remain unchanged;
+current final hosted measurements and complete semantic/negative controls decide closure.
+
+The identity owner adds an optional binder-minted, transitively immutable typed content proof
+after the unchanged exact-byte parse/hash. Its constructor defaults to no proof; the helper
+requires the existing private minting token. Every read examines the entire current key/type/value
+structure, array order, float bits and all three marker types/values. Complete equality keeps
+the original receipt; any mismatch, unsupported type, missing/foreign/incomplete proof or
+optional node/depth/allocation failure uses the original canonical guard and receipt behavior.
+Deepcopy shares only immutable proof data; mutable payload copies remain independent. This is
+a private capability boundary, not a Python namespace sandbox or an atomic concurrent-writer
+observation. Eligible proof content is finite builtins; the existing parser's exponent-overflow
+behavior is unchanged and nonfinite values use the original fallback. No new parser/input limit,
+canonical function, receipt format, schema, native pin, sample or compiler data change occurs.
+Comprehensive authored mutation, marker-type, authority, copy, unsupported/cycle and fallback
+controls remain unexecuted until the real hosted producers run them; source clearance alone
+cannot close identity correctness or the 300 ms page budget.

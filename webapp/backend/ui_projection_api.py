@@ -275,7 +275,9 @@ def _compiled_validator(schema: dict[str, Any]):
     compile_node(schema)
     stock_one_of = Draft202012Validator.VALIDATORS["oneOf"]
     stock_ref = Draft202012Validator.VALIDATORS["$ref"]
+    stock_properties = Draft202012Validator.VALIDATORS["properties"]
     references: dict[str, Any] = {}
+    property_plans: dict[int, tuple[Any, tuple[tuple[str, Any], ...]]] = {}
     context_members: dict[int, Any] = {}
     contexts = MappingProxyType(context_members)
 
@@ -299,6 +301,19 @@ def _compiled_validator(schema: dict[str, Any]):
         else:
             yield from stock_ref(validator, ref, instance, containing_schema)
 
+    def properties(validator, members, instance, containing_schema):
+        plan = property_plans.get(id(members)) if owned_context(validator) else None
+        if plan is not None and plan[0] is members:
+            if validator.is_type(instance, "object"):
+                for name, child in plan[1]:
+                    if name in instance:
+                        # Each child retains its complete keyword plan and exact root
+                        # context. As with private descend, failures never escape:
+                        # the facade replays them through the public stock schema.
+                        yield from child.iter_errors(instance[name])
+            return
+        yield from stock_properties(validator, members, instance, containing_schema)
+
     def one_of(validator, branches, instance, containing_schema):
         rule = dispatch.get(id(branches)) if owned_context(validator) else None
         if rule is not None and isinstance(instance, dict):
@@ -316,7 +331,8 @@ def _compiled_validator(schema: dict[str, Any]):
                 branches = [branches[index] for index in indexes]
         yield from stock_one_of(validator, branches, instance, containing_schema)
 
-    validator_class = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})
+    validator_class = validators.extend(Draft202012Validator,
+                                        {"oneOf": one_of, "$ref": reference, "properties": properties})
     compiled = validator_class(schema, registry=_NO_RETRIEVAL)
     root_resolver, root_registry = compiled._resolver, compiled._registry
     stock_evolve, stock_descend = validator_class.evolve, validator_class.descend
@@ -358,6 +374,14 @@ def _compiled_validator(schema: dict[str, Any]):
 
         validator_class.evolve = evolve
         validator_class.descend = descend
+        for node in owned_nodes.values():
+            members = node.get("properties") if type(node) is dict else None
+            if (type(members) is dict and all(type(name) is str and type(child) in (dict, bool)
+                                             for name, child in members.items())):
+                # Only eagerly retained private children are eligible. No request
+                # key, instance, generator, outcome or validation error is cached.
+                plan = tuple((name, constructions[id(child)][1]) for name, child in members.items())
+                property_plans[id(members)] = (members, plan)
     for name, definition in schema.get("$defs", {}).items():
         if not any(escape in name for escape in ("/", "~", "%")):
             references["#/$defs/" + name] = compiled.evolve(schema=definition)

@@ -485,6 +485,26 @@ def test_the_lazy_page_windows_the_assessed_cables_and_reads_the_snapshot_read_o
     checked(snap)
 
 
+@pytest.mark.parametrize("field,value,states", [
+    ("trunk_allowed_vlans", "20", (UV, UV)),
+    ("switchport_mode", "access", (UV, UV)),
+    ("trunk_allowed_none", "none", (UV, UV)),
+    ("trunk_native_vlan", "20", (PUB, UV)),
+])
+def test_shared_allowance_bases_keep_each_end_and_vlan_native_or_mode_conflict(tmp_path, field, value, states):
+    # Real producer rows share their original allowance. A later, different end's current basis must never
+    # inherit an earlier end's answer, even when all other fields and the stored code characters still agree.
+    snap = snapshot(tmp_path, interfaces=trunks(tmp_path, 3), vlans=[{"vlan": 10}, {"vlan": 20}])
+    assert counts(summary(snap, 0))["forwarding"] == (PUB, 3)
+    assert counts(summary(snap, 1))["not_carried"] == (PUB, 3)
+    snap["interfaces"][A]["Gi1/0/3"][field] = value  # Declared hostile current-basis mutation.
+    assert tuple(summary(snap, vi)["state"] for vi in (0, 1)) == states
+    for vi, state in enumerate(states):
+        relation = page(snap, vi)["page"]["items"][0]["relation"]
+        assert (relation["value"] is None) == (state == UV)
+    checked(snap)
+
+
 def test_a_bundled_end_must_still_join_the_channel_its_record_cites(tmp_path):
     snap = snapshot(tmp_path, interfaces=_bundle(tmp_path))
     assert summary(snap)["state"] == PUB

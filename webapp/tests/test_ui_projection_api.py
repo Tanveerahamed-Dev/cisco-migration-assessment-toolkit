@@ -968,8 +968,21 @@ def test_compiled_invalid_depth_does_not_multiply_validation_work(flavor, monkey
       "contains": {"type": "string", "minLength": 2}, "minContains": 1, "maxContains": 2,
       "unevaluatedItems": False},
      [[1, "ok"], [1, "ok", "yes"]], [[1, "x"], [1, "ok", True], [1, "ok", "yes", "more"]]),
+    ({"type": "object", "properties": {"": {"type": "integer"}, "é": {"type": "boolean"},
+                                        "type": True, "never": False},
+      "required": ["", "é"], "additionalProperties": False},
+     [{"": 1, "é": True}, {"": 0, "é": False, "type": [None]}],
+     [{"": True, "é": True}, {"": 1, "é": 1}, {"": 1, "é": True, "never": None},
+      {"": 1, "é": True, "extra": 0}, {"é": True}, []]),
+    ({"type": "object", "properties": {"fixed": {"type": "integer"}},
+      "patternProperties": {"^fixed$": {"minimum": 2}, "^item": {"type": "string", "minLength": 2}},
+      "additionalProperties": {"type": "null"}, "propertyNames": {"minLength": 1},
+      "dependentRequired": {"item0": ["fixed"]}},
+     [{"fixed": 2, "item0": "ok", "other": None}, {}],
+     [{"fixed": 1}, {"fixed": 2, "item0": "x"}, {"item0": "ok"}, {"": None},
+      {"fixed": 2, "other": 3}]),
 ], ids=["boolean-children", "conditional-dependencies", "ref-evaluated-properties",
-        "composed-branches", "contains-evaluated-items"])
+        "composed-branches", "contains-evaluated-items", "literal-property-names", "overlapping-property-keywords"])
 def test_compiled_private_descents_preserve_composed_validity_and_public_diagnostics(schema, valid, invalid):
     from backend.ui_projection_api import _compiled_validator
 

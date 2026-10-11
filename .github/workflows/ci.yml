@@ -113,6 +113,7 @@ jobs:
         run: >-
           python -m pytest tests/test_vlan_carriage.py tests/test_ui_projection_vlan_carriage.py
           tests/test_vlan_carriage_budget.py tests/test_operator_evidence_contract.py
+          tests/test_bound_snapshot_source.py webapp/tests/test_ui_projection_api.py
       - name: Run the complete default suite
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"

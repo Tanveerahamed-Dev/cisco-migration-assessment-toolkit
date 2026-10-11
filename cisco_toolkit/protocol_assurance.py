@@ -13,8 +13,10 @@ legacy ``protocol_adjacency_delta/1`` schema or the seven-family assessability d
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
+import math
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -72,6 +74,108 @@ _BOUND_SNAPSHOT_AUTHORITY = object()
 _BOUND_NATIVE_DELTA_SET_AUTHORITY = object()
 _BOUND_FAMILY_SET_AUTHORITY = object()
 _MAX_JSON_OBJECT_MEMBERS = 2_000_000
+_MAX_SNAPSHOT_PROOF_NODES = 2_000_000
+_MAX_SNAPSHOT_PROOF_DEPTH = 128
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _BoundSnapshotContentProof:
+    """Binder-owned immutable typed content, not a reusable validation verdict over mutable objects.
+
+    The whole current payload is compared on every read. This is a normal private capability boundary,
+    not a sandbox against namespace inspection, class monkeypatching or object.__setattr__.
+    """
+    source_sha256: str
+    source_bytes: int
+    payload_sha256: str
+    payload: tuple
+
+    def __init__(self, source_sha256: str, source_bytes: int, payload_sha256: str, payload: tuple,
+                 *, _authority: object) -> None:
+        if _authority is not _BOUND_SNAPSHOT_AUTHORITY:
+            raise TypeError("Snapshot content proof can only be minted by the exact-byte binder")
+        object.__setattr__(self, "source_sha256", source_sha256)
+        object.__setattr__(self, "source_bytes", source_bytes)
+        object.__setattr__(self, "payload_sha256", payload_sha256)
+        object.__setattr__(self, "payload", payload)
+
+    def __deepcopy__(self, _memo):
+        # Every retained node is a tuple, built-in scalar/type or immutable string; no mutable source alias.
+        return self
+
+
+def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
+                            payload_sha256: str, *, _authority: object) -> Optional[_BoundSnapshotContentProof]:
+    """Optional bounded optimization; an incomplete/unsupported construction never attaches a proof."""
+    if _authority is not _BOUND_SNAPSHOT_AUTHORITY:
+        raise TypeError("Snapshot content proof can only be requested by the exact-byte binder")
+    nodes = 0
+
+    def freeze(node: Any, depth: int) -> tuple:
+        nonlocal nodes
+        nodes += 1
+        if nodes > _MAX_SNAPSHOT_PROOF_NODES or depth > _MAX_SNAPSHOT_PROOF_DEPTH:
+            raise ValueError("Snapshot content proof exceeds its optional construction bound")
+        kind = type(node)
+        if kind is dict:
+            if not all(type(key) is str for key in node):
+                raise TypeError("Snapshot proof requires exact JSON object keys")
+            return (dict, tuple((key, freeze(child, depth + 1)) for key, child in node.items()))
+        if kind is list:
+            return (list, tuple(freeze(child, depth + 1) for child in node))
+        if node is None or kind in (str, bool, int):
+            return (kind, node)
+        if kind is float and math.isfinite(node):
+            return (float, node.hex())  # signed zero and the complete stored floating-point value
+        raise TypeError("Snapshot proof requires exact finite JSON scalar types")
+
+    try:
+        payload = freeze(value, 0)
+        return _BoundSnapshotContentProof(source_sha256, source_bytes, payload_sha256, payload,
+                                          _authority=_BOUND_SNAPSHOT_AUTHORITY)
+    except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
+        return None
+
+
+def _matches_snapshot_content_proof(value: Any) -> bool:
+    """Examine every current value against binder-owned typed content; never cache a mutable read result.
+
+    All mismatches and unsupported current shapes fall back to the original canonical guard. Dict insertion
+    order is ignored like canonical JSON; key/value types, array order, float bits and marker types are exact.
+    Like the canonical guard this observation is not atomic over a concurrent writer.
+    """
+    if type(value) is not BoundSnapshot:
+        return False
+    proof = getattr(value, "_bound_content_proof", None)
+    if type(proof) is not _BoundSnapshotContentProof:
+        return False
+    for current, expected in ((value._bound_source_sha256, proof.source_sha256),
+                              (value._bound_source_bytes, proof.source_bytes),
+                              (value._bound_payload_sha256, proof.payload_sha256)):
+        if type(current) is not type(expected) or current != expected:
+            return False
+    pending = [(value, proof.payload, True)]
+    while pending:
+        current, (kind, expected), root = pending.pop()
+        if not (root and type(current) is BoundSnapshot) and type(current) is not kind:
+            return False
+        if kind is dict:
+            if len(current) != len(expected) or any(type(key) is not str for key in current):
+                return False
+            for key, child in expected:
+                if key not in current:
+                    return False
+                pending.append((current[key], child, False))
+        elif kind is list:
+            if len(current) != len(expected):
+                return False
+            pending.extend((child, observed, False) for child, observed in zip(current, expected))
+        elif kind is float:
+            if not math.isfinite(current) or current.hex() != expected:
+                return False
+        elif current != expected:
+            return False
+    return True
 
 
 class BoundSnapshot(dict):
@@ -87,6 +191,7 @@ class BoundSnapshot(dict):
         "_bound_source_sha256",
         "_bound_source_bytes",
         "_bound_payload_sha256",
+        "_bound_content_proof",
     )
 
     def __init__(
@@ -103,6 +208,8 @@ class BoundSnapshot(dict):
         self._bound_source_sha256 = source_sha256
         self._bound_source_bytes = source_bytes
         self._bound_payload_sha256 = payload_sha256
+        # Constructor callers cannot bless their supplied digest by making a proof of that same payload.
+        self._bound_content_proof: Optional[_BoundSnapshotContentProof] = None
 
 
 class BoundProtocolFamilyChangeSet(dict):
@@ -296,20 +403,28 @@ def bind_snapshot_json_bytes(raw: Any) -> BoundSnapshot:
     )
     if not isinstance(value, dict):
         raise ValueError("snapshot JSON root must be an object")
-    return BoundSnapshot(
+    bound = BoundSnapshot(
         value,
         source_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
         source_bytes=len(payload),
         payload_sha256=canonical_sha256(value),
         _authority=_BOUND_SNAPSHOT_AUTHORITY,
     )
+    bound._bound_content_proof = _snapshot_content_proof(
+        value, bound._bound_source_sha256, bound._bound_source_bytes, bound._bound_payload_sha256,
+        _authority=_BOUND_SNAPSHOT_AUTHORITY)
+    return bound
 
 
 def bound_snapshot_source(value: Any) -> dict:
-    """Return the non-serializable exact-byte marker as a normalized read-only receipt."""
+    """Return the non-serializable exact-byte marker after a complete mutation-sensitive content check."""
+    try:
+        unchanged = _matches_snapshot_content_proof(value)
+    except (TypeError, ValueError, AttributeError, KeyError, RuntimeError, RecursionError, OverflowError, MemoryError):
+        unchanged = False
     if (
         not isinstance(value, BoundSnapshot)
-        or canonical_sha256(dict(value)) != value._bound_payload_sha256
+        or not unchanged and canonical_sha256(dict(value)) != value._bound_payload_sha256
     ):
         return {"source_bound": False, "sha256": "", "bytes": 0}
     return {

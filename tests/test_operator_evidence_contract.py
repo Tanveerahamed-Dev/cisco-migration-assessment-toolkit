@@ -118,16 +118,21 @@ _V1_FROZEN_CORPUS = {
 #: confirmed on the same tree. The previous pairs (golden c4f6a549.../9da4d736.../56b1c51c..., sample
 #: dbc229cf.../ab1f6d46.../0c81ec19...) still reproduce exactly when this tree's code reads the previous corpus bytes,
 #: so no code moved a stored-receipt digest; operator_evidence is unchanged and only the corpus moved comparison.
+#: W52 v2: hosted py312 job114449585329 on f8c19024 measured these complete pairs from the real admitted
+#: b43 producer/receipt outputs after the full58ae import and successful verify_import. The same unfiltered
+#: four-file run exercised every frozen control without a failure/skip. Both operator digests remain unchanged;
+#: all frozen fixtures/pins/assertions remain untouched. This receipt-first measured companion preserves the
+#: coupled live corpus/digest update; no local hash calculation or old-corpus qualification is substituted.
 _V1_LIVE = {
     "golden": {
-        "corpus_sha256": "fc8cf44f3d83a854f5d7523e127086faa138e4483a7553c28cbecfba1be180a3",
+        "corpus_sha256": "6070729ee19d162d025bdbe3b9e16b7983348c775d1c86ddc1eb831d7c50846b",
         "operator_evidence": "9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557",
-        "comparison": "c1a2e269ec27d51c6f6e2a2ac3f4510b34951684c62cdda704c9b422ef9bc268",
+        "comparison": "d9620f944bf03b700afbe969030fcf4a49844b46124334d92eb1eaef57db7ccf",
     },
     "sample": {
-        "corpus_sha256": "d015e974606ca78d623f1e9547df82e9a316708506be3438f59151342a22026a",
+        "corpus_sha256": "a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5",
         "operator_evidence": "ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32",
-        "comparison": "06acd1342e4347ae367443ace56e01a0d39c8b7edabeffecd037dd66c0c8543c",
+        "comparison": "13ec9b289d38df57ec1e7990cab3ccb07d64d10298d2ba9e6657f0264eedf14b",
     },
 }
 

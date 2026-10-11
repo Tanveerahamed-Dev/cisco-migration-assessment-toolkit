@@ -4862,7 +4862,21 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
         return (toks, _get(ctx.s, toks)) if toks is not None else (None, _MISSING)
 
     static: Dict[Tuple[int, int, str], List[Tuple[Any, ...]]] = {}
-    configured: Dict[Tuple[int, int, str], Optional[Tuple[Any, ...]]] = {}
+    configured: Dict[Tuple[int, int, str], int] = {}
+    allowance_ids: Dict[Optional[Tuple[Any, ...]], int] = {}
+    allowances: List[Optional[Tuple[Any, ...]]] = []
+
+    def allowance_id(record: Any) -> int:
+        # The owner's admission is an immutable tuple of exact kind/ranges/native/mode values (or None).
+        # Intern it once per static end, never hash a long range tuple for every end of every VLAN row.
+        admission = carriage_allowance_admission(record)
+        identity = allowance_ids.get(admission)
+        if identity is None:
+            identity = len(allowances)
+            allowance_ids[admission] = identity
+            allowances.append(admission)
+        return identity
+
     for cable in section["cables"]:
         if cable["scope"] != "assessed":
             continue
@@ -4901,7 +4915,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         end["allowance_pointer"] == end["interface_pointer"]
                         or carriage_join_interface(source_toks[-1]) != end["stp_interface"])):
                     bad.append(toks + ("allowance_pointer",))
-                configured[(ci, mi, side)] = carriage_allowance_admission(source)
+                configured[(ci, mi, side)] = allowance_id(source)
                 for ri, pointer in enumerate(end["refs"]):
                     resolved, value = resolve(pointer)
                     valid = False
@@ -4924,6 +4938,14 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     # read-only snapshot. Every end still checks its own static witnesses and configured allowance below.
     signals = {char: decode_carriage_end(char)["signal"] for char in typed_chars | configured_chars}
     role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
+    allowance_matches: Dict[Tuple[int, int, str], bool] = {}
+
+    def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str) -> bool:
+        identity = configured[key]
+        query = (identity, vid, signal)
+        if query not in allowance_matches:
+            allowance_matches[query] = carriage_allowance_matches(allowances[identity], vid, signal)
+        return allowance_matches[query]
 
     def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any) -> List[Any]:
         key = (host, interface, vid)
@@ -4960,11 +4982,11 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                               if end["stp_interface"] != end["port"] else [])
                     ok = (len(rows) == 1 and not beside and carriage_role_compatible(rows[0][1])
                           and rows[0][1]["state"] == signals[char])
-                    ok = ok and carriage_allowance_matches(configured[key], row["vlan"], signals[char])
+                    ok = ok and allowance_agrees(key, row["vlan"], signals[char])
                 if not ok:
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "stp_pointer"))
             elif char in configured_chars:
-                if not carriage_allowance_matches(configured[key], row["vlan"], signals[char]):
+                if not allowance_agrees(key, row["vlan"], signals[char]):
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "allowance_pointer"))
             else:
                 continue
