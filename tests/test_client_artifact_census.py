@@ -1463,3 +1463,16 @@ def test_unresolved_bound_html_format_pattern_cannot_disappear(tmp_path):
 def test_non_html_format_alignment_does_not_invent_a_producer_boundary(tmp_path):
     _write(tmp_path, "new-root/alignment.py", "def render(value):\n    return '{:<20}'.format(value)\n")
     assert census.download_names(tmp_path) == []
+
+
+def test_non_html_format_operands_do_not_invoke_the_filename_model(tmp_path):
+    _write(tmp_path, "new-root/messages.py", "def render():\n    fields = {}\n"
+           + "    return 'status: {}'.format(fields['runtime-field'])\n")
+    assert census.download_names(tmp_path) == []
+
+
+def test_html_format_boundary_keeps_closed_operand_refusals(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def render():\n    fields = {}\n"
+           + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(fields["runtime-field"], "script")\n')
+    with pytest.raises(ValueError, match="closed filename subscript cannot be evaluated"):
+        census.download_names(tmp_path)

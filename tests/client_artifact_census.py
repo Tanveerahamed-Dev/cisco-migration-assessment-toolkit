@@ -1950,7 +1950,7 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
             visited.add(identity)
             if isinstance(current, ast.Constant) and isinstance(current.value, str):
                 # Regex lookbehinds and arithmetic '<' text are not HTML boundaries.
-                if (re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|!DOCTYPE\b|!--)", current.value, re.I)
+                if (re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|/?\{|!DOCTYPE\b|!--)", current.value, re.I)
                         or current.value.endswith("<")):
                     html_cache[root_key] = True
                     return True
@@ -2025,7 +2025,7 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
             if isinstance(node, ast.ClassDef):
                 class_scopes.add(id(local))
         format_assembly = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                           and node.func.attr == "format")
+                           and node.func.attr == "format" and contains_html(node))
         if (isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and contains_html(node)) or format_assembly:
             # Language boundary, not a product/file/API subset. Every script-bearing generated
             # HTML string is read, including f-strings without executing the generator.
