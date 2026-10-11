@@ -12455,18 +12455,22 @@
       "finding": "R1",
       "text": "28709\tcrypto isakmp key 7\nSyntheticIsakmp282 hostname corpuspeer282\ninterface GigabitEthernet5/0/29\n",
       "secrets": ["SyntheticIsakmp282"],
-      "structural": ["28709\tcrypto isakmp key 7\n", "hostname", "interface GigabitEthernet5/0/29\n"],
+      "structural": ["28709\tcrypto isakmp key 7\n", "hostname corpuspeer282", "interface GigabitEthernet5/0/29\n"],
       "mode": "must_redact",
-      "expect": "28709\tcrypto isakmp key 7\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/29\n"
+      "original_expect": "28709\tcrypto isakmp key 7\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/29\n",
+      "expect": "28709\tcrypto isakmp key 7\n<redacted> hostname corpuspeer282\ninterface GigabitEthernet5/0/29\n",
+      "note": "New-fixture oracle correction only: the earlier expectation incorrectly copied inline hostname-RHS over-redaction into the wrapped grammar. The required private key assertion remains; the complete public peer now must survive, with an exact archived-W60 output oracle checked on hosted runners."
     },
     {
       "id": "isakmp-peer:wrapped-enc-hostname",
       "finding": "R1",
       "text": "28710\tcrypto isakmp key ENC\nSyntheticIsakmp283 hostname corpuspeer283\ninterface GigabitEthernet5/0/30\n",
       "secrets": ["SyntheticIsakmp283"],
-      "structural": ["28710\tcrypto isakmp key ENC\n", "hostname", "interface GigabitEthernet5/0/30\n"],
+      "structural": ["28710\tcrypto isakmp key ENC\n", "hostname corpuspeer283", "interface GigabitEthernet5/0/30\n"],
       "mode": "must_redact",
-      "expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/30\n"
+      "original_expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/30\n",
+      "expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname corpuspeer283\ninterface GigabitEthernet5/0/30\n",
+      "note": "New-fixture oracle correction: wrapped peer preservation is distinct from the legacy inline hostname expectation. Both private-key scrubbing and full public peer syntax remain mandatory; archived-W60 disagreement fails the hosted oracle test."
     }
   ],
   "review_differential": [
@@ -18776,6 +18780,38 @@
       ],
       "structural": [],
       "note": "A full-length credential also resembles another program"
+    }
+  ],
+  "verifier_only_controls": [
+    {
+      "id": "curl-quote:matching-close-url-extra-text",
+      "text": "curl -H \"Authorization: Bearer\n<redacted>\" https://198.51.100.185/status extra-quote-control281\n",
+      "scenario": "Matching carried quote and public URL do not authenticate additional credential-tail text.",
+      "expect_refusal": true
+    },
+    {
+      "id": "curl-quote:url-private-userinfo",
+      "text": "curl --header 'Authorization: Bearer\n<redacted>' https://synthetic:CurlOnly282@198.51.100.186/status\n",
+      "scenario": "A private URL userinfo operand cannot pass through the curl header-quote exception.",
+      "expect_refusal": true
+    },
+    {
+      "id": "curl-quote:unmatched-closing-quote",
+      "text": "curl -H \"Authorization: Bearer\n<redacted>' https://198.51.100.187/status\n",
+      "scenario": "The carried opening quote must match the closing quote exactly.",
+      "expect_refusal": true
+    },
+    {
+      "id": "curl-quote:ordinary-header-has-no-curl-provenance",
+      "text": "Authorization: Bearer\n<redacted>\" https://198.51.100.188/status\n",
+      "scenario": "A generic authorization continuation gains no URL-tail permission without explicit curl -H/--header provenance.",
+      "expect_refusal": true
+    },
+    {
+      "id": "curl-quote:attached-shell-operator-suffix",
+      "text": "curl -H \"Authorization: Bearer\n<redacted>\" https://198.51.100.189/status;echoCurlOnly285\n",
+      "scenario": "A shell-operator suffix without whitespace remains forbidden even if a broad URL regex matches the whole token.",
+      "expect_refusal": true
     }
   ],
   "performance_families": [

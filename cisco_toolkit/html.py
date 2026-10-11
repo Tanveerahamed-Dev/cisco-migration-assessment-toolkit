@@ -6144,6 +6144,14 @@ def _redact_incomplete_isakmp(line: str, next_line: str | None = None, delim: st
     return _REDACT_ISAKMP_FIRST_VALUE_RE.sub(sub, line)
 
 
+def _redact_required_config(line: str, has_next: bool, delim: str = "") -> str:
+    """Required slots produce the raw context used by later wrap observers."""
+    replace = _redact_grammar_sub(has_next, delim, preserve_quotes=True)
+    for regex in _REDACT_REQUIRED_RES:
+        line = regex.sub(replace, line)
+    return line
+
+
 def _redact_grammar_line(line: str, has_next: bool, delim: str = "", *, next_line: str | None = None) -> str:
     """The credential GRAMMAR over one line (`_REDACT_SECRET_RES`)."""
     low = line.casefold()
@@ -6151,9 +6159,7 @@ def _redact_grammar_line(line: str, has_next: bool, delim: str = "", *, next_lin
         return line
     line = _redact_incomplete_isakmp(line, next_line, delim)
     sub = _redact_grammar_sub(has_next, delim) if delim else _REDACT_GRAMMAR_SUBS[has_next]
-    required_sub = _redact_grammar_sub(has_next, delim, preserve_quotes=True)
-    for rx in _REDACT_REQUIRED_RES:
-        line = rx.sub(required_sub, line)
+    line = _redact_required_config(line, has_next, delim)
     low = line.casefold()
     for rx, needles in zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES):
         if any(needle in low for needle in needles):
@@ -6401,9 +6407,10 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         delim = banner or (start.group("d") if start else "")
         prose = (0 if banner else start.end() if start else
                  0 if not forced and _REDACT_PROSE_LINE_RE.match(out) else None)
-        before_isakmp = out
+        before_required = out
         out = _redact_incomplete_isakmp(out, next_lines[index], delim)
-        wrap_raw = line if out == before_isakmp else out
+        out = _redact_required_config(out, has_next[index], delim)
+        wrap_raw = line if out == before_required else out
         out = _redact_grammar_line(out, has_next[index], delim, next_line=next_lines[index])
         join = None if prev is None or forced else _redact_join_anchor(prev, out)
         low = out.casefold()

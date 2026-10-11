@@ -269,3 +269,27 @@ values, blank-line wraps and hostname clauses, beside every original row. The PR
 check census and body own the latest hosted verdict; this source-bound dossier preserves the
 earlier finite evidence. Green gates stop implementation for a different independent refuter;
 they confer no merge or release authority.
+
+## 0a50d28e: expanded focused evidence
+
+The [expanded focused run 38156188989](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38156188989)
+ended **81 failed / 4,360 passed** in 86.92 seconds. Both 3,185-case differentials passed:
+1,621 removed slots against pre-W60 and 2,328 against round 3, **zero regressions on both**.
+All four full-view byte oracles and persisted/inherited output custody passed against W60 main
+and current main `00647ebd`. The earlier 38 compatibility failures are closed except one curl
+wrapped-header certification path and its whole-corpus consequence.
+
+Seventy-seven new typed-value controls showed the value was scrubbed correctly but a subsequent
+raw-line wrap observer still rewrote the next interface. Required-slot preprocessing now supplies
+that observer's raw context as well as the grammar; a fulfilled value cannot reopen a false wrap.
+Valid first-type wraps retain their original assertions. Two newly authored wrapped-hostname
+fixtures had incorrectly copied inline hostname over-redaction; their controls are corrected to
+require the public hostname to survive, with a real archived-W60 structural byte oracle. Private
+value assertions and every historical W60 row remain intact. The residual curl certification fix
+is scoped to a closed quoted header and its public URL, not arbitrary text beside a placeholder.
+Five additional verifier-only corpus controls require refusal for extra text, private URL userinfo,
+a mismatched quote, a non-curl header context, and a shell suffix without intervening whitespace.
+These probes require physical capture bytes to remain unchanged by verification.
+This continuation remains pending fresh hosted evidence; all 15 plus expanded focused GREEN are
+still required. Remaining old-head workflows may be superseded and cancelled by normal concurrency;
+neither cancellation nor partial passing jobs count as the final verdict.

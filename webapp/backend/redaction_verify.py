@@ -1445,6 +1445,39 @@ def _sweep_header_capture_tail(line: str, header_start: int) -> list[str]:
     return ["capture"] if prefix is not None and leading < prefix.end() <= header_start else []
 
 
+def _sweep_curl_header_quote(line: str, header_start: int) -> str | None:
+    """The open quote of an explicit curl -H/--header operand containing this header.
+
+    This provenance is carried to the next line. A generic authorization continuation never
+    gains permission to append a URL merely because its value contains a placeholder.
+    """
+    previous: re.Match[str] | None = None
+    for word in _SWEEP_ARGV_WORD_RE.finditer(line):
+        if word.start() <= header_start < word.end():
+            raw = word.group(0)
+            if (word.end() != len(line) or raw[:1] not in {"\"", "'"} or previous is None
+                    or _sweep_decode_word(previous.group(0))[0] not in {"-H", "--header"}):
+                return None
+            curl = any(match.group("cmd").casefold() == "curl"
+                       for match in _SWEEP_ARGV_CMD_RE.finditer(line, 0, previous.start()))
+            return raw[0] if curl else None
+        previous = word
+    return None
+
+
+def _sweep_curl_closed_header_value(line: str, start: int, quote: str) -> bool:
+    """Exactly PH + its carried closing quote + one public HTTP(S) URL, with no extra text."""
+    value = line[start:].strip(_CRED_WS_CHARS)
+    prefix = _PLACEHOLDER + quote
+    if not value.startswith(prefix) or value[len(prefix):len(prefix) + 1] not in _CRED_WS_CHARS:
+        return False
+    url = value[len(prefix):].strip(_CRED_WS_CHARS)
+    if (not _SWEEP_URL_RE.fullmatch(url) or url.partition(":")[0].casefold() not in {"http", "https"}
+            or any(char in url for char in ("\"", "'", chr(92), "|", "`", ";", "&", "<", ">", "$"))):
+        return False
+    return not _sweep_url_findings(url)
+
+
 def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tuple[str, list[Any], bool] | None:
     """``(kind, tail, key_id)`` when the line DANGLES (the producer's rule, restated)."""
     if "snmp-server" in line.casefold():
@@ -1462,7 +1495,11 @@ def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tup
         masked = _sweep_masked(line)
         found = _SWEEP_SCHEME_OPEN_RE.search(masked)
         if found is not None:
-            return ("scheme", _sweep_header_capture_tail(line, found.start()), False)
+            tail = _sweep_header_capture_tail(line, found.start())
+            quote = _sweep_curl_header_quote(line, found.start())
+            if quote is not None:
+                tail.append("curl-header-" + quote)
+            return ("scheme", tail, False)
         found = _SWEEP_EMPTY_AUTH_HEADER_RE.search(masked)
         if found is not None:
             return ("header-value", _sweep_header_capture_tail(line, found.start()), False)
@@ -1563,6 +1600,10 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
     if kind in {"scheme", "header-value"}:
         prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line) if "capture" in tail else None
         value_start = max(start, prefix.end() if prefix else 0)
+        if kind == "scheme":
+            quote = next((item[-1] for item in tail if item in {"curl-header-'", 'curl-header-"'}), None)
+            if quote is not None and _sweep_curl_closed_header_value(line, value_start, quote):
+                return False
         if kind == "header-value":
             first = _SWEEP_ARGV_WORD_RE.search(line, value_start)
             if first is None:

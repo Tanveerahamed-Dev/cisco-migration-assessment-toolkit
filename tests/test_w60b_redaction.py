@@ -178,6 +178,17 @@ def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
     assert capture.read_bytes().decode("utf-8", "surrogateescape") == output
 
 
+@pytest.mark.parametrize("row", CORPUS["verifier_only_controls"], ids=lambda row: row["id"])
+def test_w60b_curl_header_quote_exception_refuses_unsafe_or_unproven_tails(row, tmp_path):
+    """Verifier-only counterexamples; no producer rewrite or approval is promised."""
+    assert row["expect_refusal"] is True
+    capture = _capture(tmp_path, row["text"])
+    proof = _verify(tmp_path)
+    assert not proof["accepted"], (row["id"], "unsafe authorization tail was certified", proof)
+    assert "residue" in proof["error"], (row["id"], "refusal was not a credential postcondition", proof)
+    assert capture.read_bytes() == row["text"].encode("utf-8"), "read-only verifier changed the capture"
+
+
 class _CountedText(str):
     """Instrument materialised source slices, the two reported quadratic causes."""
     def __new__(cls, value):
@@ -588,6 +599,42 @@ def test_w60b_archive_candidate_postconditions_for_every_required_case(archival_
         assert result["verifier"]["accepted"] and result["idempotent"], (row["id"], result)
         if row["mode"] == "must_redact":
             assert not result["raw_verifier"]["accepted"], (row["id"], result)
+
+
+def test_w60b_new_wrapped_hostname_oracles_equal_the_real_archived_w60_output(archival_replay):
+    """Two new oracle corrections require main's real byte result, never a guess.
+
+    Candidate raw refusal, private-slot removal, public structure, certification
+    and idempotence remain required by the existing strict corpus tests.
+    """
+    _cases, _results, sources, scratch = archival_replay
+    wanted = {"isakmp-peer:wrapped-type7-hostname", "isakmp-peer:wrapped-enc-hostname"}
+    rows = [row for row in ROWS if row["id"] in wanted]
+    assert {row["id"] for row in rows} == wanted
+    case_path = scratch / "w60-wrapped-hostname-cases.json"
+    case_path.write_text(json.dumps([{"id": row["id"], "text": row["text"]} for row in rows], ensure_ascii=True),
+                         encoding="utf-8")
+    output_path = scratch / "w60-wrapped-hostname-results.json"
+    subprocess.run([sys.executable, "-I", "-B", "-c", _BATCH_SCRIPT, str(sources[BASE]), str(case_path),
+                    str(scratch / "w60-wrapped-hostname-captures"), str(output_path)],
+                   cwd=scratch, check=True, timeout=180)
+    archived = {result["id"]: result for result in json.loads(output_path.read_text(encoding="utf-8"))}
+    assert set(archived) == wanted
+    disagreements = []
+    for row in rows:
+        result = archived[row["id"]]
+        output = result["output"]
+        receipt = {"id": row["id"], "reference": BASE, "byte_identical": output == row["expect"],
+                   "input_sha256": hashlib.sha256(row["text"].encode()).hexdigest(),
+                   "archived_output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+                   "expected_sha256": hashlib.sha256(row["expect"].encode()).hexdigest(),
+                   "archived_raw_verifier": result["raw_verifier"], "archived_verifier": result["verifier"]}
+        print(json.dumps(receipt))
+        assert all(_slot_count(secret, output) < _slot_count(secret, row["text"]) for secret in row["secrets"]), row["id"]
+        assert result["counts"] == [1, 1] and result["uncovered"] == [] and result["idempotent"], (row["id"], result)
+        if output != row["expect"]:
+            disagreements.append({"id": row["id"], "archived_output": output, "authored_expectation": row["expect"]})
+    assert disagreements == [], ("STOP: archived W60 disagrees with the new wrapped-hostname public-syntax oracle", disagreements)
 
 
 _SNAPSHOT_SCRIPT = r'''
