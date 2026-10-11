@@ -127,3 +127,19 @@ The harness now uses a direct fully-qualified module import, matching the
 existing exact-file registration; no directory-wide exception is added. A
 control checks the actual source AST import form. These successful measurements
 remain bound to `1fd6f08c`; the import-corrected head requires a fresh report.
+
+The import-corrected `09e79a59` subsequently passed every scale budget on
+run `38132538328` (artifact `11699922895`): CLI 226.906 s / 985.96 MiB RSS;
+ingest 238.122 s / 1,104.75 MiB; 144 projection requests in 49.638 s /
+625.12 MiB; Scope 2.169 s / 448.44 MiB. Independent data review reconciled
+source/tree/run/attempt, all five verdicts and unchanged budgets, all
+300 / 200 / 1,500 joins, the stored digest and all 1,168 Scope nodes.
+Main then advanced to `3f1d844c` (W64a/W65); merge commit `509459e7`
+integrates it, and its stricter writer census covers this harness too. Six
+exact synthetic writer rows now declare their unchanged write counts and
+resolved classes; the shared hosted action runs that census before measuring.
+No capture fixture pin or privacy exception is added.
+Prior scale results do not qualify the combined source. Webapp run
+`38133400689` also retains a CausalFlowPanel setup timeout (missing element
+after 15 s, no pixel comparison reached), artifact `11700602857`; this
+is an unconfirmed visual failure, not a demonstrated scale regression.

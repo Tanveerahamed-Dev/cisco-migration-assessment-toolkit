@@ -28,9 +28,9 @@ runs:
       run: |
         python -m pip install -r requirements-dev.txt
         npm ci --ignore-scripts --prefix atlas-scope
-    - name: Exercise qualification failure controls
+    - name: Exercise privacy census and qualification failure controls
       shell: bash
-      run: python -m pytest -q .github/scripts/test_qualify_scale.py
+      run: python -m pytest -q tests/test_client_artifact_census.py .github/scripts/test_qualify_scale.py
     - name: Qualify the real synthetic pipeline
       shell: bash
       env:
