@@ -1162,7 +1162,20 @@ def test_every_database_writer_row_retains_the_complete_companion_family():
 
 @pytest.mark.parametrize("header", ["const helper = <T,>(value: T) => value;",
                                    "const helper = <T extends object>(value: T) => value;",
+                                   "const helper = <T = string>(value: T) => value;",
+                                   "const helper = <T extends object = object, U = string>(v: T) => v;",
+                                   'const View = () => <Component<Payload> download="private.json" />;',
                                    "const View = () => <a title={x => x > 0}>Don't parse prose</a>;"])
 def test_jsx_and_typescript_syntax_does_not_hide_later_downloads(tmp_path, header):
     _write(tmp_path, "new-root/view.tsx", header + '\na.download = "private.json";\n')
     assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("view", ['<a download="private.json" />',
+                                 '<a download={`private-${id}.json`} />',
+                                 '<Component<Payload> download="private.json" />'])
+def test_self_closing_jsx_attributes_retain_their_filename(tmp_path, view):
+    _write(tmp_path, "new-root/view.tsx", f"const View = () => {view};")
+    names = census.download_names(tmp_path)
+    assert len(names) == 1
+    assert names[0][2] in {"private.json", "private-0.json"}

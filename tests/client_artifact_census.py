@@ -1244,6 +1244,7 @@ class _JsToken:
     start: int
     end: int
     line: int
+    in_tag: bool = False
 
 
 def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
@@ -1254,6 +1255,8 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
     jsx_levels = 0
     tag_mode = False
     tag_closing = False
+    tag_start = -1
+    tag_angles = 0
     expression_frames: list[list[int]] = []
 
     def regex_end(start: int) -> int:
@@ -1331,11 +1334,16 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
             text[index + 1].isalpha() or text[index + 1] in {"/", ">"}
         ) and (child_text or not tokens or tokens[-1].value in {
             "(", "=", "return", "=>", "?", ":", "&&", "||", "??", ",", "["
-        }) and not re.match(r"<[A-Za-z_$][\w$]*(?:\s*,|\s+extends\b|\s*>\s*\()", text[index:]):
+        }) and not re.match(r"<[A-Za-z_$][\w$]*(?:\s*[,=]|\s+extends\b|\s*>\s*\()", text[index:]):
             tag_mode = True
             tag_closing = text[index + 1] == "/"
+            tag_start = index
+            tag_angles = 0
+        in_tag = tag_mode
+        if jsx and char == "<" and tag_mode and index != tag_start:
+            tag_angles += 1  # JSX component type parameters: <Component<Payload> download=...>
         if jsx and char == "{" and (child_text or tag_mode):
-            expression_frames.append([0, jsx_levels, int(tag_mode), int(tag_closing)])
+            expression_frames.append([0, jsx_levels, int(tag_mode), int(tag_closing), tag_angles])
             tag_mode = False
         if jsx and expression_frames and not tag_mode:
             if char == "{":
@@ -1345,12 +1353,16 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
                 if expression_frames[-1][0] == 0:
                     closed = expression_frames.pop()
                     tag_mode, tag_closing = bool(closed[2]), bool(closed[3])
+                    tag_angles = closed[4]
         if jsx and char == ">" and tag_mode:
-            if tag_closing:
-                jsx_levels -= 1
-            elif not tokens or tokens[-1].value != "/":
-                jsx_levels += 1
-            tag_mode = False
+            if tag_angles:
+                tag_angles -= 1
+            else:
+                if tag_closing:
+                    jsx_levels -= 1
+                elif not tokens or tokens[-1].value != "/":
+                    jsx_levels += 1
+                tag_mode = False
         if char.isspace():
             line += char == "\n"
             index += 1
@@ -1383,11 +1395,13 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
             index += 2
         else:
             index += 1
-        tokens.append(_JsToken(text[begin:index], begin, index, first_line))
+        tokens.append(_JsToken(text[begin:index], begin, index, first_line, in_tag))
+    if jsx and (jsx_levels != 0 or tag_mode or expression_frames):
+        raise ValueError("unclosed or ambiguous JSX; browser exit census is incomplete")
     return tokens
 
 
-def _js_expression(text: str, tokens: list[_JsToken], start: int) -> tuple[str, int]:
+def _js_expression(text: str, tokens: list[_JsToken], start: int, *, attribute: bool = False) -> tuple[str, int]:
     if start >= len(tokens):
         return "<unresolved filename>", start
     stack = []
@@ -1396,7 +1410,7 @@ def _js_expression(text: str, tokens: list[_JsToken], start: int) -> tuple[str, 
     while index < len(tokens):
         token = tokens[index]
         if (index == start + 1 and tokens[start].value[:1] in {"\"", "'", "`"}
-                and token.value not in continuation):
+                and (attribute or token.value not in continuation)):
             break
         if not stack:
             if token.value in {";", ",", ")", "]", "}", ">"}:
@@ -1411,7 +1425,7 @@ def _js_expression(text: str, tokens: list[_JsToken], start: int) -> tuple[str, 
             if not stack:
                 break
             stack.pop()
-            if not stack and index + 1 < len(tokens) and tokens[index + 1].value not in continuation:
+            if not stack and (attribute or index + 1 < len(tokens) and tokens[index + 1].value not in continuation):
                 index += 1
                 break
         index += 1
@@ -1517,19 +1531,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
-            in_tag = False
-            tag_braces = 0
             for index, token in enumerate(tokens):
-                if token.value == "<" and index + 1 < len(tokens) and (
-                    tokens[index + 1].value[:1].isalpha() or tokens[index + 1].value == "/"
-                ):
-                    in_tag = True
-                elif in_tag and token.value == "{" :
-                    tag_braces += 1
-                elif in_tag and token.value == "}":
-                    tag_braces -= 1
-                elif token.value == ">" and not tag_braces:
-                    in_tag = False
                 value = token.value.strip("\"'")
                 after = index + 1
                 if after < len(tokens) and tokens[after].value == "]":
@@ -1537,14 +1539,14 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:
                     receiver_property = index > 0 and tokens[index - 1].value in {".", "?.", "["}
                     object_property = tokens[after].value == ":" and index > 0 and tokens[index - 1].value in {"{", ","}
-                    if value == "download" and not (receiver_property or object_property or in_tag):
+                    if value == "download" and not (receiver_property or object_property or token.in_tag):
                         continue  # local download callback/variable is not a browser filename
                     # Native HTML quoted/unquoted attributes were already read by HTMLParser.
                     if relative.endswith((".html", ".py")) and tokens[after].value == "=" and (
                         index == 0 or tokens[index - 1].value not in {".", "?.", "["}
                     ):
                         continue
-                    expression, _end = _js_expression(text, tokens, after + 1)
+                    expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)
                     if expression.startswith("{") and expression.endswith("}"):
                         expression = expression[1:-1].strip()  # JSX attribute
                     found.append((f"{relative}:{first_line + token.line - 1}", expression,
