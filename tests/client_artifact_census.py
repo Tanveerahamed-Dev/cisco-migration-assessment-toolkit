@@ -72,6 +72,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -1434,7 +1435,7 @@ class _HtmlDownloads(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.names: list[tuple[int, str, str | None]] = []
-        self.scripts: list[tuple[int, str]] = []
+        self.scripts: list[tuple[int, str, tuple[int, ...] | None]] = []
         self.in_script = False
 
     def parse_html_declaration(self, index: int) -> int:
@@ -1455,21 +1456,29 @@ class _HtmlDownloads(HTMLParser):
             self.names.append((self.getpos()[0], expression, name or None))
         raw = self.get_starttag_text() or ""
         offsets = _html_attribute_offsets(raw)
-        for (attribute, value), (raw_attribute, offset) in zip(attrs, offsets):
+        for (attribute, value), (raw_attribute, offset, end) in zip(attrs, offsets):
             if attribute != raw_attribute:
                 raise ValueError("HTML attribute source positions are unresolved")
             if value is None:
                 continue
             first_line = self.getpos()[0] + raw[:offset].count("\n")
+            decoded, source_lines = _html_value_lines(raw[offset:end], first_line)
+            if decoded != value:
+                raise ValueError("HTML attribute decoding/source positions disagree")
             if attribute.startswith("on"):
-                self.scripts.append((first_line, value))
+                self.scripts.append((first_line, value, source_lines))
             else:
-                scheme, colon, script = value.partition(":")
-                if colon and scheme.translate(str.maketrans("", "", "\t\r\n")).strip().casefold() == "javascript":
-                    # URL scheme whitespace is removed by browsers; preserve newlines in the
-                    # executable value so token locations still refer to its source attribute.
-                    first_line += value[:len(scheme) + 1].count("\n")
-                    self.scripts.append((first_line, script))
+                start, stop = 0, len(value)
+                while start < stop and ord(value[start]) <= 0x20:
+                    start += 1
+                while stop > start and ord(value[stop - 1]) <= 0x20:
+                    stop -= 1
+                characters = [(value[n], source_lines[n]) for n in range(start, stop) if value[n] not in "\t\r\n"]
+                url = "".join(char for char, _line in characters)
+                scheme, colon, script = url.partition(":")
+                if colon and scheme.casefold() == "javascript":
+                    lines = tuple(line for _char, line in characters[len(scheme) + 1:])
+                    self.scripts.append((lines[0] if lines else first_line, script, lines))
         if len(offsets) != len(attrs):
             raise ValueError("HTML attribute source positions are incomplete")
 
@@ -1479,10 +1488,10 @@ class _HtmlDownloads(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self.in_script:
-            self.scripts.append((self.getpos()[0], data))
+            self.scripts.append((self.getpos()[0], data, None))
 
 
-def _html_attribute_offsets(raw: str) -> list[tuple[str, int]]:
+def _html_attribute_offsets(raw: str) -> list[tuple[str, int, int]]:
     """Tokenize start-tag attributes for line offsets; HTMLParser owns decoded values."""
     index = 1
     while index < len(raw) and not raw[index].isspace() and raw[index] not in "/>":
@@ -1502,6 +1511,7 @@ def _html_attribute_offsets(raw: str) -> list[tuple[str, int]]:
         while index < len(raw) and raw[index].isspace():
             index += 1
         offset = start
+        end = start
         if index < len(raw) and raw[index] == "=":
             index += 1
             while index < len(raw) and raw[index].isspace():
@@ -1512,13 +1522,31 @@ def _html_attribute_offsets(raw: str) -> list[tuple[str, int]]:
                 offset = index
                 while index < len(raw) and raw[index] != quote:
                     index += 1
+                end = index
                 index += 1
             else:
                 offset = index
                 while index < len(raw) and not raw[index].isspace() and raw[index] != ">":
                     index += 1
-        offsets.append((name, offset))
+                end = index
+        offsets.append((name, offset, end))
     return offsets
+
+
+def _html_value_lines(raw: str, first_line: int) -> tuple[str, tuple[int, ...]]:
+    """Decode attribute references while keeping a physical line for each decoded character."""
+    pieces, lines = [], []
+    index, line = 0, first_line
+    reference = re.compile(r"&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z0-9]+;?)")
+    while index < len(raw):
+        entity = reference.match(raw, index) if raw[index] == "&" else None
+        piece = entity.group() if entity else raw[index]
+        decoded = unescape(piece) if entity else piece
+        pieces.append(decoded)
+        lines.extend([line] * len(decoded))
+        line += piece.count("\n")
+        index += len(piece)
+    return "".join(pieces), tuple(lines)
 
 
 @dataclass(frozen=True)
@@ -2014,15 +2042,22 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 parser.close()
                 found.extend((f"{relative}:{first_line + line - 1}", expression, template)
                              for line, expression, template in parser.names)
-                scripts.extend((first_line + line - 1, script) for line, script in parser.scripts)
+                scripts.extend((first_line + line - 1, script,
+                                None if lines is None else tuple(first_line + n - 1 for n in lines))
+                               for line, script, lines in parser.scripts)
             else:
-                scripts.append((first_line, text))
-        for first_line, text in scripts:
+                scripts.append((first_line, text, None))
+        for first_line, text, source_lines in scripts:
             try:
                 tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
                 declarations, forwarders = _js_helper_parameters(text, tokens, relative)
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
+
+            def location(token: _JsToken) -> str:
+                line = source_lines[token.start] if source_lines is not None else first_line + token.line - 1
+                return f"{relative}:{line}"
+
             for index, token in enumerate(tokens):
                 if token.value == "[":
                     property_expression, closing = _js_expression(text, tokens, index + 1)
@@ -2030,14 +2065,14 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                             and closing + 1 < len(tokens) and tokens[closing].value == "]"
                             and tokens[closing + 1].value in {"=", ":"}):
                         expression, _end = _js_expression(text, tokens, closing + 2)
-                        found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                        found.append((location(token), expression,
                                       _download_template(expression)))
                 value = token.value.strip("\"'")
                 after = index + 1
                 if (token.in_tag and token.value == "download" and after < len(tokens)
                         and tokens[after].value not in {"=", ":"}
                         and (index == 0 or tokens[index - 1].value not in {"=", "<", "/", ":"})):
-                    found.append((f"{relative}:{first_line + token.line - 1}", "<implicit browser filename>", None))
+                    found.append((location(token), "<implicit browser filename>", None))
                 if after < len(tokens) and tokens[after].value == "]":
                     after += 1  # a["download"] = ...
                 if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:
@@ -2053,7 +2088,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)
                     if expression.startswith("{") and expression.endswith("}"):
                         expression = expression[1:-1].strip()  # JSX attribute
-                    found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                    found.append((location(token), expression,
                                   _download_template(expression)))
                 # Direct native/helper calls. Match the download family structurally rather
                 # than selecting two helper names; browser open always requires disposition.
@@ -2071,7 +2106,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     argument = forwarders.get(value, 1)
                     if len(arguments) <= argument:
                         if value in forwarders or value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
-                            found.append((f"{relative}:{first_line + token.line - 1}",
+                            found.append((location(token),
                                           "<implicit browser filename>", None))
                         continue  # event handlers with no filename parameter
                     expression = arguments[argument]
@@ -2090,7 +2125,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
                 else:
                     continue
-                found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                found.append((location(token), expression,
                               _download_template(expression)))
     return sorted(set(found))
 

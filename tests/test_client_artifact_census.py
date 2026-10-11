@@ -1328,6 +1328,9 @@ def test_no_prefix_forwarder_missing_filename_retains_an_implicit_obligation(tmp
     '<a href="javascript:downloadBlob(blob, \'private.json\')">Save</a>',
     '<a href=" JaVaScRiPt:downloadBlob(blob, \'private.json\')">Save</a>',
     '<a href="java&#9;script:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="&#1;javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="\x08javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:down&#10;loadBlob(blob, \'private.json\')">Save</a>',
     '<svg><use href="javascript:downloadBlob(blob, \'private.json\')" /></svg>',
 ])
 @pytest.mark.parametrize("relative", ["new-root/inline.html", "new-root/inline.py"])
@@ -1339,6 +1342,14 @@ def test_inline_executable_html_values_retain_the_old_bad_name_obligation(tmp_pa
     for _location, _expression, template in names:
         assert dv.client_artifact_class("Downloads/" + template) is None
         assert _repository_gate()._client_artifact_class("Downloads/" + template) is None
+
+
+@pytest.mark.parametrize("attribute", ["onclick", "href"])
+def test_entity_created_newlines_do_not_invent_physical_source_lines(tmp_path, attribute):
+    prefix = "javascript:" if attribute == "href" else ""
+    _write(tmp_path, "new-root/inline.html", f'<a {attribute}="{prefix}&#10;downloadBlob(blob, '
+           + '&quot;private.json&quot;)">Save</a>')
+    assert census.download_names(tmp_path) == [("new-root/inline.html:1", '"private.json"', "private.json")]
 
 
 @pytest.mark.parametrize("attribute", ["onclick", "href"])
