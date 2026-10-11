@@ -120,7 +120,7 @@ EXPECTED_BUNDLED_FRONTEND_DIGEST = (
 #: release: tests/test_portable_release_workflow.py pins both to the real lock.
 EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT = 8
 EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST = (
-    "4c32e63ee3fd4e3791a5af85c20de09e6715cd39b8531af87da1d317a3b43736"
+    "6e59203341364e3b4827fb4e3f406f492f2ebe259864b8f370e7c1c6855afe98"
 )
 #: The toolchain receipt's npm inventories: field -> (npm project, notice-key namespace). Every
 #: project whose build output ships in the bundle must appear here (bundled_npm_inventories checks

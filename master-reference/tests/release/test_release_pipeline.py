@@ -2320,7 +2320,7 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         ("master-reference/package-lock.json", "0.7.5"),
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
-    assert vite_versions == ["8.2.4"]
+    assert vite_versions == ["8.2.4", "8.2.4", "8.2.4"]
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
     assert "GHSA-wq5f-xc86-pv6w in the current build graph only" in limits[0]
     assert "retains the earlier GHSA-rgj7-g3m4-5g8c remediation" in limits[0]
