@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { Miniflare } from "miniflare";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { parse as parseHtml } from "node-html-parser";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
@@ -390,13 +390,17 @@ async function miniflareWithAssets(directory) {
   const serverModules = (await sourceFiles(serverRoot))
     .filter((path) => path.endsWith(".js"))
     .sort();
-  return new Miniflare({
+  // Miniflare 5's public converter retains these module/asset routing semantics
+  // while admitting them through its new instance + worker configuration schema.
+  const options = convertV4MiniflareOptions({
+    host: "127.0.0.1",
+    cf: false,
     modulesRoot: serverRoot,
     modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
       type: "ESModule",
       path,
     })),
-    unsafeDevRegistry: false,
+    unsafeRegisterWorker: false,
     compatibilityDate: "2026-08-01",
     compatibilityFlags: ["nodejs_compat"],
     assets: {
@@ -408,6 +412,10 @@ async function miniflareWithAssets(directory) {
       },
     },
   });
+  assert.equal(options.workers.length, 1);
+  assert.equal(options.workers[0].dev.unsafeRegisterWorker, false);
+  assert.equal(options.unsafeDevRegistryPath, undefined);
+  return new Miniflare(options);
 }
 
 test("hardens every HTML response at the Worker boundary", async () => {
@@ -1373,6 +1381,29 @@ test("server-renders the exact nine Core outcome success-signal slots in source 
     "Core outcome style custody rejects unbound HTTP Link stylesheet relations",
   );
   const html = await response.text();
+  // Hosted review data only. Keep the closed custody assertion below until the
+  // new dependency build's exact link attributes and CSS bytes are reviewed.
+  const observedStylesheets = [];
+  for (const link of parsedHtml(html).querySelectorAll("link")) {
+    if (!(link.getAttribute("rel") ?? "").split(/[\t\n\f\r ]+/)
+      .some((token) => token.toLowerCase() === "stylesheet")) continue;
+    const attributes = Object.fromEntries(
+      Object.entries(link.attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    const href = attributes.href;
+    assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+    const bytes = await readFile(new URL(`../dist/client${href}`, import.meta.url));
+    observedStylesheets.push({
+      attributes, href, bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      base64: bytes.toString("base64"),
+    });
+  }
+  console.log("CORE_OUTCOME_STYLESHEET_OBSERVATION " + JSON.stringify({
+    source_commit: process.env.GITHUB_SHA,
+    review_required: true, release_authority: false,
+    stylesheets: observedStylesheets,
+  }));
   await assertCoreOutcomeStyleCustody(html);
   const outcomeSection = sectionById(html, "core-outcome-contracts");
   assertCoreOutcomeMarkup(outcomeSection, core, view.rendered_observations);
