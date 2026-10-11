@@ -888,7 +888,7 @@ def _assert_ci_owns_installed_transition_smoke(ci):
         "runs-on: windows-2025",
         'python-version: "3.12.10"',
         "architecture: x64",
-        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
         "tools\\requirements-transition-runtime-test.txt",
         "tools/build_release1_replay_capsule.py --check-runtime-profile",
         "python -m venv",

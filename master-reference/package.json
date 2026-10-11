@@ -27,7 +27,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "@vitejs/plugin-rsc": "0.5.36",
-    "miniflare": "5.20260801.1-alpha",
+    "miniflare": "5.20261006.0-alpha",
     "node-html-parser": "9.0.4",
     "oxlint": "1.87.0",
     "react-server-dom-webpack": "19.3.0",
@@ -41,10 +41,10 @@
     "fast-uri": "3.1.8",
     "nanoid": "3.3.18",
     "undici": "7.29.1",
-    "miniflare@5.20260801.1-alpha": {
+    "miniflare@5.20261006.0-alpha": {
       "sharp": "0.35.5"
     },
-    "vinext@0.0.50": {
+    "vinext@0.2.1": {
       "image-size": "file:vendor/bounded-image-size",
       "braces": "file:vendor/bounded-braces"
     }
