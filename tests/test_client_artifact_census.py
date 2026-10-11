@@ -1023,10 +1023,31 @@ def test_filename_model_bound_is_a_refusal_not_success(kind):
             return values
     else:
         def resolver(_name):
-            return [ast.Name(id="target")]
-        node = ast.Name(id="target")
+            index = int(_name.id.removeprefix("target"))
+            return [ast.Name(id=f"target{index + 1}")]
+        node = ast.Name(id="target0")
     with pytest.raises(census.NameModelLimit, match="filename model"):
         census._templates(node, resolver)
+
+
+@pytest.mark.parametrize("expression", ["f'{name}'", "'{}'.format(name)", "'%s' % name"])
+def test_unknown_format_alternative_keeps_the_concrete_bad_name(tmp_path, expression):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           "    name = dynamic()\n    name = 'private.json'\n"
+           + f"    Path({expression}).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert "private.json" in census.unclassified_site_literals(tmp_path)[key]
+    assert any("'private.json'" in p for p in census.census_problems(tmp_path, rows, ["snapshot"]))
+
+
+def test_cyclic_path_rebinding_keeps_other_names_without_a_budget_refusal(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit(path):\n"
+           "    path = Path(path)\n    path = 'private.json'\n    Path(path).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    problems = census.census_problems(tmp_path, rows, ["snapshot"])
+    assert problems == [f"client write site resolves to unclassified name 'private.json': {key}"]
 
 
 @pytest.mark.parametrize("assignment", [
@@ -1107,3 +1128,31 @@ def test_nrfu_library_export_has_a_class_and_old_spelling_does_not():
     assert dv.client_artifact_class("site/wave/CORE-1.txt") is None
     assert census.WRITE_SITE_CENSUS["cisco_toolkit/nrfu_export.py::write_nrfu_pack"][1:3] == (
         census.CLIENT, ("nrfu-command-pack",))
+
+
+@pytest.mark.parametrize("journal_mode", ["DELETE", "WAL"])
+@pytest.mark.parametrize("database", ["alternate.sqlite", "alternate.sqlite3", "custom.evidence", ".backup.db.partial"])
+def test_real_sqlite_companions_are_refused_on_hosted_runners(tmp_path, journal_mode, database):
+    import sqlite3
+    path = tmp_path / database
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(f"PRAGMA journal_mode = {journal_mode}")
+        connection.execute("CREATE TABLE evidence (host TEXT)")
+        connection.commit()
+        connection.execute("INSERT INTO evidence VALUES ('CORE-1')")
+        companions = [p.name for p in tmp_path.iterdir() if p != path]
+        assert companions, "the transaction produced no companion witness"
+        for name in companions:
+            assert dv.client_artifact_class("site/" + name) == _repository_gate()._client_artifact_class("site/" + name)
+            assert dv.client_artifact_class("site/" + name) in {"database-wal", "database-shm", "database-journal"}
+    finally:
+        connection.rollback()
+        connection.close()
+
+
+def test_every_database_writer_row_retains_the_complete_companion_family():
+    family = {"database-wal", "database-shm", "database-journal"}
+    for key, (_count, _disposition, classes, _why) in census.WRITE_SITE_CENSUS.items():
+        if set(classes) & family:
+            assert family <= set(classes), key

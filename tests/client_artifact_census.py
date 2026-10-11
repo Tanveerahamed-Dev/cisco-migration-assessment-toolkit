@@ -769,33 +769,40 @@ class _NameTemplate(str):
     """Keep literal certainty separate from the placeholder text used for name-class matching."""
 
     complete: bool
+    identifying: bool
 
     def __new__(cls, text: str, complete: bool = True):
         value = str.__new__(cls, text)
         value.complete = complete
+        value.identifying = False
         return value
 
 
 def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
     if left is None and right is None:
         return None
-    return _NameTemplate((left if left is not None else "0") + (right if right is not None else "0"),
-                         left is not None and right is not None
-                         and getattr(left, "complete", True) and getattr(right, "complete", True))
+    result = _NameTemplate((left if left is not None else "0") + (right if right is not None else "0"),
+                           left is not None and right is not None
+                           and getattr(left, "complete", True) and getattr(right, "complete", True))
+    result.identifying = getattr(right, "identifying", False)
+    return result
 
 
-def _closed_values(node: ast.AST, resolve, depth: int) -> list[object] | None:
+_NOT_CLOSED = object()
+
+
+def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = frozenset()) -> list[object] | None:
     _name_depth(depth)
     if isinstance(node, ast.Name):
+        if node.id in seen:
+            return [_NOT_CLOSED]
         values = resolve(node)
         if not values:
             return None
         out: list[object] = []
         for value in values:
-            closed = _closed_values(value, resolve, depth + 1)
-            if closed is None:
-                return None
-            out.extend(closed)
+            closed = _closed_values(value, resolve, depth + 1, seen | {node.id})
+            out.extend([_NOT_CLOSED] if closed is None else closed)
         return _bounded_names(out)
     if isinstance(node, (ast.Tuple, ast.List, ast.Dict)):
         if isinstance(node, ast.Dict):
@@ -804,14 +811,14 @@ def _closed_values(node: ast.AST, resolve, depth: int) -> list[object] | None:
             children = [*node.keys, *node.values]
         else:
             children = node.elts
-        values = [_closed_values(child, resolve, depth + 1) for child in children]
-        if any(value is None for value in values):
-            return None
+        values = [_closed_values(child, resolve, depth + 1, seen) or [_NOT_CLOSED] for child in children]
         combinations = _name_product(*values)
         if isinstance(node, ast.Dict):
             size = len(node.keys)
-            return [dict(zip(parts[:size], parts[size:])) for parts in combinations]
-        return [tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
+            return [_NOT_CLOSED if any(p is _NOT_CLOSED for p in parts)
+                    else dict(zip(parts[:size], parts[size:])) for parts in combinations]
+        return [_NOT_CLOSED if any(p is _NOT_CLOSED for p in parts) else
+                tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
     try:
         return [ast.literal_eval(node)]
     except (ValueError, TypeError, SyntaxError):
@@ -854,17 +861,38 @@ def _format_bound(spec: str) -> None:
         raise NameModelLimit("formatted filename specification exceeds the bounded name model")
 
 
-def _closed_format(node: ast.AST, resolve, depth: int) -> list[str] | None:
+def _partial_format(pattern: str, *, percent: bool = False) -> _NameTemplate:
+    if percent:
+        text = re.sub(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[A-Za-z]", "0", pattern)
+        tail = re.split(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[A-Za-z]", pattern)[-1]
+        complete = text == pattern and "%" not in pattern
+    else:
+        pieces = list(string.Formatter().parse(pattern))
+        text = "".join(literal + ("0" if field is not None else "") for literal, field, _s, _c in pieces)
+        tail = pieces[-1][0] if pieces and pieces[-1][1] is None else ""
+        complete = all(field is None for _literal, field, _s, _c in pieces)
+    result = _NameTemplate(text, complete)
+    result.identifying = bool(_SUFFIX_LITERAL.match(tail))
+    return result
+
+
+def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> list[str | None] | None:
     """Evaluate only closed builtin format operands, never execute source functions."""
     if isinstance(node, ast.BinOp):
-        patterns = _closed_values(node.left, resolve, depth + 1)
-        operands = _closed_values(node.right, resolve, depth + 1)
-        if patterns is None or operands is None:
+        patterns = _closed_values(node.left, resolve, depth + 1, seen)
+        operands = _closed_values(node.right, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        if patterns is None:
             return None
         out = []
         for pattern, operand in _name_product(patterns, operands):
+            if pattern is _NOT_CLOSED:
+                out.append(None)
+                continue
             if not isinstance(pattern, str):
-                return None
+                raise NameModelLimit("percent filename pattern is not a string")
+            if operand is _NOT_CLOSED:
+                out.append(_partial_format(pattern, percent=True))
+                continue
             # Bound numeric widths before invoking Python's actual percent semantics.
             for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
                 _format_bound(field)
@@ -876,18 +904,24 @@ def _closed_format(node: ast.AST, resolve, depth: int) -> list[str] | None:
                 raise NameModelLimit("closed percent filename cannot be evaluated") from None
         return _bounded_names(out)
     assert isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    patterns = _closed_values(node.func.value, resolve, depth + 1)
-    positional = [_closed_values(a, resolve, depth + 1) for a in node.args]
-    keywords = [_closed_values(k.value, resolve, depth + 1) for k in node.keywords]
-    if patterns is None or any(v is None for v in positional + keywords):
+    patterns = _closed_values(node.func.value, resolve, depth + 1, seen)
+    positional = [_closed_values(a, resolve, depth + 1, seen) or [_NOT_CLOSED] for a in node.args]
+    keywords = [_closed_values(k.value, resolve, depth + 1, seen) or [_NOT_CLOSED] for k in node.keywords]
+    if patterns is None:
         return None
     if any(k.arg is None for k in node.keywords) or any(isinstance(a, ast.Starred) for a in node.args):
         return None
     out = []
     formatter = string.Formatter()
     for pattern, *parts in _name_product(patterns, *positional, *keywords):
+        if pattern is _NOT_CLOSED:
+            out.append(None)
+            continue
         if not isinstance(pattern, str):
-            return None
+            raise NameModelLimit("format filename pattern is not a string")
+        if any(p is _NOT_CLOSED for p in parts):
+            out.append(_partial_format(pattern))
+            continue
         args = parts[:len(positional)]
         kwargs = dict(zip((k.arg for k in node.keywords), parts[len(positional):]))
         try:
@@ -901,16 +935,17 @@ def _closed_format(node: ast.AST, resolve, depth: int) -> list[str] | None:
     return _bounded_names(out)
 
 
-def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str | None]:
-    values = _closed_values(part.value, resolve, depth)
+def _formatted_names(part: ast.FormattedValue, resolve, depth: int, seen: frozenset[str]) -> list[str | None]:
+    values = _closed_values(part.value, resolve, depth, seen)
     if values is None:
         return [None]
     specs = ([_NameTemplate("")] if part.format_spec is None
-             else _templates(part.format_spec, resolve, depth + 1))
-    if any(s is None or not getattr(s, "complete", True) for s in specs):
-        return [None]
+             else _templates(part.format_spec, resolve, depth + 1, seen))
     out: list[str | None] = []
     for value in values:
+        if value is _NOT_CLOSED:
+            out.append(None)
+            continue
         if part.conversion == ord("r"):
             value = repr(value)
         elif part.conversion == ord("s"):
@@ -918,6 +953,9 @@ def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str 
         elif part.conversion == ord("a"):
             value = ascii(value)
         for spec in specs:
+            if spec is None or not getattr(spec, "complete", True):
+                out.append(None)
+                continue
             _format_bound(spec)
             try:
                 out.append(_NameTemplate(format(value, spec)))
@@ -926,7 +964,7 @@ def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str 
     return _bounded_names(out)
 
 
-def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
+def _templates(node: ast.AST, resolve, depth: int = 0, seen: frozenset[str] = frozenset()) -> list[str | None]:
     """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
     _name_depth(depth)
     text = _constant_text(node)
@@ -935,36 +973,38 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
     if isinstance(node, ast.JoinedStr):
         out: list[str | None] = [_NameTemplate("")]
         for part in node.values:
-            pieces = (_formatted_names(part, resolve, depth + 1) if isinstance(part, ast.FormattedValue)
-                      else _templates(part, resolve, depth + 1))
+            pieces = (_formatted_names(part, resolve, depth + 1, seen) if isinstance(part, ast.FormattedValue)
+                      else _templates(part, resolve, depth + 1, seen))
             out = _bounded_names([_combine_names(a, b) for a, b in _name_product(out, pieces)])
         return out
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _bounded_names([_combine_names(a, b) for a, b in _name_product(
-            _templates(node.left, resolve, depth + 1), _templates(node.right, resolve, depth + 1))])
+            _templates(node.left, resolve, depth + 1, seen), _templates(node.right, resolve, depth + 1, seen))])
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return _templates(node.right, resolve, depth + 1)
+        return _templates(node.right, resolve, depth + 1, seen)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        closed = _closed_format(node, resolve, depth)
+        closed = _closed_format(node, resolve, depth, seen)
         if closed is not None:
             return closed
         if _constant_text(node.left):
             return [_NameTemplate(re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left)), False)]
     if isinstance(node, ast.Name):
+        if node.id in seen:
+            return [None]  # cyclic branch is unknown; other concrete alternatives still survive
         values = resolve(node)
-        out = [t for value in values for t in _templates(value, resolve, depth + 1)]
+        out = [t for value in values for t in _templates(value, resolve, depth + 1, seen | {node.id})]
         return _bounded_names(out) or [None]
     if isinstance(node, (ast.List, ast.Tuple)):
-        return _bounded_names([t for value in node.elts for t in _templates(value, resolve, depth + 1)])
+        return _bounded_names([t for value in node.elts for t in _templates(value, resolve, depth + 1, seen)])
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
-            return _templates(node.args[-1], resolve, depth + 1)
+            return _templates(node.args[-1], resolve, depth + 1, seen)
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
             return [_NameTemplate("0" + t, False) if func.attr == "with_suffix" and t is not None else t
-                    for t in _templates(node.args[0], resolve, depth + 1)]
+                    for t in _templates(node.args[0], resolve, depth + 1, seen)]
         if isinstance(func, ast.Attribute) and func.attr == "format":
-            closed = _closed_format(node, resolve, depth)
+            closed = _closed_format(node, resolve, depth, seen)
             if closed is not None:
                 return closed
             if _constant_text(func.value):
@@ -972,13 +1012,13 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
         if isinstance(func, ast.Name) and func.id == "__census_sqlite_path" and node.args:
             return [_NameTemplate(unquote(t.removeprefix("file:").split("?", 1)[0]),
                                   getattr(t, "complete", True)) if t is not None else None
-                    for t in _templates(node.args[0], resolve, depth + 1)]
+                    for t in _templates(node.args[0], resolve, depth + 1, seen)]
         if isinstance(func, ast.Name) and func.id in {"Path", "PurePath", "PurePosixPath", "str"} and node.args:
-            return _templates(node.args[-1], resolve, depth + 1)
+            return _templates(node.args[-1], resolve, depth + 1, seen)
     if isinstance(node, ast.IfExp):
-        return _bounded_names(_templates(node.body, resolve, depth + 1) + _templates(node.orelse, resolve, depth + 1))
+        return _bounded_names(_templates(node.body, resolve, depth + 1, seen) + _templates(node.orelse, resolve, depth + 1, seen))
     if isinstance(node, ast.BoolOp):
-        return _bounded_names([t for value in node.values for t in _templates(value, resolve, depth + 1)])
+        return _bounded_names([t for value in node.values for t in _templates(value, resolve, depth + 1, seen)])
     return [None]
 
 
@@ -1941,10 +1981,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         "the AssessHub database assesshub.db (snapshots, executions, evidence) and its SQLite "
         "companions"),
     "webapp/backend/storage.py::Store._boot_hardening": (
-        3, CLIENT, ("database", "database-backup-partial", "database-wal", "database-shm"),
+        3, CLIENT, ("database", "database-backup-partial", "database-wal", "database-shm", "database-journal"),
         "backups/assesshub-<stamp>.db, staged as assesshub-<stamp>-<pid>-<hex>.db.partial"),
     "webapp/backend/storage.py::_backup_campaign_evidence": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens an existing database backup read-only and immutable to classify it"),
     "webapp/backend/ingest.py::_safe_extract": (
         1, PRIVATE_TEMP, (), "an uploaded collection ZIP extracted " + _WORKDIR),
@@ -1987,10 +2027,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/serve.py::run_redaction": (
         1, CLIENT, _REDACTION_RUN, "Atlas.exe --redact-folder runs the field redaction"),
     "webapp/backend/serve.py::run_database_preflight": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "Atlas.exe database preflight over a copy of the operator's database"),
     "webapp/backend/serve.py::_main_scoped": (
-        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm"),
+        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
         "the Atlas.exe entry: self-test probes, database preflight and field redaction"),
     "webapp/backend/export_ui_projection_openapi.py::main": (
         1, NON_CLIENT, (), "the UI projection OpenAPI document generated from code"),
@@ -2015,14 +2055,14 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
     "portable/database_preflight.py::_open_readonly": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
     "portable/database_preflight.py::census": (
-        1, CLIENT, ("database", "database-wal", "database-shm"), "counts rows of that copy"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "counts rows of that copy"),
     "portable/database_preflight.py::verify_migrated_copy": (
-        2, CLIENT, ("database", "database-wal", "database-shm"), "compares that copy after migration"),
+        2, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "compares that copy after migration"),
     "portable/database_preflight.py::migrate_and_compare": (
-        2, CLIENT, ("database", "database-wal", "database-shm"), "migrates and compares that copy"),
+        2, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "migrates and compares that copy"),
     "portable/build_atlas.py::build": (1, NON_CLIENT, (), _RELEASE),
     "portable/build_atlas.py::smoke": (
         2, NON_CLIENT, (), _RELEASE + "; the smoke copy's data directory comes from a synthetic run"),
@@ -2298,7 +2338,8 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                                 class_key = classify(f"customer-output/{leaf}")
                                 if class_key:
                                     resolved.setdefault(function.key, set()).add(class_key)
-                                elif not getattr(template, "complete", True) and not _identifying_suffix(target, resolve):
+                                elif (not getattr(template, "complete", True) and not getattr(template, "identifying", False)
+                                      and not _identifying_suffix(target, resolve)):
                                     unresolved.setdefault(function.key, set()).add(leaf)
                                 else:
                                     unclassified.setdefault(function.key, set()).add(leaf)
