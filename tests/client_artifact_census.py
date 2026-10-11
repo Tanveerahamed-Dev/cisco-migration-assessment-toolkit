@@ -63,6 +63,7 @@ otherwise move with it.
 from __future__ import annotations
 
 import ast
+import codecs
 import copy
 import itertools
 import operator
@@ -1478,6 +1479,7 @@ class _HtmlDownloads(HTMLParser):
                 scheme, colon, script = url.partition(":")
                 if colon and scheme.casefold() == "javascript":
                     lines = tuple(line for _char, line in characters[len(scheme) + 1:])
+                    script, lines = _javascript_url_lines(script, lines)
                     self.scripts.append((lines[0] if lines else first_line, script, lines))
         if len(offsets) != len(attrs):
             raise ValueError("HTML attribute source positions are incomplete")
@@ -1546,6 +1548,39 @@ def _html_value_lines(raw: str, first_line: int) -> tuple[str, tuple[int, ...]]:
         lines.extend([line] * len(decoded))
         line += piece.count("\n")
         index += len(piece)
+    return "".join(pieces), tuple(lines)
+
+
+def _javascript_url_lines(script: str, source_lines: tuple[int, ...]) -> tuple[str, tuple[int, ...]]:
+    """Percent-decode then UTF-8-decode executable URL bytes, retaining physical lines."""
+    octets, byte_lines = bytearray(), []
+    index = 0
+    while index < len(script):
+        if script[index] == "%" and re.fullmatch(r"[0-9a-fA-F]{2}", script[index + 1:index + 3]):
+            encoded = bytes([int(script[index + 1:index + 3], 16)])
+            step = 3
+        else:
+            encoded = script[index].encode("utf-8", errors="replace")
+            step = 1
+        octets.extend(encoded)
+        byte_lines.extend([source_lines[index]] * len(encoded))
+        index += step
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pieces, lines = [], []
+    pending_line = 0
+    for octet, line in zip(octets, byte_lines):
+        buffered = bool(decoder.getstate()[0])
+        origin = pending_line if buffered else line
+        text = decoder.decode(bytes([octet]))
+        pieces.append(text)
+        if text:
+            # An invalid buffered prefix can emit a replacement plus this byte's character.
+            lines.extend([origin] + [line] * (len(text) - 1))
+        if decoder.getstate()[0] and (not buffered or text):
+            pending_line = line
+    tail = decoder.decode(b"", final=True)
+    pieces.append(tail)
+    lines.extend([pending_line] * len(tail))
     return "".join(pieces), tuple(lines)
 
 
@@ -1965,12 +2000,15 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
                     owners.update((id(child), owner) for child in ast.walk(value))
                 return values
 
-            values = _closed_values(node, resolve, depth + 1) or [_NOT_CLOSED]
-            if any(_has_unknown(value) for value in values):
+            values = _closed_format(node, resolve, depth + 1, frozenset()) or [None]
+            if any(value is None or not getattr(value, "complete", True) for value in values):
                 if contains_html(node) or any(isinstance(child, ast.Constant) and isinstance(child.value, str)
-                                              and re.search(r"</?\{", child.value) for child in ast.walk(node)):
+                                              and re.search(r"</?\{", child.value) for child in ast.walk(node)) or any(
+                    value is not None and re.search(r"</?[A-Za-z0-9][\w:-]*(?=[\s/>]|$)", value) for value in values
+                ):
                     raise ValueError("unresolved Python HTML format language boundary")
-            return _bounded_names([value for value in values if isinstance(value, str)], text_limit=False) or ["0"]
+            return _bounded_names([value for value in values if value is not None and getattr(value, "complete", True)],
+                                  text_limit=False) or ["0"]
         return ["0"]
 
     def visit(node: ast.AST) -> None:

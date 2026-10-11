@@ -1331,6 +1331,9 @@ def test_no_prefix_forwarder_missing_filename_retains_an_implicit_obligation(tmp
     '<a href="&#1;javascript:downloadBlob(blob, \'private.json\')">Save</a>',
     '<a href="\x08javascript:downloadBlob(blob, \'private.json\')">Save</a>',
     '<a href="javascript:down&#10;loadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:%64ownloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:a%2Edownload=\'private.json\';a.click()">Save</a>',
+    '<a href="javascript://comment%0AdownloadBlob(blob, \'private.json\')">Save</a>',
     '<svg><use href="javascript:downloadBlob(blob, \'private.json\')" /></svg>',
 ])
 @pytest.mark.parametrize("relative", ["new-root/inline.html", "new-root/inline.py"])
@@ -1350,6 +1353,14 @@ def test_entity_created_newlines_do_not_invent_physical_source_lines(tmp_path, a
     _write(tmp_path, "new-root/inline.html", f'<a {attribute}="{prefix}&#10;downloadBlob(blob, '
            + '&quot;private.json&quot;)">Save</a>')
     assert census.download_names(tmp_path) == [("new-root/inline.html:1", '"private.json"', "private.json")]
+
+
+def test_javascript_url_utf8_decoding_preserves_physical_lines_and_replaces_bad_bytes():
+    script = "downloadBlob(blob, '%E2%82%AC-private.json')\n//%FF"
+    source_lines = tuple(4 if n < script.index("\n") else 5 for n in range(len(script)))
+    decoded, lines = census._javascript_url_lines(script, source_lines)
+    assert decoded == "downloadBlob(blob, '\u20ac-private.json')\n//\ufffd"
+    assert lines[decoded.index("\u20ac")] == 4 and lines[-1] == 5
 
 
 @pytest.mark.parametrize("attribute", ["onclick", "href"])
@@ -1438,6 +1449,13 @@ def test_python_html_format_uses_defining_scope_and_keeps_registered_control(tmp
 def test_unresolved_python_html_format_boundary_refuses_instead_of_losing_bad_name(tmp_path):
     _write(tmp_path, "new-root/generated.py", "def render(tag):\n"
            + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(tag, "script")\n')
+    with pytest.raises(ValueError, match="unresolved Python HTML format language boundary"):
+        census.download_names(tmp_path)
+
+
+def test_unresolved_bound_html_format_pattern_cannot_disappear(tmp_path):
+    _write(tmp_path, "new-root/generated.py", 'PATTERN = "<{}>downloadBlob(blob, \'private.json\');</{}>"\n'
+           + 'def render(tag):\n    return PATTERN.format(tag, "script")\n')
     with pytest.raises(ValueError, match="unresolved Python HTML format language boundary"):
         census.download_names(tmp_path)
 
