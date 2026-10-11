@@ -4851,7 +4851,10 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
     observations: Dict[str, Any] = {}
     indexes: Dict[str, Any] = {}
-    observation_answers: Dict[Tuple[Any, ...], Tuple[str, Optional[str], bool]] = {}
+    observation_answers: Dict[Tuple[Any, ...], Tuple[str, Optional[str], bool, int]] = {}
+    observation_ids: Dict[str, int] = {}
+    shared_indexes: Dict[int, Mapping[Any, Tuple[int, ...]]] = {}
+    shared_hosts: Dict[str, int] = {}
 
     def observation_key(record: Any) -> Optional[Tuple[Any, ...]]:
         """An optional complete typed key, not a valid-observation claim. Noneligible records keep owner admission.
@@ -4903,10 +4906,13 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 result = carriage_observation_admission(record)
                 # Never substitute another host's observation object or a foreign owner return object.
                 if key is not None and len(observation_answers) < 32 and (result[2] is None or result[2] is record):
-                    observation_answers[key] = (result[0], result[1], result[2] is record)
+                    identity = len(observation_answers)
+                    observation_answers[key] = (result[0], result[1], result[2] is record, identity)
+                    observation_ids[host] = identity
             else:
-                state, reason, present = answer
+                state, reason, present, identity = answer
                 result = (state, reason, record if present else None)
+                observation_ids[host] = identity
             observations[host] = result
         return observations[host]
 
@@ -4992,6 +4998,8 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     signals = {char: decode_carriage_end(char)["signal"] for char in typed_chars | configured_chars}
     role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
     allowance_matches: Dict[Tuple[int, int, str], bool] = {}
+    shared_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
+    shared_compatibility: Dict[Tuple[int, int], bool] = {}
 
     def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str) -> bool:
         identity = configured[key]
@@ -5003,8 +5011,52 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any) -> List[Any]:
         key = (host, interface, vid)
         if key not in role_rows:
-            role_rows[key] = carriage_role_rows(observation, interface, vid, index=index)
+            identity = shared_hosts.get(host)
+            query = (identity, interface, vid) if identity is not None else None
+            if query is not None and query in shared_positions:
+                # Only immutable positions cross hosts; each row object comes from THIS host's current record.
+                role_rows[key] = [(i, observation["roles"][i]) for i in shared_positions[query]]
+            else:
+                rows = carriage_role_rows(observation, interface, vid, index=index)
+                if query is not None and type(rows) is list and rows and all(
+                        type(pair) is tuple and len(pair) == 2 and type(pair[0]) is int
+                        and 0 <= pair[0] < len(observation["roles"])
+                        and pair[1] is observation["roles"][pair[0]] for pair in rows):
+                    shared_positions[query] = tuple(pair[0] for pair in rows)
+                role_rows[key] = rows
         return role_rows[key]
+
+    def role_index(host: str, observation: Any) -> Any:
+        if host not in indexes:
+            identity = observation_ids.get(host)
+            if identity is not None and identity in shared_indexes:
+                index = shared_indexes[identity]
+            else:
+                index = carriage_role_index(observation)
+                # Optional reuse never constrains the owner's fallback. Freeze only its ordinary immutable
+                # position shape, with no role-record alias; a foreign/nonstandard return remains per host.
+                if identity is not None and type(index) is dict and all(
+                        type(key) is tuple and len(key) == 3
+                        and type(key[0]) is str and type(key[1]) is int and type(key[2]) is str
+                        and type(value) is tuple
+                        and all(type(i) is int and 0 <= i < len(observation["roles"]) for i in value)
+                        for key, value in index.items()):
+                    index = MappingProxyType({key: tuple(value) for key, value in index.items()})
+                    shared_indexes[identity] = index
+            indexes[host] = index
+            if identity is not None and shared_indexes.get(identity) is index:
+                shared_hosts[host] = identity
+        return indexes[host]
+
+    def compatible_role(host: str, position: int, row: Any, observation: Any) -> bool:
+        identity = shared_hosts.get(host)
+        if (identity is None or type(position) is not int or not 0 <= position < len(observation["roles"])
+                or row is not observation["roles"][position]):
+            return carriage_role_compatible(row)
+        query = (identity, position)
+        if query not in shared_compatibility:
+            shared_compatibility[query] = carriage_role_compatible(row)
+        return shared_compatibility[query]
 
     positions = []
     for ci, offset, _count in carriage_code_offsets(section):
@@ -5027,13 +5079,11 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 state, _why, observation = admitted(end["host"])
                 ok = state == _PUB and observation is not None
                 if ok:
-                    if end["host"] not in indexes:
-                        indexes[end["host"]] = carriage_role_index(observation)
-                    index = indexes[end["host"]]
+                    index = role_index(end["host"], observation)
                     rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index)
                     beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index)
                               if end["stp_interface"] != end["port"] else [])
-                    ok = (len(rows) == 1 and not beside and carriage_role_compatible(rows[0][1])
+                    ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
                           and rows[0][1]["state"] == signals[char])
                     ok = ok and allowance_agrees(key, row["vlan"], signals[char])
                 if not ok:

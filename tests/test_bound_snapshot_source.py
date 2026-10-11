@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import FrozenInstanceError
 import hashlib
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -127,6 +128,28 @@ def _fresh_encoder_matches_original(value, monkeypatch):
     return actual
 
 
+def _fresh_binary_matches_original(value, monkeypatch):
+    expected = _original_source(value)
+    encoder, calls = pa._snapshot_identity_binary, []
+
+    def observed(payload):
+        assert payload is value  # Complete current graph, never a fragment or prior read verdict.
+        current = encoder(payload)
+        calls.append(current)
+        return current
+
+    monkeypatch.setattr(pa, "_snapshot_identity_binary", observed)
+    monkeypatch.setattr(pa, "_snapshot_identity_text", lambda _value: pytest.fail("complete typed binary matched"))
+    monkeypatch.setattr(pa, "canonical_sha256", lambda _value: pytest.fail("complete typed binary matched"))
+    for _ in range(2):
+        actual = pa.bound_snapshot_source(value)
+        assert actual == expected
+        assert all(type(actual[key]) is type(expected[key]) for key in expected)
+    assert calls == [value._bound_content_proof.binary_text, value._bound_content_proof.binary_text]
+    assert type(calls[0]) is bytes
+    return actual
+
+
 def test_binder_mints_immutable_content_proof_and_checks_complete_live_copies(monkeypatch):
     bound = pa.bind_snapshot_json_bytes(b'{"nested":{"rows":[1,false,0.0,"value",null]},"tail":true}')
     expected = _original_source(bound)
@@ -143,7 +166,7 @@ def test_binder_mints_immutable_content_proof_and_checks_complete_live_copies(mo
     with pytest.raises(FrozenInstanceError):
         proof.source_bytes = 0
 
-    encoder, calls = pa._snapshot_identity_text, []
+    encoder, calls = pa._snapshot_identity_binary, []
 
     def observed(payload):
         calls.append(payload)
@@ -152,7 +175,7 @@ def test_binder_mints_immutable_content_proof_and_checks_complete_live_copies(mo
     def canonical_fallback(_payload):
         raise AssertionError("a changed full encoding must fall back to the original canonical guard")
 
-    monkeypatch.setattr(pa, "_snapshot_identity_text", observed)
+    monkeypatch.setattr(pa, "_snapshot_identity_binary", observed)
     monkeypatch.setattr(pa, "canonical_sha256", canonical_fallback)
     assert pa.bound_snapshot_source(bound) == pa.bound_snapshot_source(copy) == expected
     copy["nested"]["rows"][-1] = "changed"
@@ -233,7 +256,7 @@ def test_mixed_integer_string_keys_cannot_fastaccept_identical_unsorted_text(mon
     assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is False
 
 
-def test_equal_new_key_objects_are_conservative_fallbacks_with_strong_original_refs(monkeypatch):
+def test_equal_new_plain_key_objects_keep_the_original_result_through_complete_typed_encoding(monkeypatch):
     bound = pa.bind_snapshot_json_bytes(b'{"non_interned_key_abcdefghijklmnopqrstuvwxyz":1}')
     key = next(iter(bound))
     keys, identities, _children = bound._bound_content_proof.payload[1]
@@ -243,7 +266,7 @@ def test_equal_new_key_objects_are_conservative_fallbacks_with_strong_original_r
     item = bound.pop(key)
     bound[new_key] = item
     assert pa._snapshot_identity_text(bound) == bound._bound_content_proof.text
-    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is True
+    assert _fresh_binary_matches_original(bound, monkeypatch)["source_bound"] is True
 
 
 def test_custom_comparison_key_cannot_replace_a_sortable_builtin_key(monkeypatch):
@@ -275,7 +298,7 @@ def test_the_complete_scaffold_guards_empty_and_nested_container_positions(monke
 def test_array_aliases_are_checked_by_full_content_not_original_mutable_identity(monkeypatch):
     bound = pa.bind_snapshot_json_bytes(b'{"first":[],"second":[]}')
     bound["second"] = bound["first"]  # Equal JSON content; every container position remains a built-in list.
-    _fresh_encoder_matches_original(bound, monkeypatch)
+    _fresh_binary_matches_original(bound, monkeypatch)
 
 
 def test_a_later_mutation_of_aliased_arrays_reaches_the_original_canonical_guard(monkeypatch):
@@ -389,3 +412,52 @@ def test_detached_json_or_dict_stays_unbound_even_when_it_carries_serialized_mar
     for detached in (dict(bound), json.loads(json.dumps(bound))):
         detached["_bound_content_proof"] = "caller-supplied proof"
         assert pa.bound_snapshot_source(detached) == {"source_bound": False, "sha256": "", "bytes": 0}
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"value":[false,0,0.0,-0.0,null],"tail":{"empty":[]}}',
+    b'{"value":[9007199254740993,-9007199254740993,1.25],"tail":{"empty":{}}}',
+    b'{"value":["\\ud800","\\udfff","\\ud83d\\ude00","\\u2028"],"tail":"last"}',
+])
+def test_fresh_binary_observes_complete_types_unicode_and_last_containers(raw, monkeypatch):
+    _fresh_binary_matches_original(pa.bind_snapshot_json_bytes(raw), monkeypatch)
+
+
+@pytest.mark.parametrize("failure", ["retained-byte-bound", "runtime", "allocation"])
+def test_optional_binary_construction_failure_retains_the_original_complete_proof(monkeypatch, failure):
+    if failure == "retained-byte-bound":
+        monkeypatch.setattr(pa, "_MAX_SNAPSHOT_PROOF_BINARY_BYTES", 0)
+    else:
+        def failed(_value):
+            raise (MemoryError if failure == "allocation" else RuntimeError)("optional binary observation")
+        monkeypatch.setattr(pa, "_snapshot_identity_binary", failed)
+    bound = pa.bind_snapshot_json_bytes(b'{"nested":{"rows":[false,1,0.0]},"last":"value"}')
+    assert type(bound._bound_content_proof) is pa._BoundSnapshotContentProof
+    assert bound._bound_content_proof.binary_text is None
+    _fresh_encoder_matches_original(bound, monkeypatch)
+
+
+@pytest.mark.parametrize("failure", ["exception", "different", "unsupported-result"])
+def test_optional_binary_read_failure_keeps_the_unchanged_json_scaffold_guard(monkeypatch, failure):
+    bound = pa.bind_snapshot_json_bytes(b'{"field":[1,2]}')
+    assert type(bound._bound_content_proof.binary_text) is bytes
+    def failed(_value):
+        if failure == "exception":
+            raise OSError("optional binary audit event refused")
+        if failure == "unsupported-result":
+            return bytearray(bound._bound_content_proof.binary_text)
+        return b"different incomplete observation"
+    monkeypatch.setattr(pa, "_snapshot_identity_binary", failed)
+    _fresh_encoder_matches_original(bound, monkeypatch)
+
+
+def test_non_json_buffer_provider_cannot_recreate_json_typed_binary_authority(monkeypatch):
+    bound = pa.bind_snapshot_json_bytes(b'{"field":"value"}')
+    calls = []
+    class Buffer:
+        def __buffer__(self, flags):
+            calls.append(flags)
+            return memoryview(b"value")
+    bound["field"] = Buffer()
+    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is False
+    assert bool(calls) is (sys.version_info >= (3, 12))

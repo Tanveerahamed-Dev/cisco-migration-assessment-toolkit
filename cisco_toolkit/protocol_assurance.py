@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import marshal
 import math
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
@@ -76,11 +77,12 @@ _BOUND_FAMILY_SET_AUTHORITY = object()
 _MAX_JSON_OBJECT_MEMBERS = 2_000_000
 _MAX_SNAPSHOT_PROOF_NODES = 2_000_000
 _MAX_SNAPSHOT_PROOF_DEPTH = 128
+_MAX_SNAPSHOT_PROOF_BINARY_BYTES = 64_000_000
 
 
 @dataclass(frozen=True, slots=True, init=False)
 class _BoundSnapshotContentProof:
-    """Binder-owned whole encoder text and immutable container/key scaffold, never a mutable read verdict.
+    """Binder-owned whole text/optional typed bytes and immutable scaffold, never a mutable read verdict.
 
     The whole current payload is compared on every read. This is a normal private capability boundary,
     not a sandbox against namespace inspection, class monkeypatching or object.__setattr__.
@@ -90,9 +92,10 @@ class _BoundSnapshotContentProof:
     payload_sha256: str
     payload: tuple
     text: str
+    binary_text: Optional[bytes]
 
     def __init__(self, source_sha256: str, source_bytes: int, payload_sha256: str, payload: tuple, text: str,
-                 *, _authority: object) -> None:
+                 *, _authority: object, binary_text: Optional[bytes] = None) -> None:
         if _authority is not _BOUND_SNAPSHOT_AUTHORITY:
             raise TypeError("Snapshot content proof can only be minted by the exact-byte binder")
         object.__setattr__(self, "source_sha256", source_sha256)
@@ -100,15 +103,25 @@ class _BoundSnapshotContentProof:
         object.__setattr__(self, "payload_sha256", payload_sha256)
         object.__setattr__(self, "payload", payload)
         object.__setattr__(self, "text", text)
+        object.__setattr__(self, "binary_text", binary_text)
 
     def __deepcopy__(self, _memo):
-        # Strong key references, identity/order tuples, container scaffold and whole text are immutable.
+        # Strong keys, identity/order tuples, scaffold, whole text and optional bytes are immutable.
         return self
 
 
 def _snapshot_identity_text(value: Any) -> str:
     """One complete fresh stdlib encoding, with no stringification/fragment/default fallback."""
     return json.dumps(value, sort_keys=False, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+
+
+def _snapshot_identity_binary(value: dict) -> bytes:
+    """Fresh complete same-process typed encoding; never load, persist or accept it as custody.
+
+    Version 2 carries no reference/intern tags. Exact typed framing distinguishes every JSON key,
+    container and value, including signed zero. Audit/buffer hooks are not a sandbox boundary.
+    """
+    return marshal.dumps(dict(value), 2)
 
 
 def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
@@ -153,18 +166,25 @@ def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
         if payload is None:
             return None
         text = _snapshot_identity_text(value)
+        binary_text = None
+        try:
+            observed = _snapshot_identity_binary(value)
+            if type(observed) is bytes and len(observed) <= _MAX_SNAPSHOT_PROOF_BINARY_BYTES:
+                binary_text = observed
+        except Exception:
+            pass  # This additional optimization never disables the complete original proof or guard.
         return _BoundSnapshotContentProof(source_sha256, source_bytes, payload_sha256, payload, text,
-                                          _authority=_BOUND_SNAPSHOT_AUTHORITY)
+                                          _authority=_BOUND_SNAPSHOT_AUTHORITY, binary_text=binary_text)
     except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
         return None
 
 
 def _matches_snapshot_content_proof(value: Any) -> bool:
-    """Freshly encode every current value and guard every container/key position, never reuse a read result.
+    """Freshly encode every current value/type/position, never reuse a mutable read result.
 
-    A key/order/container/marker mismatch is a conservative canonical fallback. Complete text equality through
-    the same stdlib encoder proves all scalar encodings, including equivalent scalar subclasses. The complete
-    scaffold excludes nonsortable/subclass keys or containers that could differ under the sorted canonical guard.
+    Optional complete same-process version2 typed bytes prove equality only for a fully minted original graph.
+    Any mismatch or encoding exception keeps the complete JSON/scaffold/canonical path below. That original
+    path also preserves canonically equivalent scalar subclasses and unsafe key/container fallback behavior.
     Like that guard this observation is not atomic over a concurrent writer.
     """
     if type(value) is not BoundSnapshot:
@@ -177,6 +197,13 @@ def _matches_snapshot_content_proof(value: Any) -> bool:
                               (value._bound_payload_sha256, proof.payload_sha256)):
         if type(current) is not type(expected) or current != expected:
             return False
+    if type(proof.binary_text) is bytes:
+        try:
+            observed = _snapshot_identity_binary(value)
+            if type(observed) is bytes and observed == proof.binary_text:
+                return True
+        except Exception:
+            pass  # Unsupported/exceptional current values still take the unchanged complete guard below.
     if _snapshot_identity_text(value) != proof.text:
         return False
     pending = [(value, proof.payload, True)]

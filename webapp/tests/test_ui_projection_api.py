@@ -1608,6 +1608,397 @@ def test_the_carriage_route_is_published_with_its_owner_schema(client):
     assert api.MAX_PAGE_SIZE == 200
 
 
+def _whole_native_carriage_snapshot(tmp_path, case):
+    if case != "two_member_bundle":
+        return _carriage_snapshot(tmp_path, "forwarding" if case == "empty_universe" else case,
+                                  vlans=({"vlan": 10},), trunks=0 if case == "empty_universe" else 1)
+    from cisco_toolkit.analyze import compute_cable_map
+    from cisco_toolkit.vlan_carriage import compute_vlan_carriage
+    from test_vlan_carriage import A, B, _bundle, _stored, _stp
+    interfaces = _bundle(tmp_path, allowed=(None, None))
+    observations = {A: _stp({10: [("Po1", "Desg", "FWD")]}),
+                    B: _stp({10: [("Po20", "Root", "FWD")]})}
+    cables, rows = compute_cable_map(interfaces), [{"vlan": 10}]
+    return {"interfaces": _stored(interfaces), "cable_map": cables,
+            "stp_topology_observations": observations, "vlan_cutover": rows,
+            "vlan_carriage": compute_vlan_carriage(cables, _stored(interfaces), observations, rows)}
+
+
+def _whole_native_carriage_body(client, tmp_path, case="one_end"):
+    sid = seed(client, _whole_native_carriage_snapshot(tmp_path, case))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 200})
+    assert response.status_code == 200, response.text[:300]
+    return response.json()
+
+
+def _carriage_native_triplet(api, body, bad):
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator, calls, exceptions = _native_observed(api, schema, "carriage")
+    stock = api._stock_validator(schema)
+    assert api.version("jsonschema-rs") == "0.58.5"
+    assert api._native_instance_allowed(body) and api._native_instance_allowed(bad)
+    assert validator.is_valid(body) and stock.is_valid(body)
+    assert calls == [True] and exceptions == []
+    assert not validator.is_valid(bad) and not stock.is_valid(bad)
+    assert calls == [True, False] and exceptions == []
+    assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
+    assert calls == [True, False, False] and exceptions == []
+
+
+@pytest.mark.parametrize("case", ["forwarding", "not_carried", "stp_blocked", "one_end",
+                                 "empty_universe", "two_member_bundle"])
+def test_native_lazy_carriage_has_whole_body_true_false_false_proof_from_real_producers(client, tmp_path, case):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, case)
+    page = body["payload"]["page"]
+    if case == "empty_universe":
+        assert page["items"] == [] and page["total"] == 0
+        assert body["payload"]["summary"]["assessed"]["value"] == 0
+    elif case == "one_end":
+        assert page["items"][0]["relation"]["value"] is None
+        assert body["payload"]["summary"]["held"]["value"] == 1
+    else:
+        expected = "forwarding" if case == "two_member_bundle" else case
+        assert page["items"][0]["relation"]["value"] == expected
+        if case == "two_member_bundle":
+            members = page["items"][0]["members"]["items"]
+            assert len(members) == 2 and all(member["basis"]["value"] == "typed_pvst" for member in members)
+    bad = deepcopy(body)
+    bad["view"] = "unqualified_carriage"
+    _carriage_native_triplet(api, body, bad)
+
+
+@pytest.mark.parametrize("mutation", [
+    "extra_envelope", "missing_engine", "identity_boolean_bytes", "missing_summary", "missing_count",
+    "unknown_summary_state", "boolean_vlan_index", "negative_count", "extra_page", "missing_page_items",
+    "boolean_offset", "extra_row", "missing_relation", "unknown_relation_state", "withheld_relation_value",
+    "unknown_relation_enum", "missing_member_end", "boolean_member_index", "missing_end_basis",
+    "unknown_signal", "boolean_host", "unknown_ref_role", "integer_pointer", "extra_ends",
+    "missing_member_items", "missing_withheld_reason", "engine_digest_form",
+])
+def test_native_lazy_carriage_refutes_complete_nested_shapes_without_exception_fallback(client, tmp_path, mutation):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path)
+    bad = deepcopy(body)
+    payload = bad["payload"]
+    summary, page = payload["summary"], payload["page"]
+    row = page["items"][0]
+    member = row["members"]["items"][0]
+    if mutation == "extra_envelope":
+        bad["unowned"] = True
+    elif mutation == "missing_engine":
+        del bad["engine"]
+    elif mutation == "identity_boolean_bytes":
+        bad["identity"]["bytes"] = True
+    elif mutation == "missing_summary":
+        del payload["summary"]
+    elif mutation == "missing_count":
+        del summary["forwarding"]
+    elif mutation == "unknown_summary_state":
+        summary["state"] = "assumed"
+    elif mutation == "boolean_vlan_index":
+        payload["vlan_index"] = True
+    elif mutation == "negative_count":
+        summary["held"]["value"] = -1
+    elif mutation == "extra_page":
+        page["inferred_safe"] = True
+    elif mutation == "missing_page_items":
+        del page["items"]
+    elif mutation == "boolean_offset":
+        page["offset"] = True
+    elif mutation == "extra_row":
+        row["unowned"] = True
+    elif mutation == "missing_relation":
+        del row["relation"]
+    elif mutation == "unknown_relation_state":
+        row["relation"]["state"] = "assumed"
+    elif mutation == "withheld_relation_value":
+        assert row["relation"]["value"] is None
+        row["relation"]["value"] = "forwarding"
+    elif mutation == "unknown_relation_enum":
+        row["relation"].update(state="published", value="inferred_forwarding")
+        row["relation"].pop("reason", None)
+    elif mutation == "missing_member_end":
+        del member["b"]
+    elif mutation == "boolean_member_index":
+        member["index"] = True
+    elif mutation == "missing_end_basis":
+        del member["a"]["basis"]
+    elif mutation == "unknown_signal":
+        member["a"]["signal"]["value"] = "inferred_allowance"
+    elif mutation == "boolean_host":
+        member["a"]["host"]["value"] = True
+    elif mutation == "unknown_ref_role":
+        member["a"]["signal"]["refs"][0]["role"] = "assumed"
+    elif mutation == "integer_pointer":
+        row["pointer"] = 1
+    elif mutation == "extra_ends":
+        row["ends"]["value"]["unowned"] = True
+    elif mutation == "missing_member_items":
+        del row["members"]["items"]
+    elif mutation == "missing_withheld_reason":
+        assert row["relation"]["state"] != "published"
+        del row["relation"]["reason"]
+    else:
+        bad["engine"]["snapshot_digest_form"] = "other-byte-form"
+    _carriage_native_triplet(api, body, bad)
+
+
+def test_native_lazy_carriage_validates_all_two_hundred_rows_and_the_last_end(client, tmp_path):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=200))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 200})
+    assert response.status_code == 200, response.text[:300]
+    body = response.json()
+    assert body["payload"]["page"]["returned"] == len(body["payload"]["page"]["items"]) == 200
+    bad = deepcopy(body)
+    last = bad["payload"]["page"]["items"][-1]["members"]["items"][-1]["b"]
+    del last["signal"]
+    _carriage_native_triplet(api, body, bad)
+
+
+@pytest.mark.parametrize("damage", ["float", "large_integer", "newline", "surrogate", "tuple",
+                                    "foreign_dict", "nonstring_key", "nan", "cycle", "deep"])
+def test_native_lazy_carriage_unsupported_domain_stays_entirely_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _body):
+            pytest.fail("Unsupported lazy Carriage input reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    if damage == "float":
+        body["identity"]["snapshot_id"] = 1.0
+    elif damage == "large_integer":
+        body["identity"]["snapshot_id"] = 2**53
+    elif damage == "newline":
+        body["engine"]["code_schema_version"] = "line\n"
+    elif damage == "surrogate":
+        body["engine"]["code_schema_version"] = "\ud800"
+    elif damage == "tuple":
+        body["payload"]["page"]["items"] = tuple(body["payload"]["page"]["items"])
+    elif damage == "foreign_dict":
+        body = type("ForeignBody", (dict,), {})(body)
+    elif damage == "nonstring_key":
+        body[1] = "unowned"
+    elif damage == "nan":
+        body["payload"]["summary"]["held"]["value"] = float("nan")
+    elif damage == "cycle":
+        cyclic = []
+        cyclic.append(cyclic)
+        body["payload"]["summary"]["refs"] = cyclic
+    else:
+        deep = "x"
+        for _ in range(129):
+            deep = [deep]
+        body["engine"]["code_schema_version"] = deep
+    assert not api._native_instance_allowed(body)
+    stock = api._stock_validator(schema)
+    assert validator.is_valid(body) == stock.is_valid(body)
+    assert _validation_errors(validator, body) == _validation_errors(stock, body)
+
+
+def test_native_lazy_carriage_requires_the_reviewed_literal_version_and_owned_whole_schema(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    provider = api._native_provider()
+    assert provider is not None and api.version("jsonschema-rs") == "0.58.5"
+    real, constructions = provider.Draft202012Validator, []
+
+    def observed(schema, **options):
+        constructions.append(options)
+        assert options == {"offline": True, "validate_formats": False, "ignore_unknown_formats": True}
+        return real(schema, **options)
+
+    monkeypatch.setattr(provider, "Draft202012Validator", observed)
+    changed = deepcopy(api._CARRIAGE_SCHEMA)
+    changed["title"] = "unreviewed changed whole schema"
+    assert api._NativeTransportValidator(changed, "carriage")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "view")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._VIEW_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    for pin in (None, "0" * 64):
+        with monkeypatch.context() as altered:
+            pins = dict(api._NATIVE_SCHEMA_HASHES)
+            if pin is None:
+                pins.pop("carriage", None)
+            else:
+                pins["carriage"] = pin
+            altered.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+            assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    original_version = api.version
+    for rejected in ("0.58.3", "0.58.4", "0.58.6", None):
+        def version(name):
+            if name != "jsonschema-rs":
+                return original_version(name)
+            if rejected is None:
+                raise api.PackageNotFoundError(name)
+            return rejected
+        with monkeypatch.context() as altered:
+            altered.setattr(api, "version", version)
+            assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    copied, schema = api.deepcopy, deepcopy(api._CARRIAGE_SCHEMA)
+    def changed_copy(value):
+        result = copied(value)
+        if value is schema:
+            result["title"] = "changed during private copy"
+        return result
+    with monkeypatch.context() as altered:
+        altered.setattr(api, "deepcopy", changed_copy)
+        assert api._NativeTransportValidator(schema, "carriage")._NativeTransportValidator__native is None
+    assert constructions == []
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None and len(constructions) == 1
+    assert validator.is_valid(body)
+
+
+@pytest.mark.parametrize("outcome", [False, None, 1, "true", "exception"])
+def test_native_lazy_carriage_declines_and_private_exceptions_replay_complete_stock(client, tmp_path, outcome):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Declined:
+        def is_valid(self, _body):
+            if outcome == "exception":
+                raise ValueError("private Carriage native sentinel")
+            return outcome
+    validator._NativeTransportValidator__native = Declined()
+    assert validator.is_valid(body) and api._stock_validator(schema).is_valid(body)
+    bad = deepcopy(body)
+    bad["view"] = "unqualified_carriage"
+    error = next(validator.iter_errors(bad))
+    assert error.__context__ is None and "private Carriage native sentinel" not in str(error)
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+
+
+def test_native_lazy_carriage_schema_mutation_reassignment_and_evolved_context_remain_stock(client, tmp_path):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Mutating:
+        def is_valid(self, _body):
+            schema["required"] = ["new_required"]
+            return True
+    validator._NativeTransportValidator__native = Mutating()
+    assert not validator.is_valid(body)
+    assert _validation_errors(validator, body) == _validation_errors(api._stock_validator(schema), body)
+    validator.schema = {"type": "integer"}
+    assert validator.is_valid(1) and not validator.is_valid("1")
+    assert type(validator.evolve()) is Draft202012Validator
+
+
+
+
+def test_admitted_lazy_carriage_alternate_and_evolved_contexts_never_inherit_native_or_retrieval(client, tmp_path):
+    from referencing import Registry, Resource
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    validator = api._NativeTransportValidator(deepcopy(api._CARRIAGE_SCHEMA), "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Forbidden:
+        def is_valid(self, _body):
+            pytest.fail("Alternate/evolved context inherited a native acceptance plan")
+    validator._NativeTransportValidator__native = Forbidden()
+    assert validator.is_valid(1, {"type": "integer"})
+    assert not validator.is_valid("1", {"type": "integer"})
+    calls = []
+    def retrieve(uri):
+        calls.append(uri)
+        pytest.fail("Carriage evolved context performed external retrieval")
+    registry = Registry(retrieve=retrieve)
+    for context in ({"registry":
+        registry, "_resolver": None}, {"_resolver": registry.resolver()}):
+        evolved = validator.evolve(schema={"$ref": "https://unqualified.invalid/carriage"}, **context)
+        assert type(evolved) is Draft202012Validator
+        with pytest.raises(Exception, match="Unresolvable"):
+            evolved.validate(body)
+    resource = Resource.from_contents({"$schema": Draft202012Validator.META_SCHEMA["$id"], "type": "integer"})
+    local = validator.evolve(schema={"$ref": "urn:carriage-local"},
+                             registry=Registry().with_resource("urn:carriage-local", resource), _resolver=None)
+    assert local.is_valid(1) and not local.is_valid("1")
+    assert calls == []
+@pytest.mark.parametrize("damage", ["returned", "has_more", "total", "limit", "overfull"])
+def test_native_lazy_carriage_schema_success_never_waives_post_schema_metadata(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    from pydantic import ValidationError as ModelValidationError
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    bad = deepcopy(body)
+    page = bad["payload"]["page"]
+    if damage == "has_more":
+        page["has_more"] = not page["has_more"]
+    elif damage == "limit":
+        page["limit"] = 201
+    elif damage == "overfull":
+        page["items"] = [deepcopy(page["items"][0]) for _ in range(201)]
+        page.update(returned=201, total=201, limit=201, has_more=False)
+    else:
+        page[damage] += 1
+    validator, calls, exceptions = _native_observed(api, deepcopy(api._CARRIAGE_SCHEMA), "carriage")
+    assert validator.is_valid(bad) and api._stock_validator(api._CARRIAGE_SCHEMA).is_valid(bad)
+    assert calls == [True] and exceptions == []  # Relational/max200 guards are not the raw JSON schema.
+    with pytest.raises(ValueError, match="metadata disagrees"):
+        api._require_carriage_page(bad["payload"])
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionCarriageResponse.model_validate(bad)
+
+
+def test_lazy_carriage_native_nonce_proof_requires_request_local_complete_guards(tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "carriage-native-smoke")
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    app = create_app(db_path=str(tmp_path / "carriage-native-smoke.db"), scope_dist_dir=None)
+    headers, proof = {"X-Atlas-Native-Smoke-Nonce": "carriage-native-smoke"}, "x-atlas-native-validation"
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000),
+                    raise_server_exceptions=False) as client:
+        sid = seed(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+        endpoint, params = _carriage_url(sid), {"vlan_index": 0, "limit": 1}
+        accepted = client.get(endpoint, params=params, headers=headers)
+        assert accepted.status_code == 200 and accepted.headers[proof] == "jsonschema-rs/0.58.5"
+        assert proof not in client.get(endpoint, params=params).headers
+        assert proof not in client.get(endpoint, params=params, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
+        assert proof not in client.get(endpoint, params=params, headers=[*headers.items(), *headers.items()]).headers
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            modes = [True, False] * 6
+            responses = list(pool.map(lambda mode: client.get(endpoint, params=params, headers=headers if mode else {}), modes))
+        assert [proof in response.headers for response in responses] == modes
+        class Declined:
+            def is_valid(self, _body):
+                return False
+        with monkeypatch.context() as altered:
+            altered.setattr(api._CARRIAGE_VALIDATOR, "_NativeTransportValidator__native", Declined())
+            fallback = client.get(endpoint, params=params, headers=headers)
+            assert fallback.status_code == 200 and proof not in fallback.headers
+        original = api.carriage_page
+        def malformed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result["payload"]["page"]["has_more"] = not result["payload"]["page"]["has_more"]
+            return result
+        with monkeypatch.context() as altered:
+            altered.setattr(api, "carriage_page", malformed)
+            refused = client.get(endpoint, params=params, headers=headers)
+            assert refused.status_code == 500 and proof not in refused.headers
+        owner_page = engine.ui_projection_carriage
+        def foreign_source(*args, **kwargs):
+            result = owner_page(*args, **kwargs)
+            assert result["engine"]["snapshot_bytes"]["state"] == "published"
+            result["engine"]["snapshot_bytes"]["value"] += 1
+            return result
+        with monkeypatch.context() as altered:
+            altered.setattr(engine, "ui_projection_carriage", foreign_source)
+            refused = client.get(endpoint, params=params, headers=headers)
+            assert refused.status_code == 500 and proof not in refused.headers
+        restored = client.get(endpoint, params=params, headers=headers)
+        assert restored.status_code == 200 and restored.headers[proof] == "jsonschema-rs/0.58.5"
+
+
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
                                      "extra_group_field", "unknown_check_status", "missing_check_phase"])
 def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(native_body, mutation):
@@ -1704,11 +2095,12 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    # W52 / G14 v2: recomputed as a pure _native_schema_hash call on the vlan_carriage/2 schema; hosted CI must confirm.
+    # W52 / G14 v2: all three values are literal observations from independently reviewed hosted schema material.
     prospective = {"view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
-                   "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758"}
+                   "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758",
+                   "carriage": "54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
-            (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
+            (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA), ("carriage", api._CARRIAGE_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
 
     def fact(value):
@@ -2185,7 +2577,9 @@ def test_all_python_fallbacks_and_evolved_contexts_refuse_external_retrieval(tmp
     thread.start()
     try:
         for reference in (f"http://127.0.0.1:{server.server_port}/schema", fixture.as_uri()):
-            for factory in (api._compiled_validator, lambda schema: api._NativeTransportValidator(schema, "view")):
+            for factory in (api._compiled_validator, lambda schema:
+                api._NativeTransportValidator(schema, "view"),
+                            lambda schema: api._NativeTransportValidator(schema, "carriage")):
                 unknown = factory({"$ref": reference})
                 with pytest.raises(Exception, match="Unresolvable"):
                     unknown.validate(1)

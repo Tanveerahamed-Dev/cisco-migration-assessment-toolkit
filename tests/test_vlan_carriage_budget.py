@@ -205,6 +205,7 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         sys.path.insert(0, webapp)
     from backend import ui_projection_api as api
     from backend.app import create_app
+    from cisco_toolkit import protocol_assurance as pa
 
     # Transparent hosted diagnostics: the unchanged outer timers and ceilings still decide. Times are inclusive
     # (admission includes gaps, validation includes schema fingerprinting), so these figures must not be summed.
@@ -233,6 +234,12 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
             (api.engine, "ui_projection", "document_production"),
             (api.engine, "ui_projection_carriage", "page_production"),
             (uip, "bound_snapshot_source", "mutation_sensitive_identity"),
+            (pa, "_matches_snapshot_content_proof", "identity_proof"),
+            (pa, "_snapshot_identity_text", "identity_full_encoding"),
+            (pa, "_snapshot_identity_binary", "identity_full_binary_encoding"),
+            (pa, "canonical_sha256", "canonical_content_guard"),
+            (uip, "carriage_observation_admission", "observation_owner_admission"),
+            (uip, "carriage_role_index", "role_owner_index"),
             (api, "deepcopy", "owned_copy"),
             (api, "_require_json_native", "json_native"),
             (api, "_schema_fingerprint", "schema_fingerprint"),
@@ -293,6 +300,10 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         with capsys.disabled():
             print("VLAN-CARRIAGE-STAGES " + json.dumps({
                 "inclusive_not_additive": True,
+                "bound_proof_present": {
+                    key[-1]: type(getattr(entry.snapshot, "_bound_content_proof", None))
+                    is pa._BoundSnapshotContentProof for key, entry in cache.entries.items()
+                },
                 "phases": {key: {name: {"count": value["count"], "ms": round(value["ms"], 1)}
                                  for name, value in sorted(stage.items())}
                            for key, stage in stages.items()},

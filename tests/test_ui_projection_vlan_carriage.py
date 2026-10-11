@@ -595,3 +595,170 @@ def test_noneligible_observation_key_uses_the_owner_without_changing_its_admissi
     assert len(calls) == 2
     assert summary(snap)["state"] == PUB
     checked(snap)
+
+
+def test_equal_observations_share_immutable_positions_but_keep_each_current_host_role(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    before = deepcopy(snap)
+    original, indexed = uip.carriage_role_index, []
+
+    def observed(record):
+        indexed.append(record)
+        return original(record)
+
+    monkeypatch.setattr(uip, "carriage_role_index", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(indexed) == 1
+    indexes = [admission.observations[host][1] for host in (A, B)]
+    assert indexes[0] is indexes[1]
+    with pytest.raises(TypeError):
+        indexes[0][("pvst_vlan", 10, PORT)] = (999,)
+    for host in (A, B):
+        record, index = admission.observations[host]
+        assert record is observations[host]
+        rows = vlan_carriage.carriage_role_rows(record, PORT, 10, index=index)
+        assert rows[0][1] is observations[host]["roles"][0]
+    produced = uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission)["carriage"]
+    assert produced["summary"]["forwarding"]["value"] == 1
+    for side, host in (("a", A), ("b", B)):
+        signal = produced["page"]["items"][0]["members"]["items"][0][side]["signal"]
+        assert signal["value"] == "forwarding"
+        assert any(ref["pointer"] == f"/stp_topology_observations/{host}/roles/0" for ref in signal["refs"])
+    indexed.clear()
+    uip.carriage_admission(snap)
+    assert len(indexed) == 1
+    assert snap == before
+
+
+@pytest.mark.parametrize("damage", ["incompatible", "unpublished", "namespace", "missing-role"])
+def test_shared_role_positions_are_read_again_for_a_changed_later_host(tmp_path, damage):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    assert summary(snap)["state"] == PUB
+    if damage == "incompatible":
+        observations[B]["roles"][0]["role"] = "alternate"  # Forwarding beside alternate is not compatible.
+    elif damage == "unpublished":
+        observations[B]["roles"][0]["state"] = "learning"
+    elif damage == "namespace":
+        observations[B]["roles"][0]["namespace"] = "mst_instance"
+    else:
+        observations[B]["roles"] = []
+        observations[B]["role_parsed_count"] = 0
+    result = summary(snap)
+    assert result["state"] == UV and result["forwarding"]["value"] is None
+    assert page(snap)["page"]["items"][0]["members"]["items"][0]["b"]["signal"]["value"] is None
+    checked(snap)
+
+
+def test_equal_current_role_records_keep_a_shared_false_compatibility_answer_false(tmp_path):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    assert summary(snap)["state"] == PUB
+    for record in observations.values():
+        record["roles"][0]["role"] = "alternate"  # Both current role rows are now incompatible with FWD.
+    assert observations[A] == observations[B]
+    assert summary(snap)["state"] == UV
+    members = page(snap)["page"]["items"][0]["members"]["items"]
+    assert members[0]["a"]["signal"]["value"] is None and members[0]["b"]["signal"]["value"] is None
+    checked(snap)
+
+
+@pytest.mark.parametrize("damage", ["range", "literal_none", "blocked_native_conflict"])
+def test_shared_role_compatibility_never_shares_a_final_end_allowance_decision(tmp_path, damage):
+    blocked = damage == "blocked_native_conflict"
+    observations = {host: _observation("BLK" if blocked else "FWD") for host in (A, B)}
+    snap = snapshot(tmp_path, ("20", "20") if blocked else ("10", "10"), observations)
+    assert observations[A] == observations[B]
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == ("stp_blocked" if blocked else "forwarding")
+    record = snap["interfaces"][B][PORT]
+    if damage == "range":
+        record["trunk_allowed_vlans"] = "20"
+    elif damage == "literal_none":
+        record["trunk_allowed_vlans"], record["trunk_allowed_none"] = "", "none"
+    else:
+        record["trunk_native_vlan"] = "10"
+    assert summary(snap)["state"] == UV
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
+    checked(snap)
+
+
+def test_shared_logical_channel_positions_do_not_erase_a_physical_member_beside_role(tmp_path):
+    interfaces = _bundle(tmp_path, b_groups=((1, ("Gi1/0/1", "Gi1/0/2")),), allowed=(None, None))
+    observations = {host: _stp({10: [("Po1", "Desg", "FWD")]}) for host in (A, B)}
+    snap = snapshot(tmp_path, observations=observations, interfaces=interfaces)
+    assert observations[A] == observations[B] and summary(snap)["state"] == PUB
+    # Rebuild through the typed producer, on both value-identical host records: one physical member now also has
+    # a role beside the logical channel. The stored old positive must be held; no first-member fallback.
+    snap["stp_topology_observations"] = {
+        host: _stp({10: [("Po1", "Desg", "FWD"), ("Gi1/0/2", "Altn", "BLK")]}) for host in (A, B)}
+    assert summary(snap)["state"] == UV
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
+    assert any("stp_pointer" in ref["pointer"] for ref in source(snap)["refs"])
+    checked(snap)
+
+
+def test_nonstandard_real_owner_index_shape_keeps_per_host_fallback_and_complete_output(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    expected, expected_page = checked(snap), uip.project_vlan_carriage(snap, 0, 0, 200)
+    original, calls = uip.carriage_role_index, []
+
+    class ForeignIndex(dict):
+        pass
+
+    def observed(record):
+        calls.append(record)
+        return ForeignIndex(original(record))  # Same real owner positions; optional ordinary-index reuse is ineligible.
+
+    monkeypatch.setattr(uip, "carriage_role_index", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 2 and calls[0] is observations[A] and calls[1] is observations[B]
+    first, second = admission.observations[A][1], admission.observations[B][1]
+    assert type(first) is type(second) is ForeignIndex and first is not second
+    assert uip.project(snap, carriage=admission) == expected
+    assert uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission) == expected_page
+    checked(snap)
+
+
+@pytest.mark.parametrize("shape", ["foreign-list", "list-pair", "copied-row"])
+def test_nonstandard_real_owner_queries_never_retain_shared_positions_or_foreign_rows(tmp_path, monkeypatch, shape):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    expected, expected_page = checked(snap), uip.project_vlan_carriage(snap, 0, 0, 200)
+    original, calls, replies = uip.carriage_role_rows, [], []
+    compatible, seen_rows = uip.carriage_role_compatible, []
+
+    class ForeignRows(list):
+        pass
+
+    def observed(record, interface, vid, *, index=None):
+        rows = original(record, interface, vid, index=index)
+        assert rows and rows[0][1] is record["roles"][rows[0][0]]
+        if shape == "foreign-list":
+            result = ForeignRows(rows)
+        elif shape == "list-pair":
+            result = [[i, row] for i, row in rows]
+        else:
+            result = [(i, dict(row)) for i, row in rows]
+        calls.append(record)
+        replies.append(result)
+        return result
+
+    def observed_compatible(row):
+        seen_rows.append(row)
+        return compatible(row)
+
+    monkeypatch.setattr(uip, "carriage_role_rows", observed)
+    monkeypatch.setattr(uip, "carriage_role_compatible", observed_compatible)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 2 and calls[0] is observations[A] and calls[1] is observations[B]
+    # Both host queries were executed: the second was not replaced by a shared position hit.
+    if shape == "copied-row":
+        assert len(seen_rows) == 2
+        assert seen_rows[0] is replies[0][0][1] and seen_rows[1] is replies[1][0][1]
+        assert seen_rows[0] is not observations[A]["roles"][0]
+        assert seen_rows[1] is not observations[B]["roles"][0]
+    assert uip.project(snap, carriage=admission) == expected
+    assert uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission) == expected_page
+    checked(snap)

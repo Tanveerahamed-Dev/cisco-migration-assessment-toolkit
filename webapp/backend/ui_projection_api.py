@@ -72,6 +72,9 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
     "view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
     "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758",
+    # W52 v2 whole Carriage: actual hosted 64986339/tree8719 observer material,
+    # independently reviewed complete schema/domain; never populated at runtime.
+    "carriage": "54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -829,15 +832,15 @@ Draft202012Validator.check_schema(_PATH_SCHEMA)
 # Query documents are a separate Python-validated contract, never a native profile.
 _PATH_VALIDATOR = _compiled_validator(_PATH_SCHEMA)
 # G14 v2: one VLAN row's lazy carriage page, beside the path route. The payload is exactly the owner's Carriage
-# definition; MAX_PAGE_SIZE binds it in the route and in _require_carriage_page. Python-validated like the path
-# document, never a native profile.
+# definition; MAX_PAGE_SIZE binds it in the route and in _require_carriage_page. Its complete pinned native
+# profile uses the same audited domain and full Python/stock fallbacks as the existing view/list profiles.
 _CARRIAGE_SCHEMA = {
     **_closed({**_common_schema("carriage"), "payload": {"$ref": "#/$defs/Carriage"}}),
     "$defs": _DEFS,
 }
 Draft202012Validator.check_schema(_CARRIAGE_SCHEMA)
-# Candidate profile stays entirely Python while its independently reviewed literal
-# pin is absent. The hosted observer retains its raw schema for separate admission.
+# Whole-schema source admission still requires actual hosted provider controls. Unsupported
+# instances/context and public errors retain full Python behavior; no runtime auto-pin.
 _CARRIAGE_VALIDATOR = _NativeTransportValidator(_CARRIAGE_SCHEMA, "carriage")
 
 
