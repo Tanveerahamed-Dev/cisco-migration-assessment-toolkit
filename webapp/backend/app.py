@@ -3340,7 +3340,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             media_type="application/json",
             headers={
                 "Content-Disposition": (
-                    f'attachment; filename="protocol-assurance-snapshot-{snapshot_id}.json"'
+                    f'attachment; filename="snapshot-{snapshot_id}.protocol-assurance.json"'
                 ),
                 "Cache-Control": "no-store",
                 "X-Atlas-Content-SHA256": digest,

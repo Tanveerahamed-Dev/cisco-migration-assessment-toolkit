@@ -190,7 +190,7 @@ const CANONICAL_GATE_COLOR: Record<string, string> = {
 // The trend file holds bound evidence only: the trend's own fields and, per adjacent pair, its identity and complete
 // comparison. The display-only impacts_view the server serves beside each pair is never written (receiptExport.ts).
 function downloadTrendJson(value: CampaignTrendResponse, campaignId: number) {
-  downloadJsonDocument(trendReceiptsExportDocument(value), `atlas-campaign-${campaignId}-trend-receipts.json`);
+  downloadJsonDocument(trendReceiptsExportDocument(value), `atlas-campaign-${campaignId}.trend-comparisons.json`);
 }
 
 function TrendCanonicalReceipts({ value, campaignId }: {
@@ -265,7 +265,7 @@ function TrendCanonicalReceipts({ value, campaignId }: {
               </div>
             )}
             <ComparisonDecision value={entry.comparison} impactsView={entry.impacts_view}
-              exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
+              exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}.comparison.json`} />
           </details>
         );
       })}
@@ -841,7 +841,7 @@ export default function CampaignPage() {
                       value={cmp.current_baseline}
                       completeExport={cmp.operator_evidence?.current_baseline_blocker_export}
                     />}
-                    exportFilename={`campaign-${cid}-snapshots-${cmpContext?.before ?? "unknown"}-${cmpContext?.recovery ?? "unknown"}-comparison.json`}
+                    exportFilename={`campaign-${cid}-snapshots-${cmpContext?.before ?? "unknown"}-${cmpContext?.recovery ?? "unknown"}.comparison.json`}
                   />
                   {cmpContext && (
                     <div className="faint mono" data-testid="comparison-submitted-context"
