@@ -29,7 +29,7 @@ FIXTURE_PATH = ROOT / "tests/fixtures/w60b_redaction_corpus.json"
 BASE = "0b411c16347a0f1651b88cae52b58555701e4db3"
 MAIN = "2c927d0209e4c4928c3f29d8747d648f930ddade"
 ROUND3 = "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
-CURRENT_MAIN = "3f1d844cfabd60b901a0adb68a246bd45bdcf1d0"
+CURRENT_MAIN = "00647ebddfc68064f6845a8b14a5984b6e92695c"
 _SURROGATE = re.compile(r"\{\{U\+(DC[89A-F][0-9A-F])\}\}")
 
 

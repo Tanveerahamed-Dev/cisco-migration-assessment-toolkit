@@ -3845,6 +3845,12 @@ _REDACT_REQUIRED_RES = [
     _redact_family(r"\bset{H}system{H}ntp{H}authentication-key{H}\d+{H}type{H}"
                    + _REDACT_HASH + r"{H}value(?P<required_value>)", required=True, register=False),
 ]
+_REDACT_ISAKMP_FIRST_VALUE_RE = _redact_family(
+    r"\bcrypto{H}isakmp{H}key(?P<required_value>)", required=True, register=False)
+_REDACT_ISAKMP_PEER_VALUE_RE = re.compile(_g(
+    r"{h}*" + _REDACT_KEY_RUN + _REDACT_SECRET_VALUE
+    + r"{H}(?:address|hostname){H}{S}+"), re.IGNORECASE)
+_REDACT_TRAILING_WS_RE = re.compile(_g(r"{h}*\Z"))
 _REDACT_SECRET_RES = [
     # FortiGate 'set <secret-attribute>[N] [ENC] <VALUE>'. The attribute set is CLOSED (a name containing
     # 'key' is not therefore a secret: 'keylife' is a timer); a numbered attribute ('password2' ..
@@ -6124,11 +6130,26 @@ def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bo
     return _redact_absorb_surrogates(line)
 
 
-def _redact_grammar_line(line: str, has_next: bool, delim: str = "") -> str:
+def _redact_incomplete_isakmp(line: str, next_line: str | None = None, delim: str = "") -> str:
+    """Only a witnessed peer clause permits ISAKMP key encoding or a terminal wrap."""
+    replace = _redact_grammar_sub(False, delim, preserve_quotes=True)
+
+    def sub(match):
+        inline_peer = _REDACT_ISAKMP_PEER_VALUE_RE.match(line, match.start("v"))
+        wrapped_peer = (next_line is not None
+                        and _REDACT_TRAILING_WS_RE.match(line, match.end()) is not None
+                        and _REDACT_ISAKMP_PEER_VALUE_RE.match(next_line) is not None)
+        return match.group(0) if inline_peer or wrapped_peer else replace(match)
+
+    return _REDACT_ISAKMP_FIRST_VALUE_RE.sub(sub, line)
+
+
+def _redact_grammar_line(line: str, has_next: bool, delim: str = "", *, next_line: str | None = None) -> str:
     """The credential GRAMMAR over one line (`_REDACT_SECRET_RES`)."""
     low = line.casefold()
     if len(line) > _REDACT_GRAMMAR_MAX_LINE or not _REDACT_LINE_PREFILTER.search(low):
         return line
+    line = _redact_incomplete_isakmp(line, next_line, delim)
     sub = _redact_grammar_sub(has_next, delim) if delim else _REDACT_GRAMMAR_SUBS[has_next]
     required_sub = _redact_grammar_sub(has_next, delim, preserve_quotes=True)
     for rx in _REDACT_REQUIRED_RES:
@@ -6303,6 +6324,11 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
     lines = parts[0::2]
     pem, table, forti = _redact_line_plan(lines)
     has_next = _redact_has_next(lines)
+    next_lines, following = [None] * len(lines), None
+    for i in range(len(lines) - 1, -1, -1):
+        next_lines[i] = following
+        if lines[i].strip(_REDACT_WS_CHARS):
+            following = lines[i]
     pending = None              # the previous non-blank line dangles: its open clause's qualifier tail
     region = None               # the credential column of an open show table
     prev_nb = None              # the previous non-blank SCRUBBED line (the cross-line grammar join)
@@ -6375,7 +6401,10 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         delim = banner or (start.group("d") if start else "")
         prose = (0 if banner else start.end() if start else
                  0 if not forced and _REDACT_PROSE_LINE_RE.match(out) else None)
-        out = _redact_grammar_line(out, has_next[index], delim)
+        before_isakmp = out
+        out = _redact_incomplete_isakmp(out, next_lines[index], delim)
+        wrap_raw = line if out == before_isakmp else out
+        out = _redact_grammar_line(out, has_next[index], delim, next_line=next_lines[index])
         join = None if prev is None or forced else _redact_join_anchor(prev, out)
         low = out.casefold()
         if (forced or prose is not None or join is not None or forti[index]
@@ -6457,7 +6486,8 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         # keyword or labelled a digest on this line: sweep the line again until nothing changes, so the
         # scrub is a fixpoint and the verifier reads exactly what a re-run would leave.
         for _round in range(3) if out != swept else ():
-            again = _redact_sweep_line(_redact_grammar_line(out, has_next[index], delim), forced=forced,
+            again = _redact_sweep_line(_redact_grammar_line(out, has_next[index], delim,
+                                                         next_line=next_lines[index]), forced=forced,
                                        forti=forti[index], digest_value=digest_value, prose=prose,
                                        delim=delim, join=None if prev is None or forced
                                        else _redact_join_anchor(prev, out))
@@ -6474,7 +6504,7 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         if not blank and header is None:
             dangle = _redact_dangle(out, carry)
             if dangle is None and out != line and not taken:
-                dangle = _redact_dangle(line)                # fail safe: the scrub replaced the keyword
+                dangle = _redact_dangle(wrap_raw)            # fail safe: the scrub replaced the keyword
             if dangle is not None and not has_next[index]:
                 kind, tail, key_id = dangle
                 if kind == "value" and len(tail) == 1 and _REDACT_TYPE_DIGIT_RE.fullmatch(tail[0]) and not key_id:
@@ -6497,9 +6527,9 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         if out != line:
             lines[index] = out
             changed = True
-        prev, prev_raw = out, line
+        prev, prev_raw = out, wrap_raw
         if not blank:
-            prev_nb, prev_nb_raw = out, line
+            prev_nb, prev_nb_raw = out, wrap_raw
             expect = bool(_REDACT_EXPECT_PROMPT_RE.match(out))
     if not changed:
         return s

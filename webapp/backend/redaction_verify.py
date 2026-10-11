@@ -981,7 +981,47 @@ _REQUIRED_KEY_QUALIFIERS = frozenset({
 })
 
 
-def _required_config_findings(line: str, *, has_next: bool = False, delim: str = "") -> list[str]:
+def _required_isakmp_peer(line: str, start: int, next_line: str | None) -> tuple[bool, int | None]:
+    """A bounded credential field followed by a complete peer clause admits ISAKMP qualifiers.
+
+    Only literal address/hostname labels are peer clauses. Before one, the final word is a
+    credential and every earlier word must be a literal encoding/type/hash qualifier. Thus
+    a new 'interface Ethernet...' stanza cannot supply the previous key's missing peer.
+    """
+    def peer(source: str, position: int) -> int | None:
+        fields = list(itertools.islice(_SWEEP_ARGV_WORD_RE.finditer(source, position), 33))
+        words = [_sweep_decode_word(field.group(0))[0] for field in fields]
+        for index in range(1, min(len(fields) - 1, 32)):
+            label = fields[index].group(0).casefold()
+            if label not in {"address", "hostname"}:
+                continue
+            before = words[:index - 1]
+            if any(fields[n].group(0) != word
+                   or not (word.casefold() in _REQUIRED_KEY_QUALIFIERS
+                           or _REQUIRED_HASH_RE.fullmatch(word) or _CRED_TYPE_DIGIT_RE.fullmatch(word))
+                   for n, word in enumerate(before)):
+                continue
+            host = words[index + 1]
+            if (host == _PLACEHOLDER
+                    or (label == "address" and (_sweep_is_address(host) or _SWEEP_SYNTH_RE.fullmatch(host)))
+                    or (label == "hostname" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}", host))):
+                return index
+        return None
+
+    current = peer(line, start)
+    if current is not None:
+        return True, current
+    terminal = list(itertools.islice(_SWEEP_ARGV_WORD_RE.finditer(line, start), 33))
+    if len(terminal) > 1 and any(
+            _REQUIRED_HASH_RE.fullmatch(field.group(0)) is None
+            and _CRED_TYPE_DIGIT_RE.fullmatch(field.group(0)) is None
+            and field.group(0).casefold() not in _REQUIRED_KEY_QUALIFIERS for field in terminal):
+        return False, None
+    return (next_line is not None and peer(next_line, 0) is not None), None
+
+
+def _required_config_findings(line: str, *, has_next: bool = False, delim: str = "",
+                              next_line: str | None = None) -> list[str]:
     """Check username/neighbor/enable, authentication-key and ISAKMP key slots independently.
 
     A global keyword stop list is deliberately not consulted. Here 'encryption', 'chain',
@@ -1012,6 +1052,9 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
             continue
         words = [_sweep_decode_word(field.group(0))[0] for field in fields]
         pos = 0
+        isakmp_peer, peer_limit = (False, None)
+        if match.group("isakmp"):
+            isakmp_peer, peer_limit = _required_isakmp_peer(line, gap.end(), next_line)
         if match.group("ntp"):
             if not (words[0].isdigit() or words[0] == _PLACEHOLDER) or len(words) < 2:
                 continue
@@ -1024,8 +1067,11 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
             continue                                      # complete level metadata, no value on this line
         qualifiers = _REQUIRED_PASSWORD_QUALIFIERS if match.group("password") else _REQUIRED_KEY_QUALIFIERS
         password_type_consumed = False
-        while pos + 1 < len(words):
+        limit = peer_limit if peer_limit is not None else len(words)
+        while pos + 1 < limit:
             word = words[pos]
+            if match.group("isakmp") and not isakmp_peer:
+                break                                     # without a peer clause the first token is the value
             # Required configuration slots use literal qualifier tokens. A quoted or
             # escaped word occupying that slot is a value even when it spells 'clear',
             # 'md5', 'ENC', or a type digit after semantic decoding.
@@ -1048,6 +1094,7 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
                 break
         if (has_next and pos + 1 == len(words)
                 and not password_type_consumed
+                and (not match.group("isakmp") or isakmp_peer)
                 and fields[pos].group(0) == words[pos]
                 and (_CRED_TYPE_DIGIT_RE.fullmatch(words[pos]) or words[pos] == "ENC")):
             continue
@@ -1099,12 +1146,12 @@ def _cred_clauses(line: str, artifact: bool,
 
 
 def _credential_line_findings(line: str, *, artifact: bool, has_next: bool = False,
-                              delim: str = "") -> list[str]:
+                              delim: str = "", next_line: str | None = None) -> list[str]:
     """Every GRAMMAR violation on one line: a recognised value slot that is not the placeholder.
 
     ``artifact`` reads only the families' line-start ``artifact`` anchors (a shareable artifact also
     carries authored prose and generated code); otherwise every family anchor anywhere in the line."""
-    required = _required_config_findings(line, has_next=has_next, delim=delim)
+    required = _required_config_findings(line, has_next=has_next, delim=delim, next_line=next_line)
     if len(line) > _CRED_GRAMMAR_MAX_LINE or not _CRED_PREFILTER_RE.search(line.casefold()):
         return required
     return required + [f"credential value ({family.name})"
@@ -2345,7 +2392,14 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
     producer advances it from its own output."""
     lines = _cred_lines(text)
     pem, table, forti = _sweep_plan(lines)
-    has_next = _cred_has_next(lines)
+    has_next = [False] * len(lines)
+    next_lines: list[str | None] = [None] * len(lines)
+    following: str | None = None
+    for index in range(len(lines) - 1, -1, -1):
+        has_next[index] = following is not None
+        next_lines[index] = following
+        if _CRED_WS_RE.sub("", lines[index]):
+            following = lines[index]
     kinds = _pem_findings(lines, pem)
     pending: Any = None
     region: Any = None
@@ -2472,7 +2526,8 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
                 kinds.append("credential value (shell argument)")
             if _sweep_entropy(line):
                 kinds.append("high-entropy token")
-            kinds.extend(_credential_line_findings(line, artifact=False, has_next=has_next[index], delim=delim))
+            kinds.extend(_credential_line_findings(line, artifact=False, has_next=has_next[index], delim=delim,
+                                                    next_line=next_lines[index]))
         if row is not None and any(not (_PLACEHOLDER in text and _sweep_token_ok(text)) and not _DASHES_RE.match(text)
                                    for i, (_a, _b, text) in enumerate(_table_tokens(line))
                                    if i in (_table_fields(line, _table_tokens(line), row) or ((), ()))[1]):

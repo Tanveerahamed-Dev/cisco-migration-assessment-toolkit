@@ -12371,6 +12371,102 @@
       "structural": ["--create-snmpv3-user", "-a sha", "-x aes", "creatorPublic276"],
       "mode": "must_redact",
       "expect": "net-snmp-config --create-snmpv3-user -a sha -x aes -A <redacted> -X <redacted> creatorPublic276\n"
+    },
+    {
+      "id": "isakmp-peer:incomplete-numeric-before-interface",
+      "finding": "R1",
+      "text": "28701\tcrypto isakmp key 7\ninterface GigabitEthernet5/0/21\n",
+      "secrets": ["7"],
+      "structural": ["28701\tcrypto isakmp key ", "interface GigabitEthernet5/0/21\n"],
+      "value_occurrences_removed": {"7": 1},
+      "mode": "must_redact",
+      "expect": "28701\tcrypto isakmp key <redacted>\ninterface GigabitEthernet5/0/21\n",
+      "note": "Incomplete credential statement, not a validated daemon command: with no peer clause, 7 must not become a type whose value is the following interface."
+    },
+    {
+      "id": "isakmp-peer:incomplete-quoted-numeric-before-interface",
+      "finding": "R1",
+      "text": "28702\tcrypto isakmp key \"7\"\ninterface GigabitEthernet5/0/22\n",
+      "secrets": ["7"],
+      "structural": ["28702\tcrypto isakmp key ", "interface GigabitEthernet5/0/22\n"],
+      "value_occurrences_removed": {"7": 1},
+      "mode": "must_redact",
+      "expect": "28702\tcrypto isakmp key \"<redacted>\"\ninterface GigabitEthernet5/0/22\n"
+    },
+    {
+      "id": "isakmp-peer:incomplete-enc-before-interface",
+      "finding": "R1",
+      "text": "28703\tcrypto isakmp key ENC\ninterface GigabitEthernet5/0/23\n",
+      "secrets": ["ENC"],
+      "structural": ["28703\tcrypto isakmp key ", "interface GigabitEthernet5/0/23\n"],
+      "value_occurrences_removed": {"ENC": 1},
+      "mode": "must_redact",
+      "expect": "28703\tcrypto isakmp key <redacted>\ninterface GigabitEthernet5/0/23\n"
+    },
+    {
+      "id": "isakmp-peer:incomplete-quoted-enc-before-interface",
+      "finding": "R1",
+      "text": "28704\tcrypto isakmp key \"ENC\"\ninterface GigabitEthernet5/0/24\n",
+      "secrets": ["ENC"],
+      "structural": ["28704\tcrypto isakmp key ", "interface GigabitEthernet5/0/24\n"],
+      "value_occurrences_removed": {"ENC": 1},
+      "mode": "must_redact",
+      "expect": "28704\tcrypto isakmp key \"<redacted>\"\ninterface GigabitEthernet5/0/24\n"
+    },
+    {
+      "id": "isakmp-peer:complete-inline-type7-address",
+      "finding": "R1",
+      "text": "28705\tcrypto isakmp key 7 SyntheticIsakmp278 address 198.51.100.178\ninterface GigabitEthernet5/0/25\n",
+      "secrets": ["SyntheticIsakmp278"],
+      "structural": ["28705\tcrypto isakmp key 7 ", "address 198.51.100.178", "interface GigabitEthernet5/0/25\n"],
+      "mode": "must_redact",
+      "expect": "28705\tcrypto isakmp key 7 <redacted> address 198.51.100.178\ninterface GigabitEthernet5/0/25\n"
+    },
+    {
+      "id": "isakmp-peer:complete-inline-enc-hostname",
+      "finding": "R1",
+      "text": "28706\tcrypto isakmp key ENC SyntheticIsakmp279 hostname corpuspeer279\ninterface GigabitEthernet5/0/26\n",
+      "secrets": ["SyntheticIsakmp279"],
+      "structural": ["28706\tcrypto isakmp key ENC ", "hostname", "interface GigabitEthernet5/0/26\n"],
+      "mode": "must_redact",
+      "expect": "28706\tcrypto isakmp key ENC <redacted> hostname <redacted>\ninterface GigabitEthernet5/0/26\n",
+      "note": "Preserves existing W60 hostname-RHS over-redaction while pinning the public qualifier and peer-clause structure; it does not authorize another old-oracle correction."
+    },
+    {
+      "id": "isakmp-peer:wrapped-type7-address-after-blank",
+      "finding": "R1",
+      "text": "28707\tcrypto isakmp key 7\n\nSyntheticIsakmp280 address 198.51.100.180\ninterface GigabitEthernet5/0/27\n",
+      "secrets": ["SyntheticIsakmp280"],
+      "structural": ["28707\tcrypto isakmp key 7\n\n", "address 198.51.100.180", "interface GigabitEthernet5/0/27\n"],
+      "mode": "must_redact",
+      "expect": "28707\tcrypto isakmp key 7\n\n<redacted> address 198.51.100.180\ninterface GigabitEthernet5/0/27\n"
+    },
+    {
+      "id": "isakmp-peer:wrapped-enc-address",
+      "finding": "R1",
+      "text": "28708\tcrypto isakmp key ENC\nSyntheticIsakmp281 address 198.51.100.181\ninterface GigabitEthernet5/0/28\n",
+      "secrets": ["SyntheticIsakmp281"],
+      "structural": ["28708\tcrypto isakmp key ENC\n", "address 198.51.100.181", "interface GigabitEthernet5/0/28\n"],
+      "mode": "must_redact",
+      "expect": "28708\tcrypto isakmp key ENC\n<redacted> address 198.51.100.181\ninterface GigabitEthernet5/0/28\n"
+    },
+    {
+      "id": "isakmp-peer:wrapped-type7-hostname",
+      "finding": "R1",
+      "text": "28709\tcrypto isakmp key 7\nSyntheticIsakmp282 hostname corpuspeer282\ninterface GigabitEthernet5/0/29\n",
+      "secrets": ["SyntheticIsakmp282"],
+      "structural": ["28709\tcrypto isakmp key 7\n", "hostname", "interface GigabitEthernet5/0/29\n"],
+      "mode": "must_redact",
+      "expect": "28709\tcrypto isakmp key 7\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/29\n"
+    },
+    {
+      "id": "isakmp-peer:wrapped-enc-hostname",
+      "finding": "R1",
+      "text": "28710\tcrypto isakmp key ENC\nSyntheticIsakmp283 hostname corpuspeer283\ninterface GigabitEthernet5/0/30\n",
+      "secrets": ["SyntheticIsakmp283"],
+      "structural": ["28710\tcrypto isakmp key ENC\n", "hostname", "interface GigabitEthernet5/0/30\n"],
+      "mode": "must_redact",
+      "expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/30\n"
     }
   ],
   "review_differential": [

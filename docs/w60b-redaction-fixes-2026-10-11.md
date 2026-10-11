@@ -247,3 +247,25 @@ require their complete public syntax to survive. No private-value assertion or b
 weakened. The focused lane now executes the entire W60 suite as well as W60b and runner contracts.
 No local runtime, test, build, output generation or rebaseline occurred. Fresh exact-head all 15
 required contexts and the focused lane must pass before stopping for independent refutation.
+
+### Current-main scale integration and incomplete numeric ISAKMP slots
+
+Before publication, main advanced to `00647ebddfc68064f6845a8b14a5984b6e92695c` through merged
+scale-qualification PR #654. Merge `d264108a` retains that source and both added pinned jobs, and
+reconciles the closed runner census to 22 Linux selectors with W60b's additional job. The merged
+W70 row is retired; its handoffs remain. Current-main custody and the second full-view oracle now
+bind to this main. No published engine or frontend output changed in this integration.
+
+Further static tracing found that the legacy terminal-wrap waiver could retain incomplete ISAKMP
+values `7` and `ENC` before a new interface line. The incomplete-command repair now requires a
+peer-clause witness inline or on the next nonblank continuation before preserving encoding metadata.
+Without that witness, the first token after key is an unconditional value. The original raw line
+cannot then re-open a false wrap and erase the following interface. The independent verifier makes
+the same contextual decision separately; existing legitimate wrapped ISAKMP statements and their
+exact assertions are retained. Additional private/public controls await hosted certification.
+
+The corpus now has 880 strict rows: ten new incomplete/complete ISAKMP cases, including quoted
+values, blank-line wraps and hostname clauses, beside every original row. The PR's exact-head
+check census and body own the latest hosted verdict; this source-bound dossier preserves the
+earlier finite evidence. Green gates stop implementation for a different independent refuter;
+they confer no merge or release authority.
