@@ -1060,6 +1060,7 @@ def test_cyclic_path_rebinding_keeps_other_names_without_a_budget_refusal(tmp_pa
     'const clean = raw.replace(/"/g, ""); a.download = `private-${id}.json`',
     r'saveAs(/\)/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
     r'downloadBlob(/[,)]/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
+    r"""const prose = `${JSON.stringify(paths).replace(/'/g, "''")}`; a.download = `private-${id}.json`""",
 ])
 def test_download_tokenizer_keeps_asi_multiline_object_and_save_exits(tmp_path, assignment):
     _write(tmp_path, "new-surface/export.mjs", assignment)
@@ -1090,7 +1091,8 @@ def test_browser_local_callbacks_and_comments_are_not_filename_assignments(tmp_p
     _write(tmp_path, "new-root/callback.tsx", 'const download = useCallback(() => {});\n'
            '// a.download = "private.json"\n'
            'const text = "a.download = unknown";\n'
-           'const View = () => <a download="flow-frames.txt">save</a>;\n')
+           'const View = () => <a download="flow-frames.txt">Don\'t read "prose" as JS</a>;\n'
+           'const after = () => <div>{rows.map(x => <span>{x}</span>)}</div>;\n')
     assert [t for _l, _e, t in census.download_names(tmp_path)] == ["flow-frames.txt"]
 
 
@@ -1156,3 +1158,11 @@ def test_every_database_writer_row_retains_the_complete_companion_family():
     for key, (_count, _disposition, classes, _why) in census.WRITE_SITE_CENSUS.items():
         if set(classes) & family:
             assert family <= set(classes), key
+
+
+@pytest.mark.parametrize("header", ["const helper = <T,>(value: T) => value;",
+                                   "const helper = <T extends object>(value: T) => value;",
+                                   "const View = () => <a title={x => x > 0}>Don't parse prose</a>;"])
+def test_jsx_and_typescript_syntax_does_not_hide_later_downloads(tmp_path, header):
+    _write(tmp_path, "new-root/view.tsx", header + '\na.download = "private.json";\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}

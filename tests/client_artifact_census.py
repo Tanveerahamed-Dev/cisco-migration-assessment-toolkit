@@ -927,6 +927,8 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
         try:
             for _literal, _field, spec, _conversion in formatter.parse(pattern):
                 # Nested width/precision is resolved from the same closed builtin operands.
+                if _field is None:
+                    continue
                 _format_bound(spec)
                 _format_bound(formatter.vformat(spec, args, kwargs))
             out.append(_NameTemplate(pattern.format(*args, **kwargs)))
@@ -1244,11 +1246,36 @@ class _JsToken:
     line: int
 
 
-def _js_tokens(text: str) -> list[_JsToken]:
+def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
     """Lex strings/templates/comments as units; formatting and ASI do not hide exits."""
     tokens = []
     index = 0
     line = 1
+    jsx_levels = 0
+    tag_mode = False
+    tag_closing = False
+    expression_frames: list[list[int]] = []
+
+    def regex_end(start: int) -> int:
+        cursor = start + 1
+        in_class = False
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+                continue
+            if text[cursor] == "[":
+                in_class = True
+            elif text[cursor] == "]":
+                in_class = False
+            elif text[cursor] == "/" and not in_class:
+                cursor += 1
+                while cursor < len(text) and text[cursor].isalpha():
+                    cursor += 1
+                return cursor
+            elif text[cursor] == "\n":
+                break
+            cursor += 1
+        raise ValueError("unterminated browser regex literal")
 
     def quoted_end(start: int, depth: int = 0) -> int:
         if depth > 128:
@@ -1264,6 +1291,21 @@ def _js_tokens(text: str) -> list[_JsToken]:
                 cursor += 2
                 braces = 1
                 while cursor < len(text) and braces:
+                    if text[cursor:cursor + 2] == "//":
+                        end = text.find("\n", cursor + 2)
+                        cursor = len(text) if end < 0 else end
+                        continue
+                    if text[cursor:cursor + 2] == "/*":
+                        end = text.find("*/", cursor + 2)
+                        if end < 0:
+                            raise ValueError("unterminated browser template comment")
+                        cursor = end + 2
+                        continue
+                    if text[cursor] == "/" and text[:cursor].rstrip().endswith((
+                        "(", "=", ":", ",", "[", "!", "?", "return", "=>", "&&", "||", "??"
+                    )):
+                        cursor = regex_end(cursor)
+                        continue
                     if text[cursor] in "\"'`":
                         cursor = quoted_end(cursor, depth + 1)
                         continue
@@ -1280,6 +1322,35 @@ def _js_tokens(text: str) -> list[_JsToken]:
     while index < len(text):
         begin, first_line = index, line
         char = text[index]
+        child_text = jsx_levels > (expression_frames[-1][1] if expression_frames else 0) and not tag_mode
+        if jsx and child_text and char not in {"<", "{"}:
+            line += char == "\n"
+            index += 1
+            continue  # JSX prose is not a quoted JS expression, even when it contains apostrophes
+        if jsx and char == "<" and index + 1 < len(text) and (
+            text[index + 1].isalpha() or text[index + 1] in {"/", ">"}
+        ) and (child_text or not tokens or tokens[-1].value in {
+            "(", "=", "return", "=>", "?", ":", "&&", "||", "??", ",", "["
+        }) and not re.match(r"<[A-Za-z_$][\w$]*(?:\s*,|\s+extends\b|\s*>\s*\()", text[index:]):
+            tag_mode = True
+            tag_closing = text[index + 1] == "/"
+        if jsx and char == "{" and (child_text or tag_mode):
+            expression_frames.append([0, jsx_levels, int(tag_mode), int(tag_closing)])
+            tag_mode = False
+        if jsx and expression_frames and not tag_mode:
+            if char == "{":
+                expression_frames[-1][0] += 1
+            elif char == "}":
+                expression_frames[-1][0] -= 1
+                if expression_frames[-1][0] == 0:
+                    closed = expression_frames.pop()
+                    tag_mode, tag_closing = bool(closed[2]), bool(closed[3])
+        if jsx and char == ">" and tag_mode:
+            if tag_closing:
+                jsx_levels -= 1
+            elif not tokens or tokens[-1].value != "/":
+                jsx_levels += 1
+            tag_mode = False
         if char.isspace():
             line += char == "\n"
             index += 1
@@ -1303,26 +1374,7 @@ def _js_tokens(text: str) -> list[_JsToken]:
         }):
             # Regex literals can contain quotes, comment-looking slashes and delimiters.
             # Keep the complete regex as one token; never read its contents as JS exits.
-            index += 1
-            in_class = False
-            while index < len(text):
-                if text[index] == "\\":
-                    index += 2
-                    continue
-                if text[index] == "[":
-                    in_class = True
-                elif text[index] == "]":
-                    in_class = False
-                elif text[index] == "/" and not in_class:
-                    index += 1
-                    while index < len(text) and text[index].isalpha():
-                        index += 1
-                    break
-                elif text[index] == "\n":
-                    raise ValueError("unterminated browser regex literal")
-                index += 1
-            else:
-                raise ValueError("unterminated browser regex literal")
+            index = regex_end(index)
         elif char.isalnum() or char in "_$":
             index += 1
             while index < len(text) and (text[index].isalnum() or text[index] in "_$"):
@@ -1461,7 +1513,10 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
             else:
                 scripts.append((first_line, text))
         for first_line, text in scripts:
-            tokens = _js_tokens(text)
+            try:
+                tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
+            except ValueError as error:
+                raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
             in_tag = False
             tag_braces = 0
             for index, token in enumerate(tokens):
