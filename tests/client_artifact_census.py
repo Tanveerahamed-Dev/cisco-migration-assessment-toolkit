@@ -1327,6 +1327,29 @@ def _js_expression(text: str, tokens: list[_JsToken], start: int) -> tuple[str, 
     return expression, index
 
 
+def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
+    """Split calls on token boundaries, so regex/template delimiters are never call syntax."""
+    arguments = []
+    stack = ["("]
+    begin = opening + 1
+    for index in range(begin, len(tokens)):
+        value = tokens[index].value
+        if value in {"(", "[", "{"}:
+            stack.append(value)
+        elif value in {")", "]", "}"}:
+            expected = {")": "(", "]": "[", "}": "{"}[value]
+            if not stack or stack.pop() != expected:
+                raise ValueError("unbalanced browser call arguments")
+            if not stack:
+                if index > begin:
+                    arguments.append(text[tokens[begin].start:tokens[index - 1].end].strip())
+                return arguments
+        elif value == "," and len(stack) == 1:
+            arguments.append(text[tokens[begin].start:tokens[index - 1].end].strip())
+            begin = index + 1
+    raise ValueError("unterminated browser call arguments")
+
+
 def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
     if not relative.endswith(".py"):
         return [(1, source)]
@@ -1441,17 +1464,20 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 if index and tokens[index - 1].value == "function":
                     continue
                 if (value.startswith("download") or value == "saveAs"):
-                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    arguments = _js_arguments(text, tokens, call_start)
                     if len(arguments) < 2:
+                        if value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
+                            found.append((f"{relative}:{first_line + token.line - 1}",
+                                          "<implicit browser filename>", None))
                         continue  # event handlers with no filename parameter
                     expression = arguments[1]
                 elif value == "setAttribute":
-                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    arguments = _js_arguments(text, tokens, call_start)
                     if not arguments or _download_template(arguments[0]) != "download":
                         continue
                     expression = arguments[1] if len(arguments) >= 2 else "<implicit browser filename>"
                 elif value == "open" and index >= 2 and tokens[index - 2].value in {"window", "globalThis"}:
-                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    arguments = _js_arguments(text, tokens, call_start)
                     expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
                 else:
                     continue

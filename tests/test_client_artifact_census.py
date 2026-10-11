@@ -1037,6 +1037,8 @@ def test_filename_model_bound_is_a_refusal_not_success(kind):
     'Object.assign(a, {download: `private-${id}.json`, href: blobUrl})',
     'saveAs(blob, `private-${id}.json`)',
     'const clean = raw.replace(/"/g, ""); a.download = `private-${id}.json`',
+    r'saveAs(/\)/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
+    r'downloadBlob(/[,)]/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
 ])
 def test_download_tokenizer_keeps_asi_multiline_object_and_save_exits(tmp_path, assignment):
     _write(tmp_path, "new-surface/export.mjs", assignment)
