@@ -507,9 +507,8 @@ differences that must hold:
 
 ## 4. The 3-D fabric
 
-**The stack is pinned and was verified by reading the installed modules, not assumed:**
-`three@0.186.0`, `postprocessing@6.39.5`, `react@19.2.8`, `vite@8.2.1`
-(`atlas-scope/package.json`). The installed `node_modules/postprocessing/package.json` declares
+**The exact stack is owned by `atlas-scope/package.json` and `package-lock.json`;
+hosted CI checks the installed toolchain.** The installed `node_modules/postprocessing/package.json` declares
 `peerDependencies: { "three": ">= 0.168.0 < 0.187.0" }`. r186 is in range; **r187 is not.** A CI
 check must fail the build if the installed three version leaves that range.
 

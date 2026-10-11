@@ -65,7 +65,7 @@ test("the lock resolves the Vinext image-size edge only to the tracked local pac
 
   assert.equal(manifest.overrides["image-size"], undefined);
   // The exact Vinext override object: this edge plus the bounded braces edge, nothing else.
-  assert.deepEqual(manifest.overrides["vinext@0.0.50"], {
+  assert.deepEqual(manifest.overrides["vinext@0.2.1"], {
     "image-size": "file:vendor/bounded-image-size",
     braces: "file:vendor/bounded-braces",
   });
@@ -96,11 +96,11 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
   const sharp = lock.packages["node_modules/sharp"];
 
   assert.equal(manifest.overrides.sharp, undefined);
-  assert.deepEqual(manifest.overrides["miniflare@5.20260801.1-alpha"], {
+  assert.deepEqual(manifest.overrides["miniflare@5.20261006.0-alpha"], {
     sharp: "0.35.5",
   });
-  assert.equal(miniflare.version, "5.20260801.1-alpha");
-  assert.equal(miniflare.dependencies.sharp, "0.35.2");
+  assert.equal(miniflare.version, "5.20261006.0-alpha");
+  assert.equal(miniflare.dependencies.sharp, "0.35.4");
   assert.equal(sharp.version, "0.35.5");
   assert.deepEqual(
     Object.entries(lock.packages)
@@ -155,14 +155,14 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
 });
 
 test("the exact Miniflare edge resolves only the patched undici release", () => {
-  // Miniflare 5.20260801.1-alpha pins undici 7.29.0 exactly; every release below 7.29.1 carries
-  // GHSA-r53p-7pc4-xj5r (high) and the related DoS/cache advisories. A global override lifts the
-  // single edge; the Sharp override above stays Miniflare-identity-scoped and unchanged.
+  // Miniflare 5.20261006.0-alpha pins undici 7.29.1 exactly; every release below 7.29.1 carries
+  // GHSA-r53p-7pc4-xj5r (high) and the related DoS/cache advisories. A global override holds the
+  // admitted version; the Sharp override above stays Miniflare-identity-scoped and unchanged.
   const manifest = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(path.join(projectRoot, "package-lock.json"), "utf8"));
 
   assert.equal(manifest.overrides.undici, "7.29.1");
-  assert.equal(lock.packages["node_modules/miniflare"].dependencies.undici, "7.29.0");
+  assert.equal(lock.packages["node_modules/miniflare"].dependencies.undici, "7.29.1");
   assert.deepEqual(
     Object.entries(lock.packages)
       .filter(([key]) => key === "node_modules/undici" || key.endsWith("/node_modules/undici"))

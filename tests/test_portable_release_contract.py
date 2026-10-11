@@ -222,14 +222,15 @@ def test_native_package_custody_requires_metadata_extension_and_unchanged_upstre
         # The previous wheel's actual SBOM is not evidence for this provider version.
         ("bytes", 245181),
         ("sha256", "fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88"),
+        ("sha256", "ac25eeeb7d5fd575cdc0cb3b77d7111820af0dee296a13b636a04b93c9497ee0"),
     ):
         changed = copy.deepcopy(members)
         next(row for row in changed if row["path"].endswith(".cyclonedx.json"))[field] = replacement
         with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
             subject._validate_native_package_members(changed)
     # A differently versioned metadata folder cannot satisfy the reviewed provider identity.
-    for refused_version in ("0.58.3", "0.58.4"):
-        changed = [{**row, "path": row["path"].replace("0.58.5.dist-info", f"{refused_version}.dist-info")}
+    for refused_version in ("0.58.3", "0.58.4", "0.58.5"):
+        changed = [{**row, "path": row["path"].replace("0.58.6.dist-info", f"{refused_version}.dist-info")}
                    for row in members]
         with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
             subject._validate_native_package_members(changed)
@@ -254,15 +255,15 @@ def test_real_python_manifest_cannot_omit_native_evidence_even_with_reauthored_t
 
 def test_native_package_mit_fallback_is_exact_and_does_not_claim_component_license_closure(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.5"]
+    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.6"]
     assert fallback["bytes"] == 1075
     assert fallback["sha256"] == "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
     assert "Permission is hereby granted" in fallback["content"]
-    assert "13ab58cf82ab0ae5192762efbfc2850078ccff7a" in fallback["source"]
+    assert "65092240629860ac2423a1f41fb265d49cc8d9ad" in fallback["source"]
     assert "not individual Rust component license texts" in fallback["source_identity"]
     assert "not independently verified linked components" in subject.NOTICES_INFERENCE_BOUNDARY
     registry = {"schema": "atlas.portable-license-fallbacks/1", "entries": [{
-        "key": "pypi:jsonschema-rs@0.58.5", "license_file": "LICENSE",
+        "key": "pypi:jsonschema-rs@0.58.6", "license_file": "LICENSE",
         "license_sha256": fallback["sha256"], "source": fallback["source"],
         "source_identity": fallback["source_identity"],
     }]}

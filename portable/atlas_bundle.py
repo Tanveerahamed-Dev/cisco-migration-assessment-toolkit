@@ -185,7 +185,7 @@ def native_runtime_files() -> dict[str, dict[str, str | int] | None]:
     Pin the upstream SBOM representation so omission or replacement cannot be hidden by
     reauthoring the surrounding release manifest. PE code uses the ordinary signing custody.
     """
-    metadata = "_internal/jsonschema_rs-0.58.5.dist-info/"
+    metadata = "_internal/jsonschema_rs-0.58.6.dist-info/"
     return {
         # The stock fallback's private legacy seam checks this distribution at runtime.
         # The upstream hook-jsonschema collects it; the actual frozen selftest checks lookup.
@@ -196,7 +196,7 @@ def native_runtime_files() -> dict[str, dict[str, str | int] | None]:
         metadata + "WHEEL": None,
         metadata + "sboms/jsonschema-py.cyclonedx.json": {
             "bytes": 244971,
-            "sha256": "ac25eeeb7d5fd575cdc0cb3b77d7111820af0dee296a13b636a04b93c9497ee0",
+            "sha256": "cca65bac262dcee1464a5f081f5a7b148bb6494c808e24d0a073035e0e5fd292",
         },
     }
 

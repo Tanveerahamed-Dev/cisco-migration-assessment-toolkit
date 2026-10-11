@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { Miniflare } from "miniflare";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { parse as parseHtml } from "node-html-parser";
 
 import { CANONICAL_GZIP_HEADER_BYTES } from "../build/gzip-contract.js";
@@ -46,16 +46,31 @@ const INERT_TEXT_TAGS = new Set([
   "title",
   "xmp",
 ]);
-const CORE_OUTCOME_STYLESHEET = Object.freeze({
-  href: "/assets/index-B9KNmxWm.css",
-  sha256: "bc9b52cac7e84bc24340532b3dbb1fa964200f2bfe2675924774b5cf902e6925",
-  attributes: Object.freeze({
-    "data-precedence": "vite-rsc/importer-resources",
-    "data-rsc-css-href": "/assets/index-B9KNmxWm.css",
-    href: "/assets/index-B9KNmxWm.css",
-    rel: "stylesheet",
+// Exact hosted Vinext 0.2.1 profile: docs/dependency-train-style-observation-2026-10-11.json.
+const CORE_OUTCOME_STYLESHEETS = Object.freeze([
+  Object.freeze({
+    href: "/_next/static/css/index.BG8_OOeT.css",
+    sha256: "d2f2ca60df8a6faf9bc88b43d39b9fe19be0aab371fa4f58e193b2e21591bfe3",
+    attributes: Object.freeze({
+      "crossorigin": "anonymous",
+      "data-precedence": "vite-rsc/importer-resources",
+      "data-rsc-css-href": "/_next/static/css/index.BG8_OOeT.css",
+      "href": "/_next/static/css/index.BG8_OOeT.css",
+      "rel": "stylesheet",
+    }),
   }),
-});
+  Object.freeze({
+    href: "/_next/static/css/Workspace.Cbj8SavO.css",
+    sha256: "a1733c6e2c636e5cd48bf786b036914a0b2619291e353987529d4b7beae34258",
+    attributes: Object.freeze({
+      "crossorigin": "anonymous",
+      "data-precedence": "vite-rsc/importer-resources",
+      "data-rsc-css-href": "/_next/static/css/Workspace.Cbj8SavO.css",
+      "href": "/_next/static/css/Workspace.Cbj8SavO.css",
+      "rel": "stylesheet",
+    }),
+  }),
+]);
 
 function canonicalGzip(source) {
   const encoded = gzipSync(source, { level: 9 });
@@ -142,38 +157,41 @@ async function assertCoreOutcomeStyleCustody(
   );
   assert.equal(
     links.length,
-    1,
-    "Core outcome style custody requires exactly one built stylesheet",
+    CORE_OUTCOME_STYLESHEETS.length,
+    "Core outcome style custody requires the exact closed stylesheet set",
   );
-  const attributes = Object.fromEntries(
-    Object.entries(links[0].attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
-  );
+  const attributes = links.map((link) => Object.fromEntries(
+    Object.entries(link.attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  ));
   assert.deepEqual(
     attributes,
-    CORE_OUTCOME_STYLESHEET.attributes,
+    CORE_OUTCOME_STYLESHEETS.map((stylesheet) => stylesheet.attributes),
     "Core outcome built stylesheet attributes changed; a canonical build refresh is required",
   );
-  const href = attributes.href;
-  assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
-  assert.equal(href.includes("?"), false);
-  assert.equal(href.includes("#"), false);
-  assert.equal(
-    decodeURIComponent(href),
-    href,
-    "Core outcome stylesheet path must not contain encoded path or query syntax",
-  );
-  const stylesheet = await readStylesheet(href);
-  assert.ok(
-    stylesheet instanceof Uint8Array,
-    "Core outcome stylesheet loader returned non-byte content",
-  );
-  assert.equal(
-    createHash("sha256").update(stylesheet).digest("hex"),
-    CORE_OUTCOME_STYLESHEET.sha256,
-    "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
-  );
-  const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
-  assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+  for (const [index, descriptor] of CORE_OUTCOME_STYLESHEETS.entries()) {
+    const href = attributes[index].href;
+    assert.equal(href, descriptor.href);
+    assert.match(href, /^\/(?:assets|_next\/static\/css)\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+    assert.equal(href.includes("?"), false);
+    assert.equal(href.includes("#"), false);
+    assert.equal(
+      decodeURIComponent(href),
+      href,
+      "Core outcome stylesheet path must not contain encoded path or query syntax",
+    );
+    const stylesheet = await readStylesheet(href);
+    assert.ok(
+      stylesheet instanceof Uint8Array,
+      "Core outcome stylesheet loader returned non-byte content",
+    );
+    assert.equal(
+      createHash("sha256").update(stylesheet).digest("hex"),
+      descriptor.sha256,
+      "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
+    );
+    const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
+    assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+  }
 }
 
 function liveText(node) {
@@ -390,13 +408,17 @@ async function miniflareWithAssets(directory) {
   const serverModules = (await sourceFiles(serverRoot))
     .filter((path) => path.endsWith(".js"))
     .sort();
-  return new Miniflare({
+  // Miniflare 5's public converter retains these module/asset routing semantics
+  // while admitting them through its new instance + worker configuration schema.
+  const options = convertV4MiniflareOptions({
+    host: "127.0.0.1",
+    cf: false,
     modulesRoot: serverRoot,
     modules: [entry, ...serverModules.filter((path) => path !== entry)].map((path) => ({
       type: "ESModule",
       path,
     })),
-    unsafeDevRegistry: false,
+    unsafeRegisterWorker: false,
     compatibilityDate: "2026-08-01",
     compatibilityFlags: ["nodejs_compat"],
     assets: {
@@ -408,6 +430,10 @@ async function miniflareWithAssets(directory) {
       },
     },
   });
+  assert.equal(options.workers.length, 1);
+  assert.equal(options.workers[0].dev.unsafeRegisterWorker, false);
+  assert.equal(options.unsafeDevRegistryPath, undefined);
+  return new Miniflare(options);
 }
 
 test("hardens every HTML response at the Worker boundary", async () => {
@@ -1247,15 +1273,19 @@ test("Core outcome locator guards reject hidden attributes and tag-independent d
 });
 
 test("Core outcome computed-visibility proof retains exact built stylesheet custody", async () => {
-  const stylesheetLink = [
-    '<link rel="stylesheet"',
-    ` href="${CORE_OUTCOME_STYLESHEET.href}"`,
-    ` data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}"`,
-    ' data-precedence="vite-rsc/importer-resources"/>',
-  ].join("");
+  const linkFor = (attributes, reverse = false) => {
+    const entries = Object.entries(attributes);
+    if (reverse) entries.reverse();
+    return `<link ${entries.map(([key, value]) => {
+      assert.match(key, /^[a-z][a-z0-9-]*$/i);
+      assert.doesNotMatch(value, /["&<>]/);
+      return `${key}="${value}"`;
+    }).join(" ")}/>`;
+  };
+  const stylesheetLinks = CORE_OUTCOME_STYLESHEETS.map(({ attributes }) => linkFor(attributes));
   const clean = [
     "<html><head>",
-    stylesheetLink,
+    ...stylesheetLinks,
     "</head><body>",
     '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
     '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">',
@@ -1263,53 +1293,35 @@ test("Core outcome computed-visibility proof retains exact built stylesheet cust
     "</p></section></body></html>",
   ].join("");
   await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(clean));
-  await assert.doesNotReject(() =>
-    assertCoreOutcomeStyleCustody(
-      clean.replace(
-        stylesheetLink,
-        `<link data-precedence="vite-rsc/importer-resources" data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}" href="${CORE_OUTCOME_STYLESHEET.href}" rel="stylesheet"/>`,
-      ),
+  await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(
+    clean.replace(
+      stylesheetLinks.join(""),
+      CORE_OUTCOME_STYLESHEETS.map(({ attributes }) => linkFor(attributes, true)).join(""),
     ),
-  );
+  ));
 
   const hostileMarkup = [
-    clean.replace(
-      "</head>",
-      '<style>#core-outcome-contracts{display:none!important}</style></head>',
-    ),
-    clean.replace(
-      '<section id="core-outcome-contracts"',
-      '<section style="opacity:0!important" id="core-outcome-contracts"',
-    ),
-    clean.replace(
-      "Visible",
-      '<span style="transform:scale(0)!important">Visible</span>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="STYLESHEET" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="preload stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      `${CORE_OUTCOME_STYLESHEET.href}?hide=1`,
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      `${CORE_OUTCOME_STYLESHEET.href}#hide`,
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      "/assets/%2e%2e/hostile.css",
-    ),
+    clean.replace("</head>", '<style>#core-outcome-contracts{display:none!important}</style></head>'),
+    clean.replace('<section id="core-outcome-contracts"', '<section style="opacity:0!important" id="core-outcome-contracts"'),
+    clean.replace("Visible", '<span style="transform:scale(0)!important">Visible</span>'),
+    ...["stylesheet", "STYLESHEET", "preload stylesheet"].map((rel) =>
+      clean.replace("</head>", `<link rel="${rel}" href="https://hostile.invalid/hide-core.css"></head>`)),
   ];
+  for (const [index, descriptor] of CORE_OUTCOME_STYLESHEETS.entries()) {
+    const link = stylesheetLinks[index];
+    hostileMarkup.push(
+      clean.replace(link, ""),
+      clean.replace("</head>", `${link}</head>`),
+      clean.replace(link, link.replace("<link ", '<link media="not all" ')),
+      clean.replace(link, link.replace("<link ", '<link disabled="" ')),
+      clean.replaceAll(descriptor.href, `${descriptor.href}?hide=1`),
+      clean.replaceAll(descriptor.href, `${descriptor.href}#hide`),
+      clean.replaceAll(descriptor.href, "/assets/%2e%2e/hostile.css"),
+    );
+  }
+  if (new Set(stylesheetLinks).size > 1) {
+    hostileMarkup.push(clean.replace(stylesheetLinks.join(""), [...stylesheetLinks].reverse().join("")));
+  }
   for (const hostile of hostileMarkup) {
     await assert.rejects(
       () => assertCoreOutcomeStyleCustody(hostile),
@@ -1317,19 +1329,18 @@ test("Core outcome computed-visibility proof retains exact built stylesheet cust
     );
   }
 
-  const stylesheet = await readFile(
-    new URL(`../dist/client${CORE_OUTCOME_STYLESHEET.href}`, import.meta.url),
-  );
-  await assert.rejects(
-    () =>
-      assertCoreOutcomeStyleCustody(clean, async () =>
-        Buffer.concat([
-          stylesheet,
-          Buffer.from("\n#core-outcome-contracts{display:none!important}\n"),
-        ])),
-    /canonical build refresh is required/,
-    "Core outcome style custody accepted mutated stylesheet bytes",
-  );
+  for (const descriptor of CORE_OUTCOME_STYLESHEETS) {
+    await assert.rejects(
+      () => assertCoreOutcomeStyleCustody(clean, async (href) => {
+        const bytes = await readFile(new URL(`../dist/client${href}`, import.meta.url));
+        return href === descriptor.href
+          ? Buffer.concat([bytes, Buffer.from("\n#core-outcome-contracts{display:none!important}\n")])
+          : bytes;
+      }),
+      /canonical build refresh is required/,
+      "Core outcome style custody accepted mutated stylesheet bytes",
+    );
+  }
 });
 
 test("server-renders the exact nine Core outcome success-signal slots in source order", async () => {
@@ -1854,7 +1865,7 @@ test("keeps runtime local, read-only, private, and dependency-light", async () =
   const packageData = JSON.parse(packageText);
 
   assert.deepEqual(Object.keys(packageData.dependencies).sort(), ["react", "react-dom"]);
-  assert.equal(packageData.devDependencies["node-html-parser"], "9.0.3");
+  assert.equal(packageData.devDependencies["node-html-parser"], "9.0.4");
   assert.equal(packageData.overrides.next, undefined);
   assert.equal(packageData.private, true);
   assert.match(layout, /index:\s*false/);

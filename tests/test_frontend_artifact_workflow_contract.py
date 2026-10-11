@@ -11,7 +11,7 @@ from test_release_supply_chain import _RUNNER_JOBS, _RunnerWorkflowLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/webapp-ci.yml"
-UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 PREFLIGHT = "Validate exclusive manual operations and bound data inputs"
