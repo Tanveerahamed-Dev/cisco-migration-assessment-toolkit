@@ -8,6 +8,7 @@ where the first hosted run is a finding. Every measurement is printed as one ``V
 """
 from copy import deepcopy
 from dataclasses import asdict
+import gc
 import json
 import os
 import sys
@@ -38,6 +39,164 @@ def _timed_leg():
 BUDGET = {"section_bytes": 6_000_000, "section_growth_v100_v200": 600_000, "summary_bytes": 4_096,
           "inventory_growth_bytes": 1_000_000, "compute_ms": 3_000, "validate_ms": 1_500,
           "document_growth_ms": 2_000, "page_ms": 300, "page_bytes": 3_000_000}
+
+
+def _natural_gc_counters():
+    """Observe natural collections only; telemetry refusal cannot change an original call."""
+    try:
+        counts = gc.get_count()
+        collections = tuple(item["collections"] for item in gc.get_stats())
+        if (type(counts) is tuple and len(counts) == len(collections) == 3
+                and all(type(value) is int for value in (*counts, *collections))):
+            return {"counts": counts, "collections": collections}
+    except Exception:
+        pass
+    return None
+
+
+def _copy_shape(args):
+    # Only classify known exact dictionaries; never inspect caller attributes or values.
+    if not args or type(args[0]) is not dict:
+        return "other"
+    value = args[0]
+    if len(value) > 64:
+        return "wide_mapping"
+    if not all(type(key) is str for key in value):
+        return "non_plain_keys"
+    if "carriage" in value and "engine" in value:
+        return "carriage_document"
+    if "inventory" in value and "engine" in value:
+        return "projection_document"
+    return "plain_mapping"
+
+
+def _budget_trace(name, original, current_phase, stages, copies):
+    """One original call inside the unchanged outer timer, with bounded best-effort metadata."""
+    def call(*args, **kwargs):
+        phase = current_phase()
+        if phase is None:
+            return original(*args, **kwargs)
+        started = time.perf_counter()
+        before = _natural_gc_counters() if name == "owned_copy" else None
+        try:
+            return original(*args, **kwargs)
+        finally:
+            after = _natural_gc_counters() if name == "owned_copy" else None
+            elapsed = 1000 * (time.perf_counter() - started)
+            try:
+                stage = stages.setdefault(phase, {}).setdefault(name, {"count": 0, "ms": 0.0})
+                stage["count"] += 1
+                stage["ms"] += elapsed
+                if name == "owned_copy" and len(copies) < 32:
+                    copies.append({"phase": phase, "shape": _copy_shape(args), "ms": round(elapsed, 1),
+                                   "gc_before": before, "gc_after": after})
+            except Exception:
+                pass  # A diagnostic failure never replaces the original return or exception.
+    return call
+
+
+def test_copy_diagnostic_observes_natural_gc_without_replacing_the_copy(monkeypatch):
+    calls = []
+    stages, copies = {}, []
+    source = {"engine": {}, "carriage": {"items": [True, None]}}
+
+    def original(value):
+        calls.append(value)
+        return deepcopy(value)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Diagnostic changed collection policy")
+
+    for name in ("collect", "disable", "enable", "freeze", "unfreeze", "set_threshold"):
+        monkeypatch.setattr(gc, name, forbidden)
+    monkeypatch.setattr(gc, "get_count", lambda: (1, 2, 3))
+    monkeypatch.setattr(gc, "get_stats", lambda: [{"collections": value} for value in (4, 5, 6)])
+    traced = _budget_trace("owned_copy", original, lambda: "first_page", stages, copies)
+    result = traced(source)
+    assert calls == [source] and result == source and result is not source
+    assert result["carriage"] is not source["carriage"]
+    assert stages["first_page"]["owned_copy"]["count"] == 1
+    assert len(copies) == 1 and copies[0]["shape"] == "carriage_document"
+    assert copies[0]["gc_before"] == copies[0]["gc_after"] == {
+        "counts": (1, 2, 3), "collections": (4, 5, 6)}
+
+
+@pytest.mark.parametrize("original_failure", [False, True])
+def test_copy_telemetry_failure_preserves_the_original_result_or_exception(monkeypatch, original_failure):
+    calls = []
+
+    def unavailable():
+        raise RuntimeError("GC telemetry unavailable")
+
+    def original(value):
+        calls.append(value)
+        if original_failure:
+            raise ValueError("Original copy refusal")
+        return value
+
+    class UnavailableRecords(list):
+        def append(self, _value):
+            raise RuntimeError("Record telemetry unavailable")
+
+    monkeypatch.setattr(gc, "get_count", unavailable)
+    traced = _budget_trace("owned_copy", original, lambda: "first_page", {}, UnavailableRecords())
+    source = {"plain": True}
+    if original_failure:
+        with pytest.raises(ValueError, match="Original copy refusal"):
+            traced(source)
+    else:
+        assert traced(source) is source
+    assert calls == [source]
+
+
+def test_copy_diagnostic_has_no_activity_outside_the_original_measurement(monkeypatch):
+    def forbidden():
+        pytest.fail("Inactive diagnostic read collector counters")
+
+    monkeypatch.setattr(gc, "get_count", forbidden)
+    monkeypatch.setattr(gc, "get_stats", forbidden)
+    calls, stages, copies = [], {}, []
+    traced = _budget_trace("owned_copy", lambda value: calls.append(value) or value,
+                          lambda: None, stages, copies)
+    marker = object()
+    assert traced(marker) is marker
+    assert calls == [marker] and stages == {} and copies == []
+
+
+def test_copy_diagnostic_does_not_probe_a_custom_collision_key(monkeypatch):
+    hooks = []
+
+    class CollisionKey:
+        def __hash__(self):
+            hooks.append("hash")
+            return hash("carriage")
+
+        def __eq__(self, _other):
+            hooks.append("equality")
+            raise AssertionError("Metadata probed a custom key")
+
+        def __deepcopy__(self, _memo):
+            return self
+
+    key = CollisionKey()
+    source = {key: True}
+    hooks.clear()
+    expected = deepcopy(source)
+    original_hooks = list(hooks)
+    hooks.clear()
+    calls, stages, copies = [], {}, []
+
+    def original(value):
+        calls.append(value)
+        return deepcopy(value)
+
+    monkeypatch.setattr(gc, "get_count", lambda: (0, 0, 0))
+    monkeypatch.setattr(gc, "get_stats", lambda: [{"collections": 0}] * 3)
+    result = _budget_trace("owned_copy", original, lambda: "first_page", stages, copies)(source)
+    assert calls == [source] and hooks == original_hooks == ["hash"]
+    assert list(result) == list(expected) == [key]
+    assert copies[0]["shape"] == "non_plain_keys"
+    assert stages["first_page"]["owned_copy"]["count"] == 1
 
 
 def _host(i):
@@ -211,19 +370,10 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     # (admission includes gaps, validation includes schema fingerprinting), so these figures must not be summed.
     phase = None
     stages = {}
+    copies = []
 
     def traced(name, original):
-        def call(*args, **kwargs):
-            if phase is None:
-                return original(*args, **kwargs)
-            started = time.perf_counter()
-            try:
-                return original(*args, **kwargs)
-            finally:
-                stage = stages.setdefault(phase, {}).setdefault(name, {"count": 0, "ms": 0.0})
-                stage["count"] += 1
-                stage["ms"] += 1000 * (time.perf_counter() - started)
-        return call
+        return _budget_trace(name, original, lambda: phase, stages, copies)
 
     diagnostics = os.environ.get("GITHUB_ACTIONS") == "true" and _timed_leg()
     if diagnostics:
@@ -302,6 +452,8 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         with capsys.disabled():
             print("VLAN-CARRIAGE-STAGES " + json.dumps({
                 "inclusive_not_additive": True,
+                "document_native_domain_eligible": api._native_instance_allowed(document),
+                "owned_copy_calls": copies,
                 "bound_proof_present": {
                     key[-1]: type(getattr(entry.snapshot, "_bound_content_proof", None))
                     is pa._BoundSnapshotContentProof for key, entry in cache.entries.items()

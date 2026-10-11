@@ -524,6 +524,195 @@ def test_a_typed_end_signal_cites_the_role_row_the_owner_join_names(tmp_path):
     checked(snap)
 
 
+def _routing_outputs(snap):
+    """Full public outputs from one real checked admission, including complete and sliced lazy pages."""
+    admission = uip.carriage_admission(snap)
+    document = uip.project(snap, carriage=admission)
+    pages = [uip.project_vlan_carriage(snap, vi, offset, limit, admission=admission)
+             for vi in range(len(snap["vlan_cutover"])) for offset, limit in ((0, 200), (0, 1), (1, 1))]
+    return dict(admission.gaps), document, pages
+
+
+@pytest.mark.parametrize("damage", ["none", "static-peer", "allowance", "late-role", "bundle-beside"])
+def test_optional_routing_preserves_full_documents_pages_and_gap_order(tmp_path, monkeypatch, damage):
+    if damage == "bundle-beside":
+        interfaces = _bundle(tmp_path, b_groups=((1, ("Gi1/0/1", "Gi1/0/2")),), allowed=(None, None))
+        observations = {host: _stp({10: [("Po1", "Desg", "FWD")], 20: [("Po1", "Altn", "BLK")]})
+                        for host in (A, B)}
+    else:
+        interfaces = None
+        observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]})
+                        for host in (A, B)}
+    snap = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}], interfaces=interfaces)
+    if damage == "static-peer":
+        snap["interfaces"][A][PORT]["cdp_neighbor"] = "unjoined-peer"
+        snap["interfaces"][A][PORT]["neighbor_port"] = "Gi1/0/99"
+    elif damage == "allowance":
+        snap["interfaces"][B][PORT]["trunk_allowed_none"] = "none"
+        snap["interfaces"][B][PORT]["trunk_native_vlan"] = "20"
+    elif damage == "late-role":
+        snap["stp_topology_observations"][B] = _stp(
+            {10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD")]})
+    elif damage == "bundle-beside":
+        snap["stp_topology_observations"][B] = _stp(
+            {10: [("Po1", "Desg", "FWD")], 20: [("Po1", "Altn", "BLK"), ("Gi1/0/2", "Desg", "FWD")]})
+    before = deepcopy(snap)
+    planned = _routing_outputs(snap)
+    with monkeypatch.context() as patch:
+        patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+        original_dispatch = _routing_outputs(snap)
+    assert planned == original_dispatch  # Real original dispatch and owners, not a copied routing algorithm.
+    assert snap == before
+    assert bool(planned[0]) is (damage != "none")
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_configured_only_routing_never_acquires_an_unused_role_owner(tmp_path, monkeypatch, declared):
+    observations = {A: _observation(vid=99), B: _observation(vid=99)} if declared else None
+    snap = snapshot(tmp_path, observations=observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    original, calls = uip.carriage_observation_admission, []
+
+    def observed(record):
+        assert declared, "Absent configured-only STP gained an observation owner call"
+        calls.append(record)
+        return original(record)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Configured-only codes acquired an unused role index/query")
+
+    monkeypatch.setattr(uip, "carriage_observation_admission", observed)
+    monkeypatch.setattr(uip, "carriage_role_index", forbidden)
+    monkeypatch.setattr(uip, "carriage_role_rows", forbidden)
+    planned = _routing_outputs(snap)
+    assert bool(calls) is declared  # Declared STP still receives its ORIGINAL static admission.
+    calls.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == planned
+    assert bool(calls) is declared
+    assert planned[1]["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]["forwarding"]["value"] == 1
+
+
+@pytest.mark.parametrize("field,value", [("host", B), ("stp_interface", "Gi1/0/2"), ("port", "Gi1/0/2"),
+                                         ("host-subclass", None), ("hold", "missing_interface")])
+def test_a_callback_between_typed_rows_keeps_current_end_routing_and_original_flag_behavior(
+        tmp_path, monkeypatch, field, value):
+    observations = {
+        A: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD"), ("Gi1/0/2", "Altn", "BLK")]}),
+        B: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]}),
+    }
+    seed = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    original, results = uip.carriage_role_rows, []
+
+    class ForeignHost(str):
+        def __hash__(self):
+            # Same textual value, a different owner lookup. Loose equality must not bless a plain-host plan.
+            return hash(A) ^ 1
+
+    for enabled in (False, True):
+        snap, changed = deepcopy(seed), []
+        end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+
+        def mutate(record, interface, vid, *, index=None):
+            rows = original(record, interface, vid, index=index)
+            if not changed and record is snap["stp_topology_observations"][A] and vid == 10:
+                # Deliberate callback mutation after the first original logical join.
+                end["host" if field == "host-subclass" else field] = ForeignHost(A) if field == "host-subclass" else value
+                changed.append(True)
+            return rows
+
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            patch.setattr(uip, "carriage_role_rows", mutate)
+            results.append(_routing_outputs(snap))
+        assert changed == [True]
+    assert results[0] == results[1]
+    # Original static holds are not reinterpreted mid-call. Routing changes, however, must affect the later VLAN.
+    assert (1 in results[1][0]) is (field != "hold")
+
+
+@pytest.mark.parametrize("shape", ["foreign-index", "foreign-list", "list-pair", "copied-row", "owner-error"])
+def test_optional_routing_keeps_real_owner_foreign_shapes_and_error_fallback(tmp_path, monkeypatch, shape):
+    observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]}) for host in (A, B)}
+    seed = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    original_index, original_rows, results = uip.carriage_role_index, uip.carriage_role_rows, []
+
+    class ForeignIndex(dict):
+        pass
+
+    class ForeignRows(list):
+        pass
+
+    def observed_index(record):
+        if shape == "owner-error":
+            raise RuntimeError("declared real owner callback refusal")
+        return ForeignIndex(original_index(record))
+
+    def observed_rows(record, interface, vid, *, index=None):
+        rows = original_rows(record, interface, vid, index=index)
+        if shape == "foreign-list":
+            return ForeignRows(rows)
+        if shape == "list-pair":
+            return [[i, row] for i, row in rows]
+        return [(i, dict(row)) for i, row in rows]
+
+    for enabled in (False, True):
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            if shape in ("foreign-index", "owner-error"):
+                patch.setattr(uip, "carriage_role_index", observed_index)
+            else:
+                patch.setattr(uip, "carriage_role_rows", observed_rows)
+            results.append(_routing_outputs(deepcopy(seed)))
+    assert results[0] == results[1]
+    assert bool(results[1][0]) is (shape == "owner-error")
+
+
+@pytest.mark.parametrize("owner", ["admission", "index"])
+def test_routing_changed_inside_an_original_owner_callback_is_not_read_again_in_a_different_order(
+        tmp_path, monkeypatch, owner):
+    observations = {
+        A: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD")]}),
+        B: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]}),
+    }
+    seed = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    name = "carriage_observation_admission" if owner == "admission" else "carriage_role_index"
+    original, results = getattr(uip, name), []
+    for enabled in (False, True):
+        snap, changed = deepcopy(seed), []
+        end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+
+        def mutate(record):
+            result = original(record)
+            if not changed and record is snap["stp_topology_observations"][A]:
+                end["host"] = B  # Original callback point, before the caller's NEXT host read.
+                changed.append(True)
+            return result
+
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            patch.setattr(uip, name, mutate)
+            results.append(_routing_outputs(snap))
+        assert changed == [True]
+    assert results[0] == results[1] and 1 in results[1][0]
+
+
+def test_routing_answers_do_not_survive_a_fresh_admission_after_current_source_mutation(tmp_path, monkeypatch):
+    observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD")]}) for host in (A, B)}
+    snap = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    assert _routing_outputs(snap)[0] == {}
+    snap["stp_topology_observations"][B] = _stp(
+        {10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Altn", "BLK")]})
+    planned = _routing_outputs(snap)
+    assert list(planned[0]) == [1]
+    with monkeypatch.context() as patch:
+        patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == planned
+
+
 def test_value_identical_observations_keep_each_current_host_object_and_scope_the_answer_cache(tmp_path, monkeypatch):
     observations = {A: _observation(), B: _observation()}
     snap = snapshot(tmp_path, ("", ""), observations)

@@ -40,6 +40,7 @@ _MAX_CONSTRUCTION_NODES = 8192
 _NO_RETRIEVAL = Registry()
 _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
+_NATIVE_TRANSPORT_KINDS = frozenset({"view", "list", "carriage"})
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
@@ -455,10 +456,13 @@ class _NativeTransportValidator:
     Python remains the source of public errors and unsupported/context behavior.
     No instances or validation results are retained between calls.
     """
-    __slots__ = ("schema", "__original", "__fingerprint", "__python", "__native")
+    __slots__ = ("schema", "__original", "__fingerprint", "__python", "__native", "__transport_proof")
 
-    def __init__(self, schema, kind):
+    def __init__(self, schema, kind, *, transport_proof=True):
         self.schema = self.__original = schema
+        # Internal document admission must never certify a later Python-only transport.
+        self.__transport_proof = (transport_proof is True and type(kind) is str
+                                  and kind in _NATIVE_TRANSPORT_KINDS)
         self.__fingerprint = _schema_fingerprint(schema)
         self.__python = _compiled_validator(schema)
         self.__native = None
@@ -495,7 +499,7 @@ class _NativeTransportValidator:
                 if (accepted is True and self.schema is self.__original
                         and _schema_fingerprint(self.schema) == self.__fingerprint):
                     trace = _NATIVE_SMOKE_TRACE.get()
-                    if trace is not None:
+                    if trace is not None and self.__transport_proof:
                         trace["native"] = True
                     return
         if self.schema is self.__original and _schema_fingerprint(self.schema) == self.__fingerprint:

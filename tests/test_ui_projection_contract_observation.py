@@ -151,6 +151,7 @@ def test_main_retains_success_or_structured_failure_without_changing_pins(source
     api._VIEW_SCHEMA = {"type": "object"}
     api._LIST_SCHEMA = {"type": "array"}
     api._CARRIAGE_SCHEMA = {"type": "object", "properties": {"payload": {"type": "object"}}}
+    api._OWNER = {"type": "object", "properties": {"inventory": {"type": "object"}}}
     api._NATIVE_SCHEMA_HASHES = {"view": "old-view-pin", "list": "old-list-pin"}
     api._native_schema_hash = lambda schema: hashlib.sha256(
         (json.dumps(schema, ensure_ascii=True, allow_nan=False, separators=(",", ":")) + "\n").encode()).hexdigest()
@@ -190,10 +191,12 @@ def test_main_retains_success_or_structured_failure_without_changing_pins(source
     if fault is None:
         assert report["generated_types_match_committed"] is False
         assert all(not value["matches_declared_pin"] for value in report["native_pins"].values())
-        candidate = report["native_candidates"]["carriage"]
-        assert candidate["declared_pin"] is None
-        assert candidate["disposition"] == "UNQUALIFIED_MATERIAL_REVIEW_REQUIRED"
-        assert candidate["observed_sha256"] == api._native_schema_hash(api._CARRIAGE_SCHEMA)
-        assert json.loads((output / "carriage-schema.json").read_bytes()) == api._CARRIAGE_SCHEMA
+        assert set(report["native_candidates"]) == {"carriage", "document"}
+        for kind, schema in (("carriage", api._CARRIAGE_SCHEMA), ("document", api._OWNER)):
+            candidate = report["native_candidates"][kind]
+            assert candidate["declared_pin"] is None
+            assert candidate["disposition"] == "UNQUALIFIED_MATERIAL_REVIEW_REQUIRED"
+            assert candidate["observed_sha256"] == api._native_schema_hash(schema)
+            assert json.loads((output / (kind + "-schema.json")).read_bytes()) == schema
         assert set(path.name for path in output.iterdir()) == OBSERVER.OUTPUT_NAMES
         assert json.loads((output / "source-before.json").read_bytes()) == json.loads((output / "source-after.json").read_bytes())

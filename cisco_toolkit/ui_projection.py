@@ -4889,6 +4889,26 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
     return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
 
 
+class _CarriageRoutingPlan:
+    """Optional per-position dispatch to answers already retained by this ONE checked admission.
+
+    Only a published observation and its existing per-host index are retained, never a role row or end/VLAN
+    decision. Host reads are exact-type guarded at both original dispatch points; logical/physical fields
+    remain fresh reads at the original joins. This does not make a mutable snapshot atomic.
+    """
+    __slots__ = ("host", "observation", "index")
+
+    def __init__(self) -> None:
+        self.host: Optional[str] = None
+        self.observation: Any = None
+        self.index: Any = None
+
+
+def _carriage_routing_plan() -> Optional[_CarriageRoutingPlan]:
+    """The original dispatch remains a conservative fallback when optional planning is disabled."""
+    return _CarriageRoutingPlan()
+
+
 def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[Tuple[Any, ...], ...]],
                                                                     Dict[str, Tuple[Any, Any]]]:
     """Check each published end claim's declared witnesses once per snapshot, without re-evaluating an allowance or
@@ -5081,21 +5101,36 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             for side, shift in (("a", 1), ("b", 2)):
                 key = (ci, member["index"], side)
                 if key in static:
-                    positions.append((base + shift, key, member[side]))
+                    ci, mi, side = key
+                    witness = ("vlan_carriage", "cables", ci, "members", mi, side)
+                    positions.append((base + shift, key, member[side], static[key], witness + ("stp_pointer",),
+                                      witness + ("allowance_pointer",), _carriage_routing_plan()))
     gaps: Dict[int, Tuple[Tuple[Any, ...], ...]] = {}
     for row in section["rows"]:
         codes = row["codes"]
         if not codes:
             continue
         found: List[Tuple[Any, ...]] = []
-        for position, key, end in positions:
+        for position, key, end, static_gaps, stp_gap, allowance_gap, plan in positions:
             char = codes[position]
-            ci, mi, side = key
             if char in typed_chars:
-                state, _why, observation = admitted(end["host"])
-                ok = state == _PUB and observation is not None
+                # Read at the same points as the original dispatch, including after an owner callback. A
+                # changed/nonplain host falls back; the plan never freezes the logical or physical route.
+                host = end["host"]
+                if plan is not None and type(host) is str and host == plan.host:
+                    observation, ok = plan.observation, True
+                else:
+                    state, _why, observation = admitted(host)
+                    ok = state == _PUB and observation is not None
                 if ok:
-                    index = role_index(end["host"], observation)
+                    index_host = end["host"]
+                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation)
+                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
                     rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index)
                     beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index)
                               if end["stp_interface"] != end["port"] else [])
@@ -5103,13 +5138,13 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                           and rows[0][1]["state"] == signals[char])
                     ok = ok and allowance_agrees(key, row["vlan"], signals[char])
                 if not ok:
-                    found.append(("vlan_carriage", "cables", ci, "members", mi, side, "stp_pointer"))
+                    found.append(stp_gap)
             elif char in configured_chars:
                 if not allowance_agrees(key, row["vlan"], signals[char]):
-                    found.append(("vlan_carriage", "cables", ci, "members", mi, side, "allowance_pointer"))
+                    found.append(allowance_gap)
             else:
                 continue
-            found.extend(static[key])
+            found.extend(static_gaps)
         if found:
             gaps[row["vlan_index"]] = tuple(dict.fromkeys(found))
     admitted_roles = {host: (record if state == _PUB else None, indexes.get(host))

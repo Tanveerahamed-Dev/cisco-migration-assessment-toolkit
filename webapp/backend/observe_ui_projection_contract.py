@@ -24,7 +24,8 @@ MAX_FILE = 64 * 1024 * 1024
 MAX_SOURCE = 512 * 1024 * 1024
 MAX_FILES = 10000
 OUTPUT_NAMES = frozenset({"source-before.json", "source-after.json", "openapi.json", "openapi.ts",
-                          "view-schema.json", "list-schema.json", "carriage-schema.json", "observation.json"})
+                          "view-schema.json", "list-schema.json", "carriage-schema.json", "document-schema.json",
+                          "observation.json"})
 
 
 def need(ok, message):
@@ -195,13 +196,15 @@ def main():
             pins[kind] = {"observed_sha256": digest, "declared_pin": api._NATIVE_SCHEMA_HASHES[kind],
                           "matches_declared_pin": digest == api._NATIVE_SCHEMA_HASHES[kind]}
         report["native_pins"] = pins
-        raw, digest = schema_bytes(api._CARRIAGE_SCHEMA, api._native_schema_hash)
-        emit(output, "carriage-schema.json", raw)
-        report["native_candidates"] = {"carriage": {
-            "observed_sha256": digest,
-            "declared_pin": api._NATIVE_SCHEMA_HASHES.get("carriage"),
-            "disposition": "UNQUALIFIED_MATERIAL_REVIEW_REQUIRED",
-        }}
+        report["native_candidates"] = {}
+        for kind, schema in (("carriage", api._CARRIAGE_SCHEMA), ("document", api._OWNER)):
+            raw, digest = schema_bytes(schema, api._native_schema_hash)
+            emit(output, kind + "-schema.json", raw)
+            report["native_candidates"][kind] = {
+                "observed_sha256": digest,
+                "declared_pin": api._NATIVE_SCHEMA_HASHES.get(kind),
+                "disposition": "UNQUALIFIED_MATERIAL_REVIEW_REQUIRED",
+            }
         run(root, ["node", "webapp/frontend/scripts/generate-api-types.mjs", "--review"], timeout=180)
         generated = ordinary(output / "openapi.ts")
         report["generated_types_match_committed"] = generated == ordinary(root / "webapp/frontend/src/generated/openapi.ts")

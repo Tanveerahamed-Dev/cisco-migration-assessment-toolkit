@@ -1193,6 +1193,80 @@ def test_native_transport_pins_provider_schema_and_preserves_public_errors(nativ
     assert not hasattr(api._DEVICE_VALIDATOR, "_NativeTransportValidator__native")
 
 
+def test_document_observer_bootstrap_has_no_pin_or_provider_admission(client, sample, monkeypatch):
+    from backend import ui_projection_api as api
+
+    def forbidden():
+        pytest.fail("Unreviewed document candidate reached a native provider")
+
+    assert "document" not in api._NATIVE_SCHEMA_HASHES
+    monkeypatch.setattr(api, "_native_provider", forbidden)
+    candidate = api._NativeTransportValidator(api._OWNER, "document")
+    assert candidate._NativeTransportValidator__native is None
+    # The original whole-document Python validator stays in production during the bootstrap.
+    assert not hasattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native")
+    sid = seed(client, sample)
+    raw, binding = client.app.state.store.get_snapshot_blob(sid)
+    produced = api._ProjectionCache().document(raw, binding["sha256"], None)
+    api._require_json_native(produced)
+    candidate.validate(produced)
+    api._stock_validator(api._OWNER).validate(produced)
+    for value in ({}, {"schema": "not-a-document"}, [True], None):
+        assert _validation_errors(candidate, value) == _validation_errors(api._stock_validator(api._OWNER), value)
+
+
+def test_internal_native_validation_cannot_mark_a_transport_proof(native_body):
+    from backend import ui_projection_api as api
+
+    validator = api._NativeTransportValidator(api._VIEW_SCHEMA, "view", transport_proof=False)
+    native = validator._NativeTransportValidator__native
+    assert native is not None  # Existing reviewed literal/provider; not the unqualified document candidate.
+    calls = []
+    exceptions = []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(type(error).__name__)
+                raise
+            calls.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        validator.validate(native_body)
+        assert trace == {"native": False}
+        bad = deepcopy(native_body)
+        bad["view"] = "invented"
+        assert validator.is_valid(bad) is False
+        assert trace == {"native": False}
+        assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._VIEW_SCHEMA), bad)
+        assert calls == [True, False, False] and exceptions == []
+        # The same genuine complete transport retains the existing positive smoke behavior.
+        api._NativeTransportValidator(api._VIEW_SCHEMA, "view").validate(native_body)
+        assert trace["native"] is True
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
+@pytest.mark.parametrize("flag", [False, None, 1, "true"])
+def test_transport_proof_opt_out_is_exact_without_changing_stock_results(native_body, flag):
+    from backend import ui_projection_api as api
+    validator = api._NativeTransportValidator(api._VIEW_SCHEMA, "view", transport_proof=flag)
+    assert validator._NativeTransportValidator__native is not None
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        assert validator.is_valid(native_body) == api._stock_validator(api._VIEW_SCHEMA).is_valid(native_body)
+        assert trace == {"native": False}
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
 def test_native_refuses_unsupported_instances_before_acceptance(native_body):
     from backend import ui_projection_api as api
     validator = api._NativeTransportValidator(deepcopy(api._VIEW_SCHEMA), "view")
