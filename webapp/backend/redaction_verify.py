@@ -1289,6 +1289,17 @@ def _sweep_snmp_host_tail(tokens: list[str]) -> bool:
     return True
 
 
+def _sweep_header_capture_tail(line: str, header_start: int) -> list[str]:
+    """A continuation may skip capture decoration only when its header had that decoration.
+
+    A number or a colon-shaped token on the value line can itself be the credential. It is
+    never authenticated as a capture prefix merely by resembling one.
+    """
+    prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+    leading = _SWEEP_LEAD_RE.match(line).end()
+    return ["capture"] if prefix is not None and leading < prefix.end() <= header_start else []
+
+
 def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tuple[str, list[Any], bool] | None:
     """``(kind, tail, key_id)`` when the line DANGLES (the producer's rule, restated)."""
     if "snmp-server" in line.casefold():
@@ -1302,10 +1313,14 @@ def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tup
         found = _SWEEP_NAME_OPEN_RE.search(_sweep_masked(line))
         if found is not None and _sweep_credential_name(found.group("k"), True):
             return ("value", [], False)
-    if ":" in line and _SWEEP_SCHEME_OPEN_RE.search(_sweep_masked(line)):
-        return ("scheme", [], False)
-    if ":" in line and _SWEEP_EMPTY_AUTH_HEADER_RE.search(_sweep_masked(line)):
-        return ("header-value", [], False)
+    if ":" in line:
+        masked = _sweep_masked(line)
+        found = _SWEEP_SCHEME_OPEN_RE.search(masked)
+        if found is not None:
+            return ("scheme", _sweep_header_capture_tail(line, found.start()), False)
+        found = _SWEEP_EMPTY_AUTH_HEADER_RE.search(masked)
+        if found is not None:
+            return ("header-value", _sweep_header_capture_tail(line, found.start()), False)
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _sweep_argv_walk(line, carry)[1]
         if pending is not None:
@@ -1401,7 +1416,7 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
     """The first value token a dangling clause continues into must be the placeholder (after a dangling
     authorization scheme its first blank-delimited token, whatever it spells)."""
     if kind in {"scheme", "header-value"}:
-        prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+        prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line) if "capture" in tail else None
         value_start = max(start, prefix.end() if prefix else 0)
         if kind == "header-value":
             first = _SWEEP_ARGV_WORD_RE.search(line, value_start)

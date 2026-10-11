@@ -5223,10 +5223,14 @@ def _redact_dangle(line: str, carry=None):
         found = _REDACT_NAME_OPEN_RE.search(_redact_sweep_masked(line))
         if found is not None and _redact_credential_name(found.group("k"), True):
             return ("value", [], False)
-    if ":" in line and _REDACT_SCHEME_OPEN_RE.search(_redact_sweep_masked(line)):
-        return ("scheme", [], False)                         # 'Authorization: Bearer' / '<token>'
-    if ":" in line and _REDACT_EMPTY_AUTH_HEADER_RE.search(_redact_sweep_masked(line)):
-        return ("header-value", [], False)
+    if ":" in line:
+        masked = _redact_sweep_masked(line)
+        for kind, regex in (("scheme", _REDACT_SCHEME_OPEN_RE), ("header-value", _REDACT_EMPTY_AUTH_HEADER_RE)):
+            found = regex.search(masked)
+            if found is not None:
+                prefix_end = _redact_capture_value_start(line)
+                decoration = prefix_end > _REDACT_LEAD_RE.match(line).end() and prefix_end <= found.start()
+                return kind, ["capture"] if decoration else [], False
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _redact_argv_walk(line, carry)[1]
         if pending is not None:
@@ -5334,7 +5338,8 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
     After a dangling authorization scheme (kind ``"scheme"``, round 4) the first blank-delimited token is
     the credential, whatever it spells (an argument vector that continues is read by `_redact_argv_walk`)."""
     if kind in ("scheme", "header-value"):
-        start = max(start, _redact_capture_value_start(line))
+        if "capture" in tail:
+            start = max(start, _redact_capture_value_start(line))
         if kind == "header-value":
             words = list(_REDACT_ARGV_WORD_RE.finditer(line, start))
             if not words:
@@ -5772,13 +5777,22 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
     else:
         core, positions = _redact_decode_word(raw)
     a, b = start, end
-    quotes = [char for char in raw if char in "\"'"]
-    if quotes and len(set(quotes)) == 1:
-        q = quotes[0]
-        if raw.startswith(q) and len(quotes) in (1, 2):
+    if raw[:1] in {"\"", "'"}:
+        quote, close, i = raw[0], None, 1
+        while i < len(raw):
+            if raw[i] == chr(92) and i + 1 < len(raw):
+                i += 2
+                continue
+            if raw[i] == quote:
+                close = i
+                break
+            i += 1
+        if close is None or close == len(raw) - 1:
             a += 1
-        if raw.endswith(q) and len(quotes) in (1, 2) and end - start > 1:
-            b -= 1
+            if close is not None:
+                b -= 1
+    elif raw[-1:] in {"\"", "'"} and not any(q in raw[:-1] for q in "\"'"):
+        b -= 1                           # closing outer quote of an attached option's value
     if kind in ("userinfo", "userpct"):
         sep = core.find(":" if kind == "userinfo" else "%")
         if sep < 0:
