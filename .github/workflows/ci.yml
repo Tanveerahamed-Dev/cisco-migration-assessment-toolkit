@@ -6,13 +6,18 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      measure_scale_qualification:
+        description: "Run the synthetic 300-device scale qualification (manual only)"
+        type: boolean
+        default: false
+        required: false
       measure_projection_performance:
         description: "Run the optional hosted projection measurement (existing CI jobs still run)"
         type: boolean
         default: false
         required: false
       expected_source_commit:
-        description: "Required for measurement: full commit SHA, matching the selected ref"
+        description: "Required for either measurement: full commit SHA, matching the selected ref"
         type: string
         default: ""
         required: false
@@ -28,6 +33,19 @@ concurrency:
 # on GitHub-hosted, ephemeral runners; repository variables cannot redirect it to a
 # persistent machine with local credentials or state.
 jobs:
+  scale-qualification:
+    name: Synthetic 300-device scale budgets (opt-in dispatch)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_scale_qualification }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/scale-qualification
+        with:
+          expected_source_commit: ${{ inputs.expected_source_commit }}
   lint:
     name: Ruff lint
     runs-on: ubuntu-24.04

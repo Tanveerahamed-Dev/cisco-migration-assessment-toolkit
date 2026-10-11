@@ -389,7 +389,12 @@
     {"source_path": "atlas-scope/src/contract-mode/view.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The presentation view shares only the selection-target type."},
     {"source_path": "atlas-scope/src/test-support/projection-contract-fixtures.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Test-only fixtures construct the same context digest and list selectors; runtime closure excludes test-support."},
     {"source_path": "atlas-scope/src/test-support/projection-contract-fixtures.ts", "target_path": "webapp/frontend/src/test/projectionFixtures.ts", "reason": "Synthetic contract fixtures are shared only through the explicit test-support boundary."},
-    {"source_path": "atlas-scope/vite.config.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The hub build publishes the shared versioned capability marker."}
+    {"source_path": "atlas-scope/vite.config.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The hub build publishes the shared versioned capability marker."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "cisco_toolkit/analyze.py", "reason": "The manual hosted synthetic qualification reads the canonical VLAN inventory to reconcile its generated corpus; it never produces assessment facts."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/backend/app.py", "reason": "The manual hosted synthetic qualification exercises the real AssessHub ingest and projection API in a fresh synthetic store."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/backend/ui_projection_api.py", "reason": "The manual hosted synthetic qualification derives the list catalog and page ceiling from the actual transport owner."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/sample_data/build_scale.py", "reason": "The manual hosted qualification consumes its deterministic synthetic capture corpus, never operational evidence."},
+    {"source_path": ".github/scripts/test_qualify_scale.py", "target_path": "webapp/sample_data/build_scale.py", "reason": "Hosted harness controls verify synthetic corpus identities, reciprocal links and capture grammar; this test imports no client material."}
   ],
   "forbidden_edges": [
     {"from": "master_reference", "to": "custody_collection", "reason": "Reference cannot collect or mutate operational evidence."},
