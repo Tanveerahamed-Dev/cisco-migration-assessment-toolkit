@@ -1304,6 +1304,12 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "master-reference/release/model.py::write_bytes": (1, NON_CLIENT, (), _MASTER_REFERENCE),
     "master-reference/release/model.py::StagedOutput.publish": (1, NON_CLIENT, (), _MASTER_REFERENCE),
     "master-reference/release/model.py::deterministic_zip": (1, NON_CLIENT, (), _MASTER_REFERENCE),
+    # W64a streams the release family to disk instead of building it in memory: the same
+    # deterministic release ZIPs and JSON artifacts, written entry by entry. Release output, not client data.
+    "master-reference/release/model.py::_write_deterministic_zip": (1, NON_CLIENT, (), _MASTER_REFERENCE),
+    "master-reference/release/model.py::write_deterministic_zip": (2, NON_CLIENT, (), _MASTER_REFERENCE),
+    "master-reference/release/pipeline.py::_streamed_json_artifact": (1, NON_CLIENT, (), _MASTER_REFERENCE),
+    "master-reference/release/pipeline.py::_zip_artifact": (1, NON_CLIENT, (), _MASTER_REFERENCE),
     "master-reference/release/pdf_report.py::build_master_reference_pdf": (1, NON_CLIENT, (), _MASTER_REFERENCE),
     "master-reference/release/pdf_report.py::generate_master_reference_pdf": (
         1, NON_CLIENT, (), _MASTER_REFERENCE),
