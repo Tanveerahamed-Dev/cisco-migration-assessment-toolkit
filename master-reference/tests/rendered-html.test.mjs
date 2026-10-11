@@ -1854,7 +1854,7 @@ test("keeps runtime local, read-only, private, and dependency-light", async () =
   const packageData = JSON.parse(packageText);
 
   assert.deepEqual(Object.keys(packageData.dependencies).sort(), ["react", "react-dom"]);
-  assert.equal(packageData.devDependencies["node-html-parser"], "9.0.3");
+  assert.equal(packageData.devDependencies["node-html-parser"], "9.0.4");
   assert.equal(packageData.overrides.next, undefined);
   assert.equal(packageData.private, true);
   assert.match(layout, /index:\s*false/);

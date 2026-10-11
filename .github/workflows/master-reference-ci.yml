@@ -5,12 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      prepare_dependency_lock:
-        description: Resolve the committed manifest in hosted scratch for review
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -20,45 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  prepare-lock:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_dependency_lock }}
-    name: Prepare Master Reference dependency lock for review
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24.18.0"
-      - name: Resolve only the lock in fresh external scratch
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain)"
-          scratch="$RUNNER_TEMP/master-lock-scratch"
-          output="$RUNNER_TEMP/master-lock-handoff"
-          mkdir "$scratch" "$output"
-          cp master-reference/package.json master-reference/package-lock.json "$scratch/"
-          cp -R master-reference/vendor "$scratch/"
-          git rev-parse HEAD HEAD^{tree} > "$output/source.txt"
-          git ls-tree -r HEAD -- master-reference/package.json master-reference/package-lock.json master-reference/vendor .github/workflows/master-reference-ci.yml >> "$output/source.txt"
-          node --version > "$output/toolchain.txt"
-          npm --version >> "$output/toolchain.txt"
-          npm --prefix "$scratch" install --package-lock-only --ignore-scripts --audit=false --fund=false
-          cmp master-reference/package.json "$scratch/package.json"
-          cp "$scratch/package-lock.json" "$output/package-lock.json"
-          cp master-reference/package.json "$output/package.json"
-          sha256sum "$output/package.json" "$output/package-lock.json" > "$output/sha256.txt"
-          test -z "$(git status --porcelain)"
-      - name: Preserve source-bound lock review data
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: master-lock-handoff-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/master-lock-handoff/
-          if-no-files-found: error
-          retention-days: 7
   verify:
     name: Exact-source compiler, reference, and release contracts
     runs-on: ubuntu-24.04

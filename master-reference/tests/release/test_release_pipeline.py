@@ -2121,9 +2121,9 @@ def _bounded_image_replacement_sbom() -> dict[str, object]:
                 "bom-ref": "vinext",
                 "group": "",
                 "name": "vinext",
-                "version": "0.0.50",
+                "version": "0.2.1",
                 "externalReferences": [
-                    {"type": "distribution", "url": "https://registry.npmjs.org/vinext/-/vinext-0.0.50.tgz"}
+                    {"type": "distribution", "url": "https://registry.npmjs.org/vinext/-/vinext-0.2.1.tgz"}
                 ],
                 "properties": [
                     {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
@@ -2131,7 +2131,7 @@ def _bounded_image_replacement_sbom() -> dict[str, object]:
                     {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
                     {
                         "name": "atlas:npmIntegrity",
-                        "value": "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig==",
+                        "value": "sha512-QvafNbaDCWeXIRd9+8zvTMDXdByjeLGpJXx8CnmcrPRJHjqHUZj5SgjWueadUukKZA96kzjFdsCTUqJM6GkQsg==",
                     },
                 ],
             },
@@ -2312,7 +2312,7 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         assert properties["atlas:localPackageSourceFiles"] == entry.source_files
         assert properties["atlas:localPackageSourceBytes"] == entry.source_bytes
     assert component_rows["bounded-braces"][0]["licenses"] == [{"expression": "MIT"}]
-    assert component_rows["node-html-parser"][0]["version"] == "9.0.3"
+    assert component_rows["node-html-parser"][0]["version"] == "9.0.4"
     assert component_rows["node-html-parser"][1]["atlas:developmentOnly"] == "true"
     # Every tracked lockfile is inventoried, including atlas-scope/'s.
     assert fflate_rows == {
@@ -2320,7 +2320,7 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         ("master-reference/package-lock.json", "0.7.5"),
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
-    assert vite_versions == ["8.2.0", "8.2.1", "8.2.4"]
+    assert vite_versions == ["8.2.4"]
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
     assert "GHSA-wq5f-xc86-pv6w in the current build graph only" in limits[0]
     assert "retains the earlier GHSA-rgj7-g3m4-5g8c remediation" in limits[0]
@@ -2473,7 +2473,7 @@ def test_dependency_sources_reject_an_unscoped_override_even_when_the_lock_alias
         return canonical_json(manifest)
 
     monkeypatch.setattr(release_pipeline, "read_bound_source_blob", selected_blob)
-    with pytest.raises(ReleaseInputError, match="not scoped to exact Vinext 0.0.50"):
+    with pytest.raises(ReleaseInputError, match="not scoped to exact Vinext 0.2.1"):
         release_pipeline._dependency_sources(repo, bundle)
 
 
@@ -2488,7 +2488,7 @@ _BRACES_PATCH_PROVENANCE = (
     "2026-10-03T03:19:55Z",
 )
 _VINEXT_INTEGRITY = (
-    "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig=="
+    "sha512-QvafNbaDCWeXIRd9+8zvTMDXdByjeLGpJXx8CnmcrPRJHjqHUZj5SgjWueadUukKZA96kzjFdsCTUqJM6GkQsg=="
 )
 _MICROMATCH_INTEGRITY = (
     "sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA=="
@@ -2546,7 +2546,7 @@ def _bounded_braces_replacement_sbom() -> dict[str, object]:
                     {"name": "atlas:recordKind", "value": "first-party-workspace"},
                 ],
             },
-            _npm_component("vinext", "vinext", "0.0.50", "node_modules/vinext", _VINEXT_INTEGRITY),
+            _npm_component("vinext", "vinext", "0.2.1", "node_modules/vinext", _VINEXT_INTEGRITY),
             _npm_component("commonjs", "vite-plugin-commonjs", "0.10.4", "node_modules/vite-plugin-commonjs"),
             _npm_component(
                 "dynamic-import", "vite-plugin-dynamic-import", "1.6.0", "node_modules/vite-plugin-dynamic-import"
@@ -2621,7 +2621,7 @@ def test_bounded_substitutions_are_one_registry_that_every_check_iterates() -> N
             "master-reference/package.json",
             "master-reference/package-lock.json",
         )
-        assert entry.override_selector == "vinext@0.0.50"
+        assert entry.override_selector == "vinext@0.2.1"
         assert entry.override_spec == f"file:{entry.target}"
         assert manifest["overrides"][entry.override_selector][entry.package] == entry.override_spec
         assert entry.package not in manifest["overrides"]
@@ -2734,7 +2734,7 @@ def test_dependency_assessment_fails_closed_when_the_bounded_braces_substitution
         _set_component_property(sbom, "vinext", "atlas:npmIntegrity", _MICROMATCH_INTEGRITY)
     else:
         sbom["components"].append(
-            _npm_component("vinext-copy", "vinext", "0.0.50", "node_modules/vinext", _VINEXT_INTEGRITY)
+            _npm_component("vinext-copy", "vinext", "0.2.1", "node_modules/vinext", _VINEXT_INTEGRITY)
         )
         sbom["dependencies"].append({"ref": "vinext-copy", "dependsOn": []})
 
@@ -2937,7 +2937,7 @@ def test_dependency_sources_accept_the_complete_registry_on_the_tracked_tree(mon
 @pytest.mark.parametrize(
     ("manifest", "mutate"),
     (
-        (_MASTER_MANIFEST, lambda value: value["overrides"]["vinext@0.0.50"].update(picomatch="file:vendor/x")),
+        (_MASTER_MANIFEST, lambda value: value["overrides"]["vinext@0.2.1"].update(picomatch="file:vendor/x")),
         (_MASTER_MANIFEST, lambda value: value["overrides"].update({"left-pad": "1.3.0"})),
         (_MASTER_MANIFEST, lambda value: value["overrides"].update(nanoid="3.3.19")),
         (_MASTER_MANIFEST, lambda value: value["overrides"].update({"vite@8.2.0": {"braces": "3.0.3"}})),
@@ -3032,7 +3032,7 @@ def test_dependency_sources_refuse_each_registered_override_outside_its_exact_sc
 
     repo, bundle = _real_tree_bundle()
     monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations({_MASTER_MANIFEST: mutate}))
-    with pytest.raises(ReleaseInputError, match=f"{entry.label} override is not scoped to exact Vinext 0.0.50"):
+    with pytest.raises(ReleaseInputError, match=f"{entry.label} override is not scoped to exact Vinext 0.2.1"):
         release_pipeline._dependency_sources(repo, bundle)
 
 
@@ -3052,7 +3052,7 @@ def test_dependency_sources_refuse_a_registered_substitution_without_source_boun
     ("manifest", "key_path"),
     (
         (_MASTER_MANIFEST, ("undici",)),
-        (_MASTER_MANIFEST, ("miniflare@5.20260801.1-alpha", "sharp")),
+        (_MASTER_MANIFEST, ("miniflare@5.20261006.0-alpha", "sharp")),
         ("webapp/frontend/package.json", ("nanoid",)),
     ),
 )

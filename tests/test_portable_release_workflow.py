@@ -158,12 +158,12 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     assert "setuptools==84.0.0 " in lock
     assert "cyclonedx-python-lib==11.12.0 " in lock
     assert "jsonschema==4.26.0 " in lock
-    assert "jsonschema-rs==0.58.5 " in lock
+    assert "jsonschema-rs==0.58.6 " in lock
     assert "referencing==0.37.0 " in lock
-    native_block = re.search(r"(?m)^jsonschema-rs==0\.58\.5 \\\n((?:[ \t].*\n)+)", lock)
+    native_block = re.search(r"(?m)^jsonschema-rs==0\.58\.6 \\\n((?:[ \t].*\n)+)", lock)
     assert native_block is not None
     assert re.findall(r"--hash=sha256:([a-f0-9]{64})", native_block.group()) == [
-        "f1e7d341ba53fc112a5c645f5f71834d9418f360c1d6f422c8c5314e95a65717"
+        "b4319d634748d57a21017753838a663e08f58b69227170b994ac2da07677c519"
     ]
     assert "jsonschema-specifications==2025.9.1 " in lock
     assert "--hash=sha256:" in lock

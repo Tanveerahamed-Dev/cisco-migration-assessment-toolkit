@@ -65,7 +65,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "isoduration": "20.11.0",
     "jsonpointer": "3.1.1",
     "jsonschema": "4.26.0",
-    "jsonschema-rs": "0.58.5",
+    "jsonschema-rs": "0.58.6",
     "jsonschema-specifications": "2025.9.1",
     "lark": "1.3.1",
     "lxml": "6.1.3",
@@ -164,7 +164,7 @@ def _reviewed_npm_inventory(field: str) -> tuple[int, str]:
 #: tests/test_portable_release_workflow.py derives both sets from real builds.
 EXPECTED_BUILD_ONLY_NPM_PACKAGES = {
     "bundled_frontend": ("node_modules/rolldown@1.2.5", "node_modules/vite@8.2.4"),
-    "bundled_scope_frontend": ("node_modules/rolldown@1.2.9", "node_modules/vite@8.2.1"),
+    "bundled_scope_frontend": ("node_modules/rolldown@1.2.9", "node_modules/vite@8.2.4"),
 }
 
 MANIFEST_SCHEMA = "atlas.portable-member-manifest/1"
@@ -2408,7 +2408,7 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         "pyinstaller": PYINSTALLER_VERSION,
         "cyclonedx-python-lib": "11.12.0",
         "jsonschema": "4.26.0",
-        "jsonschema-rs": "0.58.5",
+        "jsonschema-rs": "0.58.6",
         "referencing": "0.37.0",
     }.items():
         if versions.get(name) != expected:

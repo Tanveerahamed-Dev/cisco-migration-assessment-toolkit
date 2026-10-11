@@ -51,6 +51,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Observe the canonical Scope production inventory for dependency review
+        working-directory: .
+        run: |
+          python -I -B - <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+          import sys
+          root = Path.cwd()
+          sys.path.insert(0, str(root))
+          from portable import release_contract as owner
+          rows = owner._bundled_scope_frontend_packages(root)
+          print(json.dumps({
+              "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
+              "owner_blob": subprocess.check_output(["git", "rev-parse", "HEAD:portable/release_contract.py"]).decode().strip(),
+              "lock_blob": subprocess.check_output(["git", "rev-parse", "HEAD:atlas-scope/package-lock.json"]).decode().strip(),
+              "rows": rows, "count": len(rows), "digest": owner.digest_object(rows),
+              "review_required": True, "release_authority": False,
+          }, sort_keys=True))
+          PY
       - name: Bind immutable compiler inputs before exporting the family
         working-directory: .
         run: python -I -B .github/scripts/scope_compile_handoff.py before --output "${{ runner.temp }}/scope-compiler-handoff"

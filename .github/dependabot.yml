@@ -4,18 +4,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
-      python-runtime:
-        dependency-type: production
-      python-development:
-        dependency-type: development
+      python:
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /webapp/frontend
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
       frontend:
         patterns: ["*"]
@@ -50,7 +48,7 @@ updates:
     directory: /atlas-scope
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
       atlas-scope:
         patterns: ["*"]
@@ -72,7 +70,7 @@ updates:
     directory: /master-reference
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
       master-reference:
         patterns: ["*"]
@@ -87,4 +85,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -26,7 +26,7 @@ import { isDeepStrictEqual } from "node:util";
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "../..");
 const packageRoot = path.join(projectRoot, "vendor", "bounded-braces");
-const OVERRIDE_SCOPE = "vinext@0.0.50";
+const OVERRIDE_SCOPE = "vinext@0.2.1";
 const OVERRIDE_SPEC = "file:vendor/bounded-braces";
 // fast-glob 3.3.3 out/utils/pattern.js expands every pattern with exactly these options.
 const FAST_GLOB_BRACE_OPTIONS = Object.freeze({ expand: true, nodupes: true, keepEscaping: true });
@@ -451,7 +451,7 @@ function consumerChain() {
   ];
   let from = path.join(projectRoot, "node_modules", "vinext", "package.json");
   let declaring = JSON.parse(readFileSync(from, "utf8"));
-  assert.equal(declaring.version, "0.0.50");
+  assert.equal(declaring.version, "0.2.1");
   const resolved = {};
   for (const [name, version] of hops) {
     assert.ok(declaring.dependencies?.[name], `${declaring.name} declares ${name}`);
@@ -599,7 +599,7 @@ test("the lock substitutes braces only on the exact Vinext edge", () => {
   }
 
   // Only micromatch 4.0.8 declares braces, and every lock path from the root to braces passes
-  // through Vinext 0.0.50: with Vinext removed, braces is unreachable.
+  // through Vinext 0.2.1: with Vinext removed, braces is unreachable.
   const dependents = Object.entries(packages)
     .filter(([key, record]) => key && record.dependencies?.braces)
     .map(([key, record]) => [key, record.version, record.dependencies.braces]);
@@ -1111,7 +1111,7 @@ test("Vite's compiled bundle carries its own unbounded braces 3.0.3 copy outside
   // The release gate models this copy separately; this pins the installed fact it relies on.
   const viteManifest = path.join(projectRoot, "node_modules", "vite", "package.json");
   const vite = JSON.parse(readFileSync(viteManifest, "utf8"));
-  assert.equal(vite.version, "8.2.0");
+  assert.equal(vite.version, "8.2.4");
   const bundle = readFileSync(path.join(path.dirname(viteManifest), "dist", "node", "chunks", "node.js"), "utf8");
   assert.ok(bundle.includes("//#region ../../node_modules/.pnpm/braces@3.0.3/node_modules/braces/lib/parse.js"));
   assert.ok(bundle.includes("node_modules/.pnpm/chokidar@3.6.0"));
