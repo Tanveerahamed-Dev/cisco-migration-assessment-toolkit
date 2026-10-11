@@ -711,6 +711,9 @@ _SWEEP_ARGV_WS = _CRED_WS.replace("\udc80-\udcff", "")
 _SWEEP_ARGV_WORD_RE = re.compile(
     "(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
+_SWEEP_SHELL_WORD_RE = re.compile(
+    "(?:<redacted>|[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\;|&()<>]|\\\\[^\r\n]|\\\\\\Z"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'[^'\r\n]*(?:'|\\Z))+")
 _SWEEP_CHPASSWD_RE = re.compile(_v(
     r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
 _SWEEP_PGPASS_RE = re.compile(_v(
@@ -777,8 +780,10 @@ _SWEEP_SCHEME_OPEN_RE = re.compile(_v(
     + "|".join(sorted(_SWEEP_SCHEMES)) + r"))?){h}*\Z"), re.IGNORECASE)
 _SWEEP_EMPTY_AUTH_HEADER_RE = re.compile(_v(
     r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*\Z"), re.IGNORECASE)
+_SWEEP_CLOSED_AUTH_HEADER_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*[\"']?<redacted>[\"']?{h}*\Z"), re.IGNORECASE)
 _SWEEP_CAPTURE_PREFIX_RE = re.compile(_v(
-    r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _CRED_WS
+    r"^{h}*(?:(?:(?:[#+>!\-]|//){H})+|\d{1,9}{H}|[^\r\n" + _CRED_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _CRED_WS + r"]{1,256}:{H})?{h}*"))
 _PUBLIC_HTTP_HEADER_RE = re.compile(_v(
     r"^{h}*(?:host{h}*:{h}*[A-Za-z0-9.\-:\[\]]{1,255}"
@@ -1036,7 +1041,8 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
         if operand is not None:
             raw = operand.group(0)
             value = _sweep_decode_word(raw)[0]
-            placeholder = value == _PLACEHOLDER if raw != value else _cred_is_placeholder(value, delim)
+            placeholder = chr(92) not in raw and (
+                value == _PLACEHOLDER if raw != value else _cred_is_placeholder(value, delim))
             if value and not placeholder:
                 findings.append("credential value (Junos NTP required value slot)")
     for match in _REQUIRED_CONFIG_SLOT_RE.finditer(line):
@@ -1098,8 +1104,9 @@ def _required_config_findings(line: str, *, has_next: bool = False, delim: str =
                 and fields[pos].group(0) == words[pos]
                 and (_CRED_TYPE_DIGIT_RE.fullmatch(words[pos]) or words[pos] == "ENC")):
             continue
-        placeholder = (words[pos].casefold() == _PLACEHOLDER if fields[pos].group(0) != words[pos]
-                       else _cred_is_placeholder(words[pos], delim))
+        placeholder = chr(92) not in fields[pos].group(0) and (
+            words[pos].casefold() == _PLACEHOLDER if fields[pos].group(0) != words[pos]
+            else _cred_is_placeholder(words[pos], delim))
         if words[pos] and not placeholder:
             findings.append("credential value (required configuration slot)")
     return findings
@@ -1211,7 +1218,7 @@ def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
     if junos is not None:
         start, end = junos.span("id")
         masked = masked[:start] + " " * (end - start) + masked[end:]
-    public = [(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
+    public = _sweep_completed_scalar_spans(line) + [(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
               if chr(92) in line[start:end] and _sweep_public_operand(line[start:end], kind)]
     if not public:
         return masked
@@ -1225,6 +1232,29 @@ def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
         cursor = end
     pieces.append(masked[cursor:])
     return "".join(pieces)
+
+
+def _sweep_completed_scalar_spans(line: str) -> list[tuple[int, int]]:
+    """Only a completely examined empty/PH scalar may hide its credential-key anchor."""
+    spans = []
+    for regex, quoted in ((_SWEEP_QKEY_RE, True), (_SWEEP_UKEY_RE, False)):
+        consumed = 0
+        for field in regex.finditer(line):
+            if field.start() < consumed:
+                continue
+            if not _sweep_credential_name(field.group("k"), quoted):
+                continue
+            gap = _SWEEP_LEAD_RE.match(line, field.end())
+            value = _CRED_TOKEN_RE.match(line, gap.end()) if gap is not None else None
+            if value is None:
+                continue
+            consumed = value.end()
+            raw = value.group(0)
+            decoded = _sweep_decode_word(raw)[0]
+            if (not decoded or _sweep_physical_placeholder(raw, decoded)
+                    or chr(92) not in raw and _cred_is_placeholder(raw)):
+                spans.append((field.start(), value.end()))
+    return spans
 
 
 def _sweep_credential_name(name: str, quoted: bool) -> bool:
@@ -1503,6 +1533,11 @@ def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tup
         found = _SWEEP_EMPTY_AUTH_HEADER_RE.search(masked)
         if found is not None:
             return ("header-value", _sweep_header_capture_tail(line, found.start()), False)
+        closed = _SWEEP_CLOSED_AUTH_HEADER_RE.search(line)
+        if closed is not None:
+            tail = _sweep_header_capture_tail(line, closed.start())
+            if "capture" in tail:
+                return ("scheme", tail, False)             # carry provenance even when the scheme was masked
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _sweep_argv_walk(line, carry)[1]
         if pending is not None:
@@ -1609,16 +1644,20 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
             if first is None:
                 return False
             whole = line[first.start():].rstrip(_CRED_WS_CHARS)
-            return _sweep_decode_word(whole)[0] != _PLACEHOLDER
-        values = list(itertools.islice(_SWEEP_ARGV_WORD_RE.finditer(line, value_start), 1))
-        if not values:
+            return not _sweep_physical_placeholder(whole, _sweep_decode_word(whole)[0])
+        value = line[value_start:].strip(_CRED_WS_CHARS)
+        if not value:
             return False
-        token = values[0].group(0)
         # A wrapped JSON/header value may finish with its quote/comma/colon delimiter.
         # None of those closures permits text beside the exact placeholder.
-        if _PLACEHOLDER in token and _sweep_token_ok(token):
+        if _PLACEHOLDER in value and _sweep_token_ok(value):
             return False
-        return _sweep_operand_bad(token, "value")
+        transformed = re.fullmatch(_v(r"<redacted>:{H}(?P<v>{S}+){h}*"), value)
+        if transformed is not None:
+            public = transformed.group("v")
+            if public.casefold() in _SWEEP_SCHEMES or _sweep_is_address(public) or _SWEEP_SYNTH_RE.fullmatch(public):
+                return False                              # exact historical transformed-header structure
+        return True                                       # a first PH never certifies remaining credential text
     masked = _sweep_masked(line)
     size_cut = len(tail) >= 2 and tail[-2] in _SWEEP_SIZE_WORDS and tail[-1].isdigit()
     after_vrf = kind == "snmp-host" and tail[-1:] == ["vrf"]
@@ -1882,15 +1921,89 @@ def _sweep_decode_word(raw: str) -> tuple[str, list[int]]:
     return "".join(text), positions
 
 
+def _sweep_decode_shell_word(raw: str, *, initial_quote: str = "") -> tuple[str, list[int]]:
+    """POSIX shell quoting, distinct from Net-SNMP's configuration copy_nword grammar."""
+    chars: list[str] = []
+    positions: list[int] = []
+    quote = initial_quote
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                chars.append(char)
+                positions.append(index)
+            index += 1
+        elif char == chr(92) and index + 1 < len(raw):
+            following = raw[index + 1]
+            if not quote or following in {'$', '`', '"', chr(92)}:
+                chars.append(following)
+                positions.append(index)
+                index += 2
+            else:
+                chars.append(char)
+                positions.append(index)
+                index += 1
+        elif char in {"\"", "'"} and (not quote or quote == char):
+            quote = "" if quote else char
+            index += 1
+        else:
+            chars.append(char)
+            positions.append(index)
+            index += 1
+    return "".join(chars), positions
+
+
+def _sweep_operand_kind(kind: str) -> tuple[str, bool, str]:
+    for prefix, quote in (("shell-single:", "'"), ("shell-double:", '"'), ("shell:", "")):
+        if kind.startswith(prefix):
+            return kind[len(prefix):], True, quote
+    return kind, False, ""
+
+
+def _sweep_shell_quote_at(text: str, offset: int) -> str:
+    quote = ""
+    index = 0
+    while index < offset:
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            index += 1
+        elif char == chr(92) and index + 1 < offset and (
+                not quote or text[index + 1] in {'$', '`', '"', chr(92)}):
+            index += 2
+        elif char in {"\"", "'"} and (not quote or quote == char):
+            quote = "" if quote else char
+            index += 1
+        else:
+            index += 1
+    return quote
+
+
+def _sweep_shell_kind(kind: str, text: str = "", offset: int = 0) -> str:
+    quote = _sweep_shell_quote_at(text, offset)
+    return ("shell-single:" if quote == "'" else "shell-double:" if quote == '"' else "shell:") + kind
+
+
+def _sweep_physical_placeholder(raw: str, decoded: str) -> bool:
+    """Escape normalization cannot authenticate a marker that is not physically canonical."""
+    return (decoded == _PLACEHOLDER and chr(92) not in raw
+            and raw.strip("\"'") == _PLACEHOLDER)
+
+
 def _sweep_public_operand(text: str, kind: str) -> bool:
     """Only a positively recognized public parameter in its owned argv slot is structural.
 
     Decoding an escaped 'authPriv' does not authenticate the same text as a password. The
     option's independent operand kind is part of this check, and placeholders are not metadata.
     """
+    kind, shell, quote = _sweep_operand_kind(kind)
     if kind not in {"protocol", "version", "level", "create-auth", "create-priv"}:
         return False
-    decoded = _sweep_decode_word(text)[0]
+    decoded = (_sweep_decode_shell_word(text, initial_quote=quote) if shell else _sweep_decode_word(text))[0]
     if kind == "create-auth":
         return decoded in _SWEEP_CREATE_AUTH_ALGORITHMS
     if kind == "create-priv":
@@ -1901,9 +2014,11 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
             or kind == "level" and core in {"noauthnopriv", "authnopriv", "authpriv"})
 
 
-def _sweep_snmp_shape(line: str) -> bool:
+def _sweep_snmp_shape(line: str, *, config: bool = False) -> bool:
     """Recognize argument semantics, not their optional quote/escape spelling."""
-    words = [_sweep_decode_word(m.group(0))[0] for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
+    lexer = _SWEEP_ARGV_WORD_RE if config else _SWEEP_SHELL_WORD_RE
+    decoder = _sweep_decode_word if config else _sweep_decode_shell_word
+    words = [decoder(m.group(0))[0] for m in lexer.finditer(line)]
     weak: set[str] = set()
     i = 0
     while i < len(words):
@@ -1927,6 +2042,20 @@ def _sweep_snmp_shape(line: str) -> bool:
     return len(weak) >= 2
 
 
+def _sweep_shell_boundary(line: str, pos: int) -> bool:
+    if _sweep_line_word_lead(line, pos):
+        return True
+    previous = pos - 1
+    while previous >= 0 and line[previous] in _CRED_WS_CHARS:
+        previous -= 1
+    if previous >= 0 and line[previous] in ";|&()":
+        return True
+    bindings = list(itertools.islice(_SWEEP_SHELL_WORD_RE.finditer(line, 0, pos), 17))
+    return bool(bindings) and len(bindings) <= 16 and all(
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", _sweep_decode_shell_word(word.group(0))[0])
+        for word in bindings)
+
+
 def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
     """Accept mixed/upper-case directives only with complete SNMPCMD_ARGS operands.
 
@@ -1938,12 +2067,13 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
     if spelling == spelling.casefold():
         return True
     valued = ("-3m", "-3M", "-3k", "-3K", "-Cn", "-CE", "-v", "-u", "-l", "-a", "-x", "-c",
-              "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p")
+              "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p", "-Y", "-m", "-M", "-O", "-I",
+              "-P", "-D", "-Z", "-T", "-L", "-s", "-C", "-3")
     words = iter(_SWEEP_ARGV_WORD_RE.finditer(line, directive.end()))
     targets: list[str] = []
     for word in words:
         token = _sweep_decode_word(word.group(0))[0]
-        if token == "-Ci" and not targets:
+        if token in {"-Ci", "-d", "-h", "-H", "-V", "--help", "--version"} and not targets:
             continue
         option = next((name for name in valued if token.startswith(name)), None) if not targets else None
         if option is not None:
@@ -1967,20 +2097,27 @@ def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
     each listed command from its end, an SNMPCMD_ARGS directive that starts a statement, or else a net-snmp
     vector by its shape from the line start. Each run ends where the next one starts."""
     runs = [(_sweep_argv_kind(m.group("cmd")), m.end(), False) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
+    prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+    start = prefix.end() if prefix is not None else 0
+    for word in _SWEEP_SHELL_WORD_RE.finditer(line, start):
+        decoded = _sweep_decode_shell_word(word.group(0))[0]
+        command = _SWEEP_ARGV_CMD_RE.fullmatch(decoded)
+        if command is not None and _sweep_shell_boundary(line, word.start()):
+            runs.append((_sweep_argv_kind(command.group("cmd")), word.end(), False))
     if "-" in line:
         directive = next((m for m in _sweep_line_words(line)
                           if m.group(0).casefold() in _SWEEP_SNMP_DIRECTIVES
                           and _sweep_directive_config(line, m)), None)
         if directive is not None:
-            runs.append(("snmp", directive.end(), False))
+            runs.append(("config:snmp", directive.end(), False))
         elif _sweep_snmp_shape(line):
             runs.append(("snmp", 0, True))
-    return sorted(runs, key=lambda run: run[1])
+    return sorted(set(runs), key=lambda run: run[1])
 
 
 def _sweep_argv_option(text: str, options: tuple[tuple[str, str], ...],
-                       shape_only: bool) -> tuple[str, int | None] | None:
-    decoded, positions = _sweep_decode_word(text)
+                       shape_only: bool, *, config: bool = False) -> tuple[str, int | None] | None:
+    decoded, positions = (_sweep_decode_word if config else _sweep_decode_shell_word)(text)
     if shape_only and (decoded == "-config" or decoded.startswith("-config=")
                        or re.fullmatch(r"-Xmx[0-9]+[kKmMgG]?", decoded)):
         return None
@@ -2004,15 +2141,19 @@ def _sweep_operand_bad(text: str, kind: str) -> bool:
     """An operand word that does not hold the placeholder where the producer's ``_redact_operand_span`` puts it."""
     # An ordinary rest-of-line smux password can be megabytes. It needs no per-character
     # mapping allocation; quote/escape decoding is needed only when those characters exist.
-    core = text if not any(char in text for char in ("\"", "'", chr(92))) else _sweep_decode_word(text)[0]
-    if kind in ("userinfo", "userpct"):
-        sep = ":" if kind == "userinfo" else "%"
+    base, shell, quote = _sweep_operand_kind(kind)
+    core = text if not any(char in text for char in ("\"", "'", chr(92))) else (
+        _sweep_decode_shell_word(text, initial_quote=quote) if shell else _sweep_decode_word(text))[0]
+    raw = text
+    if base in ("userinfo", "userpct"):
+        sep = ":" if base == "userinfo" else "%"
         if sep not in core:
             return False
         core = core.partition(sep)[2]
+        raw = raw.partition(sep)[2]
     if _sweep_public_operand(text, kind):
         return False
-    return bool(core) and core != _PLACEHOLDER
+    return bool(core) and not _sweep_physical_placeholder(raw, core)
 
 
 def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
@@ -2024,8 +2165,7 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:
         return [], None
-    words = [m.span() for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
-    starts = [a for a, _b in words]
+    indexes: dict[bool, tuple[list[tuple[int, int]], list[int]]] = {}
     operands: list[tuple[int, int, str]] = []
     pending: tuple[str, str | None] | None = None
     consumed_commands: set[int] = set()
@@ -2036,20 +2176,26 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
         while next_run in consumed_commands:
             next_run += 1
         stop = runs[next_run][1] if next_run < len(runs) else len(line) + 1
-        options = _SWEEP_ARGV_OPTIONS[kind_name]
+        config = kind_name.startswith("config:")
+        base = kind_name[7:] if config else kind_name
+        if config not in indexes:
+            words = [m.span() for m in (_SWEEP_ARGV_WORD_RE if config else _SWEEP_SHELL_WORD_RE).finditer(line)]
+            indexes[config] = words, [a for a, _b in words]
+        words, starts = indexes[config]
+        options = _SWEEP_ARGV_OPTIONS[base]
         expect: str | None = carry[1] if (carry is not None and index == 0) else None
         position = bisect.bisect_left(starts, run)
         while position < len(words) and words[position][0] < stop:
             a, b = words[position]
             position += 1
             text = line[a:b]
-            if kind_name == "net":
+            if base == "net":
                 if not _sweep_netuse_structural(text):
-                    operands.append((a, b, "value"))
+                    operands.append((a, b, "value" if config else "shell:value"))
                 continue
-            option = _sweep_argv_option(text, options, shape_only)
+            option = _sweep_argv_option(text, options, shape_only, config=config)
             if expect is not None:
-                operands.append((a, b, expect))
+                operands.append((a, b, expect if config else "shell:" + expect))
                 expect = None
                 # A required operand that spells 'mysqladmin' or another command remains
                 # an operand. It cannot split this vector and hide later SNMP options.
@@ -2064,7 +2210,7 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
                 if offset is None:
                     expect = None if kind == "attached" else kind
                 else:
-                    operands.append((a + offset, b, kind))
+                    operands.append((a + offset, b, kind if config else _sweep_shell_kind(kind, text, offset)))
         if next_run == len(runs) and (expect is not None or line.rstrip(_CRED_WS_CHARS).endswith(chr(92))):
             pending = (kind_name, expect)
     return operands, pending
@@ -2100,16 +2246,98 @@ def _sweep_positional_violation(line: str) -> bool:
     return False
 
 
+def _sweep_shell_payloads(line: str) -> list[tuple[int, int]]:
+    """Only bounded sh/bash -c carrier operands are owned command strings."""
+    prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+    words = list(_SWEEP_SHELL_WORD_RE.finditer(line, prefix.end() if prefix is not None else 0))
+    payloads = []
+    for index, word in enumerate(words):
+        name = _sweep_decode_shell_word(word.group(0))[0].rsplit("/", 1)[-1]
+        if name not in {"sh", "bash"} or not _sweep_shell_boundary(line, word.start()):
+            continue
+        previous = word.end()
+        for option_index in range(index + 1, len(words)):
+            option = words[option_index]
+            if _SWEEP_LEAD_RE.fullmatch(line[previous:option.start()]) is None:
+                break
+            text = _sweep_decode_shell_word(option.group(0))[0]
+            if text == "-c" or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", text):
+                if option_index + 1 < len(words):
+                    operand = words[option_index + 1]
+                    if _SWEEP_LEAD_RE.fullmatch(line[option.end():operand.start()]):
+                        payloads.append(operand.span())
+                break
+            if not text.startswith("-"):
+                break
+            previous = option.end()
+    return payloads
+
+
+def _sweep_single_named_shell_command(line: str) -> bool:
+    words = list(_SWEEP_SHELL_WORD_RE.finditer(line))
+    if not words or _SWEEP_ARGV_CMD_RE.fullmatch(_sweep_decode_shell_word(words[0].group(0))[0]) is None:
+        return False
+    cursor = 0
+    for word in words:
+        if _SWEEP_LEAD_RE.fullmatch(line[cursor:word.start()]) is None:
+            return False
+        cursor = word.end()
+    return _SWEEP_LEAD_RE.fullmatch(line[cursor:]) is not None
+
+
+def _sweep_shell_payload_uncertain(raw: str, depth: int = 0) -> bool:
+    decoded = _sweep_decode_shell_word(raw)[0]
+    if _sweep_physical_placeholder(raw, decoded):
+        return False
+    words = list(_SWEEP_SHELL_WORD_RE.finditer(decoded))
+    if len(words) < 2:
+        return False
+    if _sweep_snmp_shape(decoded):
+        return True
+    nested = _sweep_shell_payloads(decoded)
+    if depth >= 8:
+        return bool(nested or _SWEEP_ARGV_CMD_RE.search(decoded)
+                    or any(option is not None and option[0] not in {"protocol", "version", "level"}
+                           for word in words for options in _SWEEP_ARGV_OPTIONS.values()
+                           for option in (_sweep_argv_option(word.group(0), options, False),)))
+    for start, end in nested:
+        child = _sweep_decode_shell_word(decoded[start:end])[0]
+        if (_sweep_shell_payload_uncertain(decoded[start:end], depth + 1)
+                or any(_sweep_operand_bad(child[a:b], kind) for a, b, kind in _sweep_argv_walk(child)[0])):
+            return True
+    if nested and _sweep_decode_shell_word(words[0].group(0))[0].rsplit("/", 1)[-1] in {"sh", "bash"}:
+        return False                                      # every owned nested shell payload was proved public
+    payload_starts = {start for start, _end in nested}
+    private_flag = False
+    for index, word in enumerate(words):
+        text = _sweep_decode_shell_word(word.group(0))[0]
+        if (text == "-c" and index + 1 < len(words)
+                and words[index + 1].start() in payload_starts):
+            continue                                      # the shell carrier flag is not an SNMP community flag
+        option = next((option for options in _SWEEP_ARGV_OPTIONS.values()
+                       if (option := _sweep_argv_option(word.group(0), options, False)) is not None
+                       and option[0] not in {"protocol", "version", "level"}), None)
+        if option is not None:
+            private_flag = True
+            break
+    return private_flag and not _sweep_single_named_shell_command(decoded)
+
+
 def _sweep_argv_violation(line: str, carry: tuple[str, str | None] | None = None, *, depth: int = 0) -> bool:
     """A credential operand of the closed shell-argument list that is not the placeholder."""
     if any(_sweep_operand_bad(line[a:b], kind) for a, b, kind in _sweep_argv_walk(line, carry)[0]):
         return True
-    for word in _SWEEP_ARGV_WORD_RE.finditer(line):
+    if any(_sweep_shell_payload_uncertain(line[start:end], depth)
+           for start, end in _sweep_shell_payloads(line)):
+        return True
+    for word in _SWEEP_SHELL_WORD_RE.finditer(line):
         raw = word.group(0)
         if "\"" not in raw and "'" not in raw:
             continue
-        decoded, _positions = _sweep_decode_word(raw)
-        if not _SWEEP_ARGV_CMD_RE.search(decoded) or not any(c in _CRED_WS_CHARS for c in decoded):
+        decoded, _positions = _sweep_decode_shell_word(raw)
+        named = any(not shaped and not name.startswith("config:")
+                    for name, _start, shaped in _sweep_argv_runs(decoded))
+        if not named or not any(c in _CRED_WS_CHARS for c in decoded):
             continue
         if depth >= 8 or _sweep_argv_violation(decoded, depth=depth + 1):
             return True
@@ -2634,6 +2862,11 @@ def _independent_value_ok(value: Any) -> bool:
     return True
 
 
+def _independent_scalar_ok(value: Any) -> bool:
+    """An explicitly credential-named scalar has no structural-word or numeric exemption."""
+    return value is None or isinstance(value, str) and value in {"", _PLACEHOLDER}
+
+
 def _independent_json_findings(value: Any, secret: bool, kinds: list[str], depth: int = 0) -> None:
     if depth > MAX_JSON_DEPTH:
         kinds.append("credential JSON nesting beyond the verification depth")
@@ -2641,6 +2874,9 @@ def _independent_json_findings(value: Any, secret: bool, kinds: list[str], depth
     if isinstance(value, dict):
         for key, child in value.items():
             name = str(key).rpartition(":")[2]
+            if (_is_secret_key(name) and not isinstance(child, (dict, list))
+                    and not _independent_scalar_ok(child)):
+                kinds.append("credential value (explicit JSON scalar)")
             _independent_json_findings(child, secret or _is_secret_key(name), kinds, depth + 1)
     elif isinstance(value, list):
         for child in value:
@@ -2685,16 +2921,33 @@ def _independent_credential_findings(text: str, lines: list[str]) -> list[str]:
             continue
         masked = _sweep_masked(line)
         for regex, quoted in ((_SWEEP_QKEY_RE, True), (_SWEEP_UKEY_RE, False)):
+            consumed = 0
             for match in regex.finditer(masked):
-                name = match.group("k").rpartition(":")[2] if quoted else match.group("k")
-                if not _is_secret_key(name):
+                if match.start() < consumed:
                     continue
-                value = _SWEEP_TOKEN_RE.search(masked, match.end())
-                if value is None or _SWEEP_LEAD_RE.fullmatch(masked[match.end():value.start()]) is None:
+                name = match.group("k").rpartition(":")[2] if quoted else match.group("k")
+                if not _sweep_credential_name(name, quoted):
+                    continue
+                gap = _SWEEP_LEAD_RE.match(line, match.end())
+                if gap is None:
+                    continue
+                value = _CRED_TOKEN_RE.match(line, gap.end())
+                if value is None:
                     continue                              # no value on this line, or not right after the name
+                consumed = value.end()
                 token = value.group(0)
-                if token.strip(_SWEEP_EDGE + "|>-+") and not _sweep_token_ok(token):
+                if token.startswith(("[", "{")):
+                    continue                              # containers retain their existing stateful reader
+                if _CRED_BLOCK_INDICATOR_RE.fullmatch(token) and match.group(0).rstrip(_CRED_WS_CHARS).endswith(":"):
+                    continue                              # a YAML block opener, never a quoted punctuation value
+                decoded = _sweep_decode_word(token)[0]
+                if quoted and token.rstrip(",;}])") == "null":
+                    continue                              # the JSON null primitive is absence, not the string 'null'
+                placeholder = (chr(92) not in token and _cred_is_placeholder(token)
+                               or _sweep_physical_placeholder(token, decoded))
+                if decoded and not placeholder:
                     kinds.append("credential value (credential-named field)")
+                    return kinds                          # one owned scalar leak already refuses this capture
     return kinds
 
 

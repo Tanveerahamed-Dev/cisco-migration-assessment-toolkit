@@ -96,6 +96,7 @@ def _base_password_stops():
 def test_w60b_corpus_retains_review_and_every_required_stop_word():
     assert CORPUS["review_merge"] == BASE
     assert CORPUS["main_ref"] == MAIN and CORPUS["round3_ref"] == ROUND3
+    assert CORPUS["current_main_ref"] == CURRENT_MAIN
     review = CORPUS["review_differential"]
     assert len(review) == 599 and len({row["id"] for row in review}) == 599
     assert len({row["id"] for row in ROWS}) == len(ROWS)
@@ -146,6 +147,26 @@ def test_w60b_ordered_type_matrix_covers_each_private_value_without_reusing_a_fi
     assert not prior_lines.intersection(fresh_lines), "an ordered-type source line reuses an older corpus fixture"
 
 
+def test_w60b_round4_corpus_retains_all_six_schematic_families_and_negative_controls():
+    rows = [row for row in ROWS if row["id"].startswith("r4:")]
+    expected = {"R4-P0-nested", "R4-P0-literal", "R4-P1-directive", "R4-P1-prefix", "R4-P2-executable", "R4-P2-field"}
+    assert {row["finding"] for row in rows} == expected
+    assert len(rows) == 40 and len({row["text"].strip() for row in rows}) == len(rows)
+    for family in expected:
+        assert any(row["finding"] == family and row["mode"] == "must_redact" for row in rows)
+        assert any(row["finding"] == family and row["mode"] == "must_keep" for row in rows)
+    assert all(row["review"] == "PR656-comment6112757283" and row["note"] for row in rows)
+    raw_controls = [row for row in CORPUS["verifier_only_controls"] if row["id"].startswith("r4-verifier:")]
+    assert len(raw_controls) == 8 and {row["finding"] for row in raw_controls} == expected
+    assert all(row["expect_refusal"] is True for row in raw_controls)
+    old = _restore(json.loads((ROOT / "tests/fixtures/redaction_grammar_corpus.json").read_text(encoding="utf-8")))
+    old_inputs = {row["line"].strip() for group in ("must_redact", "must_keep", "over_redacted", "qualifier_shaped")
+                  for row in old[group]}
+    old_inputs.update(row["text"].strip() for row in CORPUS["review_differential"])
+    old_inputs.update(row["text"].strip() for row in ROWS if not row["id"].startswith("r4:"))
+    assert not old_inputs.intersection(row["text"].strip() for row in rows), "a schematic input reuses older corpus evidence"
+
+
 @pytest.mark.parametrize("row", ROWS, ids=[row["id"] for row in ROWS])
 def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
     capture = _capture(tmp_path, row["text"])
@@ -182,11 +203,31 @@ def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
 def test_w60b_curl_header_quote_exception_refuses_unsafe_or_unproven_tails(row, tmp_path):
     """Verifier-only counterexamples; no producer rewrite or approval is promised."""
     assert row["expect_refusal"] is True
+    if "clean_header" in row:
+        capture = _capture(tmp_path, row["clean_header"])
+        header_proof = _verify(tmp_path)
+        assert header_proof["accepted"], (row["id"], "the continuation refusal would be vacuous", header_proof)
+        assert header_proof["proof"]["files"] == 1 and header_proof["proof"]["uncovered"] == []
+        assert capture.read_bytes() == row["clean_header"].encode("utf-8")
     capture = _capture(tmp_path, row["text"])
     proof = _verify(tmp_path)
     assert not proof["accepted"], (row["id"], "unsafe authorization tail was certified", proof)
     assert "residue" in proof["error"], (row["id"], "refusal was not a credential postcondition", proof)
     assert capture.read_bytes() == row["text"].encode("utf-8"), "read-only verifier changed the capture"
+
+
+@pytest.mark.parametrize("shell,quote", [("sh", "'"), ("bash", '"')])
+def test_w60b_nested_shell_depth_budget_fails_safe_with_coherent_whole_string_mask(shell, quote, tmp_path):
+    body = shell + " -c " + quote + "SCHEMATIC-DEPTH-461 -v 2c -c EXAMPLE-DEPTH-SECRET-461 SCHEMATIC-HOST-461" + quote
+    assert rv._sweep_argv_violation(body, depth=8), "depth exhaustion certified an unexamined nested credential"
+    spans = html._redact_argv_spans(body, depth=8)
+    assert spans, "depth exhaustion left the unexamined credential untouched"
+    scrubbed = html._redact_replace_spans(body, spans)
+    assert scrubbed == shell + " -c " + quote + "<redacted>" + quote
+    assert not rv._sweep_argv_violation(scrubbed, depth=8)
+    _capture(tmp_path, scrubbed + "\n")
+    proof = _verify(tmp_path)
+    assert proof["accepted"] and proof["proof"]["files"] == 1 and proof["proof"]["uncovered"] == []
 
 
 class _CountedText(str):
@@ -560,7 +601,7 @@ def archival_replay(tmp_path_factory):
     sources = {ref: _archive(ref, scratch) for ref in (MAIN, ROUND3, BASE, CURRENT_MAIN)}
     sources["candidate"] = ROOT
     results = {}
-    for ref in (MAIN, ROUND3, "candidate"):
+    for ref in (MAIN, ROUND3, CURRENT_MAIN, "candidate"):
         output_path = scratch / (ref + ".json")
         subprocess.run([sys.executable, "-I", "-B", "-c", _BATCH_SCRIPT, str(sources[ref]), str(case_path),
                         str(scratch / (ref + "-captures")), str(output_path)], cwd=scratch, check=True, timeout=300)
@@ -570,7 +611,7 @@ def archival_replay(tmp_path_factory):
     return cases, results, sources, scratch
 
 
-@pytest.mark.parametrize("ref", [MAIN, ROUND3], ids=["pre-W60-main", "round3"])
+@pytest.mark.parametrize("ref", [MAIN, ROUND3, CURRENT_MAIN], ids=["pre-W60-main", "round3", "current-main"])
 def test_w60b_exact_archive_zero_secret_regressions(ref, archival_replay):
     cases, results, _sources, _scratch = archival_replay
     checked = 0

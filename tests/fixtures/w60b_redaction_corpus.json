@@ -3,6 +3,7 @@
   "review_merge": "0b411c16347a0f1651b88cae52b58555701e4db3",
   "main_ref": "2c927d0209e4c4928c3f29d8747d648f930ddade",
   "round3_ref": "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c",
+  "current_main_ref": "00647ebddfc68064f6845a8b14a5984b6e92695c",
   "exempt_password_words": [
     "aging",
     "authentication",
@@ -12513,6 +12514,477 @@
       "structural": ["29704\tntp authentication-key 9 sha1 0 "],
       "mode": "must_redact",
       "expect": "29704\tntp authentication-key 9 sha1 0 <redacted>\n"
+    },
+    {
+      "id": "r4:nested-sh-unknown-strong-version",
+      "finding": "R4-P0-nested",
+      "text": "sh -c 'SCHEMATIC-WRAPPER-431 -v 2c -c EXAMPLE-COMMUNITY-431 SCHEMATIC-HOST-431'\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-431"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "r4:nested-bash-unknown-strong-level",
+      "finding": "R4-P0-nested",
+      "text": "bash -c \"SCHEMATIC-WRAPPER-432 -l authPriv -c EXAMPLE-COMMUNITY-432 SCHEMATIC-HOST-432\"\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-432"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "bash -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r4:nested-sh-unknown-credential-flags",
+      "finding": "R4-P0-nested",
+      "text": "sh -c 'SCHEMATIC-WRAPPER-433 -A EXAMPLE-AUTH-433 -X EXAMPLE-PRIV-433 SCHEMATIC-HOST-433'\n",
+      "secrets": [
+        "EXAMPLE-AUTH-433",
+        "EXAMPLE-PRIV-433"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "r4:nested-single-weak-control",
+      "finding": "R4-P0-nested",
+      "text": "sh -c 'SCHEMATIC-PUBLIC-434 -v 3 -n sidecar --count 4'\n",
+      "original_input": "sh -c 'SCHEMATIC-PUBLIC-434 -v 3 -c sidecar --count 4'\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "The new public control uses -n rather than ambiguous credential-shaped -c. Its original authored input is retained as history; this is not an exemption for a private option."
+    },
+    {
+      "id": "r4:nested-public-command-control",
+      "finding": "R4-P0-nested",
+      "text": "bash -c \"printf SCHEMATIC-PUBLIC-435\"\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:creator-single-quote-literal-slashes",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a 'M\\D5' -x 'A\\E\\S' SCHEMATIC-USER-436\n",
+      "secrets": [
+        "M\\D5",
+        "A\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic normalization-collision operand: literal backslashes are intentionally private actual words here, not customer credentials or public algorithms. Shell quoting must not erase them.",
+      "expect": "net-snmp-create-v3-user -a '<redacted>' -x '<redacted>' SCHEMATIC-USER-436\n"
+    },
+    {
+      "id": "r4:creator-double-quote-literal-slashes",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a \"M\\D5\" -x \"A\\E\\S\" SCHEMATIC-USER-437\n",
+      "secrets": [
+        "M\\D5",
+        "A\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic normalization-collision operand: literal backslashes are intentionally private actual words here, not customer credentials or public algorithms. Shell quoting must not erase them.",
+      "expect": "net-snmp-create-v3-user -a \"<redacted>\" -x \"<redacted>\" SCHEMATIC-USER-437\n"
+    },
+    {
+      "id": "r4:config-creator-single-quote-literal-slashes",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-config --create-snmpv3-user -a 'S\\HA' -x 'DE\\S' SCHEMATIC-USER-438\n",
+      "secrets": [
+        "S\\HA",
+        "DE\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic normalization-collision operand: literal backslashes are intentionally private actual words here, not customer credentials or public algorithms. Shell quoting must not erase them.",
+      "expect": "net-snmp-config --create-snmpv3-user -a '<redacted>' -x '<redacted>' SCHEMATIC-USER-438\n"
+    },
+    {
+      "id": "r4:community-single-quote-false-placeholder",
+      "finding": "R4-P0-literal",
+      "text": "snmpget -c '<reda\\cted>' SCHEMATIC-HOST-439\n",
+      "secrets": [
+        "<reda\\cted>"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic normalization-collision operand: literal backslashes are intentionally private actual words here, not customer credentials or public algorithms. Shell quoting must not erase them.",
+      "expect": "snmpget -c '<redacted>' SCHEMATIC-HOST-439\n"
+    },
+    {
+      "id": "r4:community-double-quote-false-placeholder",
+      "finding": "R4-P0-literal",
+      "text": "snmpget -c \"<re\\dacted>\" SCHEMATIC-HOST-440\n",
+      "secrets": [
+        "<re\\dacted>"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic normalization-collision operand: literal backslashes are intentionally private actual words here, not customer credentials or public algorithms. Shell quoting must not erase them.",
+      "expect": "snmpget -c \"<redacted>\" SCHEMATIC-HOST-440\n"
+    },
+    {
+      "id": "r4:creator-real-public-algorithm-control",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a 'MD5' -x 'AES128' SCHEMATIC-USER-441\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:creator-unquoted-shell-escape-control",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a M\\D5 -x A\\ES SCHEMATIC-USER-442\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Outside quotes the shell removes these escapes, so the operands genuinely denote public MD5/AES algorithms; raw spelling must remain byte-identical."
+    },
+    {
+      "id": "r4:community-real-placeholder-control",
+      "finding": "R4-P0-literal",
+      "text": "snmpget -c '<redacted>' SCHEMATIC-HOST-443\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:directive-mixed-case-debug-option",
+      "finding": "R4-P1-directive",
+      "text": "Trapsess -d -c EXAMPLE-COMMUNITY-444 SCHEMATIC-HOST-444\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-444"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "Trapsess -d -c <redacted> SCHEMATIC-HOST-444\n"
+    },
+    {
+      "id": "r4:directive-mixed-case-public-operands",
+      "finding": "R4-P1-directive",
+      "text": "InFoRmSeSs -r 3 -t 4 -c EXAMPLE-COMMUNITY-445 SCHEMATIC-HOST-445\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-445"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "InFoRmSeSs -r 3 -t 4 -c <redacted> SCHEMATIC-HOST-445\n"
+    },
+    {
+      "id": "r4:directive-mixed-case-attached-format-option",
+      "finding": "R4-P1-directive",
+      "text": "PrOxY -On -c EXAMPLE-COMMUNITY-446 SCHEMATIC-HOST-446 .1.3.6.1.2.1\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-446"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "PrOxY -On -c <redacted> SCHEMATIC-HOST-446 .1.3.6.1.2.1\n"
+    },
+    {
+      "id": "r4:directive-lowercase-debug-control",
+      "finding": "R4-P1-directive",
+      "text": "trapsess -d -c EXAMPLE-COMMUNITY-447 SCHEMATIC-HOST-447\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-447"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "trapsess -d -c <redacted> SCHEMATIC-HOST-447\n"
+    },
+    {
+      "id": "r4:directive-public-options-without-credential",
+      "finding": "R4-P1-directive",
+      "text": "Trapsess -d -v 3 -u SCHEMATIC-USER-448 -l noAuthNoPriv SCHEMATIC-HOST-448\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:authorization-prefix-449",
+      "finding": "R4-P1-prefix",
+      "text": "// Authorization: SCHEMATIC-SCHEME-449\n// EXAMPLE-HEADER-449\n",
+      "secrets": [
+        "EXAMPLE-HEADER-449"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "// Authorization: <redacted>\n// <redacted>\n"
+    },
+    {
+      "id": "r4:authorization-prefix-450",
+      "finding": "R4-P1-prefix",
+      "text": "! Proxy-Authorization: SCHEMATIC-SCHEME-450\n! EXAMPLE-HEADER-450\n",
+      "secrets": [
+        "EXAMPLE-HEADER-450"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "! Proxy-Authorization: <redacted>\n! <redacted>\n"
+    },
+    {
+      "id": "r4:response-header-comment-control",
+      "finding": "R4-P1-prefix",
+      "text": "// WWW-Authenticate: Basic\n// Content-Length: 451\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:shell-spelled-known-command-452",
+      "finding": "R4-P2-executable",
+      "text": "snmp\"\"get -c EXAMPLE-COMMUNITY-452 SCHEMATIC-HOST-452\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-452"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "snmp\"\"get -c <redacted> SCHEMATIC-HOST-452\n"
+    },
+    {
+      "id": "r4:shell-spelled-known-command-453",
+      "finding": "R4-P2-executable",
+      "text": "'snmp'get -c EXAMPLE-COMMUNITY-453 SCHEMATIC-HOST-453\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-453"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "'snmp'get -c <redacted> SCHEMATIC-HOST-453\n"
+    },
+    {
+      "id": "r4:shell-spelled-known-command-454",
+      "finding": "R4-P2-executable",
+      "text": "snm\\pget -c EXAMPLE-COMMUNITY-454 SCHEMATIC-HOST-454\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-454"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input.",
+      "expect": "snm\\pget -c <redacted> SCHEMATIC-HOST-454\n"
+    },
+    {
+      "id": "r4:shell-spelled-command-prefix-control",
+      "finding": "R4-P2-executable",
+      "text": "snmpget-helper-455 -c SCHEMATIC-PUBLIC-455 SCHEMATIC-HOST-455\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:explicit-quoted-private-scalar-456",
+      "finding": "R4-P2-field",
+      "text": "authPassword=\"[]{};()\" mode=baseline\n",
+      "secrets": [
+        "[]{};()"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Explicit credential scalar owns its quoted content. The punctuation/allowword is a synthetic private actual value, not metadata; the separate public mode field must survive.",
+      "expect": "authPassword=\"<redacted>\" mode=baseline\n"
+    },
+    {
+      "id": "r4:explicit-quoted-private-scalar-457",
+      "finding": "R4-P2-field",
+      "text": "authPassword='encryption' mode=baseline\n",
+      "secrets": [
+        "encryption"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Explicit credential scalar owns its quoted content. The punctuation/allowword is a synthetic private actual value, not metadata; the separate public mode field must survive.",
+      "expect": "authPassword='<redacted>' mode=baseline\n"
+    },
+    {
+      "id": "r4:explicit-quoted-private-scalar-458",
+      "finding": "R4-P2-field",
+      "text": "authPassword = \"ro\" mode=baseline\n",
+      "secrets": [
+        "ro"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Explicit credential scalar owns its quoted content. The punctuation/allowword is a synthetic private actual value, not metadata; the separate public mode field must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=baseline\n"
+    },
+    {
+      "id": "r4:explicit-real-placeholder-field-control",
+      "finding": "R4-P2-field",
+      "text": "authPassword = '<redacted>' mode=SCHEMATIC-PUBLIC-459\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:noncredential-public-protocol-field-control",
+      "finding": "R4-P2-field",
+      "text": "protocol=\"AES\" mode=SCHEMATIC-PUBLIC-460\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Fresh schematic synthetic regression input; not an executed refuter input."
+    },
+    {
+      "id": "r4:genuine-sh-bash-nested-strong-shape",
+      "finding": "R4-P0-nested",
+      "text": "sh -c \"bash -c 'SCHEMATIC-NESTED-WRAPPER-462 -v 2c -c EXAMPLE-NESTED-COMMUNITY-462 SCHEMATIC-HOST-462'\"\n",
+      "secrets": ["EXAMPLE-NESTED-COMMUNITY-462"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Two supported shell-command levels with an unknown strong SNMP wrapper require a coherent whole outer payload mask.",
+      "expect": "sh -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r4:genuine-bash-sh-nested-credential-shape",
+      "finding": "R4-P0-nested",
+      "text": "bash -c 'sh -c \"SCHEMATIC-NESTED-WRAPPER-463 -A EXAMPLE-NESTED-AUTH-463 -X EXAMPLE-NESTED-PRIV-463 SCHEMATIC-HOST-463\"'\n",
+      "secrets": ["EXAMPLE-NESTED-AUTH-463", "EXAMPLE-NESTED-PRIV-463"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Credential-flag shape inside a genuinely nested supported command string must not disappear from coverage.",
+      "expect": "bash -c '<redacted>'\n"
+    },
+    {
+      "id": "r4:shell-spelled-executable-after-pipe-boundary",
+      "finding": "R4-P2-executable",
+      "text": "printf SCHEMATIC-PUBLIC-464 | 'snmp'get -c EXAMPLE-BOUNDARY-COMMUNITY-464 SCHEMATIC-HOST-464\n",
+      "secrets": ["EXAMPLE-BOUNDARY-COMMUNITY-464"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Semantic named-command recognition must restart after a real shell pipe boundary.",
+      "expect": "printf SCHEMATIC-PUBLIC-464 | 'snmp'get -c <redacted> SCHEMATIC-HOST-464\n"
+    },
+    {
+      "id": "r4:creator-attached-single-quoted-private-values",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a'M\\D5' -x'A\\E\\S' SCHEMATIC-USER-471\n",
+      "secrets": ["M\\D5", "A\\E\\S"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Synthetic literal-backslash private operands inherit their single-quote context after the attached option offset.",
+      "expect": "net-snmp-create-v3-user -a'<redacted>' -x'<redacted>' SCHEMATIC-USER-471\n"
+    },
+    {
+      "id": "r4:creator-wholly-quoted-attached-private-words",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user '-aM\\D5' '-xA\\E\\S' SCHEMATIC-USER-472\n",
+      "secrets": ["-aM\\D5", "-xA\\E\\S"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "Private payloads M-backslash-D5 and A-backslash-E-backslash-S occur in whole attached argument words. Counts use the full argument words; the exact oracle separately requires public flags and outer quotes to remain while each private payload becomes PH.",
+      "expect": "net-snmp-create-v3-user '-a<redacted>' '-x<redacted>' SCHEMATIC-USER-472\n"
+    },
+    {
+      "id": "r4:creator-authentic-attached-quoted-public-algorithms",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a'MD5' -x'AES' SCHEMATIC-USER-473\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "Actual MD5/AES public algorithm operands remain valid under their attached single-quoted spelling."
+    },
+    {
+      "id": "r4:community-attached-quoted-false-placeholder",
+      "finding": "R4-P0-literal",
+      "text": "snmpget -c'<reda\\cted>' SCHEMATIC-HOST-474\n",
+      "secrets": ["<reda\\cted>"],
+      "structural": [],
+      "mode": "must_redact",
+      "review": "PR656-comment6112757283",
+      "note": "An attached single-quoted community retains its literal backslash and cannot authenticate itself as the placeholder.",
+      "expect": "snmpget -c'<redacted>' SCHEMATIC-HOST-474\n"
+    },
+    {
+      "id": "r4:nested-public-sh-bash-command-control",
+      "finding": "R4-P0-nested",
+      "text": "sh -c \"bash -c 'printf SCHEMATIC-PUBLIC-475'\"\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "A recognized nested shell invocation does not become private when its child contains no credential operand or SNMP shape."
+    },
+    {
+      "id": "r4:nested-public-named-snmp-version-control",
+      "finding": "R4-P0-nested",
+      "text": "bash -c \"sh -c 'snmpget -v3 SCHEMATIC-PUBLIC-HOST-476'\"\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "The nested known SNMP executable has only a public version/host; a shell -c flag alone cannot grant a blanket private-string classification."
+    },
+    {
+      "id": "r4:echo-quoted-public-option-literal-control",
+      "finding": "R4-P0-nested",
+      "text": "echo '-c SCHEMATIC-PUBLIC-477'\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "review": "PR656-comment6112757283",
+      "note": "A quoted option-like literal outside an owned sh/bash command-string operand remains public data."
     }
   ],
   "review_differential": [
@@ -18853,6 +19325,64 @@
       "id": "curl-quote:attached-shell-operator-suffix",
       "text": "curl -H \"Authorization: Bearer\n<redacted>\" https://198.51.100.189/status;echoCurlOnly285\n",
       "scenario": "A shell-operator suffix without whitespace remains forbidden even if a broad URL regex matches the whole token.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:nested-unknown-wrapper",
+      "finding": "R4-P0-nested",
+      "text": "sh -c 'SCHEMATIC-VERIFY-465 -v 2c -c EXAMPLE-RAW-465 SCHEMATIC-HOST-465'\n",
+      "scenario": "Physical raw nested strong-shape credential must be refused without relying on a producer pass.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:quote-literal-creator-values",
+      "finding": "R4-P0-literal",
+      "text": "net-snmp-create-v3-user -a 'M\\D5' -x 'A\\E\\S' SCHEMATIC-VERIFY-466\n",
+      "scenario": "Synthetic literal-backslash private actual words must not normalize into public algorithm exemptions.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:mixed-directive-public-option",
+      "finding": "R4-P1-directive",
+      "text": "TrApSeSs -d -c EXAMPLE-RAW-467 SCHEMATIC-HOST-467\n",
+      "scenario": "A public debug option does not excuse a mixed-case directive's private community.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:physical-comment-placeholder-secret-tail",
+      "finding": "R4-P1-prefix",
+      "text": "// Authorization: SCHEMATIC-SCHEME-468\n// <redacted> EXAMPLE-RAW-468\n",
+      "scenario": "A physical comment prefix and first placeholder cannot certify a still-private continuation token after that placeholder.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:shell-spelled-named-command",
+      "finding": "R4-P2-executable",
+      "text": "snmp\"\"get -c EXAMPLE-RAW-469 SCHEMATIC-HOST-469\n",
+      "scenario": "Known executable shell spelling must be recognized even without a separate version witness.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:explicit-quoted-punctuation-scalar",
+      "finding": "R4-P2-field",
+      "text": "authPassword='()[]{};' mode=SCHEMATIC-VERIFY-470\n",
+      "scenario": "Nonempty quoted credential punctuation is private scalar data, not structural punctuation.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:known-scheme-comment-placeholder-secret-tail",
+      "finding": "R4-P1-prefix",
+      "text": "// Authorization: Bearer\n// <redacted> EXAMPLE-RAW-NEW\n",
+      "clean_header": "// Authorization: Bearer\n",
+      "scenario": "The known public scheme header alone must certify; a physical comment continuation containing PH and a still-private token must then refuse.",
+      "expect_refusal": true
+    },
+    {
+      "id": "r4-verifier:placeholder-header-placeholder-secret-tail",
+      "finding": "R4-P1-prefix",
+      "text": "// Authorization: <redacted>\n<redacted> EXAMPLE-RAW-OTHER\n",
+      "clean_header": "// Authorization: <redacted>\n",
+      "scenario": "The already-scrubbed header alone must certify; the original refuter path with an already-PH prefix still cannot certify a later private token.",
       "expect_refusal": true
     }
   ],
