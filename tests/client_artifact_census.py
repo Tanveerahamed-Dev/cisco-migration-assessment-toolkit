@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ast
 import codecs
+import hashlib
 import copy
 import itertools
 import operator
@@ -1370,6 +1371,75 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 }
 
 
+# These implicit downloads have finite response-name owners. Bind the full inspected chain:
+# caller imports/scopes/arguments; useAsync -> meta catalogue keys; factory URL; GET route;
+# successful returns/caller headers; _send_file's sanitized stem/header; SPECS and docmeta.
+# Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
+# This evidence table never filters discovery or exempts an unknown name from either gate.
+ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
+    "webapp/frontend/src/api.ts": "7438cd4403be6ed14eaa03a74fcbb295259d0a1e",
+    "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
+    "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
+    "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
+    "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
+    "webapp/backend/app.py": "f3ee6dbca5e74fb7e3daa39fe0b26d25a115741a",
+    "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
+    "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
+}
+ENDPOINT_DOWNLOAD_BINDINGS = {
+    ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
+    ("webapp/frontend/src/pages/Execution.tsx", "api.executionReportUrl(eid)"): "pir",
+    ("webapp/frontend/src/pages/Snapshot.tsx", "api.deliverableUrl(snapId, d.key)"): "<snapshot catalogue>",
+}
+
+
+def endpoint_download_templates(relative: str, href: str, source_bound: bool) -> list[str]:
+    """Resolve a retained implicit obligation only through its unchanged response owner."""
+    key = ENDPOINT_DOWNLOAD_BINDINGS.get((relative, href))
+    if key is None or not source_bound:
+        return []
+    from cisco_toolkit import docmeta
+    specs = (docmeta.ASSESSHUB_DOWNLOAD_SPECS if key == "<snapshot catalogue>"
+             else (docmeta.artifact_spec(key),))
+    if not specs or any(not re.fullmatch(r"[a-z][a-z0-9_-]*", spec.key) for spec in specs):
+        raise ValueError("endpoint catalogue has no finite single-segment artifact-key proof")
+    return sorted({"0" + spec.download_suffix for spec in specs})
+
+
+def endpoint_download_sources_bound(root: Path) -> bool:
+    """Check Git-canonical source read by discovery; mismatch is uncertainty, never pass."""
+    for relative, expected in ENDPOINT_DOWNLOAD_SOURCE_BLOBS.items():
+        try:
+            source = (root / relative).read_text(encoding="utf-8").encode("utf-8")
+        except (FileNotFoundError, UnicodeError):
+            return False
+        blob = b"blob " + str(len(source)).encode("ascii") + b"\0" + source
+        if hashlib.sha1(blob, usedforsecurity=False).hexdigest() != expected:
+            return False
+    return True
+
+
+def _jsx_href(text: str, tokens: list[_JsToken], download: int) -> str:
+    """Read href from this exact opening tag, rather than any neighbouring link."""
+    start = download
+    while start >= 0 and not (tokens[start].in_tag and tokens[start].value == "<"):
+        start -= 1
+    if start < 0:
+        return ""
+    index = start + 1
+    hrefs = []
+    while index < len(tokens) and not (tokens[index].in_tag and tokens[index].value == ">"):
+        if (tokens[index].in_tag and tokens[index].value == "href" and index + 1 < len(tokens)
+                and tokens[index + 1].value == "="):
+            expression, end = _js_expression(text, tokens, index + 2, attribute=True)
+            hrefs.append(expression[1:-1].strip() if expression.startswith("{") and expression.endswith("}")
+                         else expression)
+            index = end
+        else:
+            index += 1
+    return hrefs[0] if len(hrefs) == 1 else ""
+
+
 def _is_frontend_test(relative: str) -> bool:
     name = relative.rsplit("/", 1)[-1]
     return bool(re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", name)) or "/e2e" in relative or "/__tests__/" in relative
@@ -2065,6 +2135,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
     and interprocedural JS flow remain outside this static model, explicitly, not silently.
     """
     found = []
+    endpoint_sources = None
     for relative in download_sources(root):
         source = (root / relative).read_text(encoding="utf-8")
         try:
@@ -2110,7 +2181,12 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 if (token.in_tag and token.value == "download" and after < len(tokens)
                         and tokens[after].value not in {"=", ":"}
                         and (index == 0 or tokens[index - 1].value not in {"=", "<", "/", ":"})):
-                    found.append((location(token), "<implicit browser filename>", None))
+                    href = _jsx_href(text, tokens, index)
+                    if endpoint_sources is None and (relative, href) in ENDPOINT_DOWNLOAD_BINDINGS:
+                        endpoint_sources = endpoint_download_sources_bound(root)
+                    templates = endpoint_download_templates(relative, href, bool(endpoint_sources))
+                    found.extend((location(token), "<implicit browser filename>", template)
+                                 for template in templates or [None])
                 if after < len(tokens) and tokens[after].value == "]":
                     after += 1  # a["download"] = ...
                 if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:

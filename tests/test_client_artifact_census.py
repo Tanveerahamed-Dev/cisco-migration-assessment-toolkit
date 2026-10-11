@@ -1476,3 +1476,69 @@ def test_html_format_boundary_keeps_closed_operand_refusals(tmp_path):
            + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(fields["runtime-field"], "script")\n')
     with pytest.raises(ValueError, match="closed filename subscript cannot be evaluated"):
         census.download_names(tmp_path)
+
+
+def test_existing_implicit_endpoint_downloads_bind_their_full_response_name_owners():
+    assert census.endpoint_download_sources_bound(ROOT), "endpoint source chain changed; reconcile it before classifying"
+    for (relative, href), owner in census.ENDPOINT_DOWNLOAD_BINDINGS.items():
+        names = census.endpoint_download_templates(relative, href, True)
+        expected = (docmeta.ASSESSHUB_DOWNLOAD_SPECS if owner == "<snapshot catalogue>"
+                    else (docmeta.artifact_spec(owner),))
+        assert set(names) == {"0" + spec.download_suffix for spec in expected}
+        assert names
+        for name in names:
+            assert dv.client_artifact_class("Downloads/" + name) is not None
+            assert _repository_gate()._client_artifact_class("Downloads/" + name) == dv.client_artifact_class("Downloads/" + name)
+        assert census.endpoint_download_templates(relative, href, False) == []
+    # Exact source custody is a response-owner proof, not a non-literal name exemption.
+    assert all((relative, "<implicit browser filename>") not in census.DOWNLOAD_NAME_PASSTHROUGH
+               for relative, _href in census.ENDPOINT_DOWNLOAD_BINDINGS)
+
+
+@pytest.mark.parametrize("relative,old,new", [
+    ("webapp/frontend/src/pages/Execution.tsx", 'from "../api"', 'from "../unowned-api"'),
+    ("webapp/frontend/src/components/CutoverPlanner.tsx", '"cutover")}', '"../raw")}'),
+    ("webapp/frontend/src/api.ts", '/deliverable/${kind}', '/raw?kind=${kind}'),
+    ("webapp/frontend/src/components/ui.tsx", 'export function useAsync', 'export function differentLoader'),
+    ("webapp/backend/app.py", '@app.get("/api/executions/{execution_id}/report")',
+     '@app.get("/api/executions/{execution_id}/unowned")'),
+    ("webapp/backend/app.py", 'out["content-disposition"]', 'out["missing-disposition"]'),
+    ("webapp/backend/app.py", 'headers = {"X-Gate-Status":', 'headers = {"Content-Disposition":'),
+    ("webapp/backend/app.py", 'spec.download_suffix,', '".private.json",'),
+    ("webapp/backend/deliverables.py", 'for spec in ASSESSHUB_DOWNLOAD_SPECS}', 'for spec in ()}'),
+    ("cisco_toolkit/docmeta.py", 'return self.assesshub_suffix', 'return ".private.json"'),
+])
+def test_endpoint_source_changes_keep_implicit_names_instead_of_granting_a_proof(tmp_path, relative, old, new):
+    for path in census.ENDPOINT_DOWNLOAD_SOURCE_BLOBS:
+        source = (ROOT / path).read_text(encoding="utf-8")
+        if path == relative:
+            assert old in source
+            source = source.replace(old, new, 1)
+        _write(tmp_path, path, source)
+    assert not census.endpoint_download_sources_bound(tmp_path)
+    for (caller, href) in census.ENDPOINT_DOWNLOAD_BINDINGS:
+        assert census.endpoint_download_templates(caller, href, False) == []
+
+
+@pytest.mark.parametrize("href", ['api.deliverableUrl(snapId, "../raw")',
+                                 'api.deliverableUrl(snapId, "?x")',
+                                 'api.deliverableUrl(snapId, "#x")',
+                                 'api.deliverableUrl(snapId, operatorKind)',
+                                 'evil.executionReportUrl(eid)'])
+def test_endpoint_factory_spelling_alone_cannot_prove_unsafe_or_unknown_arguments(tmp_path, href):
+    relative = "webapp/frontend/src/components/CutoverPlanner.tsx"
+    assert census.endpoint_download_templates(relative, href, True) == []
+    _write(tmp_path, relative, f"const View = () => <a href={{{href}}} download />;")
+    assert census.download_names(tmp_path) == [(relative + ":1", "<implicit browser filename>", None)]
+
+
+def test_a_new_endpoint_caller_is_discovered_without_inheriting_an_existing_owner_binding(tmp_path):
+    _write(tmp_path, "new-root/download.tsx", 'const View = () => <a href={api.executionReportUrl(eid)} download />;')
+    assert census.download_names(tmp_path) == [("new-root/download.tsx:1", "<implicit browser filename>", None)]
+
+
+def test_href_of_a_neighbouring_jsx_tag_cannot_classify_an_implicit_download():
+    source = '<div><a href={api.executionReportUrl(eid)} /><a href={blobUrl} download /></div>'
+    tokens = census._js_tokens(source, jsx=True)
+    position = next(i for i, token in enumerate(tokens) if token.value == "download")
+    assert census._jsx_href(source, tokens, position) == "blobUrl"
