@@ -871,10 +871,10 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
         if bases is None:
             return None
         values = [_closed_values(a, resolve, depth + 1, seen) or [_NOT_CLOSED] for a in node.args]
-        methods = {"lower", "upper", "casefold", "strip", "lstrip", "rstrip", "replace"}
+        methods = {"lower", "upper", "casefold", "strip", "lstrip", "rstrip", "replace", "join"}
         out = []
         for base, *args in _name_product(bases, *values):
-            if base is _NOT_CLOSED or any(a is _NOT_CLOSED for a in args):
+            if base is _NOT_CLOSED or any(_has_unknown(a) for a in args):
                 out.append(_NOT_CLOSED)
                 continue
             if not isinstance(base, str) or node.func.attr not in methods or node.keywords:
@@ -882,6 +882,12 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
             if node.func.attr == "replace" and len(args) >= 2 and isinstance(args[1], str):
                 if (len(base) + 1) * (len(args[1]) + 1) > _NAME_BYTES:
                     raise NameModelLimit("closed filename replacement exceeds the bounded model")
+            if node.func.attr == "join" and len(args) == 1:
+                pieces = args[0]
+                if not isinstance(pieces, (str, list, tuple)) or any(not isinstance(p, str) for p in pieces):
+                    raise NameModelLimit("closed string join has non-string filename pieces")
+                if sum(map(len, pieces)) + len(base) * max(0, len(pieces) - 1) > _NAME_BYTES:
+                    raise NameModelLimit("closed string join exceeds the bounded name model")
             try:
                 out.append(getattr(str, node.func.attr)(base, *args))
             except (ValueError, TypeError):
@@ -1205,6 +1211,13 @@ def _templates(node: ast.AST, resolve, depth: int = 0, seen: frozenset[str] = fr
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
+            separators = _closed_values(func.value, resolve, depth + 1, seen)
+            if separators is not None and any(isinstance(s, str) for s in separators):
+                # str.join concatenates its sequence; its members are not alternative paths.
+                # A partially unknown sequence stays unknown, never invented fragment outputs.
+                joined = _closed_values(node, resolve, depth + 1, seen)
+                return _bounded_names([_NameTemplate(s) if isinstance(s, str) else None for s in joined or []]) or [None]
+            # Path joins select the terminal name, unlike a closed string separator.
             return _templates(node.args[-1], resolve, depth + 1, seen)
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
             return [_NameTemplate("0" + t, False) if func.attr == "with_suffix" and t is not None else t
@@ -1440,6 +1453,25 @@ class _HtmlDownloads(HTMLParser):
             name = values["download"]
             expression = repr(name) if name else "<implicit browser filename>"
             self.names.append((self.getpos()[0], expression, name or None))
+        raw = self.get_starttag_text() or ""
+        offsets = _html_attribute_offsets(raw)
+        for (attribute, value), (raw_attribute, offset) in zip(attrs, offsets):
+            if attribute != raw_attribute:
+                raise ValueError("HTML attribute source positions are unresolved")
+            if value is None:
+                continue
+            first_line = self.getpos()[0] + raw[:offset].count("\n")
+            if attribute.startswith("on"):
+                self.scripts.append((first_line, value))
+            else:
+                scheme, colon, script = value.partition(":")
+                if colon and scheme.translate(str.maketrans("", "", "\t\r\n")).strip().casefold() == "javascript":
+                    # URL scheme whitespace is removed by browsers; preserve newlines in the
+                    # executable value so token locations still refer to its source attribute.
+                    first_line += value[:len(scheme) + 1].count("\n")
+                    self.scripts.append((first_line, script))
+        if len(offsets) != len(attrs):
+            raise ValueError("HTML attribute source positions are incomplete")
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "script":
@@ -1448,6 +1480,45 @@ class _HtmlDownloads(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.in_script:
             self.scripts.append((self.getpos()[0], data))
+
+
+def _html_attribute_offsets(raw: str) -> list[tuple[str, int]]:
+    """Tokenize start-tag attributes for line offsets; HTMLParser owns decoded values."""
+    index = 1
+    while index < len(raw) and not raw[index].isspace() and raw[index] not in "/>":
+        index += 1
+    offsets = []
+    while index < len(raw):
+        while index < len(raw) and (raw[index].isspace() or raw[index] == "/"):
+            index += 1
+        if index >= len(raw) or raw[index] == ">":
+            break
+        start = index
+        while index < len(raw) and not raw[index].isspace() and raw[index] not in "=/>":
+            index += 1
+        if index == start:
+            raise ValueError("unresolved HTML attribute token")
+        name = raw[start:index].lower()
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        offset = start
+        if index < len(raw) and raw[index] == "=":
+            index += 1
+            while index < len(raw) and raw[index].isspace():
+                index += 1
+            if index < len(raw) and raw[index] in "\"'":
+                quote = raw[index]
+                index += 1
+                offset = index
+                while index < len(raw) and raw[index] != quote:
+                    index += 1
+                index += 1
+            else:
+                offset = index
+                while index < len(raw) and not raw[index].isspace() and raw[index] != ">":
+                    index += 1
+        offsets.append((name, offset))
+    return offsets
 
 
 @dataclass(frozen=True)
@@ -1855,6 +1926,23 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         if isinstance(node, ast.IfExp):
             return _bounded_names(expand(node.body, seen, depth + 1, active) + expand(node.orelse, seen, depth + 1, active),
                                   text_limit=False)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            # Resolve each operand in its defining lexical scope, including module bindings
+            # reached from a function that shadows the same name.
+            owners = {id(child): active for child in ast.walk(node)}
+
+            def resolve(name: ast.Name) -> list[ast.AST]:
+                values, owner = bindings(name.id, owners.get(id(name), active))
+                for value in values:
+                    owners.update((id(child), owner) for child in ast.walk(value))
+                return values
+
+            values = _closed_values(node, resolve, depth + 1) or [_NOT_CLOSED]
+            if any(_has_unknown(value) for value in values):
+                if contains_html(node) or any(isinstance(child, ast.Constant) and isinstance(child.value, str)
+                                              and re.search(r"</?\{", child.value) for child in ast.walk(node)):
+                    raise ValueError("unresolved Python HTML format language boundary")
+            return _bounded_names([value for value in values if isinstance(value, str)], text_limit=False) or ["0"]
         return ["0"]
 
     def visit(node: ast.AST) -> None:
@@ -1870,12 +1958,16 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
             scopes.append(local)
             if isinstance(node, ast.ClassDef):
                 class_scopes.add(id(local))
-        if isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and contains_html(node):
+        format_assembly = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                           and node.func.attr == "format")
+        if (isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and contains_html(node)) or format_assembly:
             # Language boundary, not a product/file/API subset. Every script-bearing generated
             # HTML string is read, including f-strings without executing the generator.
             for text in expand(node):
                 if "<" in text:
                     documents.append((getattr(node, "lineno", 1), text))
+            if format_assembly:
+                return  # Read the composed document; format operands are not separate scripts.
             # These literal pieces are one assembled language document, not independent scripts.
             # In particular '<script>const x="' is not a complete JS string by itself.
             # Still visit embedded expressions, which may contain separate literal documents.
@@ -1942,6 +2034,10 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                                       _download_template(expression)))
                 value = token.value.strip("\"'")
                 after = index + 1
+                if (token.in_tag and token.value == "download" and after < len(tokens)
+                        and tokens[after].value not in {"=", ":"}
+                        and (index == 0 or tokens[index - 1].value not in {"=", "<", "/", ":"})):
+                    found.append((f"{relative}:{first_line + token.line - 1}", "<implicit browser filename>", None))
                 if after < len(tokens) and tokens[after].value == "]":
                     after += 1  # a["download"] = ...
                 if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:

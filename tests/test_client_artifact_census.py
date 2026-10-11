@@ -1318,3 +1318,119 @@ def test_no_prefix_forwarder_missing_filename_retains_an_implicit_obligation(tmp
            'function saveEvidence(blob, filename="private.json") { a.download = filename; }'
            'saveEvidence(blob);</script>')
     assert any(e == "<implicit browser filename>" and t is None for _l, e, t in census.download_names(tmp_path))
+
+
+# Round 3: retain executable attributes, boolean JSX exits and composed Python values.
+@pytest.mark.parametrize("markup", [
+    '<script>downloadBlob(blob, "private.json")</script>',  # existing script-element control
+    '<button onclick="downloadBlob(blob, \'private.json\')">Save</button>',
+    '<button ONCLICK="downloadBlob(blob, &quot;private.json&quot;)">Save</button>',
+    '<a href="javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href=" JaVaScRiPt:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="java&#9;script:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<svg><use href="javascript:downloadBlob(blob, \'private.json\')" /></svg>',
+])
+@pytest.mark.parametrize("relative", ["new-root/inline.html", "new-root/inline.py"])
+def test_inline_executable_html_values_retain_the_old_bad_name_obligation(tmp_path, markup, relative):
+    source = markup if relative.endswith(".html") else "HTML = " + repr(markup)
+    _write(tmp_path, relative, source)
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json"}
+    for _location, _expression, template in names:
+        assert dv.client_artifact_class("Downloads/" + template) is None
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) is None
+
+
+@pytest.mark.parametrize("attribute", ["onclick", "href"])
+@pytest.mark.parametrize("filename", ["'flow-frames.txt'", "unknown"])
+def test_inline_executable_values_keep_source_lines_and_unknown_names(tmp_path, attribute, filename):
+    prefix = "javascript:" if attribute == "href" else ""
+    _write(tmp_path, "new-root/inline.html", '<main>\n<button\n'
+           + f' {attribute}="{prefix}\n downloadBlob(blob, {filename})">Save</button>\n</main>')
+    names = census.download_names(tmp_path)
+    assert len(names) == 1
+    location, expression, template = names[0]
+    assert location == "new-root/inline.html:4"
+    if filename == "unknown":
+        assert template is None and expression == "unknown"
+        assert ("new-root/inline.html", expression) not in census.DOWNLOAD_NAME_PASSTHROUGH
+    else:
+        assert dv.client_artifact_class("Downloads/" + template) == "explorer-flow-frames"
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) == "explorer-flow-frames"
+
+
+@pytest.mark.parametrize("url", ['"private.json"', '"data:application/json;base64,e30="', "blobUrl"])
+@pytest.mark.parametrize("relative", ["new-root/view.tsx", "new-root/view.jsx", "new-root/view.js"])
+def test_bare_jsx_download_retains_implicit_filename_for_url_data_and_blob(tmp_path, url, relative):
+    _write(tmp_path, relative, f"export const View = () => <a href={{{url}}}\n download />;")
+    names = census.download_names(tmp_path)
+    assert names == [(relative + ":2", "<implicit browser filename>", None)]
+    assert (relative, names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_bare_jsx_detection_does_not_invent_attributes_from_tag_names_or_values(tmp_path):
+    _write(tmp_path, "new-root/view.tsx", 'const View = () => <download data-name="download" id={download} />;\n'
+           'const Explicit = () => <a download="flow-frames.txt" />;')
+    assert [t for _l, _e, t in census.download_names(tmp_path)] == ["flow-frames.txt"]
+
+
+@pytest.mark.parametrize("parts,leaf", [("['safe.snapshot', '.json']", "safe.snapshot.json"),
+                                       ("('private', '.json')", "private.json")])
+@pytest.mark.parametrize("expression", ["''.join({parts})", "separator.join({parts})", "''.join(pieces)"])
+def test_closed_string_joins_keep_the_composed_target_without_fragment_exemptions(tmp_path, parts, leaf, expression):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           + f"    separator = ''\n    pieces = {parts}\n"
+           + f"    Path({expression.format(parts=parts)}).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    if leaf == "safe.snapshot.json":
+        assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == []
+        assert census.unclassified_site_literals(tmp_path) == {}
+        assert census.resolved_site_classes(tmp_path)[key] == {"snapshot"}
+    else:
+        assert census.unclassified_site_literals(tmp_path) == {key: {leaf}}
+        assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+            f"client write site resolves to unclassified name {leaf!r}: {key}"]
+    assert census._templates(ast.parse("os.path.join('directory', 'safe.snapshot.json')", mode="eval").body,
+                             lambda _n: []) == ["safe.snapshot.json"]
+
+
+def test_partial_string_join_does_not_promote_its_fragments_to_literal_filenames():
+    expression = ast.parse("''.join([stem, '.json'])", mode="eval").body
+    assert census._templates(expression, lambda _n: []) == [None]
+    with pytest.raises(census.NameModelLimit, match="non-string filename pieces"):
+        census._templates(ast.parse("''.join(['private.json', 1])", mode="eval").body, lambda _n: [])
+
+
+@pytest.mark.parametrize("assembly", [
+    '"<{}>downloadBlob(blob, \'private.json\');</{}>".format("script", "script")',
+    '"<{tag}>downloadBlob(blob, \'private.json\');</{tag}>".format(tag="script")',
+    '"{0}".format("<script>downloadBlob(blob, \'private.json\');</script>")',
+])
+def test_closed_python_html_format_assemblies_keep_bad_download_obligations(tmp_path, assembly):
+    _write(tmp_path, "new-root/generated.py", "HTML = " + assembly)
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json"}
+    assert dv.client_artifact_class("Downloads/private.json") is None
+    assert _repository_gate()._client_artifact_class("Downloads/private.json") is None
+
+
+def test_python_html_format_uses_defining_scope_and_keeps_registered_control(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "TAG = 'script'\n"
+           + 'HTML = "<{tag}>downloadBlob(blob, \'private.json\');</{tag}>".format(tag=TAG)\n'
+           + "def render():\n    TAG = 'div'\n    return f'{HTML}'\n"
+           + 'SAFE = "<{}>downloadBlob(blob, \'flow-frames.txt\');</{}>".format("script", "script")\n')
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json", "flow-frames.txt"}
+
+
+def test_unresolved_python_html_format_boundary_refuses_instead_of_losing_bad_name(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def render(tag):\n"
+           + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(tag, "script")\n')
+    with pytest.raises(ValueError, match="unresolved Python HTML format language boundary"):
+        census.download_names(tmp_path)
+
+
+def test_non_html_format_alignment_does_not_invent_a_producer_boundary(tmp_path):
+    _write(tmp_path, "new-root/alignment.py", "def render(value):\n    return '{:<20}'.format(value)\n")
+    assert census.download_names(tmp_path) == []
