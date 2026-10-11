@@ -90,7 +90,7 @@ jobs:
           python -I -B .github/scripts/engine_output_handoff.py after --state "$RUNNER_TEMP/engine-output-state" --output "$RUNNER_TEMP/engine-output-handoff"
       # Uploaded only on success: a failed or partial regeneration never leaves an importable artifact.
       - name: Preserve the source-bound engine output handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-output-handoff-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/engine-output-handoff/
