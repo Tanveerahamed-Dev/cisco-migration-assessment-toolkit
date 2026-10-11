@@ -4572,10 +4572,6 @@ _REDACT_ARGV_WS = _REDACT_WS.replace("\udc80-\udcff", "")
 _REDACT_ARGV_WORD_RE = re.compile(
     "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
-# Shell single quotes preserve every backslash; operators outside quotes bound words.
-_REDACT_SHELL_WORD_RE = re.compile(
-    "(?:" + re.escape(_REDACT_PLACEHOLDER) + "|[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\;|&()<>]|\\\\[^\r\n]|\\\\\\Z"
-    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'[^'\r\n]*(?:'|\\Z))+")
 #: 'echo user:PASSWORD | chpasswd' and a PostgreSQL .pgpass line 'host:port:database:user:PASSWORD' (exactly
 #: five fields, a host with a letter, a dot or '*': a MAC address or a time is no .pgpass line).
 _REDACT_CHPASSWD_RE = re.compile(_g(
@@ -4691,7 +4687,7 @@ _REDACT_SCHEME_OPEN_RE = re.compile(_g(
 _REDACT_EMPTY_AUTH_HEADER_RE = re.compile(_g(
     r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*\Z"), re.IGNORECASE)
 _REDACT_CAPTURE_PREFIX_RE = re.compile(_g(
-    r"^{h}*(?:(?:(?:[#+>\-]|//|!){H})+|\d{1,9}{H}|[^\r\n" + _REDACT_WS
+    r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _REDACT_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _REDACT_WS + r"]{1,256}:{H})?{h}*"))
 _REDACT_SNMP_HOST_OPEN_RE = re.compile(_g(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
 #: CONFIGURATION COMMAND WORDS (closed, round 3). After an AMBIGUOUS key ID ('ntp server 192.0.2.1 key 1'
@@ -5108,47 +5104,6 @@ def _redact_sweep_bad_tokens(masked: str, anchor: int, delim: str = ""):
             yield _redact_core_span(masked, m.start(), m.end(), delim)
 
 
-def _redact_credential_scalars(line: str):
-    """Explicit credential scalar slots; quoted contents are data, never punctuation or algorithms."""
-    keys = heapq.merge(_REDACT_SWEEP_QKEY_RE.finditer(line), _REDACT_SWEEP_UKEY_RE.finditer(line),
-                       key=lambda match: match.start())
-    consumed = 0
-    for match in keys:
-        if match.start() < consumed:
-            continue                                      # a scalar's contents cannot open nested field slots
-        if not _redact_credential_name(match.group("k"), "q" in match.groupdict()):
-            continue
-        start = match.end()
-        while start < len(line) and line[start] in _REDACT_WS_CHARS:
-            start += 1
-        if start == len(line) or line[start] in "[{":
-            continue                                      # containers use the existing stateful readers
-        if line[start] in "\"'":
-            quote, pos = line[start], start + 1
-            while pos < len(line):
-                if line[pos] == chr(92) and pos + 1 < len(line):
-                    pos += 2
-                elif line[pos] == quote:
-                    break
-                else:
-                    pos += 1
-            consumed = min(len(line), pos + 1)
-            yield match.start(), consumed, start + 1, pos
-        else:
-            end = start
-            while end < len(line) and line[end] not in _REDACT_WS_CHARS + ",;}]":
-                end += 1
-            if end > start:
-                consumed = end
-                yield match.start(), end, start, end
-
-
-def _redact_sweep_scalars(line: str) -> str:
-    spans = [(a, b) for _first, _last, a, b in _redact_credential_scalars(line)
-             if line[a:b] not in ("", _REDACT_PLACEHOLDER)]
-    return _redact_replace_spans(line, spans) if spans else line
-
-
 def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
     masked = _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
     ids = [m.span("id") for m in _REDACT_NTP_KEY_ID_RE.finditer(line)] if config_slots else []
@@ -5156,13 +5111,11 @@ def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
         ids = list(heapq.merge(ids, (m.span("id") for m in _REDACT_JUNOS_NTP_ID_RE.finditer(line))))
     public = ([(a, b) for a, b, kind in _redact_argv_walk(line)[0]
                if chr(92) in line[a:b]
-               and _redact_public_argv_operand(kind, _redact_argv_decode(line[a:b], kind)[0])]
+               and _redact_public_argv_operand(kind, _redact_decode_word(line[a:b])[0])]
               if config_slots and "-" in line else [])
-    fields = [(first, last) for first, last, a, b in _redact_credential_scalars(line)
-              if line[a:b] in ("", _REDACT_PLACEHOLDER)]
-    if ids or public or fields:
+    if ids or public:
         parts, position = [], 0
-        for a, b in heapq.merge(ids, public, fields):
+        for a, b in heapq.merge(ids, public):
             a = max(a, position)
             if a >= b:
                 continue
@@ -5353,21 +5306,6 @@ def _redact_snmp_host_tail(tokens) -> bool:
     return True
 
 
-def _redact_curl_header_quote(line: str, header_start: int):
-    """A quoted curl -H/--header operand owns the closing quote and following public URL."""
-    previous = None
-    for word in _REDACT_SHELL_WORD_RE.finditer(line):
-        if word.start() <= header_start < word.end():
-            raw = word.group(0)
-            if (word.end() != len(line) or raw[:1] not in {"\"", "'"} or previous is None
-                    or _redact_decode_shell_word(previous.group(0))[0] not in {"-H", "--header"}):
-                return None
-            return raw[0] if any(m.group("cmd").casefold() == "curl"
-                                 for m in _REDACT_ARGV_CMD_RE.finditer(line, 0, previous.start())) else None
-        previous = word
-    return None
-
-
 def _redact_dangle(line: str, carry=None):
     """``(kind, tail, key_id)`` when the line DANGLES, else None: an open 'snmp-server host' clause
     (kind ``"snmp-host"``), or an open value-required keyword clause (kind ``"value"``,
@@ -5390,11 +5328,7 @@ def _redact_dangle(line: str, carry=None):
             if found is not None:
                 prefix_end = _redact_capture_value_start(line)
                 decoration = prefix_end > _REDACT_LEAD_RE.match(line).end() and prefix_end <= found.start()
-                tail = ["capture"] if decoration else []
-                quote = _redact_curl_header_quote(line, found.start())
-                if quote is not None:
-                    tail.append("curl-header-" + quote)
-                return kind, tail, False
+                return kind, ["capture"] if decoration else [], False
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _redact_argv_walk(line, carry)[1]
         if pending is not None:
@@ -5514,17 +5448,6 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
             # An empty header wrapped before its scheme as well as its credential. The complete
             # remaining header value is a credential field, not a new configuration statement.
             return words[0].start(), words[-1].end()
-        if not any(item.startswith("curl-header-") for item in tail):
-            words = list(_REDACT_ARGV_WORD_RE.finditer(line, start))
-            if not words:
-                return None
-            whole = line[words[0].start():words[-1].end()]
-            if (len(words) == 1 and _redact_sweep_token_ok_placeholder(whole)
-                    or len(words) == 2 and words[0].group(0) == _REDACT_PLACEHOLDER + ":"
-                    and (words[1].group(0).casefold() in _REDACT_SWEEP_SCHEMES
-                         or _redact_sweep_is_address(words[1].group(0)))):
-                return None
-            return _redact_core_span(line, words[0].start(), words[-1].end())
         for m in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(line, start):
             if not m.group(0).strip(_REDACT_SWEEP_EDGE):
                 continue                                     # punctuation alone ('"')
@@ -5845,65 +5768,18 @@ def _redact_decode_word(raw: str):
     return "".join(text), positions
 
 
-def _redact_decode_shell_word(raw: str, quote: str = ""):
-    """POSIX shell quote removal, with offsets; single-quoted backslashes are literal data."""
-    text, positions = [], []
-    i = 0
-    while i < len(raw):
-        char = raw[i]
-        if char == chr(92) and quote != "'" and i + 1 < len(raw):
-            following = raw[i + 1]
-            if not quote or following in "$`\"\\\n":
-                if following != "\n":
-                    text.append(following)
-                    positions.append(i)
-                i += 2
-                continue
-        if char in {"\"", "'"} and (not quote or quote == char):
-            quote = "" if quote else char
-        else:
-            text.append(char)
-            positions.append(i)
-        i += 1
-    return "".join(text), positions
-
-
-def _redact_argv_decode(raw: str, kind: str):
-    if kind.startswith("shell"):
-        quote = "'" if kind.startswith("shell-single:") else '"' if kind.startswith("shell-double:") else ""
-        return _redact_decode_shell_word(raw, quote)
-    return _redact_decode_word(raw)
-
-
-def _redact_shell_operand_kind(raw: str, offset: int, kind: str) -> str:
-    """An attached operand inherits the shell quote state at its first semantic character."""
-    quote, pos = "", 0
-    while pos < offset:
-        char = raw[pos]
-        if (char == chr(92) and quote != "'" and pos + 1 < offset
-                and (not quote or raw[pos + 1] in "$`\"\\\n")):
-            pos += 2
-            continue
-        if char in "\"'" and (not quote or quote == char):
-            quote = "" if quote else char
-        pos += 1
-    prefix = "shell-single:" if quote == "'" else "shell-double:" if quote == '"' else "shell:"
-    return prefix + kind
-
-
 def _redact_directive_config(line: str, directive) -> bool:
     """Case-insensitive configuration lookup needs a complete directive, not an uppercase prose sentence."""
     spelling = directive.group(0)
     if spelling == spelling.casefold():
         return True
     valued = ("-3m", "-3M", "-3k", "-3K", "-Cn", "-CE", "-v", "-u", "-l", "-a", "-x", "-c",
-              "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p", "-Y", "-m", "-M", "-O", "-I",
-              "-P", "-D", "-Z", "-T", "-L", "-s", "-C", "-3")
+              "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p")
     words = iter(_REDACT_ARGV_WORD_RE.finditer(line, directive.end()))
     targets = []
     for word in words:
         token = _redact_decode_word(word.group(0))[0]
-        if token in {"-Ci", "-d", "-h", "-H", "-V", "--help", "--version"} and not targets:
+        if token == "-Ci" and not targets:
             continue
         option = next((name for name in valued if token.startswith(name)), None) if not targets else None
         if option is not None:
@@ -5924,7 +5800,7 @@ def _redact_directive_config(line: str, directive) -> bool:
 
 def _redact_snmp_shape(line: str) -> bool:
     """A strong pair or two different weak pairs, after decoding their actual argument values."""
-    words = [_redact_decode_shell_word(m.group(0))[0] for m in _REDACT_SHELL_WORD_RE.finditer(line)]
+    words = [_redact_decode_word(m.group(0))[0] for m in _REDACT_ARGV_WORD_RE.finditer(line)]
     weak, i = set(), 0
     while i < len(words):
         word = words[i]
@@ -5953,36 +5829,23 @@ def _redact_argv_runs(line: str):
     its end, or else a net-snmp argument vector found by its shape (`_redact_snmp_shape`) from the line
     start. Each run ends where the next one starts, so a line is read once (linear on any line)."""
     runs = [(_redact_argv_kind(m.group("cmd")), m.end(), False) for m in _REDACT_ARGV_CMD_RE.finditer(line)]
-    # Quote fragments and escaped letters are legal executable spellings at command boundaries.
-    # A quoted operand elsewhere is data; it cannot create another command run.
-    previous = _redact_capture_value_start(line)
-    ends = {end for _kind, end, _shape in runs}
-    for word in _REDACT_SHELL_WORD_RE.finditer(line, previous):
-        gap = line[previous:word.start()].strip(_REDACT_WS_CHARS)
-        if word.start() == previous or gap and all(c in ";|&()" for c in gap):
-            decoded = _redact_decode_shell_word(word.group(0))[0]
-            command = _REDACT_ARGV_CMD_RE.fullmatch(decoded)
-            if command is not None and word.end() not in ends:
-                runs.append((_redact_argv_kind(command.group("cmd")), word.end(), False))
-                ends.add(word.end())
-        previous = word.end()
     if "-" in line:
         directive = next((m for m in _redact_line_words(line)
                           if m.group(0).casefold() in _REDACT_SNMP_DIRECTIVES
                           and _redact_directive_config(line, m)), None)
         if directive is not None:
-            runs.append(("config:snmp", directive.end(), False))
+            runs.append(("snmp", directive.end(), False))
         elif _redact_snmp_shape(line):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
 
 
-def _redact_argv_option(text: str, options, shape_only: bool, *, config: bool = False):
+def _redact_argv_option(text: str, options, shape_only: bool):
     """``(kind, offset)`` when the argument word ``text`` is one of ``options`` (``offset`` None: the operand
     is the next word; otherwise it starts at ``offset`` inside ``text``), else None. On a run found only by
     its shape (an unknown wrapper), an attached operand counts for '-c', '-A' and '-X', and for '-3?' only
     when it is hex (round 4 review: '-config', '-Xmx2g' and chronyc's '-3ms' are not net-snmp operands)."""
-    decoded, positions = (_redact_decode_word(text) if config else _redact_decode_shell_word(text))
+    decoded, positions = _redact_decode_word(text)
     if shape_only and (decoded == "-config" or decoded.startswith("-config=")
                        or re.fullmatch(r"-Xmx[0-9]+[kKmMgG]?", decoded)):
         return None
@@ -6005,7 +5868,6 @@ def _redact_argv_option(text: str, options, shape_only: bool, *, config: bool = 
 
 def _redact_public_argv_operand(kind: str, word: str) -> bool:
     """Known public values only in their semantically decoded argument slots."""
-    kind = kind.partition(":")[2] if kind.startswith("shell") else kind
     # The creator script dispatches both letter cases by these exact values;
     # other strings, including snmpcmd-only aliases, are passphrases.
     if kind == "create-auth":
@@ -6026,19 +5888,16 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
     part after ':' / '%' for a user-info operand, nothing for a USM protocol name."""
     if start >= end:
         return None
-    shell = kind.startswith("shell")
-    value_kind = kind.partition(":")[2] if shell else kind
     raw = line[start:end]
-    if not any(char in raw for char in "\"'\\") and value_kind not in ("userinfo", "userpct"):
+    if not any(char in raw for char in "\"'\\") and kind not in ("userinfo", "userpct"):
         core, positions = raw, []
     else:
-        core, positions = _redact_argv_decode(raw, kind)
+        core, positions = _redact_decode_word(raw)
     a, b = start, end
     if raw[:1] in {"\"", "'"}:
         quote, close, i = raw[0], None, 1
         while i < len(raw):
-            if (raw[i] == chr(92) and i + 1 < len(raw)
-                    and (not shell or quote == '"' and raw[i + 1] in "$`\"\\\n")):
+            if raw[i] == chr(92) and i + 1 < len(raw):
                 i += 2
                 continue
             if raw[i] == quote:
@@ -6051,8 +5910,8 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
                 b -= 1
     elif raw[-1:] in {"\"", "'"} and not any(q in raw[:-1] for q in "\"'"):
         b -= 1                           # closing outer quote of an attached option's value
-    if value_kind in ("userinfo", "userpct"):
-        sep = core.find(":" if value_kind == "userinfo" else "%")
+    if kind in ("userinfo", "userpct"):
+        sep = core.find(":" if kind == "userinfo" else "%")
         if sep < 0:
             return None
         if sep + 1 >= len(positions):
@@ -6060,8 +5919,7 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
         a, core = start + positions[sep + 1], core[sep + 1:]
     if _redact_public_argv_operand(kind, core):
         return None                                          # validated protocol, version or security level
-    # A decoded alias for the placeholder is still an unredacted credential spelling.
-    if not core or core == _REDACT_PLACEHOLDER and line[a:b] == _REDACT_PLACEHOLDER:
+    if not core or core == _REDACT_PLACEHOLDER:
         return None
     return a, b
 
@@ -6079,7 +5937,8 @@ def _redact_argv_walk(line: str, carry=None):
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:
         return [], None
-    word_indexes = {}
+    words = [m.span() for m in _REDACT_ARGV_WORD_RE.finditer(line)]
+    starts = [a for a, _b in words]
     operands, pending = [], None
     consumed_commands = set()
     for index, (kind_name, run, shape_only) in enumerate(runs):
@@ -6089,27 +5948,20 @@ def _redact_argv_walk(line: str, carry=None):
         while next_run in consumed_commands:
             next_run += 1
         stop = runs[next_run][1] if next_run < len(runs) else len(line) + 1
-        config = kind_name.startswith("config:")
-        base_kind = kind_name.removeprefix("config:")
-        if config not in word_indexes:
-            regex = _REDACT_ARGV_WORD_RE if config else _REDACT_SHELL_WORD_RE
-            words = [m.span() for m in regex.finditer(line)]
-            word_indexes[config] = words, [a for a, _b in words]
-        words, starts = word_indexes[config]
-        options = _REDACT_ARGV_OPTIONS[base_kind]
+        options = _REDACT_ARGV_OPTIONS[kind_name]
         expect = carry[1] if (carry is not None and index == 0) else None
         position = bisect.bisect_left(starts, run)
         while position < len(words) and words[position][0] < stop:
             a, b = words[position]
             position += 1
             text = line[a:b]
-            if base_kind == "net":
+            if kind_name == "net":
                 if not _redact_netuse_structural(text):
-                    operands.append((a, b, "value" if config else "shell:value"))
+                    operands.append((a, b, "value"))
                 continue
-            option = _redact_argv_option(text, options, shape_only, config=config)
+            option = _redact_argv_option(text, options, shape_only)
             if expect is not None:
-                operands.append((a, b, expect if config else "shell:" + expect))
+                operands.append((a, b, expect))
                 expect = None
                 while next_run < len(runs) and a < runs[next_run][1] <= b:
                     consumed_commands.add(next_run)
@@ -6122,74 +5974,10 @@ def _redact_argv_walk(line: str, carry=None):
                 if offset is None:
                     expect = None if kind == "attached" else kind
                 else:
-                    operands.append((a + offset, b, kind if config else _redact_shell_operand_kind(text, offset, kind)))
+                    operands.append((a + offset, b, kind))
         if next_run == len(runs) and (expect is not None or line.rstrip(_REDACT_WS_CHARS).endswith("\\")):
             pending = (kind_name, expect)
     return operands, pending
-
-
-def _redact_shell_payloads(line: str):
-    """Supported sh/bash -c operands at shell command boundaries, without evaluating shell code."""
-    previous = _redact_capture_value_start(line)
-    words = list(_REDACT_SHELL_WORD_RE.finditer(line, previous))
-    for index, word in enumerate(words):
-        gap = line[previous:word.start()].strip(_REDACT_WS_CHARS)
-        boundary = word.start() == previous or gap and all(c in ";|&()" for c in gap)
-        previous = word.end()
-        name = _redact_decode_shell_word(word.group(0))[0].rsplit("/", 1)[-1]
-        if not boundary or name not in {"sh", "bash"}:
-            continue
-        end = word.end()
-        for option_index in range(index + 1, len(words)):
-            option = words[option_index]
-            if line[end:option.start()].strip(_REDACT_WS_CHARS):
-                break
-            token = _redact_decode_shell_word(option.group(0))[0]
-            end = option.end()
-            if token == "-c" or token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-                if option_index + 1 < len(words):
-                    payload = words[option_index + 1]
-                    if not line[end:payload.start()].strip(_REDACT_WS_CHARS):
-                        yield payload
-                break
-            if not token.startswith("-"):
-                break
-
-
-def _redact_shell_payload_uncertain(line: str, depth: int) -> bool:
-    """Fail closed on credential-shaped command strings beyond proven single-command coverage."""
-    if _redact_snmp_shape(line):
-        return True
-    words = list(_REDACT_SHELL_WORD_RE.finditer(line))
-    if len(words) < 2:
-        return False                                      # a quoted option word is not a command string
-    private_options = {option for options in _REDACT_ARGV_OPTIONS.values() for option, kind in options
-                       if kind not in {"version", "level", "protocol"}}
-    flagged = any(any(token == option or token.startswith(option + "=")
-                      or not option.startswith("--") and token.startswith(option) and len(token) > len(option)
-                      for option in private_options)
-                  for word in words for token in (_redact_decode_shell_word(word.group(0))[0],))
-    named = bool(words and _REDACT_ARGV_CMD_RE.fullmatch(_redact_decode_shell_word(words[0].group(0))[0]))
-    if depth >= 8:
-        return flagged or bool(_REDACT_ARGV_CMD_RE.search(line))
-    payloads = list(_redact_shell_payloads(line))
-    for payload in payloads:
-        decoded = _redact_decode_shell_word(payload.group(0))[0]
-        if (_redact_shell_payload_uncertain(decoded, depth + 1)
-                or any(_redact_operand_span(decoded, a, b, kind) is not None
-                       for a, b, kind in _redact_argv_walk(decoded)[0])):
-            return True
-    if payloads and _redact_decode_shell_word(words[0].group(0))[0].rsplit("/", 1)[-1] in {"sh", "bash"}:
-        return False                                      # its -c is a proven shell option, not a credential flag
-    if not flagged:
-        return False
-    # Only a flat, named command with no unquoted operators has proven finer operand coverage.
-    previous = 0
-    for word in words:
-        if line[previous:word.start()].strip(_REDACT_WS_CHARS):
-            return True
-        previous = word.end()
-    return not named or bool(line[previous:].strip(_REDACT_WS_CHARS))
 
 
 def _redact_argv_spans(line: str, carry=None, depth: int = 0):
@@ -6201,20 +5989,12 @@ def _redact_argv_spans(line: str, carry=None, depth: int = 0):
             spans.append(span)
     # A shell's quoted command string is one outer word; the direct walk must not silently
     # lose recognized credential commands inside it. Nested decoding remains explicitly bounded.
-    payloads = {word.span() for word in _redact_shell_payloads(line)}
-    for word in _REDACT_SHELL_WORD_RE.finditer(line):
+    for word in _REDACT_ARGV_WORD_RE.finditer(line):
         raw = word.group(0)
         if not any(q in raw for q in "\"'"):
             continue
-        decoded, positions = _redact_decode_shell_word(raw)
-        if decoded == raw:
-            continue
-        if word.span() in payloads and _redact_shell_payload_uncertain(decoded, depth):
-            span = _redact_operand_span(line, word.start(), word.end(), "shell:value")
-            if span is not None:
-                spans.append(span)
-            continue
-        if not _REDACT_ARGV_CMD_RE.search(decoded):
+        decoded, positions = _redact_decode_word(raw)
+        if decoded == raw or not _REDACT_ARGV_CMD_RE.search(decoded):
             continue
         if depth >= 8:
             spans.append(word.span())
@@ -6222,8 +6002,7 @@ def _redact_argv_spans(line: str, carry=None, depth: int = 0):
         for a, b in _redact_argv_spans(decoded, depth=depth + 1):
             if a < b and positions:
                 last = positions[b - 1]
-                extra = 2 if (raw[last:last + 1] == chr(92) and last + 1 < len(raw)
-                              and (b == len(positions) or positions[b] > last + 1)) else 1
+                extra = 2 if raw[last:last + 1] == chr(92) and last + 1 < len(raw) else 1
                 spans.append((word.start() + positions[a], word.start() + last + extra))
     return spans
 
@@ -6316,7 +6095,6 @@ def _redact_table_cells(line: str, table) -> str:
 def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bool,
                        prose=None, delim: str = "", join=None) -> str:
     """The residual sweep of ONE line (after the grammar)."""
-    line = _redact_sweep_scalars(line)
     required = [_redact_operand_span(line, *m.span("v"), "value")
                 for regex in _REDACT_REQUIRED_RES for m in regex.finditer(line)
                 if not _redact_required_is_junos_container(m) and m.group("v") != _REDACT_PLACEHOLDER
@@ -6384,7 +6162,6 @@ def _redact_grammar_line(line: str, has_next: bool, delim: str = "", *, next_lin
     low = line.casefold()
     if len(line) > _REDACT_GRAMMAR_MAX_LINE or not _REDACT_LINE_PREFILTER.search(low):
         return line
-    line = _redact_sweep_scalars(line)
     line = _redact_incomplete_isakmp(line, next_line, delim)
     sub = _redact_grammar_sub(has_next, delim) if delim else _REDACT_GRAMMAR_SUBS[has_next]
     line = _redact_required_config(line, has_next, delim)
