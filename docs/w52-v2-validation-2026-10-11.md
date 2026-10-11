@@ -224,3 +224,31 @@ canonical function, receipt format, schema, native pin, sample or compiler data 
 Comprehensive authored mutation, marker-type, authority, copy, unsupported/cycle and fallback
 controls remain unexecuted until the real hosted producers run them; source clearance alone
 cannot close identity correctness or the 300 ms page budget.
+
+## Owner-merged W64a/W65 main integration
+
+Main advanced during final review to owner merge `3f1d844c` / #651, ordered `0b411c16 +
+4db8e966`, tree `6b02baf5`, at 10:51:49Z. PR #638 is separately merged; #637 is closed
+without its own merge, with W65 source carried by #651. Root did not approve or merge them.
+The independently reviewed performance tree `11420ddb` passed canonical privacy before
+unpublished `250a664f`; that is exact old-policy evidence, not a merged-tree clearance.
+
+The incoming 37-path change contains client-name registry/verifier/census, Inspector download
+hygiene, app Content-Disposition filename, frontend source/dist and streamed Reference writers.
+No G14/parser/protocol/route generation owner changed. SSOT retains both new client-name and
+stored-carriage owners. The 13 registered synthetic fixture files are unchanged by this branch.
+No fixture pin or exemption is added. Automatic privacy merge must preserve the v2 decoded-text
+guards alongside the incoming registry and controls, under independently reviewed current policy.
+
+Only generated SPA chunks/index conflicted. Original unmerged stages/patches are preserved;
+the complete literal incoming-main dist is the chosen unqualified bootstrap, pending a fresh
+combined whole-success producer and hosted receipt. An initial restore refused five absent-source
+unmerged paths; each was verified absent in main, the five known tracked conflicts removed and
+the complete main tree restored. No unrelated content, compiler/build/hash/controller or intake
+ran. Both complete NOW histories and full retired W64a/W65 row records remain retained.
+
+The changed policy and Inspector/.gitignore ledger inputs invalidate prior current-main privacy
+and Scope qualification. Fresh combined canonical/every-parent history/text scans, actual Scope
+diagnostic/rebind/late execution, canonical API/native agreement, applicable LF receipts,
+default golden/real UTC sample and admissible new SPA/full workflows remain required. No engine
+generation dispatch is inferred from path census alone; actual default output checks decide drift.

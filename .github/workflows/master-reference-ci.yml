@@ -53,9 +53,11 @@ jobs:
           master-reference/tests
       # GNU time (/usr/bin/time, apt package `time` on ubuntu-24.04) reports the
       # step's peak RSS as "Maximum resident set size (kbytes)" on success and
-      # failure alike. The compiler and `cli build` each hold every compiler
-      # record in memory, so their peaks are the measured basis for the release
-      # intake's chunk-census ceiling (W63; release/compiler_bundle.py). Each
+      # failure alike. The compiler holds every compiler record in memory;
+      # `cli build` validates every record but retains only the groups the
+      # release builders read and streams the rest (W64a). The `cli build` peak
+      # is the measured basis for the release intake's chunk-census ceiling
+      # (W63, W64a; release/compiler_bundle.py). Each
       # report is kept under $RUNNER_TEMP/atlas-capacity for the capacity guard
       # (W64-0) and printed to the log; the step still exits with the command's
       # own status.

@@ -1991,6 +1991,23 @@ def _source_and_truth(
     return story
 
 
+def _manifest_line_record_count(bundle: CompilerBundle) -> int:
+    """The ``lines`` record count from the validated manifest receipt.
+
+    ``load_compiler_bundle`` proves the receipt's ``record_count`` equals the
+    group's records, so the PDF never needs the ``lines`` records themselves,
+    which the release pipeline streams and does not retain (W64a).  A partial
+    renderer-only bundle without that receipt keeps the former count.
+    """
+
+    groups = bundle.manifest.get("groups")
+    lines = groups.get("lines") if isinstance(groups, dict) else None
+    count = lines.get("record_count") if isinstance(lines, dict) else None
+    if type(count) is int:
+        return count
+    return len(bundle.records.get("lines", []))
+
+
 def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> list[Flowable]:
     ledger = bundle.completeness
     census = ledger.get("census", {}) if isinstance(ledger.get("census"), dict) else {}
@@ -2018,7 +2035,10 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
                 ("Safe full-exposure files", census.get("full_exposure_files", "unknown")),
                 ("Metadata-only files", census.get("metadata_only_files", "unknown")),
                 ("Expected nonblank safe lines (full-depth census)", parsing.get("expected_nonblank_lines", "unknown")),
-                ("Source line records", parsing.get("line_records", len(bundle.records.get("lines", [])))),
+                (
+                    "Source line records",
+                    parsing["line_records"] if "line_records" in parsing else _manifest_line_record_count(bundle),
+                ),
                 (
                     "Identity-depth files (not line-mapped)",
                     census_depth.get("identity_depth_files", "unknown"),
