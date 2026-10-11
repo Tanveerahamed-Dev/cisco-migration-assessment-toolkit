@@ -236,7 +236,7 @@ def test_a_row_must_name_every_class_its_sites_resolve_to(tmp_path):
 
 
 @pytest.mark.parametrize("name,problem", [
-    ("delivery.snapshot.json", False), ("delivery.json", True), ("delivery", True),
+    ("delivery.snapshot.json", False), ("delivery.json", True), ("delivery", True), ("0", True),
 ])
 def test_same_count_client_filename_replacement_is_rejected(tmp_path, name, problem):
     _write(tmp_path, "cisco_toolkit/writer.py",
@@ -291,6 +291,20 @@ def test_default_target_literal_is_resolved_in_its_defining_module(tmp_path):
             "cisco_toolkit/caller.py::emit": (1, census.CLIENT, ("snapshot",), "client data")}
     assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
         "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/caller.py::emit"]
+
+
+def test_guarded_out_of_range_variadic_target_does_not_hide_alternative(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def write(path):\n    Path(path).write_text('payload')\n\n"
+           "def emit(fn, *args):\n"
+           "    if args:\n        fn(args[0])\n"
+           "    else:\n        fn('delivery.json')\n\n"
+           "def main():\n    emit(write)\n")
+    rows = {"cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "writer"),
+            "cisco_toolkit/writer.py::main": (1, census.CLIENT, ("snapshot",), "client data")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
 
 
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):

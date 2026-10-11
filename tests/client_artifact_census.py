@@ -613,12 +613,12 @@ class _Program:
             if node.id in bindings:
                 return bindings[node.id]  # this expression belongs to the caller's scope
             if node.id in seen:
-                return ast.Constant("0")
+                return ast.Constant(None)
             values = self.resolver(function)(node)
             if values:
                 expanded = [self._expanded(function, v, bindings, seen | {node.id}) for v in values]
                 return expanded[0] if len(expanded) == 1 else ast.BoolOp(op=ast.Or(), values=expanded)
-            return ast.Constant("0")
+            return ast.Constant(None)
         expanded = copy.copy(node)
         for name, value in ast.iter_fields(node):
             if isinstance(node, ast.Call) and name == "func":
@@ -630,7 +630,9 @@ class _Program:
                                         if isinstance(v, ast.AST) else v for v in value])
         if (isinstance(expanded, ast.Subscript) and isinstance(expanded.value, (ast.Tuple, ast.List))
                 and isinstance(expanded.slice, ast.Constant) and isinstance(expanded.slice.value, int)):
-            return expanded.value.elts[expanded.slice.value]
+            index = expanded.slice.value
+            if -len(expanded.value.elts) <= index < len(expanded.value.elts):
+                return expanded.value.elts[index]
         return expanded
 
     def _expanded_call(self, function: _Function, call: ast.Call,
@@ -708,18 +710,21 @@ def write_sites(root: Path = ROOT) -> dict[str, int]:
 
 # --------------------------------------------------------------------------- resolved names
 
-def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str]:
-    """Literal name templates an expression can produce; an unknown part is ``0``."""
+def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
+    """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
     if depth > 4:
-        return ["0"]
+        return [None]
     text = _constant_text(node)
     if text is not None:
         return [text]
     if isinstance(node, ast.JoinedStr):
+        if not any(isinstance(p, ast.Constant) and p.value for p in node.values):
+            return [None]
         parts = [p.value if isinstance(p, ast.Constant) else "0" for p in node.values]
         return ["".join(str(p) for p in parts)]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [a + b for a in _templates(node.left, resolve, depth + 1)
+        return [(a if a is not None else "0") + (b if b is not None else "0")
+                if a or b else None for a in _templates(node.left, resolve, depth + 1)
                 for b in _templates(node.right, resolve, depth + 1)][:16]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _templates(node.right, resolve, depth + 1)
@@ -728,13 +733,14 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str]:
     if isinstance(node, ast.Name):
         values = resolve(node)
         out = [t for value in values for t in _templates(value, resolve, depth + 1)]
-        return out[:16] or ["0"]
+        return out[:16] or [None]
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
             return _templates(node.args[-1], resolve, depth + 1)
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
-            return ["0" + t if func.attr == "with_suffix" else t for t in _templates(node.args[0], resolve, depth + 1)]
+            return ["0" + t if func.attr == "with_suffix" and t is not None else t
+                    for t in _templates(node.args[0], resolve, depth + 1)]
         if isinstance(func, ast.Attribute) and func.attr == "format" and _constant_text(func.value):
             return [re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value))]
         if isinstance(func, ast.Name) and func.id in {"Path", "PurePath", "PurePosixPath", "str"} and node.args:
@@ -743,7 +749,7 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str]:
         return _templates(node.body, resolve, depth + 1) + _templates(node.orelse, resolve, depth + 1)
     if isinstance(node, ast.BoolOp):
         return [t for value in node.values for t in _templates(value, resolve, depth + 1)]
-    return ["0"]
+    return [None]
 
 
 def resolved_site_classes(root: Path = ROOT) -> dict[str, set[str]]:
@@ -1751,8 +1757,10 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                 for _kind, targets in sites:
                     for target in targets:
                         for template in _templates(target, resolve):
+                            if template is None:
+                                continue
                             leaf = re.split(r"[/\\]", template)[-1]
-                            if leaf and leaf != "0":
+                            if leaf:
                                 class_key = classify(f"customer-output/{leaf}")
                                 if class_key:
                                     resolved.setdefault(function.key, set()).add(class_key)
