@@ -1466,11 +1466,16 @@ export interface components {
         };
         /** CarriagePage */
         readonly UiProjection1_CarriagePage: {
+            /** @constant */
+            readonly byte_limit: 3000000;
             readonly has_more: boolean;
             readonly items: readonly components["schemas"]["UiProjection1_CarriageRow"][];
             readonly limit: number;
             readonly offset: number;
+            readonly reason: string | null;
             readonly returned: number;
+            /** @enum {string} */
+            readonly state: "published" | "unverified";
             readonly total: number;
         };
         /** CarriageRelationFact */
@@ -7043,6 +7048,11 @@ export interface components {
             readonly carriage_evidence_shape: {
                 readonly basis: string;
                 readonly tokens: readonly ("both_ends" | "one_end_only" | "no_evidence" | "unverified")[];
+            };
+            /** VocabCarriagePageState */
+            readonly carriage_page_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("published" | "unverified")[];
             };
             /** VocabCarriageRelation */
             readonly carriage_relation: {

@@ -70,15 +70,16 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # this module's own _native_schema_hash before these were computed the same way, as a pure call.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
+# Round 2: actual hosted 8a3c04d3/tree8dfd99b6 emitted the complete page-resource
+# delta. All four whole schemas, local refs, unchanged domain and canonical types
+# were independently reviewed before adopting these literals; no runtime auto-pin.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
-    "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758",
-    # W52 v2 whole Carriage: actual hosted 64986339/tree8719 observer material,
-    # independently reviewed complete schema/domain; never populated at runtime.
-    "carriage": "54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0",
-    # Full OWNER root from actual hosted fe8fc0ea/treecc26610d, independently
-    # reviewed with all 251 definitions. Internal admission never marks transport smoke.
-    "document": "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7",
+    "view": "2f70b393a3d682063a34a930026e3b4cf145278dbb387037fbaf6b30aff28714",
+    "list": "82ca31f0505c3c30ee8f97503d0b1396a8d45d0f16ae9f7123f129720cd72bb7",
+    # W52 v2 whole Carriage, including the reviewed round-two page-resource fields.
+    "carriage": "55d75f4efeb2eb627071cffb29a64a7756618da00480a50edbe06730310cd95b",
+    # Full OWNER root with all 251 definitions. Internal admission never marks transport smoke.
+    "document": "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

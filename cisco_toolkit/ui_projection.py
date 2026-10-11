@@ -5459,7 +5459,8 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
     def size(value: Any) -> int:
         return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
-    if size(document) > byte_budget:
+    context_bytes = size(document) - size(page)
+    if context_bytes + size(page) > byte_budget:
         raise ValueError("unsupported: carriage page context exceeds the page byte bound")
     items: List[Dict[str, Any]] = []
     item_bytes, member_count = 0, 0
@@ -5477,7 +5478,9 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
                         returned=candidate_count, has_more=offset + candidate_count < total)
             # The empty array is two bytes in the base. Complete item encodings replace its interior, including
             # exactly n-1 separators; the metadata is measured with its actual digits and boolean value.
-            over_bytes = size(document) + item_bytes + length + candidate_count - 1 > byte_budget
+            # The immutable outer context is encoded once. Only the small, still-empty page header changes
+            # while filling the prefix; item encodings are complete and measured exactly once each.
+            over_bytes = context_bytes + size(page) + item_bytes + length + candidate_count - 1 > byte_budget
         else:
             over_bytes = False
         if over_members or over_bytes:
@@ -5489,9 +5492,10 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
         member_count += count
         item_bytes += length
     page.update(limit=limit if len(items) == expected or not items else len(items),
-                returned=len(items), has_more=offset + len(items) < total, items=items)
-    if size(document) > byte_budget:
+                returned=len(items), has_more=offset + len(items) < total)
+    if context_bytes + size(page) + item_bytes + max(len(items) - 1, 0) > byte_budget:
         raise ValueError("unsupported: carriage page hold exceeds the page byte bound")
+    page["items"] = items
     return document
 
 

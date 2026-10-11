@@ -173,7 +173,13 @@ def test_round2_complete_configured_inputs_keep_only_current_logical_absence_eli
     else:
         assert result["summary"]["state"] == PUB and result["summary"]["forwarding"]["value"] == 1
         assert result["page"]["items"][0]["relation"]["value"] == "forwarding"
-        assert result["page"]["items"][0]["basis"]["value"] == "stored_trunk_allowance"
+        cable = result["page"]["items"][0]
+        assert cable["basis"]["value"] == "member_consensus"
+        assert len(cable["members"]["items"]) == 2
+        for member in cable["members"]["items"]:
+            assert member["basis"]["value"] == "stored_trunk_allowance"
+            for side in ("a", "b"):
+                assert member[side]["basis"]["value"] == "stored_trunk_allowance"
     checked(snap)
 
 

@@ -1200,7 +1200,7 @@ def test_document_missing_pin_has_no_provider_admission_and_keeps_whole_python(c
     def forbidden():
         pytest.fail("Unreviewed document candidate reached a native provider")
 
-    assert api._NATIVE_SCHEMA_HASHES["document"] == "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7"
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e"
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES",
                         {key: value for key, value in api._NATIVE_SCHEMA_HASHES.items() if key != "document"})
     monkeypatch.setattr(api, "_native_provider", forbidden)
@@ -1911,7 +1911,7 @@ def test_native_full_document_requires_literal_version_private_copy_and_full_sch
     from backend import ui_projection_api as api
     document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
     assert api.version("jsonschema-rs") == "0.58.6"
-    assert api._NATIVE_SCHEMA_HASHES["document"] == "152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7"
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e"
     for replacement in (None, "0" * 64, api._NATIVE_SCHEMA_HASHES["carriage"]):
         with monkeypatch.context() as changed:
             pins = dict(api._NATIVE_SCHEMA_HASHES)
@@ -2485,9 +2485,9 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
     # W52 / G14 v2: all three values are literal observations from independently reviewed hosted schema material.
-    prospective = {"view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
-                   "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758",
-                   "carriage": "54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0"}
+    prospective = {"view": "2f70b393a3d682063a34a930026e3b4cf145278dbb387037fbaf6b30aff28714",
+                   "list": "82ca31f0505c3c30ee8f97503d0b1396a8d45d0f16ae9f7123f129720cd72bb7",
+                   "carriage": "55d75f4efeb2eb627071cffb29a64a7756618da00480a50edbe06730310cd95b"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA), ("carriage", api._CARRIAGE_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
