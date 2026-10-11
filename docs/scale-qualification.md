@@ -143,3 +143,14 @@ Prior scale results do not qualify the combined source. Webapp run
 `38133400689` also retains a CausalFlowPanel setup timeout (missing element
 after 15 s, no pixel comparison reached), artifact `11700602857`; this
 is an unconfirmed visual failure, not a demonstrated scale regression.
+
+Combined source `f5e33989` / run `38138214492`, job `114466455673`, passed
+the strict privacy census but failed the execution-error control before any
+qualification stage. That child exited 7 as intended and also exceeded the
+control's unchanged 128 MiB RSS ceiling after the census loaded substantial
+modules in the same pytest process. The leader high-water floor can include
+inherited pre-exec memory. Privacy census and failure controls now run in
+separate fresh pytest processes, with both logs retained before measurement.
+No test assertion, stage budget or measurement contract is changed. The failed
+run produced no scale report; job logs preserve it. Fresh corrected-source
+hosted qualification remains required.
