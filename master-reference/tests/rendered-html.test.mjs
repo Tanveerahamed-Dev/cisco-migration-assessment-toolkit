@@ -46,16 +46,31 @@ const INERT_TEXT_TAGS = new Set([
   "title",
   "xmp",
 ]);
-const CORE_OUTCOME_STYLESHEETS = Object.freeze([Object.freeze({
-  href: "/assets/index-B9KNmxWm.css",
-  sha256: "bc9b52cac7e84bc24340532b3dbb1fa964200f2bfe2675924774b5cf902e6925",
-  attributes: Object.freeze({
-    "data-precedence": "vite-rsc/importer-resources",
-    "data-rsc-css-href": "/assets/index-B9KNmxWm.css",
-    href: "/assets/index-B9KNmxWm.css",
-    rel: "stylesheet",
+// Exact hosted Vinext 0.2.1 profile: docs/dependency-train-style-observation-2026-10-11.json.
+const CORE_OUTCOME_STYLESHEETS = Object.freeze([
+  Object.freeze({
+    href: "/_next/static/css/index.BG8_OOeT.css",
+    sha256: "d2f2ca60df8a6faf9bc88b43d39b9fe19be0aab371fa4f58e193b2e21591bfe3",
+    attributes: Object.freeze({
+      "crossorigin": "anonymous",
+      "data-precedence": "vite-rsc/importer-resources",
+      "data-rsc-css-href": "/_next/static/css/index.BG8_OOeT.css",
+      "href": "/_next/static/css/index.BG8_OOeT.css",
+      "rel": "stylesheet",
+    }),
   }),
-})]);
+  Object.freeze({
+    href: "/_next/static/css/Workspace.Cbj8SavO.css",
+    sha256: "a1733c6e2c636e5cd48bf786b036914a0b2619291e353987529d4b7beae34258",
+    attributes: Object.freeze({
+      "crossorigin": "anonymous",
+      "data-precedence": "vite-rsc/importer-resources",
+      "data-rsc-css-href": "/_next/static/css/Workspace.Cbj8SavO.css",
+      "href": "/_next/static/css/Workspace.Cbj8SavO.css",
+      "rel": "stylesheet",
+    }),
+  }),
+]);
 
 function canonicalGzip(source) {
   const encoded = gzipSync(source, { level: 9 });
@@ -1369,29 +1384,6 @@ test("server-renders the exact nine Core outcome success-signal slots in source 
     "Core outcome style custody rejects unbound HTTP Link stylesheet relations",
   );
   const html = await response.text();
-  // Hosted review data only. Keep the closed custody assertion below until the
-  // new dependency build's exact link attributes and CSS bytes are reviewed.
-  const observedStylesheets = [];
-  for (const link of parsedHtml(html).querySelectorAll("link")) {
-    if (!(link.getAttribute("rel") ?? "").split(/[\t\n\f\r ]+/)
-      .some((token) => token.toLowerCase() === "stylesheet")) continue;
-    const attributes = Object.fromEntries(
-      Object.entries(link.attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
-    );
-    const href = attributes.href;
-    assert.match(href, /^\/(?:assets|_next\/static\/css)\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
-    const bytes = await readFile(new URL(`../dist/client${href}`, import.meta.url));
-    observedStylesheets.push({
-      attributes, href, bytes: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      base64: bytes.toString("base64"),
-    });
-  }
-  console.log("CORE_OUTCOME_STYLESHEET_OBSERVATION " + JSON.stringify({
-    source_commit: process.env.GITHUB_SHA,
-    review_required: true, release_authority: false,
-    stylesheets: observedStylesheets,
-  }));
   await assertCoreOutcomeStyleCustody(html);
   const outcomeSection = sectionById(html, "core-outcome-contracts");
   assertCoreOutcomeMarkup(outcomeSection, core, view.rendered_observations);

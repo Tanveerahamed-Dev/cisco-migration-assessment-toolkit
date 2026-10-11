@@ -1,0 +1,45 @@
+{
+  "schema": "dependency_train_stylesheet_observation/1",
+  "description": "Hosted data supporting the existing closed stylesheet custody owner; not independent browser or release acceptance.",
+  "repository": "Tanveerahamed-Dev/cisco-migration-assessment-toolkit",
+  "pull_request": 653,
+  "source_head": "ab106a1e395a692dde4347b095e71ace00afacc0",
+  "tested_merge_commit": "2ce2ef5f888f05f7fc96848ba532fdd22bce2eb9",
+  "source_tree": "a99f1e7aff5be7de7012d3e89cfcbd30bec64357",
+  "workflow_run_id": 38161276094,
+  "workflow_job_id": 114534528468,
+  "observation_marker": "CORE_OUTCOME_STYLESHEET_OBSERVATION",
+  "custody_owner": "master-reference/tests/rendered-html.test.mjs::CORE_OUTCOME_STYLESHEETS",
+  "authored_css_owners": [
+    "master-reference/app/globals.css",
+    "master-reference/app/atlas/Workspace.module.css"
+  ],
+  "review_required": true,
+  "release_authority": false,
+  "stylesheets": [
+    {
+      "attributes": {
+        "crossorigin": "anonymous",
+        "data-precedence": "vite-rsc/importer-resources",
+        "data-rsc-css-href": "/_next/static/css/index.BG8_OOeT.css",
+        "href": "/_next/static/css/index.BG8_OOeT.css",
+        "rel": "stylesheet"
+      },
+      "href": "/_next/static/css/index.BG8_OOeT.css",
+      "bytes": 39605,
+      "sha256": "d2f2ca60df8a6faf9bc88b43d39b9fe19be0aab371fa4f58e193b2e21591bfe3"
+    },
+    {
+      "attributes": {
+        "crossorigin": "anonymous",
+        "data-precedence": "vite-rsc/importer-resources",
+        "data-rsc-css-href": "/_next/static/css/Workspace.Cbj8SavO.css",
+        "href": "/_next/static/css/Workspace.Cbj8SavO.css",
+        "rel": "stylesheet"
+      },
+      "href": "/_next/static/css/Workspace.Cbj8SavO.css",
+      "bytes": 4391,
+      "sha256": "a1733c6e2c636e5cd48bf786b036914a0b2619291e353987529d4b7beae34258"
+    }
+  ]
+}
