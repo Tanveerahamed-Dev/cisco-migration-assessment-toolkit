@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   beginCommunitySelection,
   rejectCommunitySelection,
@@ -71,6 +71,10 @@ type GraphSummary = {
 const DRAW_LIMIT = 48;
 const TABLE_PAGE_SIZE = 150;
 
+const subscribeBrowserReady = () => () => {};
+const browserReadySnapshot = () => true;
+const serverReadySnapshot = () => false;
+
 function point(index: number, count: number) {
   const angle = (index / Math.max(1, count)) * Math.PI * 2 - Math.PI / 2;
   return { x: 310 + Math.cos(angle) * 245, y: 280 + Math.sin(angle) * 215 };
@@ -78,11 +82,35 @@ function point(index: number, count: number) {
 
 export function GraphExplorer() {
   const [loadState, setLoadState] = useState<GraphState>({ state: "loading" });
-  const [query, setQuery] = useState("");
-  const [community, setCommunity] = useState("all");
+  const [queryOverride, setQueryOverride] = useState<string | null>(null);
+  const [communityOverride, setCommunityOverride] = useState<string | null>(null);
   const [nodePage, setNodePage] = useState(0);
   const [edgePage, setEdgePage] = useState(0);
-  const [urlReady, setUrlReady] = useState(false);
+  const urlReady = useSyncExternalStore(subscribeBrowserReady, browserReadySnapshot, serverReadySnapshot);
+  const initialParameters = useMemo(
+    () => new URLSearchParams(urlReady ? window.location.search : ""),
+    [urlReady],
+  );
+  const query = queryOverride ?? initialParameters.get("q") ?? "";
+  const community = communityOverride ?? initialParameters.get("community") ?? "all";
+  function setQuery(value: string) {
+    setQueryOverride(value);
+    setNodePage(0);
+    setEdgePage(0);
+  }
+  function setCommunity(value: string) {
+    if (value === community) return;
+    setCommunityOverride(value);
+    setNodePage(0);
+    setEdgePage(0);
+    setLoadState((current) => {
+      if (current.state !== "ready") return current;
+      const selection = beginCommunitySelection<GraphNode, GraphEdge>(
+        value, current.summary.communities.map((entry) => entry.id),
+      );
+      return { ...current, nodes: [], edges: [], communitySelection: selection };
+    });
+  }
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   useEffect(() => {
@@ -133,31 +161,11 @@ export function GraphExplorer() {
   const graphSummary = loadState.state === "ready" ? loadState.summary : null;
   useEffect(() => {
     if (!projectionModule || !graphSummary) return;
-    if (community === "all") {
-      setLoadState((current) => current.state === "ready" ? {
-        ...current,
-        nodes: current.summary.sampleNodes,
-        edges: current.summary.sampleEdges,
-        communitySelection: {
-          state: "overview",
-          requestedCommunity: null,
-          loadedCommunity: null,
-          reason: null,
-          message: "Showing the deterministic all-community overview.",
-        },
-      } : current);
-      return;
-    }
+    if (community === "all") return;
     const started = beginCommunitySelection<GraphNode, GraphEdge>(
       community,
       graphSummary.communities.map((entry) => entry.id),
     );
-    setLoadState((current) => current.state === "ready" ? {
-      ...current,
-      nodes: [],
-      edges: [],
-      communitySelection: started,
-    } : current);
     if (started.state === "abstained") return;
     let active = true;
     void projectionModule.loadGraphCommunity(community)
@@ -185,13 +193,6 @@ export function GraphExplorer() {
   }, [community, graphSummary, projectionModule]);
 
   useEffect(() => {
-    const parameters = new URLSearchParams(window.location.search);
-    setQuery(parameters.get("q") ?? "");
-    setCommunity(parameters.get("community") ?? "all");
-    setUrlReady(true);
-  }, []);
-
-  useEffect(() => {
     if (!urlReady) return;
     const location = new URL(window.location.href);
     if (query) location.searchParams.set("q", query);
@@ -199,11 +200,26 @@ export function GraphExplorer() {
     if (community !== "all") location.searchParams.set("community", community);
     else location.searchParams.delete("community");
     window.history.replaceState(null, "", `${location.pathname}${location.search}${location.hash}`);
-    setNodePage(0);
-    setEdgePage(0);
   }, [community, query, urlReady]);
 
-  const ready = loadState.state === "ready" ? loadState : null;
+  const displayedState = useMemo<GraphState>(() => {
+    if (loadState.state !== "ready") return loadState;
+    if (community === "all") return {
+      ...loadState,
+      nodes: loadState.summary.sampleNodes,
+      edges: loadState.summary.sampleEdges,
+      communitySelection: {
+        state: "overview", requestedCommunity: null, loadedCommunity: null, reason: null,
+        message: "Showing the deterministic all-community overview.",
+      },
+    };
+    const selection = loadState.communitySelection.requestedCommunity === community
+      && loadState.communitySelection.state !== "overview"
+      ? loadState.communitySelection
+      : beginCommunitySelection<GraphNode, GraphEdge>(community, loadState.summary.communities.map((entry) => entry.id));
+    return { ...loadState, nodes: selection.nodes, edges: selection.edges, communitySelection: selection };
+  }, [community, loadState]);
+  const ready = displayedState.state === "ready" ? displayedState : null;
   const communities = useMemo(
     () => ready?.summary.communities.map((entry) => entry.id) ?? [],
     [ready],
@@ -247,20 +263,20 @@ export function GraphExplorer() {
     [ready],
   );
 
-  if (loadState.state === "loading") {
+  if (displayedState.state === "loading") {
     return <output className={styles.state}><strong>Loading bounded graph overview…</strong><span>Complete node and edge partitions remain lazy until a community is selected.</span></output>;
   }
-  if (loadState.state === "missing") {
-    return <div className={styles.state}><strong>Graph unavailable</strong><span>{loadState.message}</span></div>;
+  if (displayedState.state === "missing") {
+    return <div className={styles.state}><strong>Graph unavailable</strong><span>{displayedState.message}</span></div>;
   }
 
   return (
     <div className={styles.workspace}>
       <div className={styles.proof}>
-        <div><strong>{loadState.summary.nodeCount.toLocaleString()}</strong><span>safe nodes retained</span></div>
-        <div><strong>{loadState.summary.edgeCount.toLocaleString()}</strong><span>safe edges retained</span></div>
+        <div><strong>{displayedState.summary.nodeCount.toLocaleString()}</strong><span>safe nodes retained</span></div>
+        <div><strong>{displayedState.summary.edgeCount.toLocaleString()}</strong><span>safe edges retained</span></div>
         <div><strong>{communityCounts.length.toLocaleString()}</strong><span>communities incl. unassigned</span></div>
-        <div><strong>{loadState.commit.slice(0, 12)}</strong><span>source commit</span></div>
+        <div><strong>{displayedState.commit.slice(0, 12)}</strong><span>source commit</span></div>
       </div>
 
       <div className={styles.controls}>
@@ -269,12 +285,12 @@ export function GraphExplorer() {
       </div>
 
       <p className={styles.disclosure}>
-        {loadState.communitySelection.state === "loading"
-          ? loadState.communitySelection.message
-          : loadState.communitySelection.state === "abstained"
-            ? loadState.communitySelection.message
+        {displayedState.communitySelection.state === "loading"
+          ? displayedState.communitySelection.message
+          : displayedState.communitySelection.state === "abstained"
+            ? displayedState.communitySelection.message
             : community === "all"
-              ? `Showing a deterministic ${loadState.nodes.length}-node / ${loadState.edges.length}-edge overview. Select one community to load its complete retained records; all ${loadState.summary.nodeCount.toLocaleString()} nodes and ${loadState.summary.edgeCount.toLocaleString()} edges remain reachable community by community.`
+              ? `Showing a deterministic ${displayedState.nodes.length}-node / ${displayedState.edges.length}-edge overview. Select one community to load its complete retained records; all ${displayedState.summary.nodeCount.toLocaleString()} nodes and ${displayedState.summary.edgeCount.toLocaleString()} edges remain reachable community by community.`
               : `Showing ${filtered.length.toLocaleString()} matching nodes and ${filteredEdges.length.toLocaleString()} source-assigned edges for ${community === "unassigned" ? "the unassigned partition" : `community ${community}`}. Static extraction is not runtime truth.`}
       </p>
 
@@ -298,10 +314,10 @@ export function GraphExplorer() {
         </aside>
       </div>
 
-      {loadState.communitySelection.state === "loading" ? (
-        <output className={styles.state} aria-live="polite"><strong>Loading selected community…</strong><span>{loadState.communitySelection.message}</span></output>
-      ) : loadState.communitySelection.state === "abstained" ? (
-        <output className={styles.state} aria-live="polite"><strong>Community view abstained</strong><span>{loadState.communitySelection.message}</span><button type="button" onClick={() => setCommunity("all")}>Return to overview</button></output>
+      {displayedState.communitySelection.state === "loading" ? (
+        <output className={styles.state} aria-live="polite"><strong>Loading selected community…</strong><span>{displayedState.communitySelection.message}</span></output>
+      ) : displayedState.communitySelection.state === "abstained" ? (
+        <output className={styles.state} aria-live="polite"><strong>Community view abstained</strong><span>{displayedState.communitySelection.message}</span><button type="button" onClick={() => setCommunity("all")}>Return to overview</button></output>
       ) : filtered.length ? (
         <div className={styles.tableWrap}>
           <table>
