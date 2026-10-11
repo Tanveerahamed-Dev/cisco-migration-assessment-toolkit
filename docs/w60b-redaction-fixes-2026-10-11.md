@@ -293,3 +293,23 @@ These probes require physical capture bytes to remain unchanged by verification.
 This continuation remains pending fresh hosted evidence; all 15 plus expanded focused GREEN are
 still required. Remaining old-head workflows may be superseded and cancelled by normal concurrency;
 neither cancellation nor partial passing jobs count as the final verdict.
+
+## 65f748e9: unfinished NTP wraps must retain raw context
+
+The [expanded focused run 38157483178](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38157483178)
+ended **16 failed / 4,431 passed** in 57.71 seconds. Typed-value, curl positive/refusal and both
+archived hostname byte oracles passed. All four full-view comparisons and persisted/inherited
+output custody passed. The broad preprocessing change suppressed six legitimate NTP hash-header
+wraps; five survived private sentinels failed each of the 3,185-case differentials. These are
+candidate regressions, not waived observations. Both baselines remain mandatory zero gates.
+
+Raw-wrap suppression is now limited to a fulfilled required value after an explicitly consumed
+password type or Junos named value slot. The incomplete-ISAKMP rule remains separately witnessed.
+A native NTP hash label without its value retains original raw context for the fail-safe continuation
+observer. No legacy wrap assertion or private sentinel changes. This small narrowing and fresh
+NTP inline/wrapped controls require a new exact-head hosted pass on every gate.
+
+The strict corpus now contains 884 rows, with four fresh md5/sha1 inline/wrapped NTP controls.
+Each requires exact private-value removal and public ID/type/complete algorithm preservation;
+unfinished hash-header bytes retain the original W60 fail-safe oracle. All 599 review inputs and
+five verifier-only controls remain. No local runtime or output generation occurred.

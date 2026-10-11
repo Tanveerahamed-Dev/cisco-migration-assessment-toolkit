@@ -12471,6 +12471,48 @@
       "original_expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname <redacted>\ninterface GigabitEthernet5/0/30\n",
       "expect": "28710\tcrypto isakmp key ENC\n<redacted> hostname corpuspeer283\ninterface GigabitEthernet5/0/30\n",
       "note": "New-fixture oracle correction: wrapped peer preservation is distinct from the legacy inline hostname expectation. Both private-key scrubbing and full public peer syntax remain mandatory; archived-W60 disagreement fails the hosted oracle test."
+    },
+    {
+      "id": "ntp-native:terminal-md5-wrapped-value",
+      "finding": "R1",
+      "text": "29701\tntp authentication-key 8 md5\nNtpNativeWrap284\n",
+      "secrets": ["NtpNativeWrap284"],
+      "value_occurrences_removed": {"NtpNativeWrap284": 1},
+      "structural": ["29701\tntp authentication-key 8 "],
+      "mode": "must_redact",
+      "expect": "29701\tntp authentication-key 8 <redacted>\n<redacted>\n",
+      "note": "Pins the existing W60 terminal-hash-wrap behavior: header hash is scrubbed, public key ID remains, and original raw hash context must still remove the next-line private value."
+    },
+    {
+      "id": "ntp-native:terminal-sha1-wrapped-type0-value",
+      "finding": "R1",
+      "text": "29702\tntp authentication-key 9 sha1\n0 NtpNativeWrap285\n",
+      "secrets": ["NtpNativeWrap285"],
+      "value_occurrences_removed": {"NtpNativeWrap285": 1},
+      "structural": ["29702\tntp authentication-key 9 ", "\n0 <redacted>\n"],
+      "mode": "must_redact",
+      "expect": "29702\tntp authentication-key 9 <redacted>\n0 <redacted>\n",
+      "note": "The wrapped first encoding type 0 remains public metadata. The native terminal-hash raw context continues to the actual private value."
+    },
+    {
+      "id": "ntp-native:complete-inline-md5-public-algorithm",
+      "finding": "R1",
+      "text": "29703\tntp authentication-key 8 md5 NtpNativeInline286\n",
+      "secrets": ["NtpNativeInline286"],
+      "value_occurrences_removed": {"NtpNativeInline286": 1},
+      "structural": ["29703\tntp authentication-key 8 md5 "],
+      "mode": "must_redact",
+      "expect": "29703\tntp authentication-key 8 md5 <redacted>\n"
+    },
+    {
+      "id": "ntp-native:complete-inline-sha1-type0-public-algorithm",
+      "finding": "R1",
+      "text": "29704\tntp authentication-key 9 sha1 0 NtpNativeInline287\n",
+      "secrets": ["NtpNativeInline287"],
+      "value_occurrences_removed": {"NtpNativeInline287": 1},
+      "structural": ["29704\tntp authentication-key 9 sha1 0 "],
+      "mode": "must_redact",
+      "expect": "29704\tntp authentication-key 9 sha1 0 <redacted>\n"
     }
   ],
   "review_differential": [
