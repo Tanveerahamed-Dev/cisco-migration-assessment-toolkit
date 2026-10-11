@@ -840,6 +840,17 @@ def _name_depth(depth: int) -> None:
 
 
 def _bounded_names(values: list, *, text_limit: bool = True):
+    # Equal alternatives add no possible target. Keep certainty/provenance distinct when
+    # deduplicating templates; never collapse a real literal into its uncertain placeholder.
+    unique = []
+    seen = set()
+    for value in values:
+        identity = (type(value), repr(value), getattr(value, "complete", None),
+                    getattr(value, "identifying", None))
+        if identity not in seen:
+            unique.append(value)
+            seen.add(identity)
+    values = unique
     if len(values) > _NAME_ALTERNATIVES:
         raise NameModelLimit("filename model alternatives exceeded; no target was discarded")
     if text_limit and any(isinstance(value, str) and len(value) > _NAME_BYTES for value in values):
@@ -848,6 +859,7 @@ def _bounded_names(values: list, *, text_limit: bool = True):
 
 
 def _name_product(*values: list) -> list[tuple]:
+    values = tuple(_bounded_names(value, text_limit=False) for value in values)
     size = 1
     for value in values:
         size *= len(value)
@@ -1461,20 +1473,36 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         return [(1, source)]
     tree = ast.parse(source, filename=relative)
     documents = []
-    bindings: dict[str, list[ast.AST]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if isinstance(target, ast.Name) and node.value is not None:
-                    bindings.setdefault(target.id, []).append(node.value)
+
+    def local_bindings(node: ast.AST) -> dict[str, list[ast.AST]]:
+        function = _Function(relative, relative, "<browser-source>", node, frozenset(), None)
+        walker = _BodyWalker(function)
+        for statement in node.body:
+            walker.visit(statement)
+        return function.assignments
+
+    scopes = [local_bindings(tree)]
+    class_scopes: set[int] = set()
+
+    def bindings(name: str) -> list[ast.AST]:
+        for scope in reversed(scopes):
+            if name in scope:
+                return scope[name]
+        return []
+
+    def contains_html(node: ast.AST, seen: frozenset[str] = frozenset()) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return "<" in node.value
+        if isinstance(node, ast.Name) and node.id not in seen:
+            return any(contains_html(value, seen | {node.id}) for value in bindings(node.id))
+        return any(contains_html(child, seen) for child in ast.iter_child_nodes(node))
 
     def expand(node: ast.AST, seen: frozenset[str] = frozenset(), depth: int = 0) -> list[str]:
         _name_depth(depth)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return [node.value]
-        if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
-            return _bounded_names([s for value in bindings[node.id]
+        if isinstance(node, ast.Name) and node.id not in seen and bindings(node.id):
+            return _bounded_names([s for value in bindings(node.id)
                                    for s in expand(value, seen | {node.id}, depth + 1)], text_limit=False)
         if isinstance(node, ast.FormattedValue):
             return expand(node.value, seen, depth + 1)
@@ -1487,10 +1515,23 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return _bounded_names([a + b for a, b in _name_product(
                 expand(node.left, seen, depth + 1), expand(node.right, seen, depth + 1))], text_limit=False)
+        if isinstance(node, ast.IfExp):
+            return _bounded_names(expand(node.body, seen, depth + 1) + expand(node.orelse, seen, depth + 1),
+                                  text_limit=False)
         return ["0"]
 
     def visit(node: ast.AST) -> None:
-        if isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+        scope = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        saved_scopes = list(scopes)
+        if scope:
+            if not isinstance(node, ast.ClassDef):
+                # Python methods do not inherit the class body's locals as lexical bindings.
+                scopes[:] = [binding for binding in scopes if id(binding) not in class_scopes]
+            local = local_bindings(node)
+            scopes.append(local)
+            if isinstance(node, ast.ClassDef):
+                class_scopes.add(id(local))
+        if isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and contains_html(node):
             # Language boundary, not a product/file/API subset. Every script-bearing generated
             # HTML string is read, including f-strings without executing the generator.
             for text in expand(node):
@@ -1500,6 +1541,10 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
             # after obligations are found, never by discarding possible name alternatives.
         for child in ast.iter_child_nodes(node):
             visit(child)
+        if scope:
+            if isinstance(node, ast.ClassDef):
+                class_scopes.remove(id(local))
+            scopes[:] = saved_scopes
     visit(tree)
     return documents
 
@@ -1514,7 +1559,10 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
     found = []
     for relative in download_sources(root):
         source = (root / relative).read_text(encoding="utf-8")
-        documents = _browser_documents(relative, source)
+        try:
+            documents = _browser_documents(relative, source)
+        except ValueError as error:
+            raise ValueError(f"browser document census refuses {relative}: {error}") from error
         scripts = []
         for first_line, text in documents:
             # HTMLParser owns native HTML attributes. JS/JSX syntax belongs to tokens.

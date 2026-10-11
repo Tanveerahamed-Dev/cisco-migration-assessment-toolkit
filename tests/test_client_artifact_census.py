@@ -1179,3 +1179,29 @@ def test_self_closing_jsx_attributes_retain_their_filename(tmp_path, view):
     names = census.download_names(tmp_path)
     assert len(names) == 1
     assert names[0][2] in {"private.json", "private-0.json"}
+
+
+def test_browser_python_bindings_keep_their_lexical_scope(tmp_path):
+    _write(tmp_path, "new-root/generated.py",
+           "def first():\n    script = 'a.download = \\\"private.json\\\"'\n"
+           "    return f'<script>{script}</script>'\n"
+           "\ndef other():\n    script = 'a.download = \\\"flow-frames.txt\\\"'\n"
+           "    return f'<script>{script}</script>'\n")
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json", "flow-frames.txt"}
+    assert len(names) == 2
+
+
+def test_duplicate_alternatives_do_not_erase_a_distinct_bad_filename():
+    node = ast.Name(id="target")
+    def resolver(_name):
+        return [ast.Constant(value="safe.snapshot.json")] * 300 + [ast.Constant(value="private.json")]
+    assert "private.json" in census._templates(node, resolver)
+
+
+def test_browser_python_method_uses_module_binding_not_class_local(tmp_path):
+    _write(tmp_path, "new-root/generated.py",
+           "SCRIPT = 'a.download = \\\"private.json\\\"'\n"
+           "class Surface:\n    SCRIPT = 'a.download = \\\"flow-frames.txt\\\"'\n"
+           "    def render(self):\n        return f'<script>{SCRIPT}</script>'\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
