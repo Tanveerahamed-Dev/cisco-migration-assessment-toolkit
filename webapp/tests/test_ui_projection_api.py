@@ -1402,6 +1402,32 @@ def _native_observed(api, schema, surface):
     return validator, calls, exceptions
 
 
+def test_carriage_candidate_without_a_literal_pin_keeps_complete_python_validation(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 1})
+    assert response.status_code == 200
+    body = response.json()
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    pins = dict(api._NATIVE_SCHEMA_HASHES)
+    pins.pop("carriage", None)
+    monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+
+    def unadmitted_provider():
+        raise AssertionError("An absent literal pin must refuse native construction")
+
+    monkeypatch.setattr(api, "_native_provider", unadmitted_provider)
+    candidate = api._NativeTransportValidator(schema, "carriage")
+    assert candidate._NativeTransportValidator__native is None
+    stock = api._stock_validator(schema)
+    assert candidate.is_valid(body) and stock.is_valid(body)
+    bad = deepcopy(body)
+    bad["payload"]["page"]["unadmitted"] = True
+    assert not candidate.is_valid(bad) and not stock.is_valid(bad)
+    assert _validation_errors(candidate, bad) == _validation_errors(stock, bad)
+    assert dict(api._NATIVE_SCHEMA_HASHES) == pins
+
+
 @pytest.mark.parametrize("surface", ["view", "list"])
 @pytest.mark.parametrize("mutation", ["missing_count", "extra_field", "withheld_value", "string_count",
                                       "missing_reason", "boolean_index", "negative_count", "missing_vlan_index"])

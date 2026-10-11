@@ -447,7 +447,7 @@ def _native_provider():
 
 
 class _NativeTransportValidator:
-    """Native acceptance only for two pinned schemas and their audited instance domain.
+    """Native acceptance only for literal-pinned complete schemas and their audited instance domain.
 
     Python remains the source of public errors and unsupported/context behavior.
     No instances or validation results are retained between calls.
@@ -836,7 +836,9 @@ _CARRIAGE_SCHEMA = {
     "$defs": _DEFS,
 }
 Draft202012Validator.check_schema(_CARRIAGE_SCHEMA)
-_CARRIAGE_VALIDATOR = _compiled_validator(_CARRIAGE_SCHEMA)
+# Candidate profile stays entirely Python while its independently reviewed literal
+# pin is absent. The hosted observer retains its raw schema for separate admission.
+_CARRIAGE_VALIDATOR = _NativeTransportValidator(_CARRIAGE_SCHEMA, "carriage")
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -933,6 +935,8 @@ class UiProjectionCarriageResponse(RootModel[dict[str, JsonValue]]):
         except ValidationError as exc:
             raise ValueError("Engine carriage transport failed its owner contract") from exc
         _require_carriage_page(self.root["payload"])
+        if trace is not None:
+            trace["complete"] = trace["native"]
         return self
 
     @classmethod

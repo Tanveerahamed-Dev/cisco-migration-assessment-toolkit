@@ -107,6 +107,26 @@ def _fallback_matches_original(value, monkeypatch):
     return actual
 
 
+def _fresh_encoder_matches_original(value, monkeypatch):
+    expected = _original_source(value)
+    encoder, calls = pa._snapshot_identity_text, []
+
+    def observed(payload):
+        assert payload is value  # The entire current source, never a fragment or previous validation result.
+        text = encoder(payload)
+        calls.append(text)
+        return text
+
+    monkeypatch.setattr(pa, "_snapshot_identity_text", observed)
+    monkeypatch.setattr(pa, "canonical_sha256", lambda _value: pytest.fail("eligible equal full encoding is observed"))
+    for _ in range(2):
+        actual = pa.bound_snapshot_source(value)
+        assert actual == expected
+        assert all(type(actual[key]) is type(expected[key]) for key in expected)
+    assert calls == [value._bound_content_proof.text, value._bound_content_proof.text]
+    return actual
+
+
 def test_binder_mints_immutable_content_proof_and_checks_complete_live_copies(monkeypatch):
     bound = pa.bind_snapshot_json_bytes(b'{"nested":{"rows":[1,false,0.0,"value",null]},"tail":true}')
     expected = _original_source(bound)
@@ -123,16 +143,24 @@ def test_binder_mints_immutable_content_proof_and_checks_complete_live_copies(mo
     with pytest.raises(FrozenInstanceError):
         proof.source_bytes = 0
 
-    def cannot_skip_full_content_check(_payload):
-        raise AssertionError("unchanged typed live content uses the complete immutable proof walk")
+    encoder, calls = pa._snapshot_identity_text, []
 
-    monkeypatch.setattr(pa, "canonical_sha256", cannot_skip_full_content_check)
+    def observed(payload):
+        calls.append(payload)
+        return encoder(payload)
+
+    def canonical_fallback(_payload):
+        raise AssertionError("a changed full encoding must fall back to the original canonical guard")
+
+    monkeypatch.setattr(pa, "_snapshot_identity_text", observed)
+    monkeypatch.setattr(pa, "canonical_sha256", canonical_fallback)
     assert pa.bound_snapshot_source(bound) == pa.bound_snapshot_source(copy) == expected
     copy["nested"]["rows"][-1] = "changed"
     # The shared proof is not a mutable-object validation verdict: the copied payload must be re-read.
-    with pytest.raises(AssertionError, match="immutable proof walk"):
+    with pytest.raises(AssertionError, match="canonical guard"):
         pa.bound_snapshot_source(copy)
     assert pa.bound_snapshot_source(bound) == expected
+    assert len(calls) == 4 and calls[0] is bound and calls[1] is copy and calls[2] is copy and calls[3] is bound
 
 
 @pytest.mark.parametrize("damage", [
@@ -172,7 +200,8 @@ def test_current_content_mismatches_keep_the_original_canonical_guard(monkeypatc
         bound["integer"] = type("ForeignInt", (int,), {})(0)
     else:
         bound["float"] = type("ForeignFloat", (float,), {})(0.0)
-    result = _fallback_matches_original(bound, monkeypatch)
+    result = (_fresh_encoder_matches_original(bound, monkeypatch) if damage in (
+        "scalar-subclass", "integer-subclass", "float-subclass") else _fallback_matches_original(bound, monkeypatch))
     assert result["source_bound"] == (damage in (
         "container-subclass", "scalar-subclass", "integer-subclass", "float-subclass"))
 
@@ -186,14 +215,75 @@ def test_key_types_fall_back_even_when_canonical_json_is_equivalent(monkeypatch,
     assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is True
 
 
-def test_dict_insertion_order_matches_sorted_canonical_content_without_rewriting_values(monkeypatch):
+def test_dict_insertion_order_conservatively_uses_canonical_content_without_rewriting_values(monkeypatch):
     bound = pa.bind_snapshot_json_bytes(b'{"first":1,"second":{"a":1,"b":2}}')
     expected = _original_source(bound)
     bound["first"] = bound.pop("first")
     bound["second"]["a"] = bound["second"].pop("a")
     assert list(bound) == ["second", "first"] and list(bound["second"]) == ["b", "a"]
-    monkeypatch.setattr(pa, "canonical_sha256", lambda _value: pytest.fail("equal complete content needs no re-encoding"))
-    assert pa.bound_snapshot_source(bound) == expected
+    assert _fallback_matches_original(bound, monkeypatch) == expected
+
+
+def test_mixed_integer_string_keys_cannot_fastaccept_identical_unsorted_text(monkeypatch):
+    bound = pa.bind_snapshot_json_bytes(b'{"1":"value","tail":2}')
+    proof = bound._bound_content_proof
+    bound.clear()
+    bound[1], bound["tail"] = "value", 2
+    assert pa._snapshot_identity_text(bound) == proof.text  # Unsorted text alone would miss the unsafe key.
+    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is False
+
+
+def test_equal_new_key_objects_are_conservative_fallbacks_with_strong_original_refs(monkeypatch):
+    bound = pa.bind_snapshot_json_bytes(b'{"non_interned_key_abcdefghijklmnopqrstuvwxyz":1}')
+    key = next(iter(bound))
+    keys, identities, _children = bound._bound_content_proof.payload[1]
+    assert keys[0] is key and identities == (id(key),)
+    new_key = ("_" + key)[1:]
+    assert new_key == key and new_key is not key
+    item = bound.pop(key)
+    bound[new_key] = item
+    assert pa._snapshot_identity_text(bound) == bound._bound_content_proof.text
+    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is True
+
+
+def test_custom_comparison_key_cannot_replace_a_sortable_builtin_key(monkeypatch):
+    class ForeignKey(str):
+        def __lt__(self, _other):
+            raise TypeError("foreign key cannot supply the canonical sortable-key premise")
+
+    bound = pa.bind_snapshot_json_bytes(b'{"first":1,"second":2}')
+    item = bound.pop("first")
+    bound[ForeignKey("first")] = item
+    _fallback_matches_original(bound, monkeypatch)
+
+
+@pytest.mark.parametrize("damage", ["empty-dict", "empty-list", "nested-array-container", "tuple-array"])
+def test_the_complete_scaffold_guards_empty_and_nested_container_positions(monkeypatch, damage):
+    bound = pa.bind_snapshot_json_bytes(b'{"empty":{},"rows":[[],{"nested":[]}]}')
+    if damage == "empty-dict":
+        bound["empty"] = type("ForeignDict", (dict,), {})()
+    elif damage == "empty-list":
+        bound["rows"][0] = type("ForeignList", (list,), {})()
+    elif damage == "nested-array-container":
+        bound["rows"][1]["nested"] = type("ForeignNested", (list,), {})()
+    else:
+        bound["rows"] = tuple(bound["rows"])
+    assert pa._snapshot_identity_text(bound) == bound._bound_content_proof.text
+    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is True
+
+
+def test_array_aliases_are_checked_by_full_content_not_original_mutable_identity(monkeypatch):
+    bound = pa.bind_snapshot_json_bytes(b'{"first":[],"second":[]}')
+    bound["second"] = bound["first"]  # Equal JSON content; every container position remains a built-in list.
+    _fresh_encoder_matches_original(bound, monkeypatch)
+
+
+def test_a_later_mutation_of_aliased_arrays_reaches_the_original_canonical_guard(monkeypatch):
+    bound = pa.bind_snapshot_json_bytes(b'{"first":[],"second":[]}')
+    bound["second"] = bound["first"]
+    bound["first"].append(1)
+    assert bound["second"] == [1]
+    assert _fallback_matches_original(bound, monkeypatch)["source_bound"] is False
 
 
 @pytest.mark.parametrize("marker,kind", [
@@ -229,7 +319,8 @@ def test_missing_fake_and_other_source_proofs_cannot_bypass_the_canonical_guard(
         proof = bound._bound_content_proof
         bound._bound_content_proof = SimpleNamespace(source_sha256=proof.source_sha256,
                                                      source_bytes=proof.source_bytes,
-                                                     payload_sha256=proof.payload_sha256, payload=proof.payload)
+                                                     payload_sha256=proof.payload_sha256, payload=proof.payload,
+                                                     text=proof.text)
     else:
         other = pa.bind_snapshot_json_bytes(b'{"field":2}' if proof_kind == "foreign-content" else b'{ "field": 1 }')
         bound._bound_content_proof = other._bound_content_proof
@@ -258,11 +349,11 @@ def test_proof_construction_requires_the_existing_binder_authority():
     with pytest.raises(TypeError, match="_authority"):
         pa._snapshot_content_proof({"field": 1}, "supplied", 100, "supplied")
     with pytest.raises(TypeError, match="_authority"):
-        pa._BoundSnapshotContentProof("supplied", 100, "supplied", (dict, ()))
+        pa._BoundSnapshotContentProof("supplied", 100, "supplied", (dict, ()), "{}")
     with pytest.raises(TypeError, match="exact-byte binder"):
         pa._snapshot_content_proof({"field": 1}, "supplied", 100, "supplied", _authority=object())
     with pytest.raises(TypeError, match="exact-byte binder"):
-        pa._BoundSnapshotContentProof("supplied", 100, "supplied", (dict, ()), _authority=object())
+        pa._BoundSnapshotContentProof("supplied", 100, "supplied", (dict, ()), "{}", _authority=object())
 
 
 def test_a_bound_snapshot_subclass_keeps_the_original_guard_even_with_a_real_proof(monkeypatch):
@@ -274,17 +365,18 @@ def test_a_bound_snapshot_subclass_keeps_the_original_guard_even_with_a_real_pro
     assert _fallback_matches_original(foreign, monkeypatch)["source_bound"] is True
 
 
-@pytest.mark.parametrize("failure", ["node-bound", "depth-bound", "allocation", "deep-input"])
+@pytest.mark.parametrize("failure", ["node-bound", "depth-bound", "allocation", "encoder", "deep-input"])
 def test_optional_proof_failure_leaves_the_original_binder_and_guard_available(monkeypatch, failure):
     raw = b'{"field":[1,2,3]}'
     if failure == "node-bound":
         monkeypatch.setattr(pa, "_MAX_SNAPSHOT_PROOF_NODES", 1)
     elif failure == "depth-bound":
         monkeypatch.setattr(pa, "_MAX_SNAPSHOT_PROOF_DEPTH", 0)
-    elif failure == "allocation":
+    elif failure in ("allocation", "encoder"):
         def exhausted(*_args, **_kwargs):
             raise MemoryError("optional proof allocation")
-        monkeypatch.setattr(pa, "_BoundSnapshotContentProof", exhausted)
+        monkeypatch.setattr(pa, "_BoundSnapshotContentProof" if failure == "allocation" else "_snapshot_identity_text",
+                            exhausted)
     else:
         raw = b'{"deep":' + b"[" * 160 + b"0" + b"]" * 160 + b"}"
     bound = pa.bind_snapshot_json_bytes(raw)

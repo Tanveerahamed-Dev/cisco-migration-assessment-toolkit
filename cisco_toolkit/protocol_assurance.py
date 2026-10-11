@@ -80,7 +80,7 @@ _MAX_SNAPSHOT_PROOF_DEPTH = 128
 
 @dataclass(frozen=True, slots=True, init=False)
 class _BoundSnapshotContentProof:
-    """Binder-owned immutable typed content, not a reusable validation verdict over mutable objects.
+    """Binder-owned whole encoder text and immutable container/key scaffold, never a mutable read verdict.
 
     The whole current payload is compared on every read. This is a normal private capability boundary,
     not a sandbox against namespace inspection, class monkeypatching or object.__setattr__.
@@ -89,8 +89,9 @@ class _BoundSnapshotContentProof:
     source_bytes: int
     payload_sha256: str
     payload: tuple
+    text: str
 
-    def __init__(self, source_sha256: str, source_bytes: int, payload_sha256: str, payload: tuple,
+    def __init__(self, source_sha256: str, source_bytes: int, payload_sha256: str, payload: tuple, text: str,
                  *, _authority: object) -> None:
         if _authority is not _BOUND_SNAPSHOT_AUTHORITY:
             raise TypeError("Snapshot content proof can only be minted by the exact-byte binder")
@@ -98,10 +99,16 @@ class _BoundSnapshotContentProof:
         object.__setattr__(self, "source_bytes", source_bytes)
         object.__setattr__(self, "payload_sha256", payload_sha256)
         object.__setattr__(self, "payload", payload)
+        object.__setattr__(self, "text", text)
 
     def __deepcopy__(self, _memo):
-        # Every retained node is a tuple, built-in scalar/type or immutable string; no mutable source alias.
+        # Strong key references, identity/order tuples, container scaffold and whole text are immutable.
         return self
+
+
+def _snapshot_identity_text(value: Any) -> str:
+    """One complete fresh stdlib encoding, with no stringification/fragment/default fallback."""
+    return json.dumps(value, sort_keys=False, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
 
 
 def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
@@ -111,7 +118,7 @@ def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
         raise TypeError("Snapshot content proof can only be requested by the exact-byte binder")
     nodes = 0
 
-    def freeze(node: Any, depth: int) -> tuple:
+    def freeze(node: Any, depth: int) -> Optional[tuple]:
         nonlocal nodes
         nodes += 1
         if nodes > _MAX_SNAPSHOT_PROOF_NODES or depth > _MAX_SNAPSHOT_PROOF_DEPTH:
@@ -120,29 +127,45 @@ def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
         if kind is dict:
             if not all(type(key) is str for key in node):
                 raise TypeError("Snapshot proof requires exact JSON object keys")
-            return (dict, tuple((key, freeze(child, depth + 1)) for key, child in node.items()))
+            keys = tuple(node)
+            children = []
+            for key, child in node.items():
+                shape = freeze(child, depth + 1)
+                if shape is not None:
+                    children.append((key, shape))
+            # The strong key references keep every identity live; IDs alone never supply authority.
+            return (dict, (keys, tuple(map(id, keys)), tuple(children)))
         if kind is list:
-            return (list, tuple(freeze(child, depth + 1) for child in node))
+            children = []
+            for index, child in enumerate(node):
+                shape = freeze(child, depth + 1)
+                if shape is not None:
+                    children.append((index, shape))
+            return (list, (len(node), tuple(children)))
         if node is None or kind in (str, bool, int):
-            return (kind, node)
+            return None
         if kind is float and math.isfinite(node):
-            return (float, node.hex())  # signed zero and the complete stored floating-point value
+            return None
         raise TypeError("Snapshot proof requires exact finite JSON scalar types")
 
     try:
         payload = freeze(value, 0)
-        return _BoundSnapshotContentProof(source_sha256, source_bytes, payload_sha256, payload,
+        if payload is None:
+            return None
+        text = _snapshot_identity_text(value)
+        return _BoundSnapshotContentProof(source_sha256, source_bytes, payload_sha256, payload, text,
                                           _authority=_BOUND_SNAPSHOT_AUTHORITY)
     except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
         return None
 
 
 def _matches_snapshot_content_proof(value: Any) -> bool:
-    """Examine every current value against binder-owned typed content; never cache a mutable read result.
+    """Freshly encode every current value and guard every container/key position, never reuse a read result.
 
-    All mismatches and unsupported current shapes fall back to the original canonical guard. Dict insertion
-    order is ignored like canonical JSON; key/value types, array order, float bits and marker types are exact.
-    Like the canonical guard this observation is not atomic over a concurrent writer.
+    A key/order/container/marker mismatch is a conservative canonical fallback. Complete text equality through
+    the same stdlib encoder proves all scalar encodings, including equivalent scalar subclasses. The complete
+    scaffold excludes nonsortable/subclass keys or containers that could differ under the sorted canonical guard.
+    Like that guard this observation is not atomic over a concurrent writer.
     """
     if type(value) is not BoundSnapshot:
         return False
@@ -154,26 +177,25 @@ def _matches_snapshot_content_proof(value: Any) -> bool:
                               (value._bound_payload_sha256, proof.payload_sha256)):
         if type(current) is not type(expected) or current != expected:
             return False
+    if _snapshot_identity_text(value) != proof.text:
+        return False
     pending = [(value, proof.payload, True)]
     while pending:
         current, (kind, expected), root = pending.pop()
         if not (root and type(current) is BoundSnapshot) and type(current) is not kind:
             return False
         if kind is dict:
-            if len(current) != len(expected) or any(type(key) is not str for key in current):
+            keys, identities, children = expected
+            if len(current) != len(keys) or tuple(map(id, current)) != identities:
                 return False
-            for key, child in expected:
-                if key not in current:
-                    return False
+            for key, child in children:
                 pending.append((current[key], child, False))
         elif kind is list:
-            if len(current) != len(expected):
+            length, children = expected
+            if len(current) != length:
                 return False
-            pending.extend((child, observed, False) for child, observed in zip(current, expected))
-        elif kind is float:
-            if not math.isfinite(current) or current.hex() != expected:
-                return False
-        elif current != expected:
+            pending.extend((current[index], child, False) for index, child in children)
+        else:
             return False
     return True
 

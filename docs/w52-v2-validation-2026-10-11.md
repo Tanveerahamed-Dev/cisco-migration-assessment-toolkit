@@ -252,3 +252,45 @@ and Scope qualification. Fresh combined canonical/every-parent history/text scan
 diagnostic/rebind/late execution, canonical API/native agreement, applicable LF receipts,
 default golden/real UTC sample and admissible new SPA/full workflows remain required. No engine
 generation dispatch is inferred from path census alone; actual default output checks decide drift.
+
+## Current merged-source result and revised performance source
+
+Published `857549f3` / actual tested `7084f6d0`, ordered `3f1d844c + 857549f3`, equal
+`c2481dd9`, has complete independent Scope success: 256 files / 7,633 passed / 27 skipped,
+all ten strict mutants restored with the full 16/6/9/9 census, B3 1-4-4-1-1, standalone/hub,
+all-three-flag quiet mount and eight pure/eight actual browser cases through cleanup. Current
+four-family raw-byte reproduction, source/binding/golden controls all pass. The existing a22
+family is current without another compiler intake or data edit. Artifact `11701471747` remains
+log metadata only. This neither erases prior failures nor expands field/browser acceptance.
+
+Whole webapp `38136767678` succeeded. Current frontend `114464893253` independently supports
+38 files / 527 tests, actual canonical types, both observed/declared fdb5/5f4 native owners,
+type/build/privacy/capture. Its SPA `11701937917` remains metadata only: subsequent processor
+source changes require an exact desired-source selector before any receipt/intake. No artifact
+qualification transfers merely because frontend schema bytes are unchanged.
+
+Eligible current `114462160573` executed the expanded six-file selection, 1 failed / 727
+passed / 1 warning in 537.26 seconds, with no skips. Every selected identity/stock/native/live/
+frozen producer control passed; the sole failure is document growth 2,624.4 ms > 2,000 ms.
+Observed cold 910.7 / warm 907.2 ms exceed 300 ms; those later assertion lines and the full
+default/UTC sample tail were not reached. Inclusive stages show basis 1,916.5 ms, source
+identity about 490 ms and page validation about 312 ms. Immutable per-scalar traversal was
+correct but slower than the original 303 ms canonical check; binding also rose to 2,263 ms.
+Preserve this regression and failure rather than declaring the earlier optimization recovered.
+
+Revised source reuses only complete typed observation values within one read-only admission;
+every host retains its current record, role refs and per-end/static/basis checks. Unsupported
+keys/records and optional cache bounds use the original owner. Identity replaces the expensive
+scalar tuple walk with a fresh complete same-stdlib unsorted serialization plus a complete
+immutable container/original-key identity/order scaffold. All current values are freshly
+encoded; unsafe/mutated/foreign/no-proof/marker/container/key/encoding paths retain the original
+canonical condition and result. Canonically equivalent value subclasses retain their original
+result/type oracle and fresh complete encoder controls; no case or semantic guard is discarded.
+
+Carriage native validation is an observer-only bootstrap: no literal pin exists, so its generic
+validator returns before native construction and validates completely through Python. The actual
+hosted observer will retain one additional complete raw schema and label its hash explicitly
+unqualified. No runtime autopin or schema/type change. Only independently reviewed actual hosted
+material can authorize a later literal, followed by real-provider True/False/False/no-exception,
+stock differential, mutable-schema/context/domain and metadata/source controls. Current source
+review and cheap syntax do not qualify native acceptance or unchanged 2,000/300 ms budgets.

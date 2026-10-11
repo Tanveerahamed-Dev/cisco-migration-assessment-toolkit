@@ -522,3 +522,76 @@ def test_a_typed_end_signal_cites_the_role_row_the_owner_join_names(tmp_path):
     pointers = {ref["pointer"] for ref in signal["refs"]}
     assert {f"/stp_topology_observations/{A}", f"/stp_topology_observations/{A}/roles/0"} <= pointers
     checked(snap)
+
+
+def test_value_identical_observations_keep_each_current_host_object_and_scope_the_answer_cache(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    assert observations[A] == observations[B] and observations[A] is not observations[B]
+    original, calls = uip.carriage_observation_admission, []
+
+    def observed(record):
+        calls.append(record)
+        return original(record)
+
+    monkeypatch.setattr(uip, "carriage_observation_admission", observed)
+    admission = uip.carriage_admission(snap)
+    assert len(calls) == 1
+    assert admission.observations[A][0] is observations[A]
+    assert admission.observations[B][0] is observations[B]
+    result = uip.project_vlan_carriage(snap, 0, 0, 200, admission=admission)
+    assert result["carriage"]["summary"]["forwarding"]["value"] == 1
+    for side, host in (("a", A), ("b", B)):
+        refs = result["carriage"]["page"]["items"][0]["members"]["items"][0][side]["signal"]["refs"]
+        assert any(ref["pointer"] == f"/stp_topology_observations/{host}/roles/0" for ref in refs)
+    calls.clear()
+    uip.carriage_admission(snap)
+    assert len(calls) == 1  # Fresh admission calls the owner again; nothing survives the read-only call.
+
+
+@pytest.mark.parametrize("damage", [
+    "float-count", "bool-counter", "bool-root", "float-priority", "array-order", "integrity-finding", "new-field",
+])
+def test_observation_answer_reuse_cannot_hide_a_later_hosts_type_order_or_integrity_gap(tmp_path, damage):
+    observations = {host: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD")]})
+                    for host in (A, B)}
+    snap = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    assert observations[A] == observations[B] and summary(snap)["state"] == PUB
+    record = observations[B]
+    if damage == "float-count":
+        record["counter_parsed_count"] = float(record["counter_parsed_count"])
+    elif damage == "bool-counter":
+        assert record["topology_changes"][0]["count"] == 0
+        record["topology_changes"][0]["count"] = False
+    elif damage == "bool-root":
+        assert record["roots"][0]["is_root"] is True
+        record["roots"][0]["is_root"] = 1
+    elif damage == "float-priority":
+        record["roots"][0]["bridge_priority"] = float(record["roots"][0]["bridge_priority"])
+    elif damage == "array-order":
+        record["roles"].reverse()
+    elif damage == "integrity-finding":
+        record["finding_codes"] = sorted(set(record["finding_codes"]) | {"role_evidence_missing"})
+    else:
+        record["new_field"] = "unadmitted"
+    assert summary(snap)["state"] == UV
+    assert page(snap)["page"]["items"][0]["members"]["items"][0]["b"]["signal"]["value"] is None
+    checked(snap)
+
+
+def test_noneligible_observation_key_uses_the_owner_without_changing_its_admission_policy(tmp_path, monkeypatch):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    # A string subclass is outside the optional exact-builtins memo, but the STP owner admits it by its own rules.
+    observations[B]["roles"][0]["instance"] = type("ForeignInstance", (str,), {})("10")
+    original, calls = uip.carriage_observation_admission, []
+
+    def observed(record):
+        calls.append(record)
+        return original(record)
+
+    monkeypatch.setattr(uip, "carriage_observation_admission", observed)
+    assert uip.carriage_admission(snap).source["state"] == PUB
+    assert len(calls) == 2
+    assert summary(snap)["state"] == PUB
+    checked(snap)

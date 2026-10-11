@@ -4851,10 +4851,63 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
     observations: Dict[str, Any] = {}
     indexes: Dict[str, Any] = {}
+    observation_answers: Dict[Tuple[Any, ...], Tuple[str, Optional[str], bool]] = {}
+
+    def observation_key(record: Any) -> Optional[Tuple[Any, ...]]:
+        """An optional complete typed key, not a valid-observation claim. Noneligible records keep owner admission.
+
+        Only immutable key data are retained, and the answer cache lives in this read-only admission. Bound the
+        optional work/retention without bounding the accepted source; the owner's full validator remains fallback.
+        """
+        if type(record) is not dict:
+            return None
+        nodes, characters = 0, 0
+
+        def typed(node: Any, depth: int) -> Tuple[Any, ...]:
+            nonlocal nodes, characters
+            nodes += 1
+            if nodes > 65_536 or depth > 32:
+                raise ValueError("optional observation key exceeds its construction bound")
+            kind = type(node)
+            if kind is dict:
+                if not all(type(key) is str for key in node):
+                    raise TypeError("optional observation key requires exact text keys")
+                characters += sum(len(key) for key in node)
+                if characters > 1_000_000:
+                    raise ValueError("optional observation key exceeds its text construction bound")
+                return (dict, tuple((key, typed(node[key], depth + 1)) for key in sorted(node)))
+            if kind is list:
+                return (list, tuple(typed(child, depth + 1) for child in node))
+            if kind is str:
+                characters += len(node)
+                if characters > 1_000_000:
+                    raise ValueError("optional observation key exceeds its text construction bound")
+                return (str, node)
+            if node is None or kind in (bool, int):
+                return (kind, node)
+            if kind is float and math.isfinite(node):
+                return (float, node.hex())
+            raise TypeError("optional observation key requires exact finite JSON types")
+
+        try:
+            return typed(record, 0)
+        except (TypeError, ValueError, RecursionError, OverflowError, MemoryError):
+            return None
 
     def admitted(host: str) -> Any:
         if host not in observations:
-            observations[host] = carriage_observation_admission(_get(ctx.s, ("stp_topology_observations", host)))
+            record = _get(ctx.s, ("stp_topology_observations", host))
+            key = observation_key(record)
+            answer = observation_answers.get(key) if key is not None else None
+            if answer is None:
+                result = carriage_observation_admission(record)
+                # Never substitute another host's observation object or a foreign owner return object.
+                if key is not None and len(observation_answers) < 32 and (result[2] is None or result[2] is record):
+                    observation_answers[key] = (result[0], result[1], result[2] is record)
+            else:
+                state, reason, present = answer
+                result = (state, reason, record if present else None)
+            observations[host] = result
         return observations[host]
 
     def resolve(pointer: Any) -> Tuple[Optional[Tuple[Any, ...]], Any]:
