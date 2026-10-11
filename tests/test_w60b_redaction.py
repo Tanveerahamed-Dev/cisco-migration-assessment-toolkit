@@ -474,11 +474,32 @@ def _changed_leaf_paths(before, after, path="$"):
 
 def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_replay):
     _cases, _results, sources, scratch = archival_replay
-    changed = subprocess.check_output(["git", "diff", "--name-only", BASE, "HEAD"], cwd=ROOT).decode().splitlines()
     protected_prefixes = ("tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/")
     protected_files = {"webapp/sample_data/sample_fleet.snapshot.json", "atlas-scope/src/data/fabric.json"}
+    # The integration merge inherits current main's already-published frontend
+    # bytes. Bind W60b-owned output custody to that exact main commit, while
+    # proving each older BASE->main output delta is inherited without a rewrite.
+    # This changes attribution only: every protected candidate path must equal
+    # current main, and the original BASE golden/sample inputs and BOTH redacted
+    # view byte oracles below remain mandatory. No artifact is regenerated.
+    changed = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", CURRENT_MAIN, "HEAD"],
+                                      cwd=ROOT).decode().splitlines()
     moved = [path for path in changed if path.startswith(protected_prefixes) or path in protected_files]
     assert moved == [], ("STOP: persisted engine output would move; do not regenerate", moved)
+    inherited = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", BASE, CURRENT_MAIN],
+                                        cwd=ROOT).decode().splitlines()
+    inherited = [path for path in inherited if path.startswith(protected_prefixes) or path in protected_files]
+    inherited_failures = []
+    for path in inherited:
+        published_entry = subprocess.check_output(["git", "ls-tree", "-z", CURRENT_MAIN, "--", path], cwd=ROOT)
+        candidate_entry = subprocess.check_output(["git", "ls-tree", "-z", "HEAD", "--", path], cwd=ROOT)
+        # Git entries bind mode, type and content blob; both empty proves an
+        # inherited deletion. Added, changed and removed paths are all checked.
+        if candidate_entry != published_entry:
+            inherited_failures.append(path)
+    print(json.dumps({"output_custody_main": CURRENT_MAIN, "candidate_owned_output_changes": moved,
+                      "exact_inherited_output_paths": inherited, "inherited_output_failures": inherited_failures}))
+    assert inherited_failures == [], ("STOP: inherited published output bytes differ from current main", inherited_failures)
     inputs = []
     for name in ("tests/golden/snapshot.json", "webapp/sample_data/sample_fleet.snapshot.json"):
         raw = subprocess.check_output(["git", "show", BASE + ":" + name], cwd=ROOT)

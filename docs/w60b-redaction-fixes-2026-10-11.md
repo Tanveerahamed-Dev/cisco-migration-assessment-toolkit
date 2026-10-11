@@ -135,3 +135,14 @@ main and current main `3f1d844cfabd60b901a0adb68a246bd45bdcf1d0`, printing both 
 asserting. Relevant redaction owners and snapshot inputs are unchanged between those revisions.
 The original protected-output guard and both zero-regression differentials remain in place.
 This source repair is pending hosted validation; earlier failures and cancellations remain evidence.
+
+### Current-main integration required to start PR gates
+
+Published continuation `42bd8bfe` included `2e213e72`. Both Rule-7 scans passed. GitHub then
+reported the PR unmergeable because the live work board conflicted with main `3f1d844c`; the
+required PR workflows and focused lane did not start. CodeQL activity alone is not that gate.
+Merge `b7d618f1` reconciles the board and retains all upstream work and published frontend bytes.
+No engine output was regenerated. Output custody binds the candidate to current main's exact
+published files and separately proves every protected difference introduced upstream is inherited
+byte-for-byte. The original golden/sample input equality and both full redacted-view oracles
+remain unchanged. Both pre-W60 and round-3 zero-regression requirements remain unchanged.
