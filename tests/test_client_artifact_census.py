@@ -989,6 +989,15 @@ def test_storage_companion_owner_is_delete_and_has_no_attached_database_family()
     ('"{:04d}.json".format(7)', "0007.json"),
     ('"%04d.json" % 7', "0007.json"),
     ('"{!r}.json".format("client")', "'client'.json"),
+    ('"{}".format("private" + ".json")', "private.json"),
+    ('"{}".format(*("private.json",))', "private.json"),
+    ('"{leaf}".format(**{"leaf": "private.json"})', "private.json"),
+    ('"%s" % ("private" + ".json")', "private.json"),
+    ('"%*s" % (3, "private.json")', "private.json"),
+    ('"%.*s" % (7, "private.json")', "private"),
+    ('"{}".format("%s" % "private.json")', "private.json"),
+    ('"{0}".format("private.json", dynamic())', "private.json"),
+    ('"{}".format("PRIVATE.JSON".lower())', "private.json"),
 ])
 def test_closed_format_and_percent_targets_cannot_escape_client_refusal(tmp_path, expression, leaf):
     _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
@@ -1056,6 +1065,9 @@ def test_cyclic_path_rebinding_keeps_other_names_without_a_budget_refusal(tmp_pa
     'a["download"] = (`private-${id}.json`)\na.click()',
     'a.download = "private-"\n + id + ".json"\na.click()',
     'Object.assign(a, {download: `private-${id}.json`, href: blobUrl})',
+    'a["down" + "load"] = `private-${id}.json`',
+    'a[("down") + ("load")] = `private-${id}.json`',
+    'Reflect.set(a, "down" + "load", `private-${id}.json`)',
     'saveAs(blob, `private-${id}.json`)',
     'const clean = raw.replace(/"/g, ""); a.download = `private-${id}.json`',
     r'saveAs(/\)/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',

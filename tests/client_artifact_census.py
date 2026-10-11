@@ -65,6 +65,7 @@ from __future__ import annotations
 import ast
 import copy
 import itertools
+import operator
 import re
 import string
 import subprocess
@@ -819,6 +820,53 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
                     else dict(zip(parts[:size], parts[size:])) for parts in combinations]
         return [_NOT_CLOSED if any(p is _NOT_CLOSED for p in parts) else
                 tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
+    if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Mod):
+        left = _closed_values(node.left, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        right = _closed_values(node.right, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        operations = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul}
+        out = []
+        for a, b in _name_product(left, right):
+            if a is _NOT_CLOSED or b is _NOT_CLOSED:
+                out.append(_NOT_CLOSED)
+                continue
+            if type(node.op) not in operations:
+                raise NameModelLimit("closed filename arithmetic is outside the bounded model")
+            if isinstance(node.op, ast.Mult):
+                for sequence, count in ((a, b), (b, a)):
+                    if isinstance(sequence, (str, bytes, tuple, list)) and isinstance(count, int):
+                        if len(sequence) * max(0, count) > _NAME_BYTES:
+                            raise NameModelLimit("closed filename repetition exceeds the bounded model")
+            try:
+                out.append(operations[type(node.op)](a, b))
+            except (TypeError, ValueError):
+                raise NameModelLimit("closed filename arithmetic cannot be evaluated") from None
+        return _bounded_names(out)
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+            or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format"):
+        values = _closed_format(node, resolve, depth, seen)
+        return None if values is None else [v if v is not None and getattr(v, "complete", True)
+                                           else _NOT_CLOSED for v in values]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        bases = _closed_values(node.func.value, resolve, depth + 1, seen)
+        if bases is None:
+            return None
+        values = [_closed_values(a, resolve, depth + 1, seen) or [_NOT_CLOSED] for a in node.args]
+        methods = {"lower", "upper", "casefold", "strip", "lstrip", "rstrip", "replace"}
+        out = []
+        for base, *args in _name_product(bases, *values):
+            if base is _NOT_CLOSED or any(a is _NOT_CLOSED for a in args):
+                out.append(_NOT_CLOSED)
+                continue
+            if not isinstance(base, str) or node.func.attr not in methods or node.keywords:
+                raise NameModelLimit("closed filename method is outside the bounded model")
+            if node.func.attr == "replace" and len(args) >= 2 and isinstance(args[1], str):
+                if (len(base) + 1) * (len(args[1]) + 1) > _NAME_BYTES:
+                    raise NameModelLimit("closed filename replacement exceeds the bounded model")
+            try:
+                out.append(getattr(str, node.func.attr)(base, *args))
+            except (ValueError, TypeError):
+                raise NameModelLimit("closed filename method cannot be evaluated") from None
+        return _bounded_names(out)
     try:
         return [ast.literal_eval(node)]
     except (ValueError, TypeError, SyntaxError):
@@ -908,8 +956,18 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
             # Bound numeric widths before invoking Python's actual percent semantics.
             for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
                 _format_bound(field)
-                if "*" in field:
-                    raise NameModelLimit("dynamic percent width requires a reviewed filename model")
+            if any("*" in field for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern)):
+                if not isinstance(operand, tuple):
+                    raise NameModelLimit("closed percent star operands require a tuple")
+                position = 0
+                for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
+                    if field == "%%":
+                        continue
+                    for _star in range(field.count("*")):
+                        if position >= len(operand) or not isinstance(operand[position], int) or abs(operand[position]) > 4096:
+                            raise NameModelLimit("percent filename width exceeds the bounded model")
+                        position += 1
+                    position += 1
             try:
                 out.append(_NameTemplate(pattern % operand))
             except (TypeError, ValueError, KeyError):
@@ -917,33 +975,68 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
         return _bounded_names(out)
     assert isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     patterns = _closed_values(node.func.value, resolve, depth + 1, seen)
-    positional = [_closed_values(a, resolve, depth + 1, seen) or [_NOT_CLOSED] for a in node.args]
-    keywords = [_closed_values(k.value, resolve, depth + 1, seen) or [_NOT_CLOSED] for k in node.keywords]
     if patterns is None:
         return None
-    if any(k.arg is None for k in node.keywords) or any(isinstance(a, ast.Starred) for a in node.args):
-        return None
+    positional = [()]
+    for argument in node.args:
+        expanded = isinstance(argument, ast.Starred)
+        values = _closed_values(argument.value if expanded else argument, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        choices = []
+        for value in values:
+            if expanded and value is not _NOT_CLOSED:
+                if not isinstance(value, (str, tuple, list)):
+                    raise NameModelLimit("closed format star operand is not a deterministic sequence")
+                choices.append(tuple(value))
+            else:
+                choices.append((value,))
+        positional = _bounded_names([a + b for a, b in _name_product(positional, choices)])
+    keywords = [{}]
+    for keyword in node.keywords:
+        values = _closed_values(keyword.value, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        choices = []
+        for value in values:
+            if keyword.arg is not None:
+                choices.append({keyword.arg: value})
+            elif value is _NOT_CLOSED:
+                choices.append({"__census_unknown_keywords__": _NOT_CLOSED})
+            elif isinstance(value, dict) and all(isinstance(k, str) for k in value):
+                choices.append(value)
+            else:
+                raise NameModelLimit("closed format keyword expansion is not a string-keyed mapping")
+        keywords = _bounded_names([dict(a, **b) for a, b in _name_product(keywords, choices)])
+
+    class UnknownOperand(Exception):
+        pass
+
+    class FilenameFormatter(string.Formatter):
+        def get_value(self, key, args, kwargs):
+            if isinstance(key, int) and any(v is _NOT_CLOSED for v in args[:key + 1]):
+                raise UnknownOperand
+            if isinstance(key, str) and key not in kwargs and "__census_unknown_keywords__" in kwargs:
+                raise UnknownOperand
+            value = super().get_value(key, args, kwargs)
+            if value is _NOT_CLOSED:
+                raise UnknownOperand
+            return value
+
+        def format_field(self, value, format_spec):
+            _format_bound(format_spec)
+            rendered = super().format_field(value, format_spec)
+            _bounded_names([rendered])
+            return rendered
+
     out = []
-    formatter = string.Formatter()
-    for pattern, *parts in _name_product(patterns, *positional, *keywords):
+    formatter = FilenameFormatter()
+    for pattern, args, kwargs in _name_product(patterns, positional, keywords):
         if pattern is _NOT_CLOSED:
             out.append(None)
             continue
         if not isinstance(pattern, str):
             raise NameModelLimit("format filename pattern is not a string")
-        if any(p is _NOT_CLOSED for p in parts):
-            out.append(_partial_format(pattern))
-            continue
-        args = parts[:len(positional)]
-        kwargs = dict(zip((k.arg for k in node.keywords), parts[len(positional):]))
         try:
-            for _literal, _field, spec, _conversion in formatter.parse(pattern):
-                # Nested width/precision is resolved from the same closed builtin operands.
-                if _field is None:
-                    continue
-                _format_bound(spec)
-                _format_bound(formatter.vformat(spec, args, kwargs))
-            out.append(_NameTemplate(pattern.format(*args, **kwargs)))
+            out.append(_NameTemplate(formatter.vformat(pattern, args, kwargs)))
+        except UnknownOperand:
+            out.append(_partial_format(pattern))
         except (TypeError, ValueError, KeyError, IndexError, AttributeError):
             raise NameModelLimit("closed format filename cannot be evaluated") from None
     return _bounded_names(out)
@@ -1625,6 +1718,14 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
             for index, token in enumerate(tokens):
+                if token.value == "[":
+                    property_expression, closing = _js_expression(text, tokens, index + 1)
+                    if (_download_template(property_expression) == "download"
+                            and closing + 1 < len(tokens) and tokens[closing].value == "]"
+                            and tokens[closing + 1].value in {"=", ":"}):
+                        expression, _end = _js_expression(text, tokens, closing + 2)
+                        found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                                      _download_template(expression)))
                 value = token.value.strip("\"'")
                 after = index + 1
                 if after < len(tokens) and tokens[after].value == "]":
@@ -1666,6 +1767,11 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     if not arguments or _download_template(arguments[0]) != "download":
                         continue
                     expression = arguments[1] if len(arguments) >= 2 else "<implicit browser filename>"
+                elif value == "set" and index >= 2 and tokens[index - 2].value == "Reflect":
+                    arguments = _js_arguments(text, tokens, call_start)
+                    if len(arguments) < 2 or _download_template(arguments[1]) != "download":
+                        continue
+                    expression = arguments[2] if len(arguments) >= 3 else "<implicit browser filename>"
                 elif value == "open" and index >= 2 and tokens[index - 2].value in {"window", "globalThis"}:
                     arguments = _js_arguments(text, tokens, call_start)
                     expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
@@ -1684,6 +1790,12 @@ def _download_template(expression: str) -> str | None:
     templates = []
     literal = False
     for part in parts:
+        if part.startswith("(") and part.endswith(")"):
+            grouped = _download_template(part)
+            if grouped is not None:
+                literal = True
+                templates.append(grouped)
+                continue
         if part[:1] in {"`", '"', "'"} and part[-1:] == part[:1]:
             literal = True
             if part.startswith("`"):
