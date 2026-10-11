@@ -51,9 +51,10 @@ def ui_projection_carriage_admission(snapshot: Any) -> Any:
 
 
 def ui_projection_carriage(snapshot: Any, vlan_index: int, offset: int, limit: int,
-                           admission: Any = None) -> Dict[str, Any]:
+                           admission: Any = None, *, transport_overhead: int = 0) -> Dict[str, Any]:
     """Delegate one VLAN row's lazy carriage page to its engine owner; nothing is recomputed here."""
-    return _ui_projection.project_vlan_carriage(snapshot, vlan_index, offset, limit, admission=admission)
+    return _ui_projection.project_vlan_carriage(snapshot, vlan_index, offset, limit, admission=admission,
+                                               transport_overhead=transport_overhead)
 
 
 def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:

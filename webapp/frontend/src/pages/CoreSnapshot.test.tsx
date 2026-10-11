@@ -399,6 +399,62 @@ describe("Core snapshot route", () => {
     expect(drawer).toHaveTextContent("/vlan_carriage/cables/2");
     expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
   });
+  it("discloses an unsupported cable page without a clean empty result or a next-cursor loop", async () => {
+    const result = carriagePageFixture();
+    result.payload.page = { ...result.payload.page, state: "unverified", reason: "unsupported: complete cable cannot fit",
+      returned: 0, items: [], has_more: true } as never;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/inventory/carriage?")) return new Response(JSON.stringify(result));
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("unsupported: complete cable cannot fit");
+    expect(within(panel).getByText("Cable page unavailable; 2 assessed cables retained")).toBeInTheDocument();
+    expect(within(panel).queryByText(/^No cables/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/No assessed cable rows on this page/)).not.toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Next carriage page" })).toBeDisabled();
+  });
+  it("uses returned-prefix cursors and actual previous history across uneven carriage pages", async () => {
+    const summary = { ...carriageSummaryFixture(0), assessed: published(6) };
+    const document = vlanCarriageFixture();
+    document.payload.vlans.rows.page.items[0]!.selections.carriage = summary;
+    const original = carriagePageFixture(1, summary);
+    const cables = Array.from({ length: 6 }, (_, index) => ({ ...original.payload.page.items[index % 2]!,
+      index, pointer: `/vlan_carriage/cables/${index}` }));
+    const offsets: number[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(document));
+      if (url.includes("/inventory/carriage?")) {
+        const offset = Number(new URL(url, "http://localhost").searchParams.get("offset"));
+        offsets.push(offset);
+        const count = offset === 0 ? 2 : offset === 2 ? 1 : 3;
+        return new Response(JSON.stringify({ ...original, payload: { ...original.payload,
+          page: { state: "published", reason: null, byte_limit: 3000000, offset, limit: count, returned: count,
+            total: 6, has_more: offset + count < 6, items: cables.slice(offset, offset + count) } } }));
+      }
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    await within(panel).findByText("Cables 1–2 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Next carriage page" }));
+    await within(panel).findByText("Cables 3–3 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Next carriage page" }));
+    await within(panel).findByText("Cables 4–6 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Previous carriage page" }));
+    await within(panel).findByText("Cables 3–3 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Previous carriage page" }));
+    await within(panel).findByText("Cables 1–2 of 6 assessed cables");
+    expect(offsets).toEqual([0, 2, 3, 2, 0]);
+  });
   it.each([
     ["a drifted summary", () => carriagePageFixture(1, { ...carriageSummaryFixture(0), state: "published" }), "Carriage summary changed. Reload this view before continuing."],
     ["another snapshot", () => carriagePageFixture(2), "Carriage snapshot identity changed. Reload this view before continuing."],

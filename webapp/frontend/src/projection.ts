@@ -143,8 +143,19 @@ export async function loadCarriagePage(document: ViewDocument<"inventory">, summ
     throw new ProjectionContextError("Carriage summary changed. Reload this view before continuing.");
   }
   const page = data.payload.page;
-  requireProjectionPage(page);
-  if (page.offset !== offset || page.limit !== limit) {
+  if (page.byte_limit !== 3000000) throw new Error("Carriage page byte bound changed.");
+  if (page.state === "published") {
+    if (page.reason !== null) throw new Error("Published carriage page carries an unsupported reason.");
+    requireProjectionPage(page);
+  } else if (page.state === "unverified") {
+    if (typeof page.reason !== "string" || !page.reason.startsWith("unsupported:") || page.returned !== 0 ||
+        !Array.isArray(page.items) || page.items.length !== 0 || ![page.offset, page.limit, page.total].every(Number.isSafeInteger) ||
+        page.offset < 0 || page.total < 0 || page.limit < 1 || page.limit > limit ||
+        page.has_more !== (page.offset < page.total)) {
+      throw new Error("Unsupported carriage page is incomplete or inconsistent.");
+    }
+  } else throw new Error("Carriage page has no admitted resource state.");
+  if (page.offset !== offset || page.limit > limit) {
     throw new ProjectionContextError("Carriage page context changed. Reload this view before continuing.");
   }
   return data;

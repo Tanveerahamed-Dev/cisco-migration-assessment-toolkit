@@ -849,6 +849,7 @@ Draft202012Validator.check_schema(_CARRIAGE_SCHEMA)
 # Whole-schema source admission still requires actual hosted provider controls. Unsupported
 # instances/context and public errors retain full Python behavior; no runtime auto-pin.
 _CARRIAGE_VALIDATOR = _NativeTransportValidator(_CARRIAGE_SCHEMA, "carriage")
+_CARRIAGE_BYTE_LIMIT = _DEFS["CarriagePage"]["properties"]["byte_limit"]["const"]
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -945,6 +946,8 @@ class UiProjectionCarriageResponse(RootModel[dict[str, JsonValue]]):
         except ValidationError as exc:
             raise ValueError("Engine carriage transport failed its owner contract") from exc
         _require_carriage_page(self.root["payload"])
+        if len(json.dumps(self.root, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")) > _CARRIAGE_BYTE_LIMIT:
+            raise ValueError("Carriage complete response exceeds its owner byte bound")
         if trace is not None:
             trace["complete"] = trace["native"]
         return self
@@ -962,8 +965,14 @@ def _require_carriage_page(payload: dict[str, Any]) -> None:
     expected = min(max(page["total"] - page["offset"], 0), page["limit"])
     assessed = summary["assessed"]["value"] if summary["assessed"]["state"] == "published" else None
     counted = summary["forwarding"]["state"] == "published"
+    unsupported = page["state"] == "unverified"
+    if ((page["state"] == "published" and page["reason"] is not None)
+            or (unsupported and (page["returned"] != 0 or not isinstance(page["reason"], str)
+                                 or not page["reason"].startswith("unsupported:")))
+            or page["state"] not in ("published", "unverified")):
+        raise ValueError("Carriage page resource state disagrees with its complete items")
     if (page["limit"] > MAX_PAGE_SIZE or len(page["items"]) > MAX_PAGE_SIZE
-            or page["returned"] != len(page["items"]) or page["returned"] != expected
+            or page["returned"] != len(page["items"]) or (not unsupported and page["returned"] != expected)
             or page["has_more"] != (page["offset"] + page["returned"] < page["total"])
             or (assessed is not None and page["total"] not in (0, assessed))
             or (counted and page["total"] != assessed)):
@@ -982,14 +991,25 @@ def carriage_page(cache: _ProjectionCache, raw: bytes, binding: dict[str, Any], 
     if not 0 <= vlan_index < len(rows):
         raise HTTPException(404, "VLAN row not found")
     snapshot, admission = cache.carriage_source(raw, binding["sha256"])
-    produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission)
+    common = _common_document(main, binding, snapshot_id, "carriage")
+    def wire_size(value: Any) -> int:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    owner_context = {"schema": main["schema"], "engine": main["engine"], "carriage": None, "vocab": main["vocab"]}
+    overhead = max(0, wire_size({**common, "payload": None}) - wire_size(owner_context))
+    produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission,
+                                             transport_overhead=overhead)
     _require_json_native(produced)
     document = deepcopy(produced)
     if (document["engine"] != main["engine"]
             or document["carriage"]["summary"] != rows[vlan_index]["selections"]["carriage"]
-            or document["carriage"]["vlan_index"] != vlan_index):
+            or document["carriage"]["vlan_index"] != vlan_index
+            or document["carriage"]["page"]["offset"] != offset
+            or document["carriage"]["page"]["limit"] > limit):
         raise ValueError("Engine carriage page changed its source, VLAN row or summary")
-    return {**_common_document(main, binding, snapshot_id, "carriage"), "payload": document["carriage"]}
+    response = {**common, "payload": document["carriage"]}
+    if wire_size(response) > _CARRIAGE_BYTE_LIMIT:
+        raise ValueError("Carriage complete response exceeds its owner byte bound")
+    return response
 
 
 def _at_pointer(value: Any, pointer: str) -> Any:

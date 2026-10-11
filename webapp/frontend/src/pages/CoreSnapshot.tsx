@@ -258,6 +258,7 @@ function CarriageCable({ cable }: { cable: Schemas["UiProjection1_CarriageRow"] 
 }
 function CarriagePanel({ document, summary }: { document: ViewDocument<"inventory">; summary: CarriageSummary }) {
   const [page, setPage] = useState<CarriagePage | null>(null);
+  const [history, setHistory] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const request = useRef<AbortController | null>(null);
@@ -267,7 +268,7 @@ function CarriagePanel({ document, summary }: { document: ViewDocument<"inventor
     source.current = { document, summary };
     if (was.document !== document || was.summary !== summary) {
       request.current?.abort(); request.current = null;
-      setPage(null); setBusy(false); setError("");
+      setPage(null); setHistory([]); setBusy(false); setError("");
     }
   }, [document, summary]);
   useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
@@ -277,7 +278,11 @@ function CarriagePanel({ document, summary }: { document: ViewDocument<"inventor
     setBusy(true); setError("");
     try {
       const next = await loadCarriagePage(document, summary, offset, CARRIAGE_PAGE_SIZE, controller.signal);
-      if (!controller.signal.aborted) setPage(next.payload.page);
+      if (!controller.signal.aborted) {
+        if (page && offset > page.offset) setHistory((prior) => [...prior, page.offset]);
+        else if (page && offset < page.offset) setHistory((prior) => prior.slice(0, -1));
+        setPage(next.payload.page);
+      }
     } catch (error) {
       if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Carriage page could not be loaded.");
     } finally {
@@ -292,13 +297,15 @@ function CarriagePanel({ document, summary }: { document: ViewDocument<"inventor
     {!page && <button className="btn" disabled={busy} onClick={() => void load(0)}>Load cable carriage</button>}
     {page && <>
       {page.items.map((cable) => <CarriageCable key={cable.pointer} cable={cable} />)}
-      {!page.returned && <p className="projection-disclosure">No assessed cable rows on this page. The summary state above is unchanged.</p>}
+      {page.state === "unverified" && <p role="alert" className="projection-disclosure">{page.reason}</p>}
+      {page.state === "published" && !page.returned && <p className="projection-disclosure">No assessed cable rows on this page. The summary state above is unchanged.</p>}
       <footer className="projection-pagination">
-        <span>{page.returned ? `Cables ${page.offset + 1}–${page.offset + page.returned}` : "No cables"} of {page.total} assessed cables</span>
-        <button className="btn" disabled={busy || page.offset === 0}
-          onClick={() => void load(Math.max(0, page.offset - page.limit))}>Previous carriage page</button>
-        <button className="btn" disabled={busy || !page.has_more}
-          onClick={() => void load(page.offset + page.limit)}>Next carriage page</button>
+        <span>{page.state === "unverified" ? `Cable page unavailable; ${page.total} assessed cables retained`
+          : `${page.returned ? `Cables ${page.offset + 1}–${page.offset + page.returned}` : "No cables"} of ${page.total} assessed cables`}</span>
+        <button className="btn" disabled={busy || !history.length}
+          onClick={() => void load(history[history.length - 1]!)}>Previous carriage page</button>
+        <button className="btn" disabled={busy || page.state !== "published" || !page.has_more || !page.returned}
+          onClick={() => void load(page.offset + page.returned)}>Next carriage page</button>
       </footer></>}
     {error && <p role="alert" className="projection-error">{error}</p>}
   </section>;

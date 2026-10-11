@@ -9,6 +9,7 @@ where the first hosted run is a finding. Every measurement is printed as one ``V
 from copy import deepcopy
 from dataclasses import asdict
 import gc
+import hashlib
 import json
 import os
 import sys
@@ -285,7 +286,7 @@ def fleet(tmp_path_factory):
 
 
 def _bytes(value):
-    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
 
 def _timed(call):
@@ -467,3 +468,196 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
         assert measured["page_ms"] <= BUDGET["page_ms"]
         assert measured["first_page_ms"] <= BUDGET["page_ms"]
+
+
+def _round2_record(port, peer="", remote="", channel=""):
+    """The refuter's exact pure interface fields; no captures, CLI, filesystem or new relation implementation."""
+    return dict(port=port, cdp_neighbor=peer, neighbor_port=remote, switchport_mode="Trunk",
+                trunk_allowed_vlans="10-209", trunk_native_vlan="1", trunk_allowed_none="", port_channel=channel)
+
+
+def _round2_scale(member_count):
+    """Exact6113983469 construction, parameterized only between the original2 and hostile8 bundle members."""
+    hosts = [f"switch-{i:03d}" for i in range(300)]
+    interfaces, cables = {h: {} for h in hosts}, []
+
+    def put(host, port, peer, remote, channel=""):
+        interfaces[host][port] = _round2_record(port, peer, remote, channel)
+
+    def link(i, delta, ap, bp, bundled=False):
+        a, b = hosts[i], hosts[(i + delta) % 300]
+        members = [dict(a_port=ap, b_port=bp)]
+        if bundled:
+            members.extend(dict(a_port=f"Gi1/0/{100 + 2 * n}", b_port=f"Gi1/0/{101 + 2 * n}")
+                           for n in range(member_count - 1))
+        for member in members:
+            put(a, member["a_port"], b, member["b_port"], "Po10" if bundled else "")
+            put(b, member["b_port"], a, member["a_port"], "Po20" if bundled else "")
+        if bundled:
+            put(a, "Po10", "", "")
+            put(b, "Po20", "", "")
+        cables.append(dict(a=a, a_port=ap, b=b, b_port=bp, is_pc=bundled, members=members))
+
+    for i in range(300):
+        link(i, 1, "Gi1/0/1", "Gi1/0/2", i < 150)
+        for n in range(3):
+            host, port, far = hosts[i], f"Gi1/0/{7 + n}", f"edge-{i:03d}-{n}"
+            put(host, port, far, "Port 1")
+            cables.append(dict(a=host, a_port=port, b=far, b_port="Port 1", is_pc=False,
+                               members=[dict(a_port=port, b_port="Port 1")]))
+        link(i, 2, "Gi1/0/3", "Gi1/0/4")
+    snap = dict(interfaces=interfaces, cable_map=dict(cables=cables), stp_topology_observations={},
+                vlan_cutover=[dict(vlan=v) for v in range(10, 210)])
+    snap["vlan_carriage"] = compute_vlan_carriage(
+        snap["cable_map"], interfaces, {}, snap["vlan_cutover"])
+    assert validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    return snap
+
+
+@pytest.fixture(scope="module", params=[2, 8])
+def round2_scale(request):
+    return _round2_scale(request.param)
+
+
+@pytest.mark.parametrize("vlan_index", [0, 199])
+@pytest.mark.parametrize("limit", [25, 137, 199, 200])
+def test_round2_every_pure_owner_page_is_bounded_complete_and_deterministic(round2_scale, vlan_index, limit, capsys):
+    from jsonschema import Draft202012Validator
+
+    snap = round2_scale
+    before = deepcopy(snap)
+    section = snap["vlan_carriage"]
+    coverage = section["coverage"]
+    assert len(snap["interfaces"]) == 300 and len(section["rows"]) == 200
+    assert (coverage["cable_rows"], coverage["assessed_cables"], coverage["edge_cables"]) == (1500, 600, 900)
+    assert coverage["requested_pairs"] == coverage["emitted_pairs"] == 120000
+    expected = [c for c in section["cables"] if c["scope"] == "assessed"]
+    assert sum(c["ends"]["is_pc"] for c in expected) == 150
+    schema = uip.ui_projection_schema()
+    validator = Draft202012Validator({"$ref": "#/$defs/CarriageDocument", "$defs": schema["$defs"]})
+    admission = uip.carriage_admission(snap)
+    offset, seen, maximum = 0, [], 0
+    while True:
+        document = uip.project_vlan_carriage(snap, vlan_index, offset, limit, admission=admission)
+        assert document == uip.project_vlan_carriage(snap, vlan_index, offset, limit, admission=admission)
+        validator.validate(document)
+        page = document["carriage"]["page"]
+        maximum = max(maximum, _bytes(document))
+        assert _bytes(document) <= BUDGET["page_bytes"] == page["byte_limit"]
+        assert page["state"] == "published" and page["reason"] is None
+        assert page["offset"] == offset and 1 <= page["limit"] <= limit
+        assert page["total"] == 600 and page["returned"] == len(page["items"])
+        assert page["returned"] == min(page["limit"], 600 - offset)
+        for projected, stored in zip(page["items"], expected[offset:offset + page["returned"]], strict=True):
+            assert projected["index"] == stored["index"]
+            assert [m["index"] for m in projected["members"]["items"]] == [m["index"] for m in stored["members"]]
+        seen.extend(item["index"] for item in page["items"])
+        offset += page["returned"]
+        if not page["has_more"]:
+            break
+        assert page["returned"] > 0
+    assert seen == [c["index"] for c in expected] and offset == 600
+    beyond = uip.project_vlan_carriage(snap, vlan_index, 601, limit, admission=admission)["carriage"]["page"]
+    assert beyond["returned"] == 0 and beyond["total"] == 600 and beyond["has_more"] is False
+    assert snap == before
+    with capsys.disabled():
+        print("ROUND2-PURE-CARRIAGE-PAGES " + json.dumps({"members": len(expected[0]["members"]),
+              "vlan_index": vlan_index, "requested_limit": limit, "cables": len(seen), "maximum_owner_bytes": maximum}))
+
+
+def test_round2_eight_member_full_http_envelope_stays_within_the_unchanged_budget(round2_scale, capsys, monkeypatch):
+    from pathlib import Path
+    webapp = str(Path(__file__).resolve().parents[1] / "webapp")
+    if webapp not in sys.path:
+        sys.path.insert(0, webapp)
+    from backend import ui_projection_api as api
+
+    snap = round2_scale
+    raw = json.dumps(snap, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    binding = {"sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+    cache = api._ProjectionCache()
+    offset, indices, maximum = 0, [], 0
+    while True:
+        response = api.carriage_page(cache, raw, binding, 1, 0, offset, 200)
+        api.UiProjectionCarriageResponse.model_validate(response)
+        maximum = max(maximum, _bytes(response))
+        assert _bytes(response) <= BUDGET["page_bytes"]
+        page = response["payload"]["page"]
+        assert page["state"] == "published" and page["returned"] > 0
+        indices.extend(item["index"] for item in page["items"])
+        offset += page["returned"]
+        if not page["has_more"]:
+            break
+    assert indices == [c["index"] for c in snap["vlan_carriage"]["cables"] if c["scope"] == "assessed"]
+    oversized = deepcopy(response)
+    oversized["limitations"][0]["text"] = "x" * BUDGET["page_bytes"]
+    # Structural schema acceptance cannot waive the distinct complete-wire resource guard.
+    api._CARRIAGE_VALIDATOR.validate(oversized)
+    with pytest.raises(ValueError, match="complete response exceeds"):
+        api.UiProjectionCarriageResponse.model_validate(oversized)
+    original = api.engine.ui_projection_carriage
+    for damage in ("offset", "limit"):
+        def forged(*args, **kwargs):
+            document = original(*args, **kwargs)
+            if damage == "limit":
+                document["carriage"]["page"][damage] = 201  # attack the requested200 upper bound, not effective+1
+            else:
+                document["carriage"]["page"][damage] += 1
+            return document
+        with monkeypatch.context() as changed:
+            changed.setattr(api.engine, "ui_projection_carriage", forged)
+            with pytest.raises(ValueError, match="changed its source, VLAN row or summary"):
+                api.carriage_page(cache, raw, binding, 1, 0, 0, 200)
+    with capsys.disabled():
+        print("ROUND2-PURE-CARRIAGE-HTTP " + json.dumps({"cables": len(indices), "maximum_wire_bytes": maximum}))
+
+
+def test_round2_an_indivisible_cable_that_cannot_fit_is_explicitly_unsupported(round2_scale, monkeypatch):
+    snap = round2_scale
+    original = uip.project_vlan_carriage(snap, 0, 0, 1)
+    item_bytes = _bytes(original["carriage"]["page"]["items"][0])
+    empty = deepcopy(original)
+    empty["carriage"]["page"]["items"] = []
+    # Tighten a synthetic bound below one complete item but above the ordinary context; never raise3M.
+    tighter = _bytes(empty) + item_bytes // 2
+    assert tighter < BUDGET["page_bytes"]
+    monkeypatch.setattr(uip, "CARRIAGE_PAGE_BYTE_LIMIT", tighter)
+    held = uip.project_vlan_carriage(snap, 0, 0, 200)
+    page = held["carriage"]["page"]
+    assert page["state"] == "unverified" and page["reason"].startswith("unsupported:")
+    assert "/vlan_carriage/cables/0" in page["reason"]
+    assert page["offset"] == 0 and page["total"] == 600 and page["returned"] == 0
+    assert page["items"] == [] and page["has_more"] is True
+    assert held["carriage"]["summary"] == original["carriage"]["summary"]
+    assert _bytes(held) <= tighter
+
+
+def test_round2_more_than_one_page_of_members_is_held_without_partial_cable_output(round2_scale):
+    snap = deepcopy(round2_scale)
+    cable = snap["cable_map"]["cables"][0]
+    for n in range(len(cable["members"]), 401):
+        ap, bp = f"Gi2/0/{500 + 2 * n}", f"Gi2/0/{501 + 2 * n}"
+        snap["interfaces"][cable["a"]][ap] = _round2_record(ap, cable["b"], bp, "Po10")
+        snap["interfaces"][cable["b"]][bp] = _round2_record(bp, cable["a"], ap, "Po20")
+        cable["members"].append(dict(a_port=ap, b_port=bp))
+    snap["vlan_carriage"] = compute_vlan_carriage(snap["cable_map"], snap["interfaces"], {}, snap["vlan_cutover"])
+    assert validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    before = deepcopy(snap)
+    result = uip.project_vlan_carriage(snap, 0, 0, 200)
+    page = result["carriage"]["page"]
+    assert page["state"] == "unverified" and page["reason"].startswith("unsupported:")
+    assert page["total"] == 600 and page["offset"] == 0 and page["returned"] == 0
+    assert page["items"] == [] and page["has_more"] is True
+    assert _bytes(result) <= BUDGET["page_bytes"]
+    assert snap == before and len(snap["vlan_carriage"]["cables"][0]["members"]) == 401
+
+
+def test_round2_unrepresentable_transport_context_fails_closed_without_a_page(round2_scale):
+    with pytest.raises(ValueError, match="unsupported: carriage page context exceeds"):
+        uip.project_vlan_carriage(round2_scale, 0, 0, 200, transport_overhead=BUDGET["page_bytes"] - 1)
+
+
+def test_round2_byte_accounting_refuses_non_finite_context_instead_of_emitting_non_json(round2_scale, monkeypatch):
+    monkeypatch.setattr(uip, "_engine", lambda _ctx: {"synthetic_non_finite": float("nan")})
+    with pytest.raises(ValueError, match="Out of range float"):
+        uip.project_vlan_carriage(round2_scale, 0, 0, 200)

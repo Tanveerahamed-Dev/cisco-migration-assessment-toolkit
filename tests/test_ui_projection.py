@@ -1311,7 +1311,7 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # tests/test_impact_assessability.py). Trust inputs (G08) admit the dossier's public per-axis input
     # registry by its exact name, so the input list is imported, never copied. G41: the source identity is read
     # from its one owner, the exact-byte marker class and its public receipt reader; the projection itself
-    # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place. The G21
+    # never hashes (no hashlib); json below measures response bytes only, never source identity. The G21
     # finding facets admit the owner's public category vocabulary, its read-only category-to-source-section map
     # (what a category count was computed over) and its stored-row facet fold, by exact name, beside the
     # severity owner.
@@ -1320,7 +1320,8 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # Its compute function and whole module remain outside this exact read-only import boundary.
     # marshal writes fresh same-process complete observation keys after the unchanged JSON eligibility walk;
     # no deserialization, persistent cache, hashing or project producer import is admitted.
-    allowed = {"math", "re", "ipaddress", "marshal", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    # json encodes complete carriage page bytes for the unchanged transport resource bound; no file I/O.
+    allowed = {"math", "re", "ipaddress", "json", "marshal", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",

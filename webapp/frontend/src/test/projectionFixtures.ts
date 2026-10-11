@@ -444,7 +444,7 @@ export function carriagePageFixture(sid = 1, summary: object = carriageSummaryFi
   const base = vlanCarriageFixture(sid);
   return { ...common(sid, "carriage"), limitations: base.limitations, payload: {
     vlan_index: 0, pointer: "/vlan_carriage/rows/0", summary,
-    page: { offset, limit, returned: items.length, total: cables.length, has_more: offset + items.length < cables.length, items } } };
+    page: { state: "published", reason: null, byte_limit: 3000000, offset, limit, returned: items.length, total: cables.length, has_more: offset + items.length < cables.length, items } } };
 }
 
 export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected"), coverage_rollup = coverageRollupFixture("not_collected")) {

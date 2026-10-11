@@ -128,6 +128,7 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 from __future__ import annotations
 
 import ipaddress
+import json
 import math
 import marshal
 import re
@@ -4771,6 +4772,10 @@ _R_CARRIAGE_SELECTOR = "unverified: this VLAN row has no readable carriage selec
 _R_CARRIAGE_GAP = ("unverified: stored carriage basis references no longer resolve to unique typed end evidence; "
                    "no relation is reconstructed")
 _R_CARRIAGE_END = "unverified: this cable member has no complete readable endpoint identity"
+# One HTTP page's unchanged wire ceiling; the schema exposes this owner to the transport.
+CARRIAGE_PAGE_BYTE_LIMIT = 3_000_000
+CARRIAGE_PAGE_STATES = (_PUB, _UV)
+_CARRIAGE_PAGE_MEMBER_LIMIT = 400
 
 
 def _stored_pointer_tokens(ctx: _Ctx, pointer: str) -> Optional[Tuple[Any, ...]]:
@@ -4918,14 +4923,19 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     interfaces = ctx.s.get("interfaces")
     host_keys: Dict[str, List[str]] = {}
     port_keys: Dict[str, Dict[str, List[str]]] = {}
+    logical_keys: Dict[str, Dict[str, List[str]]] = {}
     for host, records in (interfaces.items() if isinstance(interfaces, dict) else ()):
         if not _is_text(host):
             continue
         host_keys.setdefault(carriage_host_identity(host), []).append(host)
         port_keys[host] = {}
+        logical_keys[host] = {}
         for key in records if isinstance(records, dict) else ():
             if _is_text(key):
                 port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
+                logical = carriage_join_interface(key)
+                if logical is not None:
+                    logical_keys[host].setdefault(logical, []).append(key)
     observations: Dict[str, Any] = {}
     indexes: Dict[str, Any] = {}
     observation_answers: Dict[bytes, Tuple[str, Optional[str], bool, int]] = {}
@@ -4935,6 +4945,15 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
 
     def admitted(host: str) -> Any:
         if host not in observations:
+            supplied = ctx.s.get("stp_topology_observations")
+            # The owner's absent-section/absent-host case is distinct from a supplied malformed record.
+            # Configured claims must recheck CURRENT eligibility even when no STP pointer was stored.
+            if supplied is None or (type(supplied) is dict and host not in supplied):
+                observations[host] = (_NC, None, None)
+                return observations[host]
+            if type(supplied) is not dict:
+                observations[host] = (_UV, "stp_unreadable", None)
+                return observations[host]
             record = _get(ctx.s, ("stp_topology_observations", host))
             key = _carriage_observation_key(record)
             answer = observation_answers.get(key) if key is not None else None
@@ -5008,7 +5027,10 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 source_values = _carriage_record_values(source)
                 if source_values is None or source_toks is None or (bundled and (
                         end["allowance_pointer"] == end["interface_pointer"]
-                        or carriage_join_interface(source_toks[-1]) != end["stp_interface"])):
+                        or len(logical_keys.get(host, {}).get(end["stp_interface"], ())) != 1
+                        or carriage_join_interface(source_toks[-1]) != end["stp_interface"]
+                        or (source_values["port"].strip()
+                            and carriage_join_interface(source_values["port"]) != end["stp_interface"]))):
                     bad.append(toks + ("allowance_pointer",))
                 configured[(ci, mi, side)] = allowance_id(source)
                 for ri, pointer in enumerate(end["refs"]):
@@ -5140,6 +5162,33 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 if not ok:
                     found.append(stp_gap)
             elif char in configured_chars:
+                # A configured code is eligible only while the CURRENT owner has no relevant logical PVST
+                # row. A newly supplied row (even an agreeing one), malformed record or error capture makes
+                # this stored basis stale; withhold it instead of computing a replacement relation.
+                host = end["host"]
+                if plan is not None and type(host) is str and host == plan.host:
+                    state, observation = _PUB, plan.observation
+                else:
+                    state, _why, observation = admitted(host)
+                eligible = state == _NC or (state == _PUB and observation is not None)
+                if eligible and state == _PUB:
+                    index_host = end["host"]
+                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation)
+                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
+                    eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
+                                                observation, index)) == 0
+                if not eligible:
+                    found.append(stp_gap)
+                    current = ("stp_topology_observations", end["host"])
+                    if _get(ctx.s, current) is not _MISSING:
+                        found.append(current)
+                    elif _get(ctx.s, current[:1]) is not _MISSING:
+                        found.append(current[:1])
                 if not allowance_agrees(key, row["vlan"], signals[char]):
                     found.append(allowance_gap)
             else:
@@ -5365,9 +5414,13 @@ def carriage_admission(snap: Any) -> _CarriageAdmission:
 
 
 def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *,
-                          admission: Optional[_CarriageAdmission] = None) -> Dict[str, Any]:
+                          admission: Optional[_CarriageAdmission] = None,
+                          transport_overhead: int = 0) -> Dict[str, Any]:
     """One VLAN row's carriage page (G14 v2): its summary, echoed exactly as the inventory document carries it, and
-    ``limit`` assessed cables from ``offset`` decoded from the stored codes. Read-only over the snapshot: it never
+    At most ``limit`` assessed cables from ``offset``, as a complete whole-cable prefix within the member and exact
+    UTF-8 byte bounds. The returned limit is the effective filled extent, never above the request. A cable that
+    cannot fit alone produces an explicit unsupported page hold, with its total and offset retained. No member
+    is truncated and no cable is skipped. Read-only over the snapshot: it never
     recomputes carriage and joins only the owner's role rows. It pages beside :func:`project_path`."""
     ctx = _Ctx(snap)
     engine = _engine(ctx)
@@ -5381,8 +5434,6 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
     readable = row is not None and bool(row["codes"]) and valid_vlan
     failed = adm.failed or ((_UV, _R_CARRIAGE_GAP) if vlan_index in adm.gaps else None)
     total = len(adm.offsets) if readable else 0
-    window = carriage_row_cables(section, vlan_index, offset, offset + limit, offsets=list(adm.offsets)) if (
-        readable and section is not None and offset < total) else []
     observations: Dict[str, Any] = dict(adm.observations)
 
     def roles(host: str, stp_interface: str, vid: int) -> List[Any]:
@@ -5394,13 +5445,54 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
         observation, index = observations[host]
         return carriage_role_rows(observation, stp_interface, vid, index=index) if index is not None else []
 
-    items = [_carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
-             for cable, verdict, members in window]
-    page = {"offset": offset, "limit": limit, "returned": len(items), "total": total,
-            "has_more": offset + len(items) < total, "items": items}
+    if (type(transport_overhead) is not int or transport_overhead < 0
+            or transport_overhead >= CARRIAGE_PAGE_BYTE_LIMIT):
+        raise ValueError("unsupported: carriage transport context exceeds the page byte bound")
+    byte_budget = CARRIAGE_PAGE_BYTE_LIMIT - transport_overhead
+    page = {"state": _PUB, "reason": None, "byte_limit": CARRIAGE_PAGE_BYTE_LIMIT,
+            "offset": offset, "limit": limit, "returned": 0, "total": total,
+            "has_more": offset < total, "items": []}
     carriage = {"vlan_index": vlan_index, "pointer": json_pointer("vlan_carriage", "rows", vlan_index),
                 "summary": summary, "page": page}
-    return {"schema": SCHEMA, "engine": engine, "carriage": carriage, "vocab": _vocab()}
+    document = {"schema": SCHEMA, "engine": engine, "carriage": carriage, "vocab": _vocab()}
+
+    def size(value: Any) -> int:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+
+    if size(document) > byte_budget:
+        raise ValueError("unsupported: carriage page context exceeds the page byte bound")
+    items: List[Dict[str, Any]] = []
+    item_bytes, member_count = 0, 0
+    expected = min(max(total - offset, 0), limit)
+    for position in range(offset, offset + expected):
+        ci, _code_offset, count = adm.offsets[position]
+        over_members = member_count + count > _CARRIAGE_PAGE_MEMBER_LIMIT
+        if not over_members:
+            cable, verdict, members = carriage_row_cables(
+                section, vlan_index, position, position + 1, offsets=adm.offsets)[0]
+            item = _carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
+            length = size(item)
+            candidate_count = len(items) + 1
+            page.update(limit=limit if candidate_count == expected else candidate_count,
+                        returned=candidate_count, has_more=offset + candidate_count < total)
+            # The empty array is two bytes in the base. Complete item encodings replace its interior, including
+            # exactly n-1 separators; the metadata is measured with its actual digits and boolean value.
+            over_bytes = size(document) + item_bytes + length + candidate_count - 1 > byte_budget
+        else:
+            over_bytes = False
+        if over_members or over_bytes:
+            if not items:
+                page.update(state=_UV, reason=(f"unsupported: complete cable /vlan_carriage/cables/{ci} and all "
+                            "its members cannot fit within the carriage member/byte page bounds"))
+            break
+        items.append(item)
+        member_count += count
+        item_bytes += length
+    page.update(limit=limit if len(items) == expected or not items else len(items),
+                returned=len(items), has_more=offset + len(items) < total, items=items)
+    if size(document) > byte_budget:
+        raise ValueError("unsupported: carriage page hold exceeds the page byte bound")
+    return document
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -8693,6 +8785,7 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
 #: level). Evidence states, reasons, roles, names and presentation tokens are not severities; naming each one
 #: here keeps the catalogue closed, so a vocabulary added to the schema cannot go unclassified.
 _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
+    ("carriage_page_state", CARRIAGE_PAGE_STATES, "the carriage page resource admission names published or unsupported/unverified, never a health level"),
     ("carriage_relation", CARRIAGE_RELATIONS, "vlan_carriage.RELATIONS names modeled cable/VLAN relations, not severity or delivery assurance"),
     ("carriage_end_signal", CARRIAGE_END_SIGNALS, "vlan_carriage.END_SIGNALS names the admitted observation at one cable end"),
     ("carriage_basis", CARRIAGE_BASES, "vlan_carriage.BASES separates typed PVST, configured allowance and member consensus"),
@@ -9273,8 +9366,10 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
          "vocab": _ref("Vocab")})
     # G14 v2: one VLAN row's lazy carriage page (project_vlan_carriage), echoing the row's summary exactly.
     count = {"type": "integer", "minimum": 0, "maximum": JS_MAX_SAFE_INT}
-    defs["CarriagePage"] = _closed("CarriagePage", ("offset", "limit", "returned", "total", "has_more", "items"),
-        {"offset": dict(count), "limit": {**count, "minimum": 1}, "returned": dict(count), "total": dict(count),
+    defs["CarriagePage"] = _closed("CarriagePage", ("state", "reason", "byte_limit", "offset", "limit", "returned", "total", "has_more", "items"),
+        {"state": {"type": "string", "enum": list(CARRIAGE_PAGE_STATES)}, "reason": _nullable(_str()),
+         "byte_limit": {"type": "integer", "const": CARRIAGE_PAGE_BYTE_LIMIT},
+         "offset": dict(count), "limit": {**count, "minimum": 1}, "returned": dict(count), "total": dict(count),
          "has_more": {"type": "boolean"}, "items": {"type": "array", "items": _ref("CarriageRow")}})
     defs["Carriage"] = _closed("Carriage", ("vlan_index", "pointer", "summary", "page"),
         {"vlan_index": _nonneg_int(), "pointer": _ref("Pointer"), "summary": _ref("CarriageSummary"),

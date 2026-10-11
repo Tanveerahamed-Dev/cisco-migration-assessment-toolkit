@@ -11,7 +11,7 @@ import json
 import pytest
 from jsonschema import Draft202012Validator
 
-from cisco_toolkit import analyze, ui_projection as uip, vlan_carriage
+from cisco_toolkit import analyze, stp_topology, ui_projection as uip, vlan_carriage
 from test_vlan_carriage import A, B, LONG, PORT, _built, _bundle, _cdp, _ios_trunk, _link, _observation, _stored, _stp
 
 PUB, NC, UV, AU, CBE = "published", "not_collected", "unverified", "analysis_unavailable", "collected_but_empty"
@@ -26,6 +26,214 @@ def snapshot(tmp_path, allowed=("10", "10"), observations=None, vlans=None, inte
     assert vlan_carriage.validate_vlan_carriage(stored) == (True, "ok")
     return {"interfaces": _stored(interfaces), "cable_map": cables, "stp_topology_observations": observations,
             "vlan_cutover": rows, "vlan_carriage": stored}
+
+
+def _round2_record(port, peer="", remote="", channel=""):
+    """Exact complete pure synthetic interface record in owner refutation6113983469."""
+    return dict(port=port, cdp_neighbor=peer, neighbor_port=remote, switchport_mode="Trunk",
+                trunk_allowed_vlans="10", trunk_native_vlan="1", trunk_allowed_none="", port_channel=channel)
+
+
+def _round2_observation(port="Po10", state="FWD", vid=10):
+    role = "Altn" if state == "BLK" else "Desg"
+    text = (f"VLAN{vid:04d}\n  Root ID Priority 32778\n"
+            "          Address aaaa.0001.0001\n"
+            "          This bridge is the root\n  Bridge ID Priority 32778\n"
+            "          Address aaaa.0001.0001\n"
+            "Interface Role Sts Cost Prio.Nbr Type\n"
+            "---------------- ---- --- --------- -------- ----------------\n"
+            f"{port} {role} {state} 4 128.1 P2p\n")
+    return stp_topology.produce_stp_topology_observation(
+        text, f"VLAN{vid:04d}\n  Number of topology changes 0 last change occurred 00:00:00 ago\n",
+        state_capture_state="usable", detail_capture_state="usable")
+
+
+def _round2_bundle(observations):
+    ports = ("Gi1/0/1", "Gi1/0/2")
+    interfaces = {host: {port: _round2_record(port, peer, port, "Po10") for port in ports}
+                  for host, peer in (("switch-a", "switch-b"), ("switch-b", "switch-a"))}
+    for host in interfaces:
+        interfaces[host]["Po10"] = _round2_record("Po10")
+    return dict(interfaces=interfaces, stp_topology_observations=observations, vlan_cutover=[dict(vlan=10)],
+                cable_map=dict(cables=[dict(a="switch-a", a_port=ports[0], b="switch-b", b_port=ports[0],
+                                           is_pc=True, members=[dict(a_port=port, b_port=port) for port in ports])]))
+
+
+def _round2_compute(snap):
+    return vlan_carriage.compute_vlan_carriage(snap["cable_map"], snap["interfaces"],
+                                               snap["stp_topology_observations"], snap["vlan_cutover"])
+
+
+def _round2_assert_held_without_recomputation(snap, monkeypatch):
+    original = deepcopy(snap)
+    assert vlan_carriage.validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Reader reconstructed a replacement carriage relation")
+
+    with monkeypatch.context() as changed:
+        changed.setattr(vlan_carriage, "compute_vlan_carriage", forbidden)
+        result = uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]
+        assert result["summary"]["state"] == UV
+        assert result["summary"]["forwarding"]["state"] == UV
+        assert result["summary"]["forwarding"]["value"] is None
+        assert result["page"]["items"][0]["relation"]["state"] == UV
+        assert result["page"]["items"][0]["relation"]["value"] is None
+        checked(snap)
+    assert snap == original
+
+
+@pytest.mark.parametrize("original", ["absent", "unrelated"])
+@pytest.mark.parametrize("current", ["blocked", "forwarding", "error", "malformed", "mst", "null-host",
+                                    "section-malformed", "section-subclass"])
+def test_round2_configured_bundle_refuses_new_current_logical_stp_even_without_a_stored_pointer(
+        monkeypatch, original, current):
+    observations = {} if original == "absent" else {
+        host: _round2_observation(vid=20) for host in ("switch-a", "switch-b")}
+    snap = _round2_bundle(observations)
+    snap["vlan_carriage"] = _round2_compute(snap)
+    stored = deepcopy(snap["vlan_carriage"])
+    assert all(member[side]["stp_pointer"] is None for member in stored["cables"][0]["members"]
+               for side in ("a", "b")) is (original == "absent")
+    before = uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]
+    assert before["page"]["items"][0]["relation"]["value"] == "forwarding"
+    if current in ("blocked", "forwarding"):
+        # EXACT absent/unrelated -> currentPo10 DesgFWD / AltnBLK owner counterexample; bothFWD also makes
+        # the configured BASIS stale even where the relation would coincidentally agree.
+        snap["stp_topology_observations"] = {
+            "switch-a": _round2_observation(),
+            "switch-b": _round2_observation(state="BLK" if current == "blocked" else "FWD")}
+        fresh = _round2_compute(snap)
+        assert vlan_carriage.carriage_row_cables(fresh, 0)[0][1]["relation"] == (
+            "stp_blocked" if current == "blocked" else "forwarding")
+    elif current == "error":
+        snap["stp_topology_observations"]["switch-b"] = stp_topology.produce_stp_topology_observation(
+            "", "", state_capture_state="error", detail_capture_state="absent")
+    elif current == "malformed":
+        snap["stp_topology_observations"]["switch-b"] = {"schema": "stp_topology_observation/1"}
+    elif current == "mst":
+        snap["stp_topology_observations"]["switch-b"] = _observation(namespace="MST", port="Po10")
+    elif current == "null-host":
+        snap["stp_topology_observations"]["switch-b"] = None  # Supplied null is not an absent host.
+    elif current == "section-malformed":
+        snap["stp_topology_observations"] = []
+    else:
+        class ForeignSection(dict):
+            pass
+
+        snap["stp_topology_observations"] = ForeignSection(
+            {host: _round2_observation(vid=20) for host in ("switch-a", "switch-b")})
+    _round2_assert_held_without_recomputation(snap, monkeypatch)
+    assert snap["vlan_carriage"] == stored
+    pointers = {ref["pointer"] for ref in source(snap)["refs"]}
+    assert any(pointer.endswith("/b/stp_pointer") for pointer in pointers)
+    if current in ("blocked", "forwarding", "error", "malformed", "mst", "null-host", "section-subclass"):
+        assert "/stp_topology_observations/switch-b" in pointers
+    else:
+        assert "/stp_topology_observations" in pointers
+
+
+def test_round2_configured_exclusion_cannot_remain_published_over_a_new_logical_role(monkeypatch):
+    snap = _round2_bundle({})
+    for records in snap["interfaces"].values():
+        records["Po10"]["trunk_allowed_vlans"] = ""
+        records["Po10"]["trunk_allowed_none"] = "none"
+    snap["vlan_carriage"] = _round2_compute(snap)
+    assert uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]["page"]["items"][0]["relation"]["value"] == "not_carried"
+    snap["stp_topology_observations"] = {
+        host: _round2_observation(state="BLK") for host in ("switch-a", "switch-b")}
+    _round2_assert_held_without_recomputation(snap, monkeypatch)
+
+
+@pytest.mark.parametrize("original", ["absent", "unrelated"])
+@pytest.mark.parametrize("current", ["absent", "unrelated", "physical-only", "explicit-no-subject"])
+def test_round2_complete_configured_inputs_keep_only_current_logical_absence_eligibility(original, current):
+    snap = _round2_bundle({} if original == "absent" else {
+        host: _round2_observation(vid=20) for host in ("switch-a", "switch-b")})
+    snap["vlan_carriage"] = _round2_compute(snap)
+    if current == "absent":
+        snap["stp_topology_observations"] = {}
+    elif current == "unrelated":
+        snap["stp_topology_observations"] = {
+            host: _round2_observation(vid=20) for host in ("switch-a", "switch-b")}
+    elif current == "physical-only":
+        # A physical member alone is not the logicalPo10 row. Preserve the OWNER's configured fallback.
+        snap["stp_topology_observations"] = {
+            host: _round2_observation(port="Gi1/0/1") for host in ("switch-a", "switch-b")}
+    else:
+        snap["stp_topology_observations"] = {
+            host: stp_topology.produce_stp_topology_observation(
+                "No spanning tree instance exists", "No spanning tree instance exists",
+                state_capture_state="usable", detail_capture_state="usable")
+            for host in ("switch-a", "switch-b")}
+    result = uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]
+    # A non-null STORED declaration still must resolve; removing that formerly cited source remains held.
+    if original == "unrelated" and current == "absent":
+        assert result["summary"]["state"] == UV and result["page"]["items"][0]["relation"]["value"] is None
+    else:
+        assert result["summary"]["state"] == PUB and result["summary"]["forwarding"]["value"] == 1
+        assert result["page"]["items"][0]["relation"]["value"] == "forwarding"
+        assert result["page"]["items"][0]["basis"]["value"] == "stored_trunk_allowance"
+    checked(snap)
+
+
+@pytest.mark.parametrize("port", ["Po99", " Po10 "])
+def test_round2_logical_allowance_source_port_identity_gap_holds_the_stored_bundle(monkeypatch, port):
+    snap = _round2_bundle({host: _round2_observation() for host in ("switch-a", "switch-b")})
+    snap["vlan_carriage"] = _round2_compute(snap)
+    stored = deepcopy(snap["vlan_carriage"])
+    assert uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]["page"]["items"][0]["relation"]["value"] == "forwarding"
+    snap["interfaces"]["switch-b"]["Po10"]["port"] = port  # EXACTPo10→Po99 source counterexample.
+    _round2_assert_held_without_recomputation(snap, monkeypatch)
+    assert any(ref["pointer"].endswith("/b/allowance_pointer") for ref in source(snap)["refs"])
+    assert snap["vlan_carriage"] == stored
+
+
+@pytest.mark.parametrize("port", ["Po10", "Port-channel10", "Po010", ""])
+def test_round2_complete_logical_source_keeps_its_owned_canonical_and_sparse_identity_rules(port):
+    snap = _round2_bundle({host: _round2_observation() for host in ("switch-a", "switch-b")})
+    snap["vlan_carriage"] = _round2_compute(snap)
+    snap["interfaces"]["switch-b"]["Po10"]["port"] = port
+    result = uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]
+    assert result["summary"]["state"] == PUB and result["summary"]["forwarding"]["value"] == 1
+    assert result["page"]["items"][0]["relation"]["value"] == "forwarding"
+    checked(snap)
+
+
+@pytest.mark.parametrize("basis", ["typed", "configured"])
+@pytest.mark.parametrize("host", ["switch-a", "switch-b"])
+@pytest.mark.parametrize("alias", ["Po010", "Port-channel10"])
+def test_round2_current_logical_alias_collision_holds_each_retained_basis_and_end(monkeypatch, basis, host, alias):
+    observations = {name: _round2_observation() for name in ("switch-a", "switch-b")} if basis == "typed" else {}
+    snap = _round2_bundle(observations)
+    snap["vlan_carriage"] = _round2_compute(snap)
+    stored = deepcopy(snap["vlan_carriage"])
+    assert uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]["page"]["items"][0]["relation"]["value"] == "forwarding"
+    # A distinct, complete current record with the SAME public logical-channel identity; the old cited source
+    # stays readable and self-consistent, so its port/pointer checks ALONE cannot establish uniqueness.
+    snap["interfaces"][host][alias] = _round2_record(alias)
+    _round2_assert_held_without_recomputation(snap, monkeypatch)
+    side = "a" if host == "switch-a" else "b"
+    assert any(ref["pointer"].endswith(f"/{side}/allowance_pointer") for ref in source(snap)["refs"])
+    assert snap["vlan_carriage"] == stored
+
+
+@pytest.mark.parametrize("basis", ["typed", "configured"])
+@pytest.mark.parametrize("host", ["switch-a", "switch-b"])
+@pytest.mark.parametrize("alias", ["Po010", "Port-channel10"])
+@pytest.mark.parametrize("port", ["canonical", "blank"])
+def test_round2_one_logical_key_alias_with_its_own_valid_source_is_not_a_collision(basis, host, alias, port):
+    observations = {name: _round2_observation() for name in ("switch-a", "switch-b")} if basis == "typed" else {}
+    snap = _round2_bundle(observations)
+    record = snap["interfaces"][host].pop("Po10")
+    record["port"] = alias if port == "canonical" else ""
+    snap["interfaces"][host][alias] = record
+    # Produce AFTER the declared single-key alias: the stored witness names that exact current key.
+    snap["vlan_carriage"] = _round2_compute(snap)
+    result = uip.project_vlan_carriage(snap, 0, 0, 200)["carriage"]
+    assert result["summary"]["state"] == PUB and result["summary"]["forwarding"]["value"] == 1
+    assert result["page"]["items"][0]["relation"]["value"] == "forwarding"
+    checked(snap)
 
 
 def trunks(tmp_path, n):
@@ -567,29 +775,41 @@ def test_optional_routing_preserves_full_documents_pages_and_gap_order(tmp_path,
 
 
 @pytest.mark.parametrize("declared", [False, True])
-def test_configured_only_routing_never_acquires_an_unused_role_owner(tmp_path, monkeypatch, declared):
+def test_configured_only_routing_checks_current_logical_absence_only_for_a_present_observation(
+        tmp_path, monkeypatch, declared):
     observations = {A: _observation(vid=99), B: _observation(vid=99)} if declared else None
     snap = snapshot(tmp_path, observations=observations, vlans=[{"vlan": 10}, {"vlan": 20}])
     original, calls = uip.carriage_observation_admission, []
+    original_index, original_rows, queries = uip.carriage_role_index, uip.carriage_role_rows, []
 
     def observed(record):
         assert declared, "Absent configured-only STP gained an observation owner call"
         calls.append(record)
         return original(record)
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("Configured-only codes acquired an unused role index/query")
+    def index(record):
+        assert declared, "Absent configured-only STP gained a role index"
+        return original_index(record)
+
+    def rows(record, interface, vid, *, index=None):
+        assert declared, "Absent configured-only STP gained a role query"
+        queries.append((record, interface, vid))
+        return original_rows(record, interface, vid, index=index)
 
     monkeypatch.setattr(uip, "carriage_observation_admission", observed)
-    monkeypatch.setattr(uip, "carriage_role_index", forbidden)
-    monkeypatch.setattr(uip, "carriage_role_rows", forbidden)
+    monkeypatch.setattr(uip, "carriage_role_index", index)
+    monkeypatch.setattr(uip, "carriage_role_rows", rows)
     planned = _routing_outputs(snap)
     assert bool(calls) is declared  # Declared STP still receives its ORIGINAL static admission.
+    assert {(interface, vid) for _record, interface, vid in queries} == ({(PORT, 10), (PORT, 20)} if declared else set())
+    assert all(record is observations[A] or record is observations[B] for record, _interface, _vid in queries)
     calls.clear()
+    queries.clear()
     with monkeypatch.context() as patch:
         patch.setattr(uip, "_carriage_routing_plan", lambda: None)
         assert _routing_outputs(snap) == planned
     assert bool(calls) is declared
+    assert {(interface, vid) for _record, interface, vid in queries} == ({(PORT, 10), (PORT, 20)} if declared else set())
     assert planned[1]["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]["forwarding"]["value"] == 1
 
 

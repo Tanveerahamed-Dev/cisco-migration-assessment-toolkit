@@ -1,10 +1,44 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPathProjection, loadProjection, loadProjectionPage, requireProjectionPage, sameIdentity } from "./projection";
-import { pathFixture, requireContractVocab, topologyFixture, vocabFixture } from "./test/projectionFixtures";
+import { loadCarriagePage, loadPathProjection, loadProjection, loadProjectionPage, requireProjectionPage, sameIdentity } from "./projection";
+import { carriagePageFixture, carriageSummaryFixture, pathFixture, requireContractVocab, topologyFixture, vlanCarriageFixture, vocabFixture } from "./test/projectionFixtures";
 
 const identity = { snapshot_id: 4, sha256: `sha256:${"a".repeat(64)}`, bytes: 42, digest_form: "assesshub-store-blob" as const };
 const common = { identity, schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view: "device", engine: {}, limitations: [] };
 const source = { pointer: "/findings", source_list: { state: "not_collected", reason: "Partial", subject: null, refs: [], basis: "engine" }, page: { offset: 0, limit: 25, total: 2, returned: 2, has_more: false, items: [{ index: 8, pointer: "/punchlist/8" }, { index: 12, pointer: "/punchlist/12" }] } };
+describe("Bounded complete carriage pages", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("accepts a filled effective extent below the requested maximum", async () => {
+    const result = carriagePageFixture(1, carriageSummaryFixture(0), 0, 1);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(result)));
+    const admitted = await loadCarriagePage(vlanCarriageFixture() as never, result.payload.summary as never, 0, 25);
+    expect(admitted.payload.page.returned).toBe(1);
+    expect(admitted.payload.page.limit).toBe(1);
+    expect(admitted.payload.page.has_more).toBe(true);
+  });
+  it("retains an explicit indivisible-cable hold without calling it an empty completed list", async () => {
+    const result = carriagePageFixture();
+    result.payload.page = { ...result.payload.page, state: "unverified", reason: "unsupported: complete cable cannot fit",
+      returned: 0, items: [], has_more: true } as never;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(result)));
+    const admitted = await loadCarriagePage(vlanCarriageFixture() as never, result.payload.summary as never, 0, 25);
+    expect(admitted.payload.page.state).toBe("unverified");
+    expect(admitted.payload.page.total).toBe(2);
+    expect(admitted.payload.page.has_more).toBe(true);
+  });
+  it.each(["partial published", "zero progress published", "unsupported with items", "invented byte bound", "string items", "array-like items"])(
+    "refuses %s rather than weakening ordinary page completeness", async (damage) => {
+      const result = carriagePageFixture();
+      if (damage === "partial published") result.payload.page.items.pop();
+      if (damage === "zero progress published") Object.assign(result.payload.page, { returned: 0, items: [], has_more: true });
+      if (damage === "unsupported with items") Object.assign(result.payload.page, { state: "unverified", reason: "unsupported: cannot fit" });
+      if (damage === "invented byte bound") result.payload.page.byte_limit = 4000000;
+      if (damage === "string items" || damage === "array-like items") Object.assign(result.payload.page,
+        { state: "unverified", reason: "unsupported: cannot fit", returned: 0, has_more: true,
+          items: damage === "string items" ? "" : { length: 0 } });
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(result)));
+      await expect(loadCarriagePage(vlanCarriageFixture() as never, result.payload.summary as never, 0, 25)).rejects.toThrow();
+    });
+});
 describe("Projection transport custody", () => {
   afterEach(() => vi.restoreAllMocks());
   it("encodes the exact host and only calls the projection API", async () => {

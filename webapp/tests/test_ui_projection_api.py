@@ -1616,10 +1616,10 @@ def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(cli
         admissions.append(snapshot)
         return admit(snapshot)
 
-    def checked_page(snapshot, vlan_index, offset, limit, admission=None):
+    def checked_page(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
         before = deepcopy(snapshot)
         sources.append(snapshot)
-        result = page(snapshot, vlan_index, offset, limit, admission)
+        result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
         assert snapshot == before  # The cached bound snapshot is read, never written.
         return result
 
@@ -1639,8 +1639,8 @@ def test_a_carriage_page_that_drifts_from_its_inventory_row_is_refused(client, t
     sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},)))
     page = engine.ui_projection_carriage
 
-    def forged(snapshot, vlan_index, offset, limit, admission=None):
-        result = page(snapshot, vlan_index, offset, limit, admission)
+    def forged(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
+        result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
         if forgery == "summary":
             result["carriage"]["summary"]["forwarding"]["value"] += 1
         elif forgery == "engine":
