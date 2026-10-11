@@ -822,6 +822,11 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
     if isinstance(node, ast.JoinedStr):
         return [v if v is not None and getattr(v, "complete", True) else _NOT_CLOSED
                 for v in _templates(node, resolve, depth + 1, seen)]
+    if isinstance(node, ast.Slice):
+        bounds = [([None] if value is None else _closed_values(value, resolve, depth + 1, seen) or [_NOT_CLOSED])
+                  for value in (node.lower, node.upper, node.step)]
+        return [_NOT_CLOSED if any(v is _NOT_CLOSED for v in parts) else slice(*parts)
+                for parts in _name_product(*bounds)]
     if isinstance(node, ast.Subscript):
         containers = _closed_values(node.value, resolve, depth + 1, seen) or [_NOT_CLOSED]
         selectors = _closed_values(node.slice, resolve, depth + 1, seen) or [_NOT_CLOSED]
@@ -832,7 +837,7 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
                 continue
             try:
                 out.append(container[selector])
-            except (TypeError, KeyError, IndexError):
+            except (TypeError, KeyError, IndexError, ValueError):
                 raise NameModelLimit("closed filename subscript cannot be evaluated") from None
         return _bounded_names(out)
     if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Mod):
@@ -946,11 +951,67 @@ def _has_unknown(value: object) -> bool:
     return False
 
 
+def _percent_fields(pattern: str) -> list[tuple[int, int, str | None, int]]:
+    """Read printf fields once; escaped %% is literal text, never a dependency or width."""
+    fields = []
+    cursor = 0
+    while cursor < len(pattern):
+        if pattern[cursor] != "%":
+            cursor += 1
+            continue
+        start = cursor
+        cursor += 1
+        if cursor < len(pattern) and pattern[cursor] == "%":
+            cursor += 1
+            continue
+        key = None
+        if cursor < len(pattern) and pattern[cursor] == "(":
+            begin = cursor + 1
+            depth = 1
+            cursor += 1
+            while cursor < len(pattern) and depth:
+                if pattern[cursor] == "(":
+                    depth += 1
+                elif pattern[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                raise NameModelLimit("unterminated percent filename mapping field")
+            key = pattern[begin:cursor - 1]
+        while cursor < len(pattern) and pattern[cursor] in "#0- +":
+            cursor += 1
+        stars = 0
+        for precision in (False, True):
+            if precision:
+                if cursor >= len(pattern) or pattern[cursor] != ".":
+                    break
+                cursor += 1
+            if cursor < len(pattern) and pattern[cursor] == "*":
+                stars += 1
+                cursor += 1
+            else:
+                while cursor < len(pattern) and pattern[cursor].isdigit():
+                    cursor += 1
+        if cursor < len(pattern) and pattern[cursor] in "hlL":
+            cursor += 1
+        if cursor >= len(pattern) or pattern[cursor] not in "diouxXeEfFgGcrsa":
+            raise NameModelLimit("unsupported percent filename conversion")
+        cursor += 1
+        fields.append((start, cursor, key, stars))
+    return fields
+
+
 def _partial_format(pattern: str, *, percent: bool = False) -> _NameTemplate:
     if percent:
-        text = re.sub(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[A-Za-z]", "0", pattern)
-        tail = re.split(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[A-Za-z]", pattern)[-1]
-        complete = text == pattern and "%" not in pattern
+        fields = _percent_fields(pattern)
+        pieces = []
+        previous = 0
+        for start, end, _key, _stars in fields:
+            pieces.append(pattern[previous:start].replace("%%", "%") + "0")
+            previous = end
+        tail = pattern[previous:].replace("%%", "%")
+        text = "".join(pieces) + tail
+        complete = not fields
     else:
         pieces = list(string.Formatter().parse(pattern))
         text = "".join(literal + ("0" if field is not None else "") for literal, field, _s, _c in pieces)
@@ -978,27 +1039,27 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
             if operand is _NOT_CLOSED:
                 out.append(_partial_format(pattern, percent=True))
                 continue
+            fields = _percent_fields(pattern)
+            keys = [key for _start, _end, key, _stars in fields if key is not None]
             used = operand
-            if isinstance(operand, dict) and "%(" in pattern:
-                used = [operand.get(k, _NOT_CLOSED) for k in re.findall(r"%\(([^)]*)\)", pattern)]
+            if not fields:
+                used = []
+            elif isinstance(operand, dict) and len(keys) == len(fields):
+                used = [operand.get(k, _NOT_CLOSED) for k in keys]
             if _has_unknown(used):
                 out.append(_partial_format(pattern, percent=True))
                 continue
-            # Bound numeric widths before invoking Python's actual percent semantics.
-            for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
-                _format_bound(field)
-            if any("*" in field for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern)):
-                if not isinstance(operand, tuple):
-                    raise NameModelLimit("closed percent star operands require a tuple")
-                position = 0
-                for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
-                    if field == "%%":
-                        continue
-                    for _star in range(field.count("*")):
+            position = 0
+            for start, end, _key, stars in fields:
+                _format_bound(pattern[start:end])
+                if stars:
+                    if not isinstance(operand, tuple):
+                        raise NameModelLimit("closed percent star operands require a tuple")
+                    for _star in range(stars):
                         if position >= len(operand) or not isinstance(operand[position], int) or abs(operand[position]) > 4096:
                             raise NameModelLimit("percent filename width exceeds the bounded model")
                         position += 1
-                    position += 1
+                position += 1
             try:
                 out.append(_NameTemplate(pattern % operand))
             except (TypeError, ValueError, KeyError):
