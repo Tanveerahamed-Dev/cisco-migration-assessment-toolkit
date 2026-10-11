@@ -32,8 +32,10 @@ updates:
         versions: ["0.186.x"]
       - dependency-name: "@types/three"
         versions: ["0.186.x"]
+      # 2026-10-11: 1.64.x also awaits browser-baseline review; #653 job 114502981686
+      # changed a native textarea resize glyph. Keep strict visual gates and reviewed pixels.
       - dependency-name: "@playwright/test"
-        versions: ["1.63.x"]
+        versions: ["1.63.x", "1.64.x"]
       # Defer only Vite 8.3.x pending separate review; later lines remain eligible.
       - dependency-name: "vite"
         versions: ["8.3.x"]
@@ -56,8 +58,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
       # 2026-10-08 owner deferral: Playwright 1.63 browser/visual-baseline changes are reviewed separately.
+      # 2026-10-11: 1.64.x also awaits browser-baseline review; #653 job 114502981686
+      # changed a native textarea resize glyph. Keep strict visual gates and reviewed pixels.
       - dependency-name: "@playwright/test"
-        versions: ["1.63.x"]
+        versions: ["1.63.x", "1.64.x"]
       # 2026-10-08 owner deferral: Vite 8.3.x pending separate review; later lines remain eligible.
       - dependency-name: "vite"
         versions: ["8.3.x"]
