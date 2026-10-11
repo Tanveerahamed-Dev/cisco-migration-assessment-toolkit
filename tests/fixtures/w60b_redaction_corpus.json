@@ -9334,6 +9334,33 @@
       "structural": [],
       "mode": "must_keep",
       "structural_word": "strength-check"
+    },
+    {
+      "id": "creator:algorithm-shaped-passwords",
+      "finding": "R1",
+      "text": "net-snmp-create-v3-user -a aes-192c -x aes-256c -A SHA256 -X AES qrCreatorUser\n",
+      "secrets": ["aes-192c", "aes-256c"],
+      "structural": ["-A SHA256", "-X AES", "qrCreatorUser"],
+      "mode": "must_redact",
+      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n"
+    },
+    {
+      "id": "creator:net-snmp-config-password-slots",
+      "finding": "R1",
+      "text": "net-snmp-config --create-snmpv3-user -a aes-192c -x aes-256c -A SHA256 -X AES qrCreatorUser\n",
+      "secrets": ["aes-192c", "aes-256c"],
+      "structural": ["--create-snmpv3-user", "-A SHA256", "-X AES", "qrCreatorUser"],
+      "mode": "must_redact",
+      "expect": "net-snmp-config --create-snmpv3-user -a <redacted> -x <redacted> -A SHA256 -X AES qrCreatorUser\n"
+    },
+    {
+      "id": "named-snmp:attached-public-algorithms",
+      "finding": "L1",
+      "text": "snmpget -v3 -aSHA256 -xAES192C -A W60bAuth229 -X W60bPriv229 query-birch-229\n",
+      "secrets": ["W60bAuth229", "W60bPriv229"],
+      "structural": ["-v3", "-aSHA256", "-xAES192C", "query-birch-229"],
+      "mode": "must_redact",
+      "expect": "snmpget -v3 -aSHA256 -xAES192C -A <redacted> -X <redacted> query-birch-229\n"
     }
   ],
   "review_differential": [

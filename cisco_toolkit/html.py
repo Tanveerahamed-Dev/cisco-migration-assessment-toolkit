@@ -4454,6 +4454,8 @@ _REDACT_ARGV_OPTIONS = {
     # snmpcmd(1): '-c COMMUNITY', '-A AUTHPASS', '-X PRIVPASS', and the USM keys '-3m|-3M|-3k|-3K 0xHEXKEY'
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
              ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+    "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"),
+                    ("-3M", "value"), ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
@@ -5590,6 +5592,8 @@ def _redact_sweep_xml(line: str) -> str:
 def _redact_argv_kind(name: str) -> str:
     """The `_REDACT_ARGV_OPTIONS` entry of a matched command name."""
     folded = name.casefold()
+    if folded in {"net-snmp-create-v3-user", "net-snmp-config"}:
+        return "snmp-create"
     return ("snmp" if "snmp" in folded else "mysql" if folded.startswith("mysql")
             else "net" if folded.startswith("net") else folded)
 

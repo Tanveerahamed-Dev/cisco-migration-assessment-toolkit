@@ -672,6 +672,8 @@ _SWEEP_ARGV_OPTIONS = {
     "mysql": (("-p", "attached"),),
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value"), ("-3m", "value"), ("-3M", "value"),
              ("-3k", "value"), ("-3K", "value"), ("-a", "protocol"), ("-x", "protocol")),
+    "snmp-create": (("-c", "value"), ("-A", "protocol"), ("-X", "protocol"), ("-3m", "value"), ("-3M", "value"),
+                    ("-3k", "value"), ("-3K", "value"), ("-a", "value"), ("-x", "value")),
     "encode_keychange": (("-O", "value"), ("-N", "value")),
     "ipmitool": (("-P", "value"),),
     "smbclient": (("-U", "userpct"), ("--user", "userpct")),
@@ -1614,6 +1616,8 @@ def _sweep_xml_findings(line: str) -> list[str]:
 
 def _sweep_argv_kind(name: str) -> str:
     folded = name.casefold()
+    if folded in {"net-snmp-config", "net-snmp-create-v3-user"}:
+        return "snmp-create"
     return ("snmp" if "snmp" in folded else "mysql" if folded.startswith("mysql")
             else "net" if folded.startswith("net") else folded)
 
