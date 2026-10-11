@@ -307,6 +307,18 @@ def test_guarded_out_of_range_variadic_target_does_not_hide_alternative(tmp_path
         "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
 
 
+@pytest.mark.parametrize("suffix,problem", [(".tmp", False), (".json", True)])
+def test_temporary_names_compose_prefix_and_suffix_without_classifying_directory(tmp_path, suffix, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "import tempfile\n\ndef emit(directory):\n"
+           f"    tempfile.mkstemp(dir=directory or '.', prefix='delivery.', suffix={suffix!r})\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("atomic-staging",), "client staging")}
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["atomic-staging"])
+    assert problems == (["client write site resolves to unclassified name 'delivery.0.json': "
+                         "cisco_toolkit/writer.py::emit"] if problem else [])
+    assert "cisco_toolkit/writer.py::emit" in census.scan(tmp_path)[1], "directory flow must be retained"
+
+
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):
     _write(tmp_path, "cisco_toolkit/writer.py",
            "from pathlib import Path\n\n\ndef emit(path):\n"
