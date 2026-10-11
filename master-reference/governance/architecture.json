@@ -374,6 +374,11 @@
     ["research_lane", "design_intelligence"]
   ],
   "allowed_static_path_edges": [
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "cisco_toolkit/analyze.py", "reason": "The manual hosted synthetic qualification reads the canonical VLAN inventory to reconcile its generated corpus; it never produces assessment facts."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/backend/app.py", "reason": "The manual hosted synthetic qualification exercises the real AssessHub ingest and projection API in a fresh synthetic store."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/backend/ui_projection_api.py", "reason": "The manual hosted synthetic qualification derives the list catalog and page ceiling from the actual transport owner."},
+    {"source_path": ".github/scripts/qualify_scale.py", "target_path": "webapp/sample_data/build_scale.py", "reason": "The manual hosted qualification consumes its deterministic synthetic capture corpus, never operational evidence."},
+    {"source_path": ".github/scripts/test_qualify_scale.py", "target_path": "webapp/sample_data/build_scale.py", "reason": "Hosted harness controls verify synthetic corpus identities, reciprocal links and capture grammar; this test imports no client material."},
     {"source_path": "atlas-scope/src/contract-mode/boot.test.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Session contract verification uses the same closed protocol as both frames."},
     {"source_path": "atlas-scope/src/contract-mode/boot.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Frame coordination consumes pure closed protocol guards and identity comparison, never browser-owned assessment facts."},
     {"source_path": "atlas-scope/src/contract-mode/boundary.test.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The dependency-boundary test verifies the shared protocol marker."},

@@ -127,6 +127,21 @@ def test_workflows_have_no_automatic_pr_qualification():
             assert action.startswith("actions/") and len(sha) == 40
 
 
+def test_architecture_dependencies_are_exact_harness_paths():
+    contract = json.loads((ROOT / "master-reference/governance/architecture.json").read_text())
+    assert ["release_distribution", "assesshub_backend"] not in contract["allowed_edges"]
+    assert ["release_distribution", "analysis"] not in contract["allowed_edges"]
+    pairs = {(row["source_path"], row["target_path"]) for row in contract["allowed_static_path_edges"]
+             if row["source_path"].startswith(".github/scripts/") and "qualify_scale" in row["source_path"]}
+    assert pairs == {
+        (".github/scripts/qualify_scale.py", "cisco_toolkit/analyze.py"),
+        (".github/scripts/qualify_scale.py", "webapp/backend/app.py"),
+        (".github/scripts/qualify_scale.py", "webapp/backend/ui_projection_api.py"),
+        (".github/scripts/qualify_scale.py", "webapp/sample_data/build_scale.py"),
+        (".github/scripts/test_qualify_scale.py", "webapp/sample_data/build_scale.py"),
+    }
+
+
 def test_report_keeps_failed_and_skipped_stages():
     report = {"status": "fail", "source_commit": "a" * 40, "runner_os": "Linux", "image_version": "test",
               "stages": [{"stage": "fixture", "status": "fail", "budgets": qualification.BUDGETS["fixture"],

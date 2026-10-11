@@ -103,3 +103,11 @@ that the owner correctly preserves. The capture generator now emits the
 actual Cisco phone platform and the intended literal uncollected identity.
 No engine logic, cable gate or budget was weakened. This attempt is not scale
 qualification and its measurements do not qualify the corrected source.
+
+The first normal Master Reference check also refused the new harness's
+undeclared static imports into the analysis/API/corpus owners. Their five
+exact source/target path pairs are now registered through the existing
+`allowed_static_path_edges` owner in `master-reference/governance/architecture.json`.
+The broader release-to-analysis/backend component edges remain undeclared;
+the harness control pins that boundary. The initial architecture failure and
+its unmeasured downstream capacity walls are preserved, not a capacity pass.
