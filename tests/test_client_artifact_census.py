@@ -998,6 +998,12 @@ def test_storage_companion_owner_is_delete_and_has_no_attached_database_family()
     ('"{}".format("%s" % "private.json")', "private.json"),
     ('"{0}".format("private.json", dynamic())', "private.json"),
     ('"{}".format("PRIVATE.JSON".lower())', "private.json"),
+    ('"{}".format(f"private.json")', "private.json"),
+    ('"%s" % f"private.json"', "private.json"),
+    ('"{}".format({"leaf": "private.json"}["leaf"])', "private.json"),
+    ('"{0[0]}".format(("private.json", dynamic()))', "private.json"),
+    ('"{0[leaf]}".format({"leaf": "private.json", "unused": dynamic()})', "private.json"),
+    ('"%(leaf)s" % {"leaf": "private.json", "unused": dynamic()}', "private.json"),
 ])
 def test_closed_format_and_percent_targets_cannot_escape_client_refusal(tmp_path, expression, leaf):
     _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"

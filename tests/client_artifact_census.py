@@ -816,10 +816,24 @@ def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = fr
         combinations = _name_product(*values)
         if isinstance(node, ast.Dict):
             size = len(node.keys)
-            return [_NOT_CLOSED if any(p is _NOT_CLOSED for p in parts)
-                    else dict(zip(parts[:size], parts[size:])) for parts in combinations]
-        return [_NOT_CLOSED if any(p is _NOT_CLOSED for p in parts) else
-                tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
+            return [dict(zip(parts[:size], parts[size:])) for parts in combinations]
+        return [tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
+    if isinstance(node, ast.JoinedStr):
+        return [v if v is not None and getattr(v, "complete", True) else _NOT_CLOSED
+                for v in _templates(node, resolve, depth + 1, seen)]
+    if isinstance(node, ast.Subscript):
+        containers = _closed_values(node.value, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        selectors = _closed_values(node.slice, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        out = []
+        for container, selector in _name_product(containers, selectors):
+            if container is _NOT_CLOSED or selector is _NOT_CLOSED:
+                out.append(_NOT_CLOSED)
+                continue
+            try:
+                out.append(container[selector])
+            except (TypeError, KeyError, IndexError):
+                raise NameModelLimit("closed filename subscript cannot be evaluated") from None
+        return _bounded_names(out)
     if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Mod):
         left = _closed_values(node.left, resolve, depth + 1, seen) or [_NOT_CLOSED]
         right = _closed_values(node.right, resolve, depth + 1, seen) or [_NOT_CLOSED]
@@ -921,6 +935,16 @@ def _format_bound(spec: str) -> None:
         raise NameModelLimit("formatted filename specification exceeds the bounded name model")
 
 
+def _has_unknown(value: object) -> bool:
+    if value is _NOT_CLOSED:
+        return True
+    if isinstance(value, dict):
+        return any(_has_unknown(k) or _has_unknown(v) for k, v in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_unknown(v) for v in value)
+    return False
+
+
 def _partial_format(pattern: str, *, percent: bool = False) -> _NameTemplate:
     if percent:
         text = re.sub(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[A-Za-z]", "0", pattern)
@@ -951,6 +975,12 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
             if not isinstance(pattern, str):
                 raise NameModelLimit("percent filename pattern is not a string")
             if operand is _NOT_CLOSED:
+                out.append(_partial_format(pattern, percent=True))
+                continue
+            used = operand
+            if isinstance(operand, dict) and "%(" in pattern:
+                used = [operand.get(k, _NOT_CLOSED) for k in re.findall(r"%\(([^)]*)\)", pattern)]
+            if _has_unknown(used):
                 out.append(_partial_format(pattern, percent=True))
                 continue
             # Bound numeric widths before invoking Python's actual percent semantics.
@@ -1020,10 +1050,17 @@ def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> 
             return value
 
         def format_field(self, value, format_spec):
+            if _has_unknown(value):
+                raise UnknownOperand
             _format_bound(format_spec)
             rendered = super().format_field(value, format_spec)
             _bounded_names([rendered])
             return rendered
+
+        def convert_field(self, value, conversion):
+            if _has_unknown(value):
+                raise UnknownOperand
+            return super().convert_field(value, conversion)
 
     out = []
     formatter = FilenameFormatter()
