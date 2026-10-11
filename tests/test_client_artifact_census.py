@@ -817,6 +817,40 @@ def test_engine_html_attribute_forms_and_implicit_names_are_not_silently_skipped
     assert any(expression == "<implicit browser filename>" for _location, expression, _template in names)
 
 
+@pytest.mark.parametrize("attributes", [
+    'download="private.json" download="topology.svg"',
+    'download="topology.svg" download="private.json"',
+    'DOWNLOAD="private.json" download="topology.svg"',
+    'download="topology.svg" DoWnLoAd="private.json"',
+    'download="topology.svg" download="flow-path.svg"',
+    'download download="topology.svg"',
+])
+@pytest.mark.parametrize("element", ["a", "button"])
+@pytest.mark.parametrize("relative", ["new-root/export.html", "new-root/generated.py"])
+def test_duplicate_native_download_attributes_refuse_with_an_explicit_census_problem(
+    tmp_path, attributes, element, relative,
+):
+    html = f'<main>\n<{element} {attributes} href="blob:x">Save</{element}>\n</main>'
+    source = "HTML = " + repr(html) if relative.endswith(".py") else html
+    _write(tmp_path, relative, source)
+    with pytest.raises(ValueError, match=re.escape(
+        f"browser census refuses {relative}:2: duplicate HTML download attributes"
+    )):
+        census.download_names(tmp_path)
+    assert (relative, "'private.json'") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_single_native_download_attribute_and_separate_elements_keep_their_names(tmp_path):
+    _write(tmp_path, "new-root/export.html",
+           '<a DOWNLOAD="topology.svg" href="blob:x">Save</a>\n'
+           '<button download="flow-path.svg" href="blob:y">Save</button>')
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == ["topology.svg", "flow-path.svg"]
+    for _location, _expression, template in names:
+        assert dv.client_artifact_class("Downloads/" + template) is not None
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) is not None
+
+
 def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
     _write(tmp_path, "cisco_toolkit/explorer.html",
            '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'

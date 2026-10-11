@@ -1518,11 +1518,14 @@ class _HtmlDownloads(HTMLParser):
             return self.parse_bogus_comment(index)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        values = dict(attrs)
+        downloads = [value for attribute, value in attrs if attribute.casefold() == "download"]
+        if len(downloads) > 1:
+            # Browsers retain the first duplicate; selecting either value could hide a name.
+            raise ValueError("duplicate HTML download attributes")
         if tag == "script":
             self.in_script = True
-        if "download" in values:
-            name = values["download"]
+        if downloads:
+            name = downloads[0]
             expression = repr(name) if name else "<implicit browser filename>"
             self.names.append((self.getpos()[0], expression, name or None))
         raw = self.get_starttag_text() or ""
@@ -2147,8 +2150,12 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
             # HTMLParser owns native HTML attributes. JS/JSX syntax belongs to tokens.
             parser = _HtmlDownloads()
             if relative.endswith((".html", ".py")):
-                parser.feed(text)
-                parser.close()
+                try:
+                    parser.feed(text)
+                    parser.close()
+                except ValueError as error:
+                    line = first_line + parser.getpos()[0] - 1
+                    raise ValueError(f"browser census refuses {relative}:{line}: {error}") from error
                 found.extend((f"{relative}:{first_line + line - 1}", expression, template)
                              for line, expression, template in parser.names)
                 scripts.extend((first_line + line - 1, script,
