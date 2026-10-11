@@ -46,7 +46,7 @@ const INERT_TEXT_TAGS = new Set([
   "title",
   "xmp",
 ]);
-const CORE_OUTCOME_STYLESHEET = Object.freeze({
+const CORE_OUTCOME_STYLESHEETS = Object.freeze([Object.freeze({
   href: "/assets/index-B9KNmxWm.css",
   sha256: "bc9b52cac7e84bc24340532b3dbb1fa964200f2bfe2675924774b5cf902e6925",
   attributes: Object.freeze({
@@ -55,7 +55,7 @@ const CORE_OUTCOME_STYLESHEET = Object.freeze({
     href: "/assets/index-B9KNmxWm.css",
     rel: "stylesheet",
   }),
-});
+})]);
 
 function canonicalGzip(source) {
   const encoded = gzipSync(source, { level: 9 });
@@ -142,38 +142,41 @@ async function assertCoreOutcomeStyleCustody(
   );
   assert.equal(
     links.length,
-    1,
-    "Core outcome style custody requires exactly one built stylesheet",
+    CORE_OUTCOME_STYLESHEETS.length,
+    "Core outcome style custody requires the exact closed stylesheet set",
   );
-  const attributes = Object.fromEntries(
-    Object.entries(links[0].attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
-  );
+  const attributes = links.map((link) => Object.fromEntries(
+    Object.entries(link.attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  ));
   assert.deepEqual(
     attributes,
-    CORE_OUTCOME_STYLESHEET.attributes,
+    CORE_OUTCOME_STYLESHEETS.map((stylesheet) => stylesheet.attributes),
     "Core outcome built stylesheet attributes changed; a canonical build refresh is required",
   );
-  const href = attributes.href;
-  assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
-  assert.equal(href.includes("?"), false);
-  assert.equal(href.includes("#"), false);
-  assert.equal(
-    decodeURIComponent(href),
-    href,
-    "Core outcome stylesheet path must not contain encoded path or query syntax",
-  );
-  const stylesheet = await readStylesheet(href);
-  assert.ok(
-    stylesheet instanceof Uint8Array,
-    "Core outcome stylesheet loader returned non-byte content",
-  );
-  assert.equal(
-    createHash("sha256").update(stylesheet).digest("hex"),
-    CORE_OUTCOME_STYLESHEET.sha256,
-    "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
-  );
-  const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
-  assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+  for (const [index, descriptor] of CORE_OUTCOME_STYLESHEETS.entries()) {
+    const href = attributes[index].href;
+    assert.equal(href, descriptor.href);
+    assert.match(href, /^\/(?:assets|_next\/static\/css)\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+    assert.equal(href.includes("?"), false);
+    assert.equal(href.includes("#"), false);
+    assert.equal(
+      decodeURIComponent(href),
+      href,
+      "Core outcome stylesheet path must not contain encoded path or query syntax",
+    );
+    const stylesheet = await readStylesheet(href);
+    assert.ok(
+      stylesheet instanceof Uint8Array,
+      "Core outcome stylesheet loader returned non-byte content",
+    );
+    assert.equal(
+      createHash("sha256").update(stylesheet).digest("hex"),
+      descriptor.sha256,
+      "Core outcome built stylesheet bytes changed; a canonical build refresh is required",
+    );
+    const css = new TextDecoder("utf-8", { fatal: true }).decode(stylesheet);
+    assert.doesNotMatch(css, /@import\b/i, "Core outcome stylesheet custody rejects CSS imports");
+  }
 }
 
 function liveText(node) {
@@ -1255,15 +1258,19 @@ test("Core outcome locator guards reject hidden attributes and tag-independent d
 });
 
 test("Core outcome computed-visibility proof retains exact built stylesheet custody", async () => {
-  const stylesheetLink = [
-    '<link rel="stylesheet"',
-    ` href="${CORE_OUTCOME_STYLESHEET.href}"`,
-    ` data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}"`,
-    ' data-precedence="vite-rsc/importer-resources"/>',
-  ].join("");
+  const linkFor = (attributes, reverse = false) => {
+    const entries = Object.entries(attributes);
+    if (reverse) entries.reverse();
+    return `<link ${entries.map(([key, value]) => {
+      assert.match(key, /^[a-z][a-z0-9-]*$/i);
+      assert.doesNotMatch(value, /["&<>]/);
+      return `${key}="${value}"`;
+    }).join(" ")}/>`;
+  };
+  const stylesheetLinks = CORE_OUTCOME_STYLESHEETS.map(({ attributes }) => linkFor(attributes));
   const clean = [
     "<html><head>",
-    stylesheetLink,
+    ...stylesheetLinks,
     "</head><body>",
     '<section id="core-outcome-contracts" aria-label="Outcome success signals">',
     '<p data-core-outcome-slot="web.product.core.outcome.outcome.synthetic.success_signal">',
@@ -1271,53 +1278,35 @@ test("Core outcome computed-visibility proof retains exact built stylesheet cust
     "</p></section></body></html>",
   ].join("");
   await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(clean));
-  await assert.doesNotReject(() =>
-    assertCoreOutcomeStyleCustody(
-      clean.replace(
-        stylesheetLink,
-        `<link data-precedence="vite-rsc/importer-resources" data-rsc-css-href="${CORE_OUTCOME_STYLESHEET.href}" href="${CORE_OUTCOME_STYLESHEET.href}" rel="stylesheet"/>`,
-      ),
+  await assert.doesNotReject(() => assertCoreOutcomeStyleCustody(
+    clean.replace(
+      stylesheetLinks.join(""),
+      CORE_OUTCOME_STYLESHEETS.map(({ attributes }) => linkFor(attributes, true)).join(""),
     ),
-  );
+  ));
 
   const hostileMarkup = [
-    clean.replace(
-      "</head>",
-      '<style>#core-outcome-contracts{display:none!important}</style></head>',
-    ),
-    clean.replace(
-      '<section id="core-outcome-contracts"',
-      '<section style="opacity:0!important" id="core-outcome-contracts"',
-    ),
-    clean.replace(
-      "Visible",
-      '<span style="transform:scale(0)!important">Visible</span>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="STYLESHEET" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replace(
-      "</head>",
-      '<link rel="preload stylesheet" href="https://hostile.invalid/hide-core.css"></head>',
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      `${CORE_OUTCOME_STYLESHEET.href}?hide=1`,
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      `${CORE_OUTCOME_STYLESHEET.href}#hide`,
-    ),
-    clean.replaceAll(
-      CORE_OUTCOME_STYLESHEET.href,
-      "/assets/%2e%2e/hostile.css",
-    ),
+    clean.replace("</head>", '<style>#core-outcome-contracts{display:none!important}</style></head>'),
+    clean.replace('<section id="core-outcome-contracts"', '<section style="opacity:0!important" id="core-outcome-contracts"'),
+    clean.replace("Visible", '<span style="transform:scale(0)!important">Visible</span>'),
+    ...["stylesheet", "STYLESHEET", "preload stylesheet"].map((rel) =>
+      clean.replace("</head>", `<link rel="${rel}" href="https://hostile.invalid/hide-core.css"></head>`)),
   ];
+  for (const [index, descriptor] of CORE_OUTCOME_STYLESHEETS.entries()) {
+    const link = stylesheetLinks[index];
+    hostileMarkup.push(
+      clean.replace(link, ""),
+      clean.replace("</head>", `${link}</head>`),
+      clean.replace(link, link.replace("<link ", '<link media="not all" ')),
+      clean.replace(link, link.replace("<link ", '<link disabled="" ')),
+      clean.replaceAll(descriptor.href, `${descriptor.href}?hide=1`),
+      clean.replaceAll(descriptor.href, `${descriptor.href}#hide`),
+      clean.replaceAll(descriptor.href, "/assets/%2e%2e/hostile.css"),
+    );
+  }
+  if (new Set(stylesheetLinks).size > 1) {
+    hostileMarkup.push(clean.replace(stylesheetLinks.join(""), [...stylesheetLinks].reverse().join("")));
+  }
   for (const hostile of hostileMarkup) {
     await assert.rejects(
       () => assertCoreOutcomeStyleCustody(hostile),
@@ -1325,19 +1314,18 @@ test("Core outcome computed-visibility proof retains exact built stylesheet cust
     );
   }
 
-  const stylesheet = await readFile(
-    new URL(`../dist/client${CORE_OUTCOME_STYLESHEET.href}`, import.meta.url),
-  );
-  await assert.rejects(
-    () =>
-      assertCoreOutcomeStyleCustody(clean, async () =>
-        Buffer.concat([
-          stylesheet,
-          Buffer.from("\n#core-outcome-contracts{display:none!important}\n"),
-        ])),
-    /canonical build refresh is required/,
-    "Core outcome style custody accepted mutated stylesheet bytes",
-  );
+  for (const descriptor of CORE_OUTCOME_STYLESHEETS) {
+    await assert.rejects(
+      () => assertCoreOutcomeStyleCustody(clean, async (href) => {
+        const bytes = await readFile(new URL(`../dist/client${href}`, import.meta.url));
+        return href === descriptor.href
+          ? Buffer.concat([bytes, Buffer.from("\n#core-outcome-contracts{display:none!important}\n")])
+          : bytes;
+      }),
+      /canonical build refresh is required/,
+      "Core outcome style custody accepted mutated stylesheet bytes",
+    );
+  }
 });
 
 test("server-renders the exact nine Core outcome success-signal slots in source order", async () => {
@@ -1391,7 +1379,7 @@ test("server-renders the exact nine Core outcome success-signal slots in source 
       Object.entries(link.attributes ?? {}).sort(([left], [right]) => left.localeCompare(right)),
     );
     const href = attributes.href;
-    assert.match(href, /^\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
+    assert.match(href, /^\/(?:assets|_next\/static\/css)\/[A-Za-z0-9][A-Za-z0-9._-]*\.css$/);
     const bytes = await readFile(new URL(`../dist/client${href}`, import.meta.url));
     observedStylesheets.push({
       attributes, href, bytes: bytes.length,
