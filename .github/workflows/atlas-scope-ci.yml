@@ -62,7 +62,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python -I -B .github/scripts/scope_compile_handoff.py after --output "${{ runner.temp }}/scope-compiler-handoff"
       - name: Preserve the source-bound compiler family before the freshness gates
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-compiler-handoff-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/scope-compiler-handoff/
@@ -79,7 +79,7 @@ jobs:
           node review/mutation-check.mjs --only a3-outcome-only --only a3-binding-ignored --only a3-always-false --only a3-chosen-path-ignored --output "${{ runner.temp }}/a3-refusal-mutations" 2>&1 | tee "${{ runner.temp }}/a3-refusal-mutations.log"
       - name: Preserve alternate-ingress mutation observations
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-a3-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -94,7 +94,7 @@ jobs:
           node review/mutation-check.mjs --only b7-collection-wording --only b7-collected-membership --output "${{ runner.temp }}/b7-footer-mutations" 2>&1 | tee "${{ runner.temp }}/b7-footer-mutations.log"
       - name: Preserve Fabric-list mutation observations
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-b7-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -109,7 +109,7 @@ jobs:
           node review/mutation-check.mjs --only b7-status-inventory-membership --only b7-status-collection-wording --only b7-overlay-collection-wording --output "${{ runner.temp }}/b7-coverage-mutations" 2>&1 | tee "${{ runner.temp }}/b7-coverage-mutations.log"
       - name: Preserve inventory coverage mutation observations
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-b7-coverage-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -124,7 +124,7 @@ jobs:
           node review/mutation-check.mjs --only d2-roving-row-retention --output "${{ runner.temp }}/d2-grid-retention-mutations" 2>&1 | tee "${{ runner.temp }}/d2-grid-retention-mutations.log"
       - name: Preserve grid retention mutation observations
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-d2-grid-retention-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -158,7 +158,7 @@ jobs:
         run: node review/verify-b3-route-admission.mjs --output "${{ runner.temp }}/b3-browser" --expected-commit "${{ github.sha }}"
       - name: Preserve B3 browser verification evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-b3-browser-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/b3-browser/
@@ -182,7 +182,7 @@ jobs:
           node review/verify-grid-focus.mjs --expected-commit "${{ github.sha }}" --output "${{ runner.temp }}/grid-focus" 2>&1 | tee "${{ runner.temp }}/grid-focus.log"
       - name: Preserve grid-focus observations
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-grid-focus-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
