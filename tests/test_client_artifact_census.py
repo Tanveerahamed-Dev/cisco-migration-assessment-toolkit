@@ -42,6 +42,7 @@ import client_artifact_census as census  # tests/ is on sys.path (root conftest.
 from cisco_toolkit import distribution_verify as dv
 from cisco_toolkit import docmeta, gate_state, recall
 from cisco_toolkit import engine_log_path
+from portable.release_contract import _forbidden_client_artifact as bundle_client_name
 
 ROOT = Path(__file__).resolve().parents[1]
 CLASSES = tuple((key, match, pattern) for key, match, pattern, _producer in dv.CLIENT_ARTIFACT_NAME_CLASSES)
@@ -188,7 +189,9 @@ def test_a_new_caller_of_a_derived_writer_fails_the_census(tmp_path):
     literal_problems = census.suffix_literal_problems(root, non_client={})
     assert len(literal_problems) == 1 and "'.new.json'" in literal_problems[0]
     classified = {**_BASE_ROW, "COLLECT_PARSE_V3_23_0.py::emit": (1, census.CLIENT, ("snapshot",), "x")}
-    assert census.census_problems(root, census=classified, registry_keys=["snapshot"]) == []
+    assert census.census_problems(root, census=classified, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name '0.new.json': COLLECT_PARSE_V3_23_0.py::emit"
+    ]
 
 
 def test_a_writer_that_only_forwards_its_path_is_derived_too(tmp_path):
@@ -230,6 +233,30 @@ def test_a_row_must_name_every_class_its_sites_resolve_to(tmp_path):
     rows["COLLECT_PARSE_V3_23_0.py::emit"] = (1, census.NON_CLIENT, (), "x")
     assert any("comparison-receipt" in line for line in census.census_problems(
         root, census=rows, registry_keys=["comparison-receipt"]))
+
+
+@pytest.mark.parametrize("name,problem", [
+    ("delivery.snapshot.json", False), ("delivery.json", True), ("delivery", True),
+])
+def test_same_count_client_filename_replacement_is_rejected(tmp_path, name, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           f"from pathlib import Path\n\ndef emit():\n    Path({name!r}).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert census.suffix_literals(tmp_path) == [], "bare filenames have no suffix-appending node"
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"])
+    assert problems == ([f"client write site resolves to unclassified name {name!r}: "
+                         "cisco_toolkit/writer.py::emit"] if problem else [])
+    assert census.unclassified_site_literals(tmp_path) == (
+        {"cisco_toolkit/writer.py::emit": {name}} if problem else {})
+
+
+@pytest.mark.parametrize("disposition", [census.NON_CLIENT, census.OPERATOR_PATH, census.DELEGATED])
+def test_unclassified_operator_and_non_client_names_stay_explicit(tmp_path, disposition):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit(path):\n    Path(path or 'operator.json').write_text('x')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, disposition, (), "caller/operator/non-client name")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=[]) == []
+    assert census.unclassified_site_literals(tmp_path) == {"cisco_toolkit/writer.py::emit": {"operator.json"}}
 
 
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):
@@ -450,37 +477,75 @@ def test_the_csv_exceptions_are_exactly_the_retained_official_sources():
 # ---------------------------------------------------------------- the raw-capture owner
 
 
-#: Capture-shaped names the owner of record treats as captures inside a collection folder.
-_OWNER_CAPTURE_CORPUS = (
-    "show_version.txt", "show_running-config.txt", "backup-config.cfg", "router.conf",
-    "switch.config", "show_tech-support.log", "core1.out", "CORE-1-running-config",
-    "startup-config", "router-confg", "capture.pcap", "capture.pcapng", "trace.cap", "boot.etl",
-    "get_system_ha_status.txt", "moquery_-c_fvTenant.txt", "api_fmc_config_v1_devices.txt",
-    "ers_config_node.txt", "dataservice_device.txt", "aws_ec2_describe-instances.txt",
-)
-#: Owner captures that stay context-only: ordinary repository files share these shapes.
+#: The raw owner's open class also includes ordinary text and extension-less repository names.
 _CONTEXT_ONLY = ("notes.txt", "README", "Makefile", "output")
+#: Known difference: portable excludes ZIPs by container context; the global registry cannot.
+_BUNDLE_CONTEXT_ONLY = {".zip": "generic ZIPs also contain public product/distribution material"}
+
+
+def _bundle_owner_corpus(source: str) -> set[str]:
+    shapes = census.bundle_artifact_name_shapes(source)
+    names = {_probe(match, pattern).rsplit("/", 1)[-1] for match, pattern in shapes}
+    suffixes = {pattern for match, pattern in shapes if match == "suffix"}
+    stems = {"probe"} | {pattern + "probe" for match, pattern in shapes if match == "leaf-prefix"}
+    stems |= {"CORE-1" + pattern for match, pattern in shapes if match == "contains"}
+    names |= {stem + suffix for stem in stems for suffix in suffixes}
+    accepted = {name for name in names if bundle_client_name(f"site/{name}")}
+    for match, pattern in shapes:
+        witnesses = {name for name in accepted if (
+            name.endswith(pattern) if match == "suffix" else
+            name == pattern if match == "leaf" else
+            name.startswith(pattern) if match == "leaf-prefix" else pattern in name
+        )}
+        assert witnesses, f"bundle shape {match}:{pattern} has no owner-accepted witness"
+    return accepted
 
 
 def test_the_registry_reconciles_with_the_raw_capture_owner_both_ways():
     owner = _raw_capture_owner()
-    shape_kinds = {key for key, match, _p in CLASSES if match in {"capture", "contains"}}
-    shape_kinds |= {"config-file-cfg", "config-file-conf", "config-file-config", "command-output",
-                    "engine-log", "packet-capture-pcap", "packet-capture-pcapng",
-                    "packet-capture-cap", "event-trace-etl"}
-    # Owner -> registry: every name-identifiable capture shape is a registered class.
-    for name in _OWNER_CAPTURE_CORPUS:
-        assert owner(name) == "", f"the owner no longer calls {name} a capture"
-        assert dv.client_artifact_class(f"site/CORE-1/{name}") in shape_kinds, name
-    # Registry -> owner: no capture-shape class claims a name the owner calls structured.
+    gate = _repository_gate()
+    source = (ROOT / "portable/release_contract.py").read_text(encoding="utf-8")
+    names = _bundle_owner_corpus(source)
+    assert names, "bundle owner supplied no positive name shape"
+    seen_context = set()
+    for name in names:
+        if Path(name).suffix in _BUNDLE_CONTEXT_ONLY:
+            seen_context.add(Path(name).suffix)
+            continue
+        expected = dv.client_artifact_class(f"site/{name}")
+        assert expected is not None, f"bundle owner name {name} has no registry class"
+        assert gate._client_artifact_class(f"site/{name}") == expected
+        # The live raw owner decides capture vs structured artifact; derive its excluded
+        # suffixes from that same owner instead of restating selected class keys.
+        assert bool(owner(name)) == (Path(name).suffix.casefold() in {
+            *owner.__globals__["_STRUCTURED_CAPTURE_SUFFIXES"], owner.__globals__["_SCRUB_TEMP_SUFFIX"]
+        })
+    assert seen_context == set(_BUNDLE_CONTEXT_ONLY), "a documented bundle-only shape disappeared"
+    # Registry -> raw owner for actual capture/configuration selectors, including shapes the
+    # bundle does not yet own (.out and -confg). No finite corpus stands in for the open class.
     for key, match, pattern in CLASSES:
-        if key in shape_kinds:
+        if match in {"capture", "contains"}:
             leaf = _probe(match, pattern).rsplit("/", 1)[-1]
             assert owner(leaf) == "", f"{key} claims {leaf}, which the owner does not call a capture"
+    for suffix in {*owner.__globals__["_STRUCTURED_CAPTURE_SUFFIXES"], owner.__globals__["_SCRUB_TEMP_SUFFIX"]}:
+        assert owner(f"capture{suffix}"), f"raw owner exclusion {suffix} became a capture"
     # Context-only owner captures: named here, and deliberately not name classes.
     for name in _CONTEXT_ONLY:
         assert owner(name) == ""
         assert dv.client_artifact_class(f"site/{name}") is None
+
+
+def test_bundle_owner_shape_additions_are_derived_and_unregistered_shapes_refused():
+    source = (ROOT / "portable/release_contract.py").read_text(encoding="utf-8")
+    changed = source.replace('".db", ".sqlite",', '".new-capture", ".db", ".sqlite",', 1)
+    assert changed != source
+    shapes = census.bundle_artifact_name_shapes(changed)
+    assert ("suffix", ".new-capture") in shapes
+    assert dv.client_artifact_class("site/probe.new-capture") is None
+    assert _repository_gate()._client_artifact_class("site/probe.new-capture") is None
+    with pytest.raises(ValueError, match="unrecognised bundle client-name selector"):
+        census.bundle_artifact_name_shapes(
+            "def _forbidden_client_artifact(relative):\n    return custom_selector(relative)\n")
 
 
 def test_every_collector_capture_filename_is_a_registered_capture_class():
@@ -571,23 +636,58 @@ def test_named_producer_constants_are_registered_classes():
 
 
 def test_every_browser_download_name_classifies():
-    """P2: AssessHub and Atlas Scope downloads are client files the browser writes to disk."""
+    """SPA, Scope and engine explorer downloads must classify in both matchers."""
     names = census.download_names(ROOT)
-    assert len(names) >= 9, names
+    assert len(names) >= 15, names
+    gate = _repository_gate()
     problems = []
     for location, expression, template in names:
         relative = location.rsplit(":", 1)[0]
         if template is None:
             if (relative, expression) not in census.DOWNLOAD_NAME_PASSTHROUGH:
                 problems.append(f"undeclared non-literal download name {expression!r} at {location}")
-        elif dv.client_artifact_class(f"Downloads/{template}") is None:
-            problems.append(f"download name {template!r} at {location} matches no class")
+        else:
+            artifact_class = dv.client_artifact_class(f"Downloads/{template}")
+            if artifact_class is None:
+                problems.append(f"download name {template!r} at {location} matches no class")
+            assert gate._client_artifact_class(f"Downloads/{template}") == artifact_class
     assert problems == []
     used = {(location.rsplit(":", 1)[0], expression) for location, expression, _t in names}
     assert set(census.DOWNLOAD_NAME_PASSTHROUGH) <= used, "a declared pass-through no longer exists"
     classes = {dv.client_artifact_class(f"Downloads/{t}") for _l, _e, t in names if t}
     assert {"protocol-assurance-export", "comparison-receipt", "trend-comparisons",
             "scope-record-export"} <= classes
+    assert {path for path in _tracked() if path.startswith("cisco_toolkit/") and path.endswith(".html")} <= set(
+        census.download_sources(ROOT))
+
+
+def test_engine_html_download_discovery_includes_nested_calls_and_unknown_names(tmp_path):
+    _write(tmp_path, "cisco_toolkit/new-explorer.html",
+           '<a download="flow-frames.txt">export</a>\n'
+           '<script>\n'
+           'downloadBlob(new Blob([payload], {type: "text/plain"}), "flow-path.svg");\n'
+           'downloadBlob(blob, "ipv6-routing-blockers-" + scope + ".json");\n'
+           'downloadBlob(blob, "unregistered.json");\n'
+           'a.download = unknown;\n'
+           '</script>\n')
+    names = census.download_names(tmp_path)
+    assert {template for _location, _expression, template in names} == {
+        "flow-frames.txt", "flow-path.svg", "ipv6-routing-blockers-0.json", "unregistered.json", None}
+    for template in ("flow-frames.txt", "flow-path.svg", "ipv6-routing-blockers-0.json"):
+        assert dv.client_artifact_class(f"Downloads/{template}") is not None
+        assert _repository_gate()._client_artifact_class(f"Downloads/{template}") is not None
+    assert dv.client_artifact_class("Downloads/unregistered.json") is None
+    assert ("cisco_toolkit/new-explorer.html", "unknown") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_engine_html_attribute_forms_and_implicit_names_are_not_silently_skipped(tmp_path):
+    _write(tmp_path, "cisco_toolkit/explorer.html",
+           '<a download=topology.svg></a>\n<a href="data.json" download></a>\n'
+           '<script>a.setAttribute("download", "flow-frames.txt");</script>\n')
+    names = census.download_names(tmp_path)
+    assert {template for _location, _expression, template in names} == {
+        "topology.svg", "flow-frames.txt", None}
+    assert any(expression == "<implicit browser filename>" for _location, expression, _template in names)
 
 
 def test_the_comparison_download_suffix_is_the_registered_class():

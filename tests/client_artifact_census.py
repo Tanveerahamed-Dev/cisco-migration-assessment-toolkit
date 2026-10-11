@@ -34,6 +34,8 @@ This module closes the class from the producer side, statically (every file is p
 * **Names actually written.** Wherever a site's target resolves to a literal name (assignments in
   the function and module constants are followed), its class must be one the row names, and a
   ``non-client`` row must resolve to none (:func:`resolved_site_classes`).
+  Resolved literals that match no class are retained (:func:`unclassified_site_literals`) and
+  refused for ``client`` rows; keeping the write count unchanged cannot hide a renamed artifact.
 * **Suffix literals.** :func:`suffix_literals` collects every literal appended to an output stem
   (``+``, f-string tails, ``%`` and ``.format`` templates, ``with_suffix``/``with_name``,
   ``str.join``), and each one must be a registered class or a :data:`NON_CLIENT_SUFFIX_LITERALS`
@@ -41,8 +43,10 @@ This module closes the class from the producer side, statically (every file is p
 
 Bounds, stated rather than implied: a bare file name joined onto a directory for READING is not a
 write; dynamic dispatch (``getattr(module, spec.writer_name)``) is tied by the docmeta registry, not
-here; files written by a subprocess are the subprocess's own rows; ``.ps1`` and JavaScript writers
-are tied by literal checks in ``tests/test_client_artifact_census.py``.
+  here; files written by a subprocess are the subprocess's own rows; ``.ps1`` and browser writers
+are tied by producer-name checks in ``tests/test_client_artifact_census.py``. The browser census
+includes every tracked engine HTML file, direct download-helper calls and download attributes;
+it is not general JavaScript alias/data-flow analysis. Unknown names require explicit disposition.
 
 :func:`census_problems` and :func:`suffix_literal_problems` are the whole check;
 ``tests/test_client_artifact_census.py`` asserts both are empty, so a new sidecar fails CI until it
@@ -61,6 +65,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -586,9 +591,6 @@ def write_sites(root: Path = ROOT) -> dict[str, int]:
 
 # --------------------------------------------------------------------------- resolved names
 
-_FILE_NAME = re.compile(r"[^/\\]*\.[A-Za-z0-9][A-Za-z0-9-]*$")
-
-
 def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str]:
     """Literal name templates an expression can produce; an unknown part is ``0``."""
     if depth > 4:
@@ -736,17 +738,16 @@ def gitignore_block_in(text: str) -> str | None:
 
 # --------------------------------------------------------------------------- download names
 
-#: Where browser downloads are named: AssessHub's SPA and Atlas Scope (non-test sources).
+#: Browser producers, plus every tracked engine HTML file (discovered below).
 DOWNLOAD_SOURCE_ROOTS = ("webapp/frontend/src", "atlas-scope/src")
 _DOWNLOAD_PATTERNS = (
     re.compile(r"\bdownload=\{\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[^}]+?)\s*\}"),
-    re.compile(r"\bdownload=(\"[^\"]*\")"),
+    re.compile(r"\bdownload\s*=\s*(\"[^\"]*\"|'[^']*')"),
     re.compile(r"\.download\s*=\s*([^;\n]+?)\s*;"),
     re.compile(r"\bexportFilename=\{\s*(`[^`]*`|\"[^\"]*\"|[^}]+?)\s*\}"),
     re.compile(r"\bexportFilename\s*=\s*(`[^`]*`|\"[^\"]*\"|[A-Za-z_$][\w$]*)\s*,"),
-    re.compile(r"\bdownloadJsonDocument\(\s*(?:[^;]*?),\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[A-Za-z_$][\w$.]*(?:\([^()]*\))?)\s*\)",
-               re.S),
 )
+_DOWNLOAD_CALL = re.compile(r"\b(downloadJsonDocument|downloadBlob|setAttribute)\s*\(")
 #: Download-name expressions that are not literals, each with why its name still classifies.
 DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
     ("webapp/frontend/src/receiptExport.ts", "filename"):
@@ -755,6 +756,8 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
         "safeFilename appends COMPARISON_RECEIPT_SUFFIX to any caller name (unit-tested)",
     ("webapp/frontend/src/components/ComparisonDecision.tsx", "DEFAULT_COMPARISON_EXPORT"):
         "atlas-receipt + COMPARISON_RECEIPT_SUFFIX",
+    ("cisco_toolkit/blast_radius_explorer.html", "filename"):
+        "downloadBlob's own parameter; every direct caller's filename is scanned",
 }
 
 
@@ -763,9 +766,9 @@ def _is_frontend_test(relative: str) -> bool:
     return bool(re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", name)) or "/e2e" in relative or "/__tests__/" in relative
 
 
-def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
-    """Every browser download name: ``(file:line, expression, literal template or None)``."""
-    found: list[tuple[str, str, str | None]] = []
+def download_sources(root: Path = ROOT) -> list[str]:
+    """SPA/Scope sources and all tracked engine HTML, never a named explorer-file subset."""
+    found: set[str] = set()
     for base in DOWNLOAD_SOURCE_ROOTS:
         directory = root / base
         if not directory.is_dir():
@@ -776,19 +779,121 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
             relative = path.relative_to(root).as_posix()
             if _is_frontend_test(relative):
                 continue
-            text = path.read_text(encoding="utf-8")
-            for pattern in _DOWNLOAD_PATTERNS:
-                for match in pattern.finditer(text):
-                    expression = match.group(1).strip()
-                    line = text.count("\n", 0, match.start()) + 1
-                    found.append((f"{relative}:{line}", expression, _download_template(expression)))
+            found.add(relative)
+    if (root / ".git").exists():
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.html"], cwd=root, check=True, capture_output=True
+        ).stdout.decode("utf-8").split("\0")
+        found.update(p for p in listed if p.startswith("cisco_toolkit/") and p.endswith(".html"))
+    elif (root / "cisco_toolkit").is_dir():
+        found.update(p.relative_to(root).as_posix() for p in (root / "cisco_toolkit").rglob("*.html"))
+    return sorted(found)
+
+
+def _js_parts(text: str, start: int, stop: str, separator: str) -> list[str]:
+    """Split a direct JS argument/concatenation expression without splitting nested values.
+
+    This is a bounded lexical reader, not execution or general JS data-flow inference. Unknown
+    expressions remain unknown and require an explicit pass-through declaration.
+    """
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    begin = start
+    index = start
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif text[index:index + 2] == "//":
+            end = text.find("\n", index + 2)
+            index = len(text) if end < 0 else end
+            continue
+        elif text[index:index + 2] == "/*":
+            end = text.find("*/", index + 2)
+            index = len(text) if end < 0 else end + 2
+            continue
+        elif char == stop and depth == 0:
+            parts.append(text[begin:index].strip())
+            return parts
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == separator and depth == 0:
+            parts.append(text[begin:index].strip())
+            begin = index + 1
+        index += 1
+    if not stop:
+        parts.append(text[begin:].strip())
+    return parts
+
+
+class _HtmlDownloads(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.names: list[tuple[int, str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if "download" in values:
+            name = values["download"]
+            expression = repr(name) if name else "<implicit browser filename>"
+            self.names.append((self.getpos()[0], expression, name or None))
+
+
+def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
+    """Direct browser download names: ``(file:line, expression, template or None)``."""
+    found: list[tuple[str, str, str | None]] = []
+    for relative in download_sources(root):
+        text = (root / relative).read_text(encoding="utf-8")
+        for pattern in _DOWNLOAD_PATTERNS:
+            for match in pattern.finditer(text):
+                expression = match.group(1).strip()
+                line = text.count("\n", 0, match.start()) + 1
+                found.append((f"{relative}:{line}", expression, _download_template(expression)))
+        for match in _DOWNLOAD_CALL.finditer(text):
+            if re.search(r"\bfunction\s*$", text[max(0, match.start() - 30):match.start()]):
+                continue  # declaration, not a download; its .download assignment is still scanned
+            arguments = _js_parts(text, match.end(), ")", ",")
+            if match.group(1) == "setAttribute" and (
+                not arguments or _download_template(arguments[0]) != "download"
+            ):
+                continue
+            expression = arguments[1] if len(arguments) >= 2 else "<unresolved filename>"
+            line = text.count("\n", 0, match.start()) + 1
+            found.append((f"{relative}:{line}", expression, _download_template(expression)))
+        if relative.endswith(".html"):
+            parser = _HtmlDownloads()
+            parser.feed(text)
+            found.extend((f"{relative}:{line}", expression, template)
+                         for line, expression, template in parser.names)
     return sorted(set(found))
 
 
 def _download_template(expression: str) -> str | None:
-    if expression[:1] in {"`", '"', "'"} and expression[-1:] == expression[:1]:
-        return re.sub(r"\$\{[^{}]*\}", "0", expression[1:-1])
-    return None
+    parts = _js_parts(expression, 0, "", "+")
+    templates = []
+    literal = False
+    for part in parts:
+        if part[:1] in {"`", '"', "'"} and part[-1:] == part[:1]:
+            literal = True
+            if part.startswith("`"):
+                templates.append(re.sub(r"\$\{[^{}]*\}", "0", part[1:-1]))
+            else:
+                try:
+                    templates.append(ast.literal_eval(part))
+                except (ValueError, SyntaxError):
+                    return None
+        else:
+            templates.append("0")
+    return "".join(templates) if literal else None
 
 
 def response_filenames(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
@@ -830,6 +935,55 @@ def response_filenames(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
 
 
 # --------------------------------------------------------------------------- the census
+
+def bundle_artifact_name_shapes(source: str) -> list[tuple[str, str]]:
+    """Derive portable's finite name selectors; refuse unfamiliar positive predicate forms.
+
+    Negative full-path/container exceptions constrain shapes rather than adding name classes.
+    """
+    tree = ast.parse(source)
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name == "_forbidden_client_artifact")
+    result = next(n.value for n in function.body if isinstance(n, ast.Return))
+    shapes: set[tuple[str, str]] = set()
+
+    def literals(node: ast.AST) -> list[str]:
+        value = ast.literal_eval(node)
+        values = [value] if isinstance(value, str) else list(value)
+        if not values or any(not isinstance(v, str) for v in values):
+            raise ValueError("bundle name selector is not a nonempty literal string collection")
+        return values
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                visit(value)
+            return
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right, op = node.left, node.comparators[0], node.ops[0]
+            if isinstance(left, ast.Name) and left.id in {"suffix", "leaf"} and isinstance(op, ast.In):
+                kind = "suffix" if left.id == "suffix" else "leaf"
+                shapes.update((kind, value) for value in literals(right))
+                return
+            if (isinstance(left, ast.Constant) and isinstance(left.value, str)
+                    and isinstance(right, ast.Name) and right.id == "leaf" and isinstance(op, ast.In)):
+                shapes.add(("contains", left.value))
+                return
+            if (isinstance(left, ast.Name) and left.id == "folded"
+                    and isinstance(op, (ast.NotIn, ast.NotEq))
+                    and isinstance(right, ast.Name) and right.id in {"allowed_snapshot", "allowed_container"}):
+                return
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "leaf"
+                and node.func.attr in {"startswith", "endswith"} and len(node.args) == 1):
+            kind = "leaf-prefix" if node.func.attr == "startswith" else "suffix"
+            shapes.update((kind, value) for value in literals(node.args[0]))
+            return
+        raise ValueError(f"unrecognised bundle client-name selector: {ast.unparse(node)}")
+
+    visit(result)
+    return sorted(shapes)
+
 
 _CAPTURES = (
     "capture-show", "capture-get-system", "capture-aws", "capture-moquery", "capture-api",
@@ -1455,6 +1609,7 @@ def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:
 # --------------------------------------------------------------------------- the check
 
 _ANALYSES: dict[str, tuple[dict[str, int], set[str], dict[str, set[str]]]] = {}
+_UNCLASSIFIED_LITERALS: dict[str, dict[str, set[str]]] = {}
 
 
 def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set[str]]]:
@@ -1464,6 +1619,7 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         program = _Program(Path(root))
         counts: Counter[str] = Counter()
         resolved: dict[str, set[str]] = {}
+        unclassified: dict[str, set[str]] = {}
         _classes, classify = _registry()
         for file in program.files:
             for function in [file.top, *file.functions]:
@@ -1476,12 +1632,21 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                     for target in targets:
                         for template in _templates(target, resolve):
                             leaf = re.split(r"[/\\]", template)[-1]
-                            if leaf and leaf != "0" and _FILE_NAME.search(leaf):
+                            if leaf and leaf != "0":
                                 class_key = classify(f"customer-output/{leaf}")
                                 if class_key:
                                     resolved.setdefault(function.key, set()).add(class_key)
+                                else:
+                                    unclassified.setdefault(function.key, set()).add(leaf)
         _ANALYSES[key] = (dict(sorted(counts.items())), set(program.writers), resolved)
+        _UNCLASSIFIED_LITERALS[key] = unclassified
     return _ANALYSES[key]
+
+
+def unclassified_site_literals(root: Path = ROOT) -> dict[str, set[str]]:
+    """Keep resolved names that match no class, including extension-less fixed names."""
+    analysis(root)
+    return _UNCLASSIFIED_LITERALS[str(Path(root).resolve())]
 
 
 def census_problems(
@@ -1495,6 +1660,7 @@ def census_problems(
         registry_keys = [row[0] for row in _registry()[0]]
     known = frozenset(registry_keys)
     observed, writers, resolved = analysis(root)
+    unclassified = unclassified_site_literals(root)
     problems: list[str] = []
     for key in sorted(set(observed) - set(census)):
         problems.append(f"unclassified write site: {key} ({observed[key]} write(s))")
@@ -1510,6 +1676,9 @@ def census_problems(
             problems.append(f"census row gives no reason: {key}")
         if disposition == CLIENT and not keys:
             problems.append(f"client write site names no registry class: {key}")
+        if disposition == CLIENT:
+            for leaf in sorted(unclassified.get(key, set())):
+                problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
         for class_key in keys:
             if class_key not in known:
                 problems.append(f"write site names an unregistered class {class_key!r}: {key}")
