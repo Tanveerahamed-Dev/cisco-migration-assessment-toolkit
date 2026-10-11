@@ -12985,6 +12985,273 @@
       "mode": "must_keep",
       "review": "PR656-comment6112757283",
       "note": "A quoted option-like literal outside an owned sh/bash command-string operand remains public data."
+    },
+    {
+      "id": "r5:sh-strong-version-wrapper",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "sh -c 'SCHEMATIC-R5-WRAPPER-501 -v 2c -c EXAMPLE-R5-COMMUNITY-501 SCHEMATIC-HOST-501'\n",
+      "secrets": [
+        "EXAMPLE-R5-COMMUNITY-501"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "r5:bash-strong-security-level-wrapper",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "bash -c \"SCHEMATIC-R5-WRAPPER-502 -l authPriv -c EXAMPLE-R5-COMMUNITY-502 SCHEMATIC-HOST-502\"\n",
+      "secrets": [
+        "EXAMPLE-R5-COMMUNITY-502"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input.",
+      "expect": "bash -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r5:sh-two-weak-wrapper",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "sh -c 'SCHEMATIC-R5-WRAPPER-503 -v 3 -a SHA -c EXAMPLE-R5-COMMUNITY-503 SCHEMATIC-HOST-503'\n",
+      "secrets": [
+        "EXAMPLE-R5-COMMUNITY-503"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "r5:two-level-nested-strong-wrapper",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "sh -c \"bash -c 'SCHEMATIC-R5-WRAPPER-504 -v 2c -c EXAMPLE-R5-COMMUNITY-504 SCHEMATIC-HOST-504'\"\n",
+      "secrets": [
+        "EXAMPLE-R5-COMMUNITY-504"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input.",
+      "expect": "sh -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r5:public-single-weak-control",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "sh -c 'SCHEMATIC-R5-PUBLIC-505 -v 3 -n sidecar --count 4'\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input."
+    },
+    {
+      "id": "r5:public-nested-command-control",
+      "finding": "R5-P0-nested-main-witness",
+      "text": "sh -c \"bash -c 'printf SCHEMATIC-R5-PUBLIC-506'\"\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Fresh schematic current-main-witness regression case; not a newly executed refuter input."
+    },
+    {
+      "id": "r5:single-quoted-false-physical-placeholder",
+      "finding": "R5-P0-physical-placeholder",
+      "text": "snmpget -c '<reda\\cted>' SCHEMATIC-R5-HOST-507\n",
+      "secrets": ["<reda\\cted>"],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "The synthetic literal-backslash private community is not the mechanically canonical physical marker; decoder normalization grants no exemption.",
+      "expect": "snmpget -c '<redacted>' SCHEMATIC-R5-HOST-507\n"
+    },
+    {
+      "id": "r5:double-quoted-false-physical-placeholder",
+      "finding": "R5-P0-physical-placeholder",
+      "text": "snmpget -c \"<re\\dacted>\" SCHEMATIC-R5-HOST-508\n",
+      "secrets": ["<re\\dacted>"],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "A backslash-normalized alias of PH is a private actual synthetic operand, including inside double quotes.",
+      "expect": "snmpget -c \"<redacted>\" SCHEMATIC-R5-HOST-508\n"
+    },
+    {
+      "id": "r5:attached-single-quoted-false-physical-placeholder",
+      "finding": "R5-P0-physical-placeholder",
+      "text": "snmpget -c'<reda\\cted>' SCHEMATIC-R5-HOST-509\n",
+      "secrets": ["<reda\\cted>"],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "The physical marker rule also applies after an attached credential-option offset.",
+      "expect": "snmpget -c'<redacted>' SCHEMATIC-R5-HOST-509\n"
+    },
+    {
+      "id": "r5:bare-canonical-physical-placeholder-control",
+      "finding": "R5-P0-physical-placeholder",
+      "text": "snmpget -c <redacted> SCHEMATIC-R5-HOST-510\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "An exact mechanically canonical PH payload remains a clean marker; it is never inferred by decoding a different word."
+    },
+    {
+      "id": "r5:quoted-canonical-emitted-placeholder-control",
+      "finding": "R5-P0-physical-placeholder",
+      "text": "snmpget -c '<redacted>' SCHEMATIC-R5-HOST-511\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only",
+      "note": "Matching syntactic outer quotes around the actual PH payload are the producer's canonical emitted syntax, not an escape/joined-quote alias."
+    },
+    {
+      "id": "r5:creator-single-quote-literal-bytes",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a 'M\\D5' -x 'A\\E\\S' SCHEMATIC-R5-USER-512\n",
+      "secrets": [
+        "M\\D5",
+        "A\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a '<redacted>' -x '<redacted>' SCHEMATIC-R5-USER-512\n"
+    },
+    {
+      "id": "r5:creator-double-quote-literal-bytes",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a \"M\\D5\" -x \"A\\E\\S\" SCHEMATIC-R5-USER-513\n",
+      "secrets": [
+        "M\\D5",
+        "A\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a \"<redacted>\" -x \"<redacted>\" SCHEMATIC-R5-USER-513\n"
+    },
+    {
+      "id": "r5:creator-attached-quoted-literal-bytes",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a'M\\D5' -x'A\\E\\S' SCHEMATIC-R5-USER-514\n",
+      "secrets": [
+        "M\\D5",
+        "A\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a'<redacted>' -x'<redacted>' SCHEMATIC-R5-USER-514\n"
+    },
+    {
+      "id": "r5:creator-wholly-quoted-attached-aliases",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user '-aM\\D5' '-xA\\E\\S' SCHEMATIC-R5-USER-515\n",
+      "secrets": [
+        "-aM\\D5",
+        "-xA\\E\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Full attached argument words are counted to avoid incidental prefix matches. The exact oracle retains both public flags/outer quotes and removes their synthetic literal-backslash payloads.",
+      "expect": "net-snmp-create-v3-user '-a<redacted>' '-x<redacted>' SCHEMATIC-R5-USER-515\n"
+    },
+    {
+      "id": "r5:creator-joined-quote-algorithm-aliases",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a M'D'5 -x A\"E\"S SCHEMATIC-R5-USER-516\n",
+      "secrets": [
+        "M'D'5",
+        "A\"E\"S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> SCHEMATIC-R5-USER-516\n"
+    },
+    {
+      "id": "r5:creator-quoted-canonical-names-are-private",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a 'MD5' -x \"AES\" SCHEMATIC-R5-USER-517\n",
+      "secrets": [
+        "MD5",
+        "AES"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a '<redacted>' -x \"<redacted>\" SCHEMATIC-R5-USER-517\n"
+    },
+    {
+      "id": "r5:creator-unquoted-escape-algorithm-aliases",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a M\\D5 -x A\\ES SCHEMATIC-R5-USER-518\n",
+      "secrets": [
+        "M\\D5",
+        "A\\ES"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-create-v3-user -a <redacted> -x <redacted> SCHEMATIC-R5-USER-518\n"
+    },
+    {
+      "id": "r5:config-creator-quoted-algorithm-aliases",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-config --create-snmpv3-user -a 'S\\HA' -x 'DE\\S' SCHEMATIC-R5-USER-519\n",
+      "secrets": [
+        "S\\HA",
+        "DE\\S"
+      ],
+      "structural": [],
+      "mode": "must_redact",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption.",
+      "expect": "net-snmp-config --create-snmpv3-user -a '<redacted>' -x '<redacted>' SCHEMATIC-R5-USER-519\n"
+    },
+    {
+      "id": "r5:creator-bare-canonical-public-control",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a MD5 -x AES SCHEMATIC-R5-USER-520\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption."
+    },
+    {
+      "id": "r5:config-creator-bare-canonical-public-control",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-config --create-snmpv3-user -a SHA-256 -x AES128 SCHEMATIC-R5-USER-521\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption."
+    },
+    {
+      "id": "r5:creator-bare-lowercase-public-control",
+      "finding": "R5-P0-creator-raw-bytes",
+      "text": "net-snmp-create-v3-user -a md5 -x aes SCHEMATIC-R5-USER-522\n",
+      "secrets": [],
+      "structural": [],
+      "mode": "must_keep",
+      "owner_scope": "W60b round5 P0-only; ambiguous creator credential slots only",
+      "note": "Synthetic creator credential operands: only exact raw canonical algorithm words are public. Quoted, escaped or joined-quote normalization does not grant a public exemption."
     }
   ],
   "review_differential": [
@@ -19386,6 +19653,313 @@
       "expect_refusal": true
     }
   ],
+  "scope_dispositions": {
+    "owner_decision": "Round 5: qualify only the two P0 families; retain legacy 884 and all W60 gates. Preserve rejected round-4 records; W60c owns P1/P2 and unsupported extra scope.",
+    "creator_slot_policy": "Supervisor answered: exact RAW-byte public algorithm matching applies only to ambiguous net-snmp-create-v3-user and delegated create-user credential slots. Legacy general SNMP/configuration public metadata controls remain unchanged.",
+    "placeholder_policy": "Every checked slot authenticates the actual mechanically canonical PH payload bytes, including emitted matching quote syntax; backslash/joined-quote decoding never creates a placeholder exemption.",
+    "reverted_source": "908509bcf133f85f39b828710e79b973e27c1573",
+    "forward_revert_commit": "7b89e2f5",
+    "historical_round4_rows": [
+      "r4:nested-sh-unknown-strong-version",
+      "r4:nested-bash-unknown-strong-level",
+      "r4:nested-sh-unknown-credential-flags",
+      "r4:nested-single-weak-control",
+      "r4:nested-public-command-control",
+      "r4:creator-single-quote-literal-slashes",
+      "r4:creator-double-quote-literal-slashes",
+      "r4:config-creator-single-quote-literal-slashes",
+      "r4:community-single-quote-false-placeholder",
+      "r4:community-double-quote-false-placeholder",
+      "r4:creator-real-public-algorithm-control",
+      "r4:creator-unquoted-shell-escape-control",
+      "r4:community-real-placeholder-control",
+      "r4:directive-mixed-case-debug-option",
+      "r4:directive-mixed-case-public-operands",
+      "r4:directive-mixed-case-attached-format-option",
+      "r4:directive-lowercase-debug-control",
+      "r4:directive-public-options-without-credential",
+      "r4:authorization-prefix-449",
+      "r4:authorization-prefix-450",
+      "r4:response-header-comment-control",
+      "r4:shell-spelled-known-command-452",
+      "r4:shell-spelled-known-command-453",
+      "r4:shell-spelled-known-command-454",
+      "r4:shell-spelled-command-prefix-control",
+      "r4:explicit-quoted-private-scalar-456",
+      "r4:explicit-quoted-private-scalar-457",
+      "r4:explicit-quoted-private-scalar-458",
+      "r4:explicit-real-placeholder-field-control",
+      "r4:noncredential-public-protocol-field-control",
+      "r4:genuine-sh-bash-nested-strong-shape",
+      "r4:genuine-bash-sh-nested-credential-shape",
+      "r4:shell-spelled-executable-after-pipe-boundary",
+      "r4:creator-attached-single-quoted-private-values",
+      "r4:creator-wholly-quoted-attached-private-words",
+      "r4:creator-authentic-attached-quoted-public-algorithms",
+      "r4:community-attached-quoted-false-placeholder",
+      "r4:nested-public-sh-bash-command-control",
+      "r4:nested-public-named-snmp-version-control",
+      "r4:echo-quoted-public-option-literal-control"
+    ],
+    "historical_round4_verifier_controls": [
+      "r4-verifier:nested-unknown-wrapper",
+      "r4-verifier:quote-literal-creator-values",
+      "r4-verifier:mixed-directive-public-option",
+      "r4-verifier:physical-comment-placeholder-secret-tail",
+      "r4-verifier:shell-spelled-named-command",
+      "r4-verifier:explicit-quoted-punctuation-scalar",
+      "r4-verifier:known-scheme-comment-placeholder-secret-tail",
+      "r4-verifier:placeholder-header-placeholder-secret-tail"
+    ],
+    "deferred_to_w60c": [
+      {
+        "id": "r4:nested-sh-unknown-credential-flags",
+        "finding": "R4-P0-nested",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:directive-mixed-case-debug-option",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:directive-mixed-case-public-operands",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:directive-mixed-case-attached-format-option",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:directive-lowercase-debug-control",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:directive-public-options-without-credential",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:authorization-prefix-449",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:authorization-prefix-450",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:response-header-comment-control",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:shell-spelled-known-command-452",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:shell-spelled-known-command-453",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:shell-spelled-known-command-454",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:shell-spelled-command-prefix-control",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:explicit-quoted-private-scalar-456",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:explicit-quoted-private-scalar-457",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:explicit-quoted-private-scalar-458",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:explicit-real-placeholder-field-control",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:noncredential-public-protocol-field-control",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:genuine-bash-sh-nested-credential-shape",
+        "finding": "R4-P0-nested",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4:shell-spelled-executable-after-pipe-boundary",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:mixed-directive-public-option",
+        "finding": "R4-P1-directive",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:physical-comment-placeholder-secret-tail",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:shell-spelled-named-command",
+        "finding": "R4-P2-executable",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:explicit-quoted-punctuation-scalar",
+        "finding": "R4-P2-field",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:known-scheme-comment-placeholder-secret-tail",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      },
+      {
+        "id": "r4-verifier:placeholder-header-placeholder-secret-tail",
+        "finding": "R4-P1-prefix",
+        "disposition": "W60c deferred; no round-5 closure claim"
+      }
+    ],
+    "superseded_p0_evidence": [
+      {
+        "id": "r4:nested-sh-unknown-strong-version",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:nested-bash-unknown-strong-level",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:nested-single-weak-control",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:nested-public-command-control",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-single-quote-literal-slashes",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-double-quote-literal-slashes",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:config-creator-single-quote-literal-slashes",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:community-single-quote-false-placeholder",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:community-double-quote-false-placeholder",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-real-public-algorithm-control",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-unquoted-shell-escape-control",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:community-real-placeholder-control",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:genuine-sh-bash-nested-strong-shape",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-attached-single-quoted-private-values",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-wholly-quoted-attached-private-words",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:creator-authentic-attached-quoted-public-algorithms",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:community-attached-quoted-false-placeholder",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:nested-public-sh-bash-command-control",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:nested-public-named-snmp-version-control",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4:echo-quoted-public-option-literal-control",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4-verifier:nested-unknown-wrapper",
+        "finding": "R4-P0-nested",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      },
+      {
+        "id": "r4-verifier:quote-literal-creator-values",
+        "finding": "R4-P0-literal",
+        "disposition": "Round-4 history retained; round-5 active cases own the current assertion"
+      }
+    ],
+    "historical_test_dispositions": {
+      "nested_shell_depth_budget": "Deferred to W60c: introduced in rejected round 4, beyond the two current-main-witness P0 families approved for round 5."
+    },
+    "differential_policy": "Every retained input, including history/deferred rows, executes on pre-W60, round3 and current-main archives plus candidate. Any secret actually removed by a baseline must remain removed."
+  },
   "performance_families": [
     {
       "id": "T1",

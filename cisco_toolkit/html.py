@@ -5111,7 +5111,8 @@ def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
         ids = list(heapq.merge(ids, (m.span("id") for m in _REDACT_JUNOS_NTP_ID_RE.finditer(line))))
     public = ([(a, b) for a, b, kind in _redact_argv_walk(line)[0]
                if chr(92) in line[a:b]
-               and _redact_public_argv_operand(kind, _redact_decode_word(line[a:b])[0])]
+               and _redact_public_argv_operand(kind, line[a:b] if kind in {"create-auth", "create-priv"}
+                                                else _redact_decode_word(line[a:b])[0])]
               if config_slots and "-" in line else [])
     if ids or public:
         parts, position = [], 0
@@ -5800,6 +5801,11 @@ def _redact_directive_config(line: str, directive) -> bool:
 
 def _redact_snmp_shape(line: str) -> bool:
     """A strong pair or two different weak pairs, after decoding their actual argument values."""
+    # Retain main's raw witness path, including a witness inside sh/bash's quoted -c word.
+    # The existing argv walk then owns that entire word as the required -c operand.
+    if (_REDACT_SNMP_SHAPE_STRONG_RE.search(line)
+            or len({m.group(0)[:2] for m in _REDACT_SNMP_SHAPE_WEAK_RE.finditer(line)}) >= 2):
+        return True
     words = [_redact_decode_word(m.group(0))[0] for m in _REDACT_ARGV_WORD_RE.finditer(line)]
     weak, i = set(), 0
     while i < len(words):
@@ -5867,7 +5873,7 @@ def _redact_argv_option(text: str, options, shape_only: bool):
 
 
 def _redact_public_argv_operand(kind: str, word: str) -> bool:
-    """Known public values only in their semantically decoded argument slots."""
+    """Public metadata values; creator credential waivers require the raw operand bytes."""
     # The creator script dispatches both letter cases by these exact values;
     # other strings, including snmpcmd-only aliases, are passphrases.
     if kind == "create-auth":
@@ -5917,9 +5923,9 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
         if sep + 1 >= len(positions):
             return None
         a, core = start + positions[sep + 1], core[sep + 1:]
-    if _redact_public_argv_operand(kind, core):
+    if _redact_public_argv_operand(kind, raw if kind in {"create-auth", "create-priv"} else core):
         return None                                          # validated protocol, version or security level
-    if not core or core == _REDACT_PLACEHOLDER:
+    if not core or core == _REDACT_PLACEHOLDER and line[a:b] == _REDACT_PLACEHOLDER:
         return None
     return a, b
 

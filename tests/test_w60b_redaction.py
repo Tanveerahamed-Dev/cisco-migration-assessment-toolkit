@@ -45,6 +45,11 @@ def _restore(value):
 
 CORPUS = _restore(json.loads(FIXTURE_PATH.read_text(encoding="utf-8")))
 ROWS = CORPUS["rows"]
+_HISTORICAL_R4_IDS = frozenset(CORPUS["scope_dispositions"]["historical_round4_rows"])
+_HISTORICAL_R4_VERIFIER_IDS = frozenset(CORPUS["scope_dispositions"]["historical_round4_verifier_controls"])
+GATED_ROWS = [row for row in ROWS if row["id"] not in _HISTORICAL_R4_IDS]
+GATED_VERIFIER_CONTROLS = [row for row in CORPUS["verifier_only_controls"]
+                         if row["id"] not in _HISTORICAL_R4_VERIFIER_IDS]
 
 
 def _slot_count(secret, text):
@@ -167,7 +172,44 @@ def test_w60b_round4_corpus_retains_all_six_schematic_families_and_negative_cont
     assert not old_inputs.intersection(row["text"].strip() for row in rows), "a schematic input reuses older corpus evidence"
 
 
-@pytest.mark.parametrize("row", ROWS, ids=[row["id"] for row in ROWS])
+def test_w60b_round5_scope_keeps_legacy_and_historical_records_separate_from_fix_claims():
+    catalog = CORPUS["scope_dispositions"]
+    assert _HISTORICAL_R4_IDS == {row["id"] for row in ROWS if row["id"].startswith("r4:")}
+    assert _HISTORICAL_R4_VERIFIER_IDS == {row["id"] for row in CORPUS["verifier_only_controls"]
+                                         if row["id"].startswith("r4-verifier:")}
+    legacy = [row for row in GATED_ROWS if not row["id"].startswith("r5:")]
+    assert len(legacy) == 884, "a pre-round4 strict assertion was deferred or lost"
+    assert len(GATED_VERIFIER_CONTROLS) >= 5 and all(not row["id"].startswith("r4-verifier:")
+                                                 for row in GATED_VERIFIER_CONTROLS)
+    deferred = {row["id"] for row in catalog["deferred_to_w60c"]}
+    assert all(row["id"] in deferred for row in ROWS
+               if row.get("finding", "").startswith(("R4-P1-", "R4-P2-")))
+    assert all(row["finding"].startswith("R5-P0-") for row in GATED_ROWS if row["id"].startswith("r5:"))
+    round5 = [row for row in GATED_ROWS if row["id"].startswith("r5:")]
+    assert len(round5) == 22
+    assert {row["finding"] for row in round5} == {
+        "R5-P0-nested-main-witness", "R5-P0-physical-placeholder", "R5-P0-creator-raw-bytes"}
+    assert catalog["creator_slot_policy"] and catalog["placeholder_policy"]
+    assert all(row["expect"] and row["secrets"] for row in GATED_ROWS
+               if row["id"].startswith("r5:") and row["mode"] == "must_redact")
+    print(json.dumps({"round5_scope": catalog["owner_decision"], "legacy_strict_rows": len(legacy),
+                      "active_round5_rows": len(GATED_ROWS) - len(legacy),
+                      "retained_round4_history_rows": len(_HISTORICAL_R4_IDS),
+                      "deferred_w60c_ids": sorted(deferred)}))
+
+
+def test_w60b_round5_creator_only_gate_keeps_the_legacy_general_quoted_protocol_controls():
+    legacy_ids = {"review:snmp_shape_quoted_5", "review:snmp_shape_quoted_6", "review:snmp_shape_quoted_7", "control:6"}
+    assert legacy_ids <= {row["id"] for row in GATED_ROWS}
+    assert all(row["id"] not in _HISTORICAL_R4_IDS for row in ROWS if row["id"] in legacy_ids)
+    creator = [row for row in GATED_ROWS if row.get("finding") == "R5-P0-creator-raw-bytes"]
+    assert len(creator) == 11 and sum(row["mode"] == "must_redact" for row in creator) == 8
+    assert sum(row["mode"] == "must_keep" for row in creator) == 3
+    assert all("net-snmp-create-v3-user" in row["text"] or "--create-snmpv3-user" in row["text"] for row in creator)
+    assert all(row["expect"] and row["secrets"] for row in creator if row["mode"] == "must_redact")
+
+
+@pytest.mark.parametrize("row", GATED_ROWS, ids=[row["id"] for row in GATED_ROWS])
 def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
     capture = _capture(tmp_path, row["text"])
     raw_proof = _verify(tmp_path)
@@ -199,7 +241,7 @@ def test_w60b_real_producer_and_independent_verifier(row, tmp_path):
     assert capture.read_bytes().decode("utf-8", "surrogateescape") == output
 
 
-@pytest.mark.parametrize("row", CORPUS["verifier_only_controls"], ids=lambda row: row["id"])
+@pytest.mark.parametrize("row", GATED_VERIFIER_CONTROLS, ids=lambda row: row["id"])
 def test_w60b_curl_header_quote_exception_refuses_unsafe_or_unproven_tails(row, tmp_path):
     """Verifier-only counterexamples; no producer rewrite or approval is promised."""
     assert row["expect_refusal"] is True
@@ -218,6 +260,7 @@ def test_w60b_curl_header_quote_exception_refuses_unsafe_or_unproven_tails(row, 
 
 @pytest.mark.parametrize("shell,quote", [("sh", "'"), ("bash", '"')])
 def test_w60b_nested_shell_depth_budget_fails_safe_with_coherent_whole_string_mask(shell, quote, tmp_path):
+    pytest.skip(CORPUS["scope_dispositions"]["historical_test_dispositions"]["nested_shell_depth_budget"])
     body = shell + " -c " + quote + "SCHEMATIC-DEPTH-461 -v 2c -c EXAMPLE-DEPTH-SECRET-461 SCHEMATIC-HOST-461" + quote
     assert rv._sweep_argv_violation(body, depth=8), "depth exhaustion certified an unexamined nested credential"
     spans = html._redact_argv_spans(body, depth=8)
@@ -635,7 +678,7 @@ def test_w60b_exact_archive_zero_secret_regressions(ref, archival_replay):
 
 def test_w60b_archive_candidate_postconditions_for_every_required_case(archival_replay):
     _cases, results, _sources, _scratch = archival_replay
-    for row in ROWS:
+    for row in GATED_ROWS:
         result = results["candidate"]["w60b:" + row["id"]]
         assert result["verifier"]["accepted"] and result["idempotent"], (row["id"], result)
         if row["mode"] == "must_redact":

@@ -1890,11 +1890,11 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
     """
     if kind not in {"protocol", "version", "level", "create-auth", "create-priv"}:
         return False
-    decoded = _sweep_decode_word(text)[0]
     if kind == "create-auth":
-        return decoded in _SWEEP_CREATE_AUTH_ALGORITHMS
+        return text in _SWEEP_CREATE_AUTH_ALGORITHMS
     if kind == "create-priv":
-        return decoded in _SWEEP_CREATE_PRIV_ALGORITHMS
+        return text in _SWEEP_CREATE_PRIV_ALGORITHMS
+    decoded = _sweep_decode_word(text)[0]
     core = decoded.casefold()
     return (kind == "protocol" and core in _SWEEP_SNMP_PROTOCOLS
             or kind == "version" and core in {"1", "2c", "3"}
@@ -1903,6 +1903,13 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
 
 def _sweep_snmp_shape(line: str) -> bool:
     """Recognize argument semantics, not their optional quote/escape spelling."""
+    # Preserve 00647ebd's existing raw witness path. It can see a valid vector inside
+    # a quoted sh/bash command word, allowing the existing outer '-c' operand walk
+    # to inspect that same word. No new carrier or whole-string grammar is introduced.
+    if _SWEEP_SNMP_SHAPE_STRONG_RE.search(line):
+        return True
+    if len({match.group(0)[1] for match in _SWEEP_SNMP_SHAPE_WEAK_RE.finditer(line)}) >= 2:
+        return True
     words = [_sweep_decode_word(m.group(0))[0] for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
     weak: set[str] = set()
     i = 0
@@ -2005,14 +2012,20 @@ def _sweep_operand_bad(text: str, kind: str) -> bool:
     # An ordinary rest-of-line smux password can be megabytes. It needs no per-character
     # mapping allocation; quote/escape decoding is needed only when those characters exist.
     core = text if not any(char in text for char in ("\"", "'", chr(92))) else _sweep_decode_word(text)[0]
+    raw = text
     if kind in ("userinfo", "userpct"):
         sep = ":" if kind == "userinfo" else "%"
         if sep not in core:
             return False
         core = core.partition(sep)[2]
+        raw = raw.partition(sep)[2]
     if _sweep_public_operand(text, kind):
         return False
-    return bool(core) and core != _PLACEHOLDER
+    marker = raw in {
+        _PLACEHOLDER, "'" + _PLACEHOLDER + "'", '"' + _PLACEHOLDER + '"',
+        "'" + _PLACEHOLDER, '"' + _PLACEHOLDER, _PLACEHOLDER + "'", _PLACEHOLDER + '"',
+    }
+    return bool(core) and not marker
 
 
 def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
