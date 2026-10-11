@@ -1315,7 +1315,8 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # finding facets admit the owner's public category vocabulary, its read-only category-to-source-section map
     # (what a category count was computed over) and its stored-row facet fold, by exact name, beside the
     # severity owner.
-    # Stored carriage adds only its public vocabulary, selectors, validators and identity joins.
+    # Stored carriage adds only its public vocabulary, selectors, validators and identity joins, and (G14 v2) the
+    # owner's read-only code decoders, its interface-field tuple and its PVST role join (carriage_role_rows).
     # Its compute function and whole module remain outside this exact read-only import boundary.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
@@ -1333,6 +1334,11 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
                "cisco_toolkit.vlan_carriage:validate_vlan_carriage", "cisco_toolkit.vlan_carriage:vlan_row_identity",
                "cisco_toolkit.vlan_carriage:carriage_observation_admission",
                "cisco_toolkit.vlan_carriage:carriage_host_identity", "cisco_toolkit.vlan_carriage:carriage_port_identity",
+               "cisco_toolkit.vlan_carriage:CARRIAGE_INTERFACE_FIELDS", "cisco_toolkit.vlan_carriage:carriage_join_interface",
+               "cisco_toolkit.vlan_carriage:carriage_role_index", "cisco_toolkit.vlan_carriage:carriage_role_rows",
+               "cisco_toolkit.vlan_carriage:carriage_code_offsets", "cisco_toolkit.vlan_carriage:carriage_row_cables",
+               "cisco_toolkit.vlan_carriage:carriage_row_counts", "cisco_toolkit.vlan_carriage:carriage_end_char",
+               "cisco_toolkit.vlan_carriage:decode_end",
                "cisco_toolkit.protocol_assurance:BoundSnapshot",
                "cisco_toolkit.protocol_assurance:bound_snapshot_source"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}

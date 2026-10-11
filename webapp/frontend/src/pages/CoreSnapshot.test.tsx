@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, vlanCarriageFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, vlanCarriageFixture, carriagePageFixture, carriageSummaryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
   deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture, findingFacetsFixture } from "../test/projectionFixtures";
 
 function Harness() {
@@ -361,16 +361,27 @@ describe("Core snapshot route", () => {
     expect(new URL(link.getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
     expect(screen.getAllByText("Synthetic input was not collected").length).toBeGreaterThan(0);
   });
-  it("renders supplied cable members under an uncertain list without inventing carriage at a missing end", async () => {
+  it("shows the engine's carriage summary and loads one lazy page without inventing carriage at a missing end", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/ui-projection/inventory/carriage?")) return new Response(JSON.stringify(carriagePageFixture()));
       if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false }));
       throw new Error(`Unexpected raw-source or recomputation request: ${url}`);
     });
     show("/snapshots/1?view=inventory&inventory=vlans");
     fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
-    expect(screen.getByText("Synthetic supplied carriage census remains incomplete")).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    expect(within(panel).getByText("Synthetic supplied carriage census remains incomplete")).toBeInTheDocument();
+    expect(within(panel).getByText("edge not collected")).toBeInTheDocument();
+    expect(within(panel).getByText("3")).toBeInTheDocument();
+    // The summary is all the inventory row carries: no cable row is rendered before the page is requested.
+    expect(screen.queryAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(0);
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    await waitFor(() => expect(screen.getAllByRole("region").filter((node) =>
+      node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(2));
+    const requested = fetcher.mock.calls.map(([url]) => String(url)).find((url) => url.includes("/inventory/carriage?"))!;
+    expect(new URL(requested, "http://localhost").searchParams.toString()).toBe("vlan_index=0&offset=0&limit=25");
     const regions = screen.getAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"));
     expect(regions.map((node) => node.getAttribute("aria-label"))).toEqual(["Cable carriage source row 2", "Cable carriage source row 0"]);
     expect(within(regions[0]).getAllByText("forwarding")).toHaveLength(2);
@@ -380,12 +391,31 @@ describe("Core snapshot route", () => {
     expect(missing.queryByText("forwarding")).not.toBeInTheDocument();
     expect(missing.queryByText("stp_blocked")).not.toBeInTheDocument();
     expect(missing.getByRole("group", { name: "Cable 0 member 0" })).toHaveTextContent("synthetic-b");
+    expect(within(panel).getByText("Cables 1–2 of 2 assessed cables")).toBeInTheDocument();
     fireEvent.click(within(regions[0]).getByRole("button", { name: "Qualifications for relation" }));
     const drawer = screen.getByRole("dialog");
     expect(drawer).toHaveTextContent("not simultaneous forwarding or data-plane delivery");
-    expect(drawer).toHaveTextContent("/vlan_carriage/rows/2/relation");
-    expect(drawer).toHaveTextContent("/cable_map/cables/2");
+    expect(drawer).toHaveTextContent("/vlan_carriage/rows/0/codes");
+    expect(drawer).toHaveTextContent("/vlan_carriage/cables/2");
     expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+  });
+  it.each([
+    ["a drifted summary", () => carriagePageFixture(1, { ...carriageSummaryFixture(0), state: "published" }), "Carriage summary changed. Reload this view before continuing."],
+    ["another snapshot", () => carriagePageFixture(2), "Carriage snapshot identity changed. Reload this view before continuing."],
+    ["another page window", () => carriagePageFixture(1, carriageSummaryFixture(0), 1), "Carriage page context changed. Reload this view before continuing."],
+  ])("refuses a carriage page from %s instead of merging it", async (_name, page, message) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/ui-projection/inventory/carriage?")) return new Response(JSON.stringify(page()));
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(0);
   });
   describe.each([
     { view: "inventory", path: "/snapshots/1?view=inventory", label: "Finding severity for edge/a~b" },

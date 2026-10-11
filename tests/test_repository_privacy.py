@@ -253,6 +253,33 @@ def test_guard_rejects_engagement_paths_and_client_markers(tmp_path):
     assert any("src/module.py" in item and "client marker" in item for item in violations)
 
 
+def _escaped_marker() -> str:
+    # Assembled so neither this source nor its \u-decoded text carries the marker or its escaped spelling.
+    return "al" + "\\" + "u006a" + "azeera fleet"
+
+
+def test_guard_flags_a_marker_written_with_unicode_escapes_in_tracked_text(tmp_path):
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    _track(root, "src/module.json", '{"site": "' + _escaped_marker() + '"}\n')
+    violations = module.inspect_tracked_tree(root)
+    assert any("src/module.json" in item and "client marker" in item for item in violations)
+    assert module._escape_decoded("plain text") == "plain text"
+    assert module._escape_decoded("caf" + "\\" + "u00c9") == "caf\u00e9"
+
+
+def test_guard_flags_a_marker_written_with_unicode_escapes_in_indexed_text(tmp_path):
+    module = _privacy_module()
+    root = _repo(tmp_path)
+    path = root / "src" / "module.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"site": "' + _escaped_marker() + '"}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "--", "src/module.json"], cwd=root, check=True)
+    path.write_text("{}\n", encoding="utf-8")
+    violations = module.inspect_tracked_tree(root)
+    assert any("src/module.json" in item and "indexed text" in item for item in violations)
+
+
 def test_guard_allows_reviewed_synthetic_snapshots_and_examples(tmp_path):
     module = _privacy_module()
     root = _repo(tmp_path)

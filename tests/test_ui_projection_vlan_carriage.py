@@ -1,49 +1,88 @@
-"""Stored G14 carriage facts; real producer fixtures and declared hostile mutations.
+"""Stored G14 carriage facts (``vlan_carriage/2``): a per-VLAN summary in the inventory and a lazy page.
 
-These controls are authored for hosted execution. They never replace missing stored
-carriage with the legacy simulation predicate or reconstruct a VLAN universe.
+Fixtures come from the real producers (capture text read back by build_interfaces, compute_cable_map, the typed STP
+producer and compute_vlan_carriage); hostile mutations of the stored snapshot are declared. These controls are
+authored for hosted execution. They never replace missing stored carriage with the legacy simulation predicate or
+reconstruct a VLAN universe.
 """
 from copy import deepcopy
-from dataclasses import asdict
 import json
 
 import pytest
 from jsonschema import Draft202012Validator
 
 from cisco_toolkit import analyze, ui_projection as uip, vlan_carriage
-from test_vlan_carriage import A, B, PORT, _fleet, _observation
+from test_vlan_carriage import A, B, LONG, PORT, _built, _bundle, _cdp, _ios_trunk, _link, _observation, _stored, _stp
+
+PUB, NC, UV, AU, CBE = "published", "not_collected", "unverified", "analysis_unavailable", "collected_but_empty"
 
 
-def snapshot(allowed=("10", "10"), observations=None, vlans=None):
-    interfaces = _fleet(*allowed)
+def snapshot(tmp_path, allowed=("10", "10"), observations=None, vlans=None, interfaces=None):
+    if interfaces is None:
+        interfaces = _link(tmp_path, (allowed[0] or None, True), (allowed[1] or None, True))
     cables = analyze.compute_cable_map(interfaces)
     rows = [{"vlan": 10}] if vlans is None else vlans
-    stored = vlan_carriage.compute_vlan_carriage(cables, interfaces, observations, rows)
+    stored = vlan_carriage.compute_vlan_carriage(cables, _stored(interfaces), observations, rows)
     assert vlan_carriage.validate_vlan_carriage(stored) == (True, "ok")
-    return {"interfaces": {h: {p: asdict(rec) for p, rec in records.items()}
-                           for h, records in interfaces.items()},
-            "cable_map": cables, "stp_topology_observations": observations,
+    return {"interfaces": _stored(interfaces), "cable_map": cables, "stp_topology_observations": observations,
             "vlan_cutover": rows, "vlan_carriage": stored}
 
 
-def selection(snap, index=0):
+def trunks(tmp_path, n):
+    """n parallel unbundled trunks Gi1/0/1..n, each allowing VLAN 10, built from capture text."""
+    ports = [f"Gi1/0/{i + 1}" for i in range(n)]
+    return {host: _built(tmp_path, host, {"show interfaces trunk": _ios_trunk([(p, "10", "1", True) for p in ports]),
+                                          "show cdp neighbors detail": _cdp([(p, peer, p) for p in ports])})
+            for host, peer in ((A, B), (B, A))}
+
+
+def summary(snap, index=0):
     return uip.project_inventory(snap)["vlans"]["rows"]["items"][index]["selections"]["carriage"]
+
+
+def source(snap):
+    return uip.project_inventory(snap)["vlans"]["selection_sources"]["carriage"]
+
+
+def page(snap, index=0, offset=0, limit=200):
+    return uip.project_vlan_carriage(snap, index, offset, limit)["carriage"]
+
+
+def counts(fact):
+    return {name: (fact[name]["state"], fact[name]["value"]) for name in uip.CARRIAGE_SUMMARY_COUNTS}
+
+
+def _resolves(snap, pointer):
+    return uip._stored_pointer_tokens(uip._Ctx(snap), pointer) is not None
 
 
 def checked(snap):
     before = deepcopy(snap)
+    schema = uip.ui_projection_schema()
     result = uip.project(snap)
-    errors = list(Draft202012Validator(uip.ui_projection_schema()).iter_errors(result))
+    errors = list(Draft202012Validator(schema).iter_errors(result))
     assert not errors, [(list(error.path), error.message) for error in errors]
+    document = Draft202012Validator({"$ref": "#/$defs/CarriageDocument", "$defs": schema["$defs"]})
+    rows = result["inventory"]["vlans"]["rows"]["items"]
+    pages = []
+    for row in rows:
+        carriage = uip.project_vlan_carriage(snap, row["index"], 0, 200)
+        errors = list(document.iter_errors(carriage))
+        assert not errors, [(list(error.path), error.message) for error in errors]
+        assert carriage["carriage"]["summary"] == row["selections"]["carriage"]
+        assert carriage["engine"] == result["engine"]
+        pages.append(carriage)
     assert snap == before
-    # Strict serialization and every emitted ref must still address the input.
-    json.dumps(result, allow_nan=False)
-    pending = [result]
+    # Strict serialization, and every emitted ref and published subject must still address the input.
+    json.dumps([result, pages], allow_nan=False)
+    pending = [result, pages]
     while pending:
         item = pending.pop()
         if isinstance(item, dict):
             for ref in item.get("refs", []):
-                assert uip._stored_pointer_tokens(uip._Ctx(snap), ref["pointer"]) is not None, ref
+                assert _resolves(snap, ref["pointer"]), ref
+            if item.get("state") == PUB and isinstance(item.get("subject"), str) and "basis" in item:
+                assert _resolves(snap, item["subject"]), item["subject"]
             pending.extend(item.values())
         elif isinstance(item, list):
             pending.extend(item)
@@ -51,84 +90,99 @@ def checked(snap):
 
 
 @pytest.mark.parametrize("allowed,observations,state,relation,shape,basis", [
-    (("10", "10"), None, "published", "forwarding", "both_ends", "stored_trunk_allowance"),
-    (("none", "none"), None, "published", "not_carried", "both_ends", "stored_trunk_allowance"),
-    (("", ""), {A: _observation("BLK"), B: _observation()}, "published", "stp_blocked", "both_ends", "typed_pvst"),
-    (("", ""), {A: _observation("BLK")}, "not_collected", None, "one_end_only", "none"),
-    (("", ""), None, "not_collected", None, "no_evidence", "none"),
+    (("10", "10"), None, PUB, "forwarding", "both_ends", "stored_trunk_allowance"),
+    (("none", "none"), None, PUB, "not_carried", "both_ends", "stored_trunk_allowance"),
+    (("", ""), "blk", PUB, "stp_blocked", "both_ends", "typed_pvst"),
+    (("", ""), "one", NC, None, "one_end_only", "none"),
+    (("", ""), None, NC, None, "no_evidence", "none"),
 ])
-def test_actual_stored_relations_and_missing_ends_are_distinct(allowed, observations, state, relation, shape, basis):
-    snap = snapshot(allowed, observations)
-    result = selection(snap)
-    assert result["state"] == state
-    assert len(result["items"]) == 1
-    row = result["items"][0]
+def test_actual_stored_relations_and_missing_ends_are_distinct(tmp_path, allowed, observations, state, relation, shape,
+                                                               basis):
+    observed = {"blk": {A: _observation("BLK"), B: _observation()}, "one": {A: _observation("BLK")}}.get(observations)
+    snap = snapshot(tmp_path, allowed, observed)
+    result = summary(snap)
+    assert result["state"] == state and result["vlan_index"] == 0
+    assert {ref["pointer"] for ref in result["refs"]} == {"/vlan_carriage/rows/0", "/vlan_carriage/coverage"}
+    expected = {"assessed": 1, "edge_not_collected": 0, "forwarding": int(relation == "forwarding"),
+                "stp_blocked": int(relation == "stp_blocked"), "not_carried": int(relation == "not_carried"),
+                "held": int(relation is None)}
+    assert counts(result) == {name: (PUB, value) for name, value in expected.items()}
+    carriage = page(snap)
+    assert (carriage["page"]["total"], carriage["page"]["returned"], carriage["page"]["has_more"]) == (1, 1, False)
+    row = carriage["page"]["items"][0]
     assert (row["relation"]["state"], row["relation"]["value"]) == (state, relation)
     assert row["evidence_shape"]["value"] == shape and row["basis"]["value"] == basis
-    assert row["pointer"] == "/vlan_carriage/rows/0"
-    assert row["cable_pointer"] == "/cable_map/cables/0"
+    assert row["pointer"] == "/vlan_carriage/cables/0" and row["cable_pointer"] == "/cable_map/cables/0"
+    assert row["relation"]["subject"] == "/vlan_carriage/rows/0/codes"
     assert row["ends"]["value"]["a"] == A
     assert "stored_vlan_carriage_scope" in row["relation"]["caveats"]
     assert row["members"]["items"][0]["a"]["port"]["value"] == PORT
     if shape == "one_end_only":
         member = row["members"]["items"][0]
         assert member["a"]["signal"]["value"] == "blocked"
-        assert member["b"]["signal"]["state"] == "not_collected"
-        assert member["b"]["signal"]["value"] is None
+        assert member["b"]["signal"]["state"] == NC and member["b"]["signal"]["value"] is None
     checked(snap)
 
 
-def test_projection_is_stored_only_and_does_not_call_any_carriage_or_root_producer(monkeypatch):
-    snap = snapshot(vlans=[{"vlan": 10}, {"vlan": 20}])
+def test_projection_is_stored_only_and_does_not_call_any_carriage_or_root_producer(tmp_path, monkeypatch):
+    snap = snapshot(tmp_path, vlans=[{"vlan": 10}, {"vlan": 20}])
+
     def forbidden(*_args, **_kwargs):
         raise AssertionError("rendering must not recompute")
+
     monkeypatch.setattr(vlan_carriage, "compute_vlan_carriage", forbidden)
     monkeypatch.setattr(analyze, "_link_carries", forbidden)
     monkeypatch.setattr(analyze, "build_network_model", forbidden)
     monkeypatch.setattr(analyze, "compute_vlan_cutover_matrix", forbidden)
-    assert selection(snap, 0)["items"][0]["relation"]["value"] == "forwarding"
-    assert selection(snap, 1)["items"][0]["relation"]["value"] == "not_carried"
+    assert page(snap, 0)["page"]["items"][0]["relation"]["value"] == "forwarding"
+    assert page(snap, 1)["page"]["items"][0]["relation"]["value"] == "not_carried"
+    assert counts(summary(snap, 1))["not_carried"] == (PUB, 1)
     del snap["vlan_carriage"]
-    held = selection(snap)
-    assert held["state"] == "not_collected" and held["items"] == []
+    held = summary(snap)
+    assert held["state"] == NC and all(state == NC and value is None for state, value in counts(held).values())
+    assert page(snap)["page"]["total"] == 0
     checked(snap)
 
 
-@pytest.mark.parametrize("damage", ["unknown_schema", "malformed_tail", "unknown_relation", "extra_field",
+@pytest.mark.parametrize("damage", ["unknown_schema", "malformed_tail", "unknown_code", "extra_field",
                                    "withheld_relation", "boolean_census", "missing_member", "vlan_moved",
                                    "cable_moved", "member_moved"])
-def test_invalid_stored_contract_or_current_identity_never_recomputes(damage):
-    snap = snapshot()
+def test_invalid_stored_contract_or_current_identity_never_recomputes(tmp_path, damage):
+    snap = snapshot(tmp_path)
     stored = snap["vlan_carriage"]
     row = stored["rows"][0]
     if damage == "unknown_schema":
         stored["schema"] = "vlan_carriage/unknown"
     elif damage == "malformed_tail":
         stored["rows"].append(None)
-    elif damage == "unknown_relation":
-        row["relation"] = "assumed_forwarding"
+    elif damage == "unknown_code":
+        row["codes"] = "~" + row["codes"][1:]
     elif damage == "extra_field":
         row["health"] = "safe"
     elif damage == "withheld_relation":
-        row["state"] = "not_collected"
+        row["state"] = NC
     elif damage == "boolean_census":
         stored["coverage"]["emitted_pairs"] = True
     elif damage == "missing_member":
-        row["members"] = []
+        stored["cables"][0]["members"] = []
     elif damage == "vlan_moved":
         snap["vlan_cutover"][0]["vlan"] = 20
     elif damage == "cable_moved":
         snap["cable_map"]["cables"][0]["a"] = "another-host"
     else:
         snap["cable_map"]["cables"][0]["members"][0]["a_port"] = "Gi1/0/2"
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and listing["items"] == []
-    assert any(ref["pointer"] == "/vlan_carriage" for ref in listing["refs"])
+    result = summary(snap)
+    assert result["state"] == UV
+    # A refused section never reads as zero: every count carries the refusal.
+    assert all(state == UV and value is None for state, value in counts(result).values())
+    assert source(snap)["state"] == UV
+    assert any(ref["pointer"] == "/vlan_carriage" for ref in source(snap)["refs"])
+    assert page(snap)["page"]["total"] == 0 and page(snap)["page"]["items"] == []
     checked(snap)
 
 
-def test_empty_stored_cables_and_absent_section_have_different_states():
-    snap = snapshot()
+def test_empty_stored_cables_and_absent_section_have_different_states(tmp_path):
+    snap = snapshot(tmp_path)
     snap["devices"] = {host: {"hostname": host} for host in (A, B)}
     snap["collection_completeness"] = {
         "devices": [], "summary": {"inventory": 2, "partial": 0, "not_collected": 0},
@@ -136,16 +190,17 @@ def test_empty_stored_cables_and_absent_section_have_different_states():
     snap["cable_map"]["cables"] = []
     snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
         snap["cable_map"], snap["interfaces"], None, snap["vlan_cutover"])
-    assert selection(snap)["state"] == "collected_but_empty"
-    assert selection(snap)["items"] == []
+    result = summary(snap)
+    assert result["state"] == CBE and counts(result)["assessed"] == (PUB, 0)
+    assert page(snap)["page"]["total"] == 0
     checked(snap)
     del snap["vlan_carriage"]
-    assert selection(snap)["state"] == "not_collected"
+    assert summary(snap)["state"] == NC
 
 
 @pytest.mark.parametrize("gap", ["blind_device", "absent_record", "unreadable_rows", "summary_gap"])
-def test_empty_carriage_is_not_clean_absence_under_fleet_coverage_gap(gap):
-    snap = snapshot()
+def test_empty_carriage_is_not_clean_absence_under_fleet_coverage_gap(tmp_path, gap):
+    snap = snapshot(tmp_path)
     snap["devices"] = {host: {"hostname": host} for host in (A, B)}
     snap["cable_map"]["cables"] = []
     snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
@@ -162,39 +217,41 @@ def test_empty_carriage_is_not_clean_absence_under_fleet_coverage_gap(gap):
         snap["collection_completeness"]["devices"] = [None]
     else:
         snap["collection_completeness"]["summary"]["partial"] = 1
-    result = selection(snap)
-    assert result["state"] == "not_collected" and result["items"] == []
+    result = summary(snap)
+    assert result["state"] == NC
     assert "empty list" in result["reason"]
     if gap == "blind_device":
         assert {"pointer": "/collection_completeness/devices/0", "role": "witness"} in result["refs"]
     checked(snap)
 
 
-def test_nonempty_carriage_keeps_local_facts_and_fleet_blind_spot_qualification():
-    snap = snapshot()
+def test_nonempty_carriage_keeps_local_facts_and_fleet_blind_spot_qualification(tmp_path):
+    snap = snapshot(tmp_path)
     snap["devices"] = {host: {"hostname": host} for host in (A, B)}
     snap["collection_completeness"] = {
         "devices": [{"host": B, "status": "partial"}],
         "summary": {"inventory": 2, "partial": 1, "not_collected": 0},
     }
-    result = selection(snap)
-    assert result["state"] == "published" and len(result["items"]) == 1
+    result = summary(snap)
+    assert result["state"] == PUB
     assert "fleet_lists_exclude_blind_devices" in result["caveats"]
     assert {"pointer": "/collection_completeness/devices/0", "role": "witness"} in result["refs"]
-    assert result["items"][0]["relation"]["value"] == "forwarding"
+    assert counts(result)["forwarding"] == (PUB, 1)
+    assert "fleet_lists_exclude_blind_devices" in result["forwarding"]["caveats"]
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == "forwarding"
     checked(snap)
 
 
-def test_source_uncertainty_keeps_readable_member_evidence_and_no_completeness_promotion():
-    snap = snapshot()
-    snap["interfaces"]["orphan"] = {"Gi1/0/2": None}
+def test_source_uncertainty_keeps_readable_cable_evidence_and_no_completeness_promotion(tmp_path):
+    snap = snapshot(tmp_path)
+    snap["interfaces"]["orphan"] = {"Gi1/0/2": None}  # Declared hostile stored record outside every cable.
     snap["vlan_carriage"] = vlan_carriage.compute_vlan_carriage(
         snap["cable_map"], snap["interfaces"], None, snap["vlan_cutover"])
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and len(listing["items"]) == 1
-    assert listing["items"][0]["relation"]["value"] == "forwarding"
-    assert {"pointer": "/interfaces/orphan/Gi1~10~12", "role": "witness"} in listing["refs"]
-    assert "input_census_complete" not in listing and "capture_completeness_claim" not in listing
+    result = summary(snap)
+    assert result["state"] == UV and counts(result)["forwarding"] == (PUB, 1)
+    assert {"pointer": "/interfaces/orphan/Gi1~10~12", "role": "witness"} in source(snap)["refs"]
+    assert "input_census_complete" not in result and "capture_completeness_claim" not in result
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == "forwarding"
     checked(snap)
 
 
@@ -209,28 +266,30 @@ def test_new_closed_enum_sets_are_owned_unranked_without_health_claims():
 
 
 @pytest.mark.parametrize("vid", [10, "10", "0010"])
-def test_carriage_selection_uses_the_unchanged_producer_selector(vid):
-    snap = snapshot(vlans=[{"vlan": vid}])
-    listing = selection(snap)
-    assert listing["state"] == "published" and len(listing["items"]) == 1
-    assert listing["items"][0]["relation"]["value"] == "forwarding"
+def test_carriage_selection_uses_the_unchanged_producer_selector(tmp_path, vid):
+    snap = snapshot(tmp_path, vlans=[{"vlan": vid}])
+    assert summary(snap)["state"] == PUB
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == "forwarding"
     assert snap["vlan_cutover"][0]["vlan"] == vid
     checked(snap)
 
 
 @pytest.mark.parametrize("vid", [10.0, 0, 4095, True, "١٠", " 10 ", None])
-def test_carriage_does_not_borrow_legacy_count_coercion_for_its_selector(vid):
-    snap = snapshot(vlans=[{"vlan": vid}])
-    assert selection(snap)["state"] == "unverified"
-    assert selection(snap)["items"] == []
+def test_carriage_does_not_borrow_legacy_count_coercion_for_its_selector(tmp_path, vid):
+    snap = snapshot(tmp_path, vlans=[{"vlan": vid}])
+    result = summary(snap)
+    assert result["state"] == UV
+    assert all(value is None for _state, value in counts(result).values() if _state != PUB)
+    assert counts(result)["forwarding"] == (UV, None)
+    assert page(snap)["page"]["items"] == []
     checked(snap)
 
 
 @pytest.mark.parametrize("damage", ["missing_interface", "malformed_interface", "missing_field", "typed_role",
                                    "typed_role_mismatch", "host_alias", "port_alias"])
-def test_missing_or_ambiguous_current_basis_cannot_leave_a_published_stored_claim(damage):
+def test_missing_or_ambiguous_current_basis_cannot_leave_a_published_stored_claim(tmp_path, damage):
     typed = damage.startswith("typed_role")
-    snap = snapshot(("", "") if typed else ("10", "10"),
+    snap = snapshot(tmp_path, ("", "") if typed else ("10", "10"),
                     {A: _observation(), B: _observation()} if typed else None)
     stored = deepcopy(snap["vlan_carriage"])
     if damage == "missing_interface":
@@ -248,56 +307,107 @@ def test_missing_or_ambiguous_current_basis_cannot_leave_a_published_stored_clai
     elif damage == "host_alias":
         snap["interfaces"][A + ".example.invalid"] = deepcopy(snap["interfaces"][A])
     else:
-        snap["interfaces"][A]["GigabitEthernet1/0/1"] = deepcopy(snap["interfaces"][A][PORT])
+        snap["interfaces"][A][LONG] = deepcopy(snap["interfaces"][A][PORT])
     assert snap["vlan_carriage"] == stored and vlan_carriage.validate_vlan_carriage(stored) == (True, "ok")
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and len(listing["items"]) == 1
-    row = listing["items"][0]
-    assert row["relation"]["state"] == "unverified" and row["relation"]["value"] is None
-    assert row["members"]["items"][0]["a"]["signal"]["value"] is None
-    assert any(ref["pointer"].startswith("/vlan_carriage/rows/0/members/0/a/") for ref in listing["refs"])
+    result = summary(snap)
+    assert result["state"] == UV and "no longer resolve" in result["reason"]
+    assert counts(result)["forwarding"] == (UV, None)
+    item = page(snap)["page"]["items"][0]
+    assert item["relation"]["state"] == UV and item["relation"]["value"] is None
+    assert item["members"]["items"][0]["a"]["signal"]["value"] is None
+    assert any(ref["pointer"].startswith("/vlan_carriage/cables/0/members/0/a/") for ref in source(snap)["refs"])
     checked(snap)
 
 
-def test_held_relation_still_requires_original_identity_for_its_published_end():
-    snap = snapshot(("10", ""))
-    assert snap["vlan_carriage"]["rows"][0]["state"] == "not_collected"
-    assert snap["vlan_carriage"]["rows"][0]["members"][0]["a"]["state"] == "published"
-    snap["cable_map"]["cables"][0]["members"][0]["a_port"] = "Gi1/0/2"
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and listing["items"] == []
+def test_held_relation_still_requires_original_identity_for_its_published_end(tmp_path):
+    snap = snapshot(tmp_path, ("10", ""))
+    assert summary(snap)["state"] == NC
+    snap["cable_map"]["cables"][0]["members"][0]["a_port"] = "Gi1/0/2"  # Declared hostile mutation.
+    result = summary(snap)
+    assert result["state"] == UV and page(snap)["page"]["items"] == []
     checked(snap)
 
 
-def test_failed_source_precedes_missing_basis_qualification_and_holds_stale_values():
-    snap = snapshot()
+def test_failed_source_precedes_missing_basis_qualification_and_holds_stale_values(tmp_path):
+    snap = snapshot(tmp_path)
     snap["assessment_integrity"] = {"failed_phases": ["VLAN cutover matrix"]}
     del snap["interfaces"][A][PORT]
-    listing = selection(snap)
-    assert listing["state"] == "analysis_unavailable" and len(listing["items"]) == 1
-    assert listing["items"][0]["relation"]["state"] == "analysis_unavailable"
-    assert listing["items"][0]["members"]["items"][0]["a"]["signal"]["state"] == "analysis_unavailable"
+    result = summary(snap)
+    assert result["state"] == AU and all(state == AU for state, _value in counts(result).values())
+    item = page(snap)["page"]["items"][0]
+    assert item["relation"]["state"] == AU
+    assert item["members"]["items"][0]["a"]["signal"]["state"] == AU
     checked(snap)
 
 
 @pytest.mark.parametrize("field,value", [("port", "Gi1/0/99"), ("cdp_neighbor", "different-peer"),
                                          ("neighbor_port", "Gi1/0/99")])
-def test_present_interface_record_fields_must_still_name_the_stored_end_and_peer(field, value):
-    snap = snapshot()
-    assert selection(snap)["items"][0]["relation"]["value"] == "forwarding"
-    snap["interfaces"][A][PORT][field] = value
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and len(listing["items"]) == 1
-    assert listing["items"][0]["relation"]["value"] is None
+def test_present_interface_record_fields_must_still_name_the_stored_end_and_peer(tmp_path, field, value):
+    snap = snapshot(tmp_path)
+    assert page(snap)["page"]["items"][0]["relation"]["value"] == "forwarding"
+    snap["interfaces"][A][PORT][field] = value  # Declared hostile mutation.
+    assert summary(snap)["state"] == UV
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
     checked(snap)
 
 
 @pytest.mark.parametrize("damage", ["malformed", "mst"])
-def test_declared_stp_source_is_admitted_even_when_configured_allowance_was_selected(damage):
-    snap = snapshot(observations={A: _observation(vid=20), B: _observation(vid=20)})
-    assert selection(snap)["items"][0]["basis"]["value"] == "stored_trunk_allowance"
+def test_declared_stp_source_is_admitted_even_when_configured_allowance_was_selected(tmp_path, damage):
+    snap = snapshot(tmp_path, observations={A: _observation(vid=20), B: _observation(vid=20)})
+    assert page(snap)["page"]["items"][0]["basis"]["value"] == "stored_trunk_allowance"
     snap["stp_topology_observations"][A] = {} if damage == "malformed" else _observation(namespace="MST", vid=20)
-    listing = selection(snap)
-    assert listing["state"] == "unverified" and len(listing["items"]) == 1
-    assert listing["items"][0]["relation"]["value"] is None
+    assert summary(snap)["state"] == UV
+    assert page(snap)["page"]["items"][0]["relation"]["value"] is None
+    checked(snap)
+
+
+def test_a_vlan_summary_reads_its_own_row_never_another_vlans_hold(tmp_path):
+    observations = {A: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "LRN")]}),
+                    B: _stp({10: [(PORT, "Desg", "FWD")], 20: [(PORT, "Desg", "FWD")]})}
+    snap = snapshot(tmp_path, ("", ""), observations, vlans=[{"vlan": 10}, {"vlan": 20}])
+    assert [summary(snap, i)["state"] for i in (0, 1)] == [PUB, UV]
+    assert counts(summary(snap, 0))["forwarding"] == (PUB, 1) and counts(summary(snap, 1))["held"] == (PUB, 1)
+    assert source(snap)["state"] == UV
+    checked(snap)
+
+
+def test_a_summary_keeps_o1_refs_and_its_size_whatever_the_cable_count(tmp_path):
+    small, large = snapshot(tmp_path, interfaces=trunks(tmp_path, 1)), snapshot(tmp_path, interfaces=trunks(tmp_path, 3))
+    one, three = summary(small), summary(large)
+    assert counts(three)["assessed"] == (PUB, 3) and counts(three)["forwarding"] == (PUB, 3)
+    assert [ref["pointer"] for ref in one["refs"]] == [ref["pointer"] for ref in three["refs"]]
+    assert len(json.dumps(one, separators=(",", ":"))) == len(json.dumps(three, separators=(",", ":")))
+    assert len(json.dumps(three, separators=(",", ":"))) <= 4096
+
+
+def test_the_lazy_page_windows_the_assessed_cables_and_reads_the_snapshot_read_only(tmp_path):
+    snap = snapshot(tmp_path, interfaces=trunks(tmp_path, 3))
+    before = deepcopy(snap)
+    first, last, beyond = page(snap, 0, 0, 2), page(snap, 0, 2, 2), page(snap, 0, 3, 2)
+    assert [(p["page"]["returned"], p["page"]["total"], p["page"]["has_more"]) for p in (first, last, beyond)] == [
+        (2, 3, True), (1, 3, False), (0, 3, False)]
+    assert [item["index"] for item in first["page"]["items"] + last["page"]["items"]] == [0, 1, 2]
+    assert first["summary"] == last["summary"] == summary(snap)
+    admission = uip.carriage_admission(snap)
+    assert uip.project_vlan_carriage(snap, 0, 0, 2, admission=admission)["carriage"] == first
+    assert snap == before
+    checked(snap)
+
+
+def test_a_bundled_end_must_still_join_the_channel_its_record_cites(tmp_path):
+    snap = snapshot(tmp_path, interfaces=_bundle(tmp_path))
+    assert summary(snap)["state"] == PUB
+    snap["interfaces"][A][PORT]["port_channel"] = "Po2"  # Declared hostile mutation: the member moved channel.
+    assert summary(snap)["state"] == UV
+    assert any(ref["pointer"] == "/vlan_carriage/cables/0/members/0/a/stp_interface" for ref in source(snap)["refs"])
+    checked(snap)
+
+
+def test_a_typed_end_signal_cites_the_role_row_the_owner_join_names(tmp_path):
+    observations = {A: _observation(), B: _observation()}
+    snap = snapshot(tmp_path, ("", ""), observations)
+    signal = page(snap)["page"]["items"][0]["members"]["items"][0]["a"]["signal"]
+    assert (signal["state"], signal["value"]) == (PUB, "forwarding")
+    pointers = {ref["pointer"] for ref in signal["refs"]}
+    assert {f"/stp_topology_observations/{A}", f"/stp_topology_observations/{A}/roles/0"} <= pointers
     checked(snap)

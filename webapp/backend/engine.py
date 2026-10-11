@@ -45,6 +45,17 @@ def ui_projection_path(snapshot: Any, src_ip: str, dst_ip: str) -> Dict[str, Any
     return _ui_projection.project_path(snapshot, src_ip, dst_ip)
 
 
+def ui_projection_carriage_admission(snapshot: Any) -> Any:
+    """The engine's read-only admission of one snapshot's stored carriage (G14 v2), for the cache to share."""
+    return _ui_projection.carriage_admission(snapshot)
+
+
+def ui_projection_carriage(snapshot: Any, vlan_index: int, offset: int, limit: int,
+                           admission: Any = None) -> Dict[str, Any]:
+    """Delegate one VLAN row's lazy carriage page to its engine owner; nothing is recomputed here."""
+    return _ui_projection.project_vlan_carriage(snapshot, vlan_index, offset, limit, admission=admission)
+
+
 def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:
     """The engine-owned ``failure_impact`` FactList (``ui_projection/1``) for a stored snapshot.
 

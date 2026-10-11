@@ -816,8 +816,10 @@ def check_output_bytes(path: str, data: bytes, patterns_for) -> None:
     need(b"\r" not in data, f"{path}: carries CR bytes; the tracked outputs are LF-only")
     value = strict_json(data, path)
     need(isinstance(value, dict) and value, f"{path}: not a non-empty JSON object")
-    text = data.decode("utf-8")
-    need(not any(pattern.search(text) for pattern in patterns_for(path)),
+    # The raw bytes and the decoded JSON text are both scanned: a marker written with \uXXXX escapes is
+    # invisible to a scan of the raw text alone but is the same string once a reader parses it.
+    texts = (data.decode("utf-8"), json.dumps(value, ensure_ascii=False))
+    need(not any(pattern.search(text) for text in texts for pattern in patterns_for(path)),
          f"{path}: fails the canonical client-marker scan")
 
 
@@ -1448,8 +1450,10 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
             row["at_import"] = "admitted" if imported == admitted[path] else "source"
         report.append(row)
 
-    # The checkout is still exactly the dispatched commit before anything is recorded.
+    # The checkout is still exactly the dispatched commit before anything is recorded. As at the start (and in
+    # the producer's _closed_effect), the index, flags and filter attributes are admitted before `git status`.
     need(commit_of(root, "HEAD") == head, "HEAD moved during the receipt")
+    source_index(root, head)
     require_clean_tracked_tree(root)
     bind_checkout(root, head)
     receipt = {

@@ -2297,7 +2297,10 @@ def test_i20_selections_carry_their_source_state(snaps, payloads):
     assert old_vlans["selection_sources"]["carriage"]["state"] == NC
     for row in old_vlans["rows"]["items"]:
         assert row["selections"]["carriage"]["state"] == NC
-        assert row["selections"]["carriage"]["items"] == []
+        # G14 v2: a summary carries counts, never cable rows; an absent section withholds each count, never zero.
+        assert "items" not in row["selections"]["carriage"]
+        assert all(row["selections"]["carriage"][name]["state"] == NC
+                   and row["selections"]["carriage"][name]["value"] is None for name in uip.CARRIAGE_SUMMARY_COUNTS)
         assert row["selections"]["carriage"]["reason"]
     snap = copy.deepcopy(snaps["a"])
     del snap["stp_roots"], snap["l3_forwarding"]

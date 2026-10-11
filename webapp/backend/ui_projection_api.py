@@ -63,11 +63,15 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # limitation id, four unranked carriage vocabularies, Trust limitations 32 -> 33). Recomputed
 # statically on the merged schema with this module's own _native_schema_hash; the same method
 # reproduces every parent's committed pins. Hosted CI must confirm.
+# W52 / G14 v2 (vlan_carriage/2): VlanSelections.carriage is now the closed CarriageSummary
+# (CarriageList removed); CarriagePage, Carriage and CarriageDocument are added for the lazy
+# page route. The previous pins (414419ba.../0f6d3e3d...) were reproduced on the v1 head with
+# this module's own _native_schema_hash before these were computed the same way, as a pure call.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "414419ba7a1a44ec1310a66b66a1a170f9d5ad4a700b0e59f25d9034a557b1df",
-    "list": "0f6d3e3d54e969f0a1322a3db24f5c1209d0eba6340ff6f077fd4de0985b2b72",
+    "view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
+    "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -610,6 +614,8 @@ class _SnapshotProjection:
         self.lock = Lock()
         self.snapshot: dict[str, Any] | None = None
         self.documents: dict[str | None, dict[str, Any]] = {}
+        # G14 v2: the engine's read-only carriage admission (validation, join, basis gaps), built once per digest.
+        self.carriage: Any = None
 
 
 class _ProjectionCache:
@@ -661,6 +667,21 @@ class _ProjectionCache:
             if entry.snapshot is None:
                 entry.snapshot = engine.bind_ui_projection_snapshot(raw)
             return deepcopy(entry.snapshot)
+
+    def carriage_source(self, raw: bytes, digest: str) -> tuple[dict[str, Any], Any]:
+        """The bound snapshot and its carriage admission, built once per digest (basis gaps included).
+
+        Neither is copied: a carriage page reads the cached snapshot read-only and only its result is owned.
+        """
+        key = (*_PROJECTION_VERSION, digest)
+        with self.lock:
+            entry = self.entries.setdefault(key, _SnapshotProjection())
+        with entry.lock:
+            if entry.snapshot is None:
+                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+            if entry.carriage is None:
+                entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
+            return entry.snapshot, entry.carriage
 
 
 def _common_document(document: dict[str, Any], binding: dict[str, Any], snapshot_id: int, view: str):
@@ -778,6 +799,15 @@ _PATH_SCHEMA = {
 Draft202012Validator.check_schema(_PATH_SCHEMA)
 # Query documents are a separate Python-validated contract, never a native profile.
 _PATH_VALIDATOR = _compiled_validator(_PATH_SCHEMA)
+# G14 v2: one VLAN row's lazy carriage page, beside the path route. The payload is exactly the owner's Carriage
+# definition; MAX_PAGE_SIZE binds it in the route and in _require_carriage_page. Python-validated like the path
+# document, never a native profile.
+_CARRIAGE_SCHEMA = {
+    **_closed({**_common_schema("carriage"), "payload": {"$ref": "#/$defs/Carriage"}}),
+    "$defs": _DEFS,
+}
+Draft202012Validator.check_schema(_CARRIAGE_SCHEMA)
+_CARRIAGE_VALIDATOR = _compiled_validator(_CARRIAGE_SCHEMA)
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -854,6 +884,71 @@ class UiProjectionPathResponse(RootModel[dict[str, JsonValue]]):
         return {"type": "object", "title": cls.__name__}
 
 
+class UiProjectionCarriageResponse(RootModel[dict[str, JsonValue]]):
+    """One VLAN row's carriage page; its summary is the inventory row's summary, compared before it is served."""
+    model_config = ConfigDict(strict=True, allow_inf_nan=False, revalidate_instances="always")
+
+    @model_validator(mode="before")
+    @classmethod
+    def json_native_contract(cls, value: Any) -> Any:
+        _require_json_native(value.root if isinstance(value, cls) else value)
+        return value
+
+    @model_validator(mode="after")
+    def owner_carriage_contract(self):
+        trace = _NATIVE_SMOKE_TRACE.get()
+        if trace is not None:
+            trace.update(native=False, complete=False)
+        try:
+            _CARRIAGE_VALIDATOR.validate(self.root)
+        except ValidationError as exc:
+            raise ValueError("Engine carriage transport failed its owner contract") from exc
+        _require_carriage_page(self.root["payload"])
+        return self
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, _core_schema, _handler):
+        return {"type": "object", "title": cls.__name__}
+
+
+def _require_carriage_page(payload: dict[str, Any]) -> None:
+    """Page metadata must agree with its items and with the summary it echoes: where the summary publishes its
+    assessed cables a page totals them, or nothing when the row's codes are not readable; a row whose counts
+    publish totals every one. (A withheld assessed count, under a failed source, binds no total.)"""
+    page, summary = payload["page"], payload["summary"]
+    expected = min(max(page["total"] - page["offset"], 0), page["limit"])
+    assessed = summary["assessed"]["value"] if summary["assessed"]["state"] == "published" else None
+    counted = summary["forwarding"]["state"] == "published"
+    if (page["limit"] > MAX_PAGE_SIZE or len(page["items"]) > MAX_PAGE_SIZE
+            or page["returned"] != len(page["items"]) or page["returned"] != expected
+            or page["has_more"] != (page["offset"] + page["returned"] < page["total"])
+            or (assessed is not None and page["total"] not in (0, assessed))
+            or (counted and page["total"] != assessed)):
+        raise ValueError("Carriage page metadata disagrees with its items")
+
+
+def carriage_page(cache: _ProjectionCache, raw: bytes, binding: dict[str, Any], snapshot_id: int,
+                  vlan_index: int, offset: int, limit: int) -> dict[str, Any]:
+    """Build one carriage page response from the cached admission; the caller validates the transport.
+
+    The page summary must equal the summary the admitted inventory document carries for the same VLAN row, and the
+    engine block must equal that document's: the client and this server both refuse drift.
+    """
+    main = cache.document(raw, binding["sha256"], None)
+    rows = main["inventory"]["vlans"]["rows"]["items"]
+    if not 0 <= vlan_index < len(rows):
+        raise HTTPException(404, "VLAN row not found")
+    snapshot, admission = cache.carriage_source(raw, binding["sha256"])
+    produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission)
+    _require_json_native(produced)
+    document = deepcopy(produced)
+    if (document["engine"] != main["engine"]
+            or document["carriage"]["summary"] != rows[vlan_index]["selections"]["carriage"]
+            or document["carriage"]["vlan_index"] != vlan_index):
+        raise ValueError("Engine carriage page changed its source, VLAN row or summary")
+    return {**_common_document(main, binding, snapshot_id, "carriage"), "payload": document["carriage"]}
+
+
 def _at_pointer(value: Any, pointer: str) -> Any:
     for token in pointer.removeprefix("/").split("/"):
         value = value[token.replace("~1", "/").replace("~0", "~")]
@@ -883,6 +978,22 @@ def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
     cache = _ProjectionCache()
     app.add_middleware(_NativeValidationSmoke)
+    @app.get("/api/snapshots/{snapshot_id}/ui-projection/inventory/carriage",
+             response_model=UiProjectionCarriageResponse, operation_id="get_ui_projection_carriage")
+    def projection_carriage(
+        snapshot_id: Annotated[int, PathParam(ge=-(2**63), le=2**63 - 1)], response: Response,
+        vlan_index: Annotated[int, Query(ge=0, le=2**53 - 1)],
+        offset: Annotated[int, Query(ge=0, le=2**53 - 1)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
+    ) -> dict[str, Any]:
+        bound = store.get_snapshot_blob(snapshot_id)
+        if bound is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding = bound
+        page = carriage_page(cache, raw, binding, snapshot_id, vlan_index, offset, limit)
+        response.headers["Cache-Control"] = "no-store"
+        return page
+
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/topology/path",
              response_model=UiProjectionPathResponse, operation_id="get_ui_projection_path")
     def projection_path(
@@ -945,7 +1056,8 @@ def install_routes(app: FastAPI, store: Any) -> None:
                             for name, schema in _TRANSPORT_DEFS.items()})
             for name, source in (("UiProjectionViewResponse", _VIEW_SCHEMA),
                                  ("UiProjectionListResponse", _LIST_SCHEMA),
-                                 ("UiProjectionPathResponse", _PATH_SCHEMA)):
+                                 ("UiProjectionPathResponse", _PATH_SCHEMA),
+                                 ("UiProjectionCarriageResponse", _CARRIAGE_SCHEMA)):
                 schemas[name] = _rewrite_refs({key: value for key, value in source.items() if key != "$defs"})
                 schemas[name]["x-engine-schema-id"] = _OWNER["$id"]
             app.openapi_schema = api

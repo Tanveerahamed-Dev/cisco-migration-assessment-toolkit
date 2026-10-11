@@ -160,6 +160,9 @@ def test_guarded_carriage_and_upstream_failures_remain_unavailable_in_real_pipel
         assert returned["state"] == "analysis_unavailable"
         assert returned["coverage"]["input_census_complete"] is False
         assert returned["coverage"]["capture_completeness_claim"] is False
-        assert returned["rows"] == []
+        # vlan_carriage/2: a failed input holds every VLAN row (no codes); a failed vlan_cutover leaves no row.
+        assert all(row["hold"] == "failed_source" and row["codes"] == "" for row in returned["rows"])
+        assert returned["coverage"]["emitted_pairs"] == 0
+        assert (returned["rows"] == []) is (source == "vlan_cutover")
         assert any(issue["pointer"] == "/" + source and issue["state"] == "analysis_unavailable"
                    for issue in returned["issues"])

@@ -50,9 +50,6 @@ RUN_ID = 41
 ARTIFACT_ID = 9001
 # Built from fragments so this source never carries the marker it proves is refused.
 MARKER_TEXT = "al" + "jazeera" + " campus"
-# The policy closure imports tomllib, standard library from 3.11; the hosted ends run 3.12 only.
-BOUND_POLICY = pytest.mark.skipif(sys.version_info < (3, 11),
-                                  reason="the marker-policy closure imports tomllib (standard library from 3.11)")
 
 
 @pytest.fixture(autouse=True)
@@ -1065,7 +1062,6 @@ def _flags_marker(policy) -> bool:
     return any(pattern.search(MARKER_TEXT) for pattern in policy("tests/golden/snapshot.json"))
 
 
-@BOUND_POLICY
 def test_bound_policy_executes_admitted_git_bytes_not_a_same_path_or_cached_module(closure_repo, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     foreign = _foreign_policy_module(source)
@@ -1081,7 +1077,6 @@ def test_bound_policy_executes_admitted_git_bytes_not_a_same_path_or_cached_modu
     assert sys.path is path_identity and sys.path == path_contents
 
 
-@BOUND_POLICY
 def test_bound_policy_ignores_a_permissive_working_tree_edit(closure_repo):
     (closure_repo / "cisco_toolkit" / "distribution_verify.py").write_text(
         "def _marker_patterns_for(name):\n    return ()\n", encoding="utf-8")
@@ -1089,7 +1084,6 @@ def test_bound_policy_ignores_a_permissive_working_tree_edit(closure_repo):
         assert _flags_marker(policy)
 
 
-@BOUND_POLICY
 @pytest.mark.parametrize("kind,match", [
     ("relative-escape", "escaped the admitted closure"),
     ("absolute-project", "not standard library"),
@@ -1118,14 +1112,12 @@ def test_marker_policy_refuses_another_checkouts_owner(tmp_path):
     assert sys.path is identity and sys.path == contents
 
 
-@BOUND_POLICY
 def test_bound_policy_loads_this_repository_closure_from_git():
     with handoff.bound_marker_policy(ROOT, _git(ROOT, "rev-parse", "HEAD")) as policy:
         assert _flags_marker(policy)
         assert policy("tests/golden/snapshot.json")
 
 
-@BOUND_POLICY
 def test_producer_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_repo, tmp_path, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     monkeypatch.setitem(sys.modules, "cisco_toolkit.distribution_verify", _foreign_policy_module(source))
@@ -1137,7 +1129,6 @@ def test_producer_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_r
     assert not (output / handoff.MANIFEST_NAME).exists()
 
 
-@BOUND_POLICY
 def test_receiver_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_repo, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     monkeypatch.setitem(sys.modules, "cisco_toolkit.distribution_verify", _foreign_policy_module(source))
@@ -1147,7 +1138,6 @@ def test_receiver_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_r
     assert not _review_dir(closure_repo).exists()
 
 
-@BOUND_POLICY
 def test_receiver_admits_through_the_bound_policy(closure_repo):
     result, _lines = _receive(closure_repo, _api(closure_repo), policy=None)
     assert result["status"] == handoff.RECEIPT_STATUS and _review_files(closure_repo) == _regenerated()
@@ -1535,6 +1525,77 @@ def test_installer_metadata_is_bound_as_data_not_git_source(repo, tmp_path, monk
     target.write_bytes(raw + b"changed")
     with pytest.raises(handoff.HandoffRefusal, match="installer metadata bytes"):
         handoff.phase_after(repo, state, tmp_path / "handoff", environ=_hosted(repo), patterns_for=POLICY)
+
+
+def _sentinel_filter(repo: Path, tmp_path: Path) -> Path:
+    """A configured clean filter that writes a sentinel whenever Git runs it, on a stat-dirty tracked file."""
+    sentinel, script = tmp_path / "filter-ran", tmp_path / "clean_filter.py"
+    script.write_text("import pathlib, sys\n"
+                      f"pathlib.Path({sentinel.as_posix()!r}).write_text('ran')\n"
+                      "sys.stdout.buffer.write(sys.stdin.buffer.read())\n", encoding="utf-8")
+    _git(repo, "config", "filter.sentinel.clean", f'"{Path(sys.executable).as_posix()}" "{script.as_posix()}"')
+    (repo / ".gitattributes").write_bytes(b"engine.py filter=sentinel\n")
+    _commit(repo, "filtered source")
+    if sentinel.exists():
+        sentinel.unlink()  # `git add` ran the filter while committing; the bound phases must never run it.
+    engine = repo / "engine.py"
+    info = engine.stat()
+    os.utime(engine, ns=(info.st_atime_ns + 10**10, info.st_mtime_ns + 10**10))  # same bytes, stale stat cache
+    return sentinel
+
+
+def test_a_producer_refuses_a_clean_filter_before_status_can_run_it_on_a_stat_dirty_file(repo, tmp_path):
+    sentinel = _sentinel_filter(repo, tmp_path)
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not sentinel.exists() and not (tmp_path / "state").exists()
+
+
+def test_a_receiver_refuses_a_clean_filter_before_status_or_any_api_call(repo, tmp_path):
+    sentinel = _sentinel_filter(repo, tmp_path)
+    api = _api(repo)
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        _receive(repo, api)
+    assert not sentinel.exists() and api.calls == [] and not _review_dir(repo).exists()
+
+
+def test_a_replacement_ref_cannot_substitute_another_tree_for_the_bound_commit(repo, tmp_path):
+    real, real_tree = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    other = _commit(repo, "a different tree")
+    _git(repo, "reset", "-q", "--hard", real)
+    _git(repo, "replace", real, other)
+    # An ordinary Git view now reads the other commit's tree for HEAD; the bound phases must not.
+    assert _git(repo, "rev-parse", "HEAD") == real and _git(repo, "rev-parse", "HEAD^{tree}") != real_tree
+    record = handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert record["source_commit"] == real and record["tree"] == real_tree
+
+
+def test_the_receivers_closing_status_follows_its_own_index_admission(repo, monkeypatch):
+    order = []
+    for name in ("source_index", "require_clean_tracked_tree"):
+        original = getattr(handoff, name)
+
+        def recorded(*args, _original=original, _name=name, **kwargs):
+            order.append(_name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(handoff, name, recorded)
+    result, _lines = _receive(repo, _api(repo))
+    assert result["status"] == handoff.RECEIPT_STATUS
+    statuses = [i for i, name in enumerate(order) if name == "require_clean_tracked_tree"]
+    assert len(statuses) == 2 and all(i > 0 and order[i - 1] == "source_index" for i in statuses), order
+
+
+@pytest.mark.parametrize("escaped", [
+    "al" + "\\u006a" + "azeera campus", "\\u0061\\u006c" + "jazeera campus", "AL" + "\\u004a" + "AZEERA campus",
+])
+def test_an_escaped_marker_in_a_regenerated_output_is_refused(escaped):
+    data = ('{"site": "' + escaped + '"}').encode("utf-8")
+    assert MARKER_TEXT not in data.decode("utf-8").lower()  # the raw text alone would pass the scan
+    with pytest.raises(handoff.HandoffRefusal, match="client-marker"):
+        handoff.check_output_bytes(handoff.OUTPUT_PATHS[2], data, POLICY)
+    handoff.check_output_bytes(handoff.OUTPUT_PATHS[2], b'{"site": "public \\u0063ampus"}', POLICY)
 
 
 def test_source_filters_are_refused_before_content_conversion(repo, tmp_path, monkeypatch):

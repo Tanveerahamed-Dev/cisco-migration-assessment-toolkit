@@ -51,14 +51,15 @@ def test_guard_runs_before_snapshot_or_projection(client, monkeypatch):
         pytest.fail("guard must precede source read")
     monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", forbidden)
     for path in (url(991), url(991, "inventory") + "/lists?pointer=/devices/rows",
-                 url(991, "topology") + "/path?src_ip=192.0.2.1&dst_ip=198.51.100.1"):
+                 url(991, "topology") + "/path?src_ip=192.0.2.1&dst_ip=198.51.100.1",
+                 url(991, "inventory") + "/carriage?vlan_index=0"):
         assert client.get(path, headers={"sec-fetch-site": "cross-site"}).status_code == 403
         assert client.get(path, headers={"host": "evil.example"}).status_code == 403
 
 
 def test_routes_declare_response_models(client):
     paths = [r for r in client.app.routes if "ui-projection" in getattr(r, "path", "")]
-    assert len(paths) == 3
+    assert len(paths) == 4  # view, lists, the path query and (G14 v2) the lazy carriage page
     assert all(r.response_model is not None for r in paths)
 
 
@@ -1320,29 +1321,36 @@ def test_native_stp_nested_facts_match_stock_on_valid_and_hostile_bodies(client,
     assert len(results) == 3 and results[2] is False
 
 
-@pytest.fixture
-def carriage_snapshot():
-    from dataclasses import asdict
+def _carriage_snapshot(tmp_path, relation="one_end", vlans=({"vlan": 10}, {"vlan": 20}), trunks=1):
+    """A stored snapshot whose interfaces come from the real producer (tests/test_vlan_carriage.py capture helpers:
+    build_interfaces over synthetic capture text), then compute_cable_map and compute_vlan_carriage."""
     from cisco_toolkit.analyze import compute_cable_map
-    from cisco_toolkit.model import InterfaceData
     from cisco_toolkit.vlan_carriage import compute_vlan_carriage
-    interfaces = {
-        host: {"Gi1/0/1": InterfaceData(port="Gi1/0/1", cdp_neighbor=peer, neighbor_port="Gi1/0/1",
-                                      switchport_mode="Trunk", trunk_allowed_vlans=allowance,
-                                      endpoint_type="Switch")}
-        for host, peer, allowance in (("side-a", "side-b", "10"), ("side-b", "side-a", ""))
-    }
-    cables, rows = compute_cable_map(interfaces), [{"vlan": 10}, {"vlan": 20}]
-    stored = compute_vlan_carriage(cables, interfaces, None, rows)
-    return {"interfaces": {h: {p: asdict(rec) for p, rec in ports.items()} for h, ports in interfaces.items()},
-            "cable_map": cables, "vlan_cutover": rows, "vlan_carriage": stored}
+    from test_vlan_carriage import A, B, _built, _cdp, _ios_trunk, _observation, _stored
+    ports = [f"Gi1/0/{i + 1}" for i in range(trunks)]
+    allowed = {"one_end": ("10", None), "forwarding": ("10", "10"), "not_carried": ("none", "none"),
+               "stp_blocked": (None, None)}[relation]
+    interfaces = {host: _built(tmp_path, host, {
+        "show interfaces trunk": _ios_trunk([(port, value, "1", True) for port in ports]),
+        "show cdp neighbors detail": _cdp([(port, peer, port) for port in ports])})
+        for host, peer, value in ((A, B, allowed[0]), (B, A, allowed[1]))}
+    observations = {A: _observation("BLK"), B: _observation()} if relation == "stp_blocked" else None
+    cables, rows = compute_cable_map(interfaces), [dict(row) for row in vlans]
+    stored = compute_vlan_carriage(cables, _stored(interfaces), observations, rows)
+    return {"interfaces": _stored(interfaces), "cable_map": cables, "stp_topology_observations": observations,
+            "vlan_cutover": rows, "vlan_carriage": stored}
 
 
-def test_carriage_members_travel_whole_in_the_existing_vlan_page(client, carriage_snapshot):
+def _carriage_url(sid):
+    return url(sid, "inventory") + "/carriage"
+
+
+def test_the_carriage_summary_travels_whole_in_the_existing_vlan_page(client, tmp_path):
     from backend import ui_projection_api as api
-    before = deepcopy(carriage_snapshot)
-    sid = seed(client, carriage_snapshot)
-    expected = owner.project_inventory(carriage_snapshot)["vlans"]["rows"]["items"]
+    snapshot = _carriage_snapshot(tmp_path)
+    before = deepcopy(snapshot)
+    sid = seed(client, snapshot)
+    expected = owner.project_inventory(snapshot)["vlans"]["rows"]["items"]
     view = client.get(url(sid, "inventory"), params={"limit": 1})
     assert view.status_code == 200
     assert view.json()["payload"]["vlans"]["rows"]["page"]["items"] == expected[:1]
@@ -1351,30 +1359,20 @@ def test_carriage_members_travel_whole_in_the_existing_vlan_page(client, carriag
                               params={"pointer": "/vlans/rows", "limit": 1, "offset": offset})
         assert response.status_code == 200
         assert response.json()["list"]["page"]["items"] == expected[offset:offset + 1]
-        carriage = response.json()["list"]["page"]["items"][0]["selections"]["carriage"]
-        assert carriage["items"][0]["relation"]["state"] == "not_collected"
-        assert carriage["items"][0]["relation"]["value"] is None
-        assert len(carriage["items"][0]["members"]["items"]) == 1
+        summary = response.json()["list"]["page"]["items"][0]["selections"]["carriage"]
+        assert summary["vlan_index"] == offset and "items" not in summary
+        assert summary["state"] == "not_collected" and summary["held"]["value"] == 1
+        assert [ref["pointer"] for ref in summary["refs"]] == [f"/vlan_carriage/rows/{offset}", "/vlan_carriage/coverage"]
     assert not any("carriage" in pointer for pointer in api.LIST_CATALOG["inventory"])
     for pointer in ("/vlans/rows/0/selections/carriage", "/vlans/rows/items/0/selections/carriage"):
         assert client.get(url(sid, "inventory") + "/lists", params={"pointer": pointer}).status_code == 422
-    assert carriage_snapshot == before
+    assert snapshot == before
 
 
-@pytest.mark.parametrize("surface", ["view", "list"])
-@pytest.mark.parametrize("mutation", ["missing_members", "extra_field", "withheld_value", "unknown_relation",
-                                     "missing_reason", "unknown_signal", "boolean_index", "missing_end"])
-def test_native_carriage_facts_have_direct_true_false_false_proof(client, carriage_snapshot, surface, mutation):
-    from backend import ui_projection_api as api
-    sid = seed(client, carriage_snapshot)
-    endpoint = url(sid, "inventory") + ("/lists" if surface == "list" else "")
-    response = client.get(endpoint, params={"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})})
-    assert response.status_code == 200
-    body = response.json()
-    schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
+def _native_observed(api, schema, surface):
     validator = api._NativeTransportValidator(schema, surface)
     native = validator._NativeTransportValidator__native
-    assert native is not None  # Only literal pins adopted from reviewed hosted schema material.
+    assert native is not None  # Only literal pins computed from the reviewed schema material.
     calls, exceptions = [], []
 
     class Observed:
@@ -1388,29 +1386,45 @@ def test_native_carriage_facts_have_direct_true_false_false_proof(client, carria
             return result
 
     validator._NativeTransportValidator__native = Observed()
+    return validator, calls, exceptions
+
+
+@pytest.mark.parametrize("surface", ["view", "list"])
+@pytest.mark.parametrize("mutation", ["missing_count", "extra_field", "withheld_value", "string_count",
+                                      "missing_reason", "boolean_index", "negative_count", "missing_vlan_index"])
+def test_native_carriage_summaries_have_direct_true_false_false_proof(client, tmp_path, surface, mutation):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path))
+    endpoint = url(sid, "inventory") + ("/lists" if surface == "list" else "")
+    response = client.get(endpoint, params={"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})})
+    assert response.status_code == 200
+    body = response.json()
+    schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
+    validator, calls, exceptions = _native_observed(api, schema, surface)
     stock = api._stock_validator(schema)
     assert validator.is_valid(body) and stock.is_valid(body)
     assert exceptions == [] and len(calls) == 1 and calls[0] is True
     bad = deepcopy(body)
     parent = bad["list"] if surface == "list" else bad["payload"]["vlans"]["rows"]
-    row = parent["page"]["items"][0]["selections"]["carriage"]["items"][0]
-    if mutation == "missing_members":
-        del row["members"]
+    summary = parent["page"]["items"][0]["selections"]["carriage"]
+    assert summary["state"] == "not_collected" and summary["forwarding"]["state"] == "published"
+    if mutation == "missing_count":
+        del summary["forwarding"]
     elif mutation == "extra_field":
-        row["inferred_safe"] = True
+        summary["inferred_safe"] = True
     elif mutation == "withheld_value":
-        row["relation"]["value"] = "stp_blocked"
-    elif mutation == "unknown_relation":
-        row["relation"].update(state="published", value="unknown_relation")
-        row["relation"].pop("reason", None)
+        summary["edge_not_collected"] = {**summary["edge_not_collected"], "state": "not_collected",
+                                         "reason": "forged", "value": 0}
+    elif mutation == "string_count":
+        summary["forwarding"]["value"] = "1"
     elif mutation == "missing_reason":
-        del row["relation"]["reason"]
-    elif mutation == "unknown_signal":
-        row["members"]["items"][0]["a"]["signal"]["value"] = "guessed"
+        del summary["reason"]
     elif mutation == "boolean_index":
-        row["index"] = True
+        summary["vlan_index"] = True
+    elif mutation == "negative_count":
+        summary["held"]["value"] = -1
     else:
-        del row["members"]["items"][0]["b"]
+        del summary["vlan_index"]
     assert not validator.is_valid(bad) and not stock.is_valid(bad)
     assert exceptions == [] and len(calls) == 2 and calls[1] is False
     assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
@@ -1419,57 +1433,133 @@ def test_native_carriage_facts_have_direct_true_false_false_proof(client, carria
 
 @pytest.mark.parametrize("surface", ["view", "list"])
 @pytest.mark.parametrize("relation", ["forwarding", "not_carried", "stp_blocked"])
-def test_native_accepts_each_real_published_carriage_relation_without_fallback(client, carriage_snapshot, surface, relation):
+def test_native_accepts_each_real_published_carriage_summary_without_fallback(client, tmp_path, surface, relation):
     from backend import ui_projection_api as api
-    from cisco_toolkit.stp_topology import produce_stp_topology_observation
-    from cisco_toolkit.vlan_carriage import compute_vlan_carriage
-    snap = deepcopy(carriage_snapshot)
-    allowance = "10" if relation == "forwarding" else "none" if relation == "not_carried" else ""
-    for ports in snap["interfaces"].values():
-        ports["Gi1/0/1"]["trunk_allowed_vlans"] = allowance
-    observations = None
-    if relation == "stp_blocked":
-        observations = {}
-        for host, role, state in (("side-a", "Altn", "BLK"), ("side-b", "Desg", "FWD")):
-            observations[host] = produce_stp_topology_observation(
-                "VLAN0010\n  Root ID Priority 32778\n          Address aaaa.0001.0001\n"
-                "          This bridge is the root\n  Bridge ID Priority 32778\n          Address aaaa.0001.0001\n"
-                "Interface Role Sts Cost Prio.Nbr Type\n"
-                "---------------- ---- --- --------- -------- ----------------\n"
-                f"Gi1/0/1 {role} {state} 4 128.1 P2p\n",
-                "VLAN0010\n  Number of topology changes 0 last change occurred 00:00:00 ago\n",
-                state_capture_state="usable", detail_capture_state="usable")
-            assert observations[host]["role_candidate_count"] == observations[host]["role_parsed_count"] == 1
-            assert "role_row_malformed" not in observations[host]["finding_codes"]
-    snap["stp_topology_observations"] = observations
-    snap["vlan_carriage"] = compute_vlan_carriage(snap["cable_map"], snap["interfaces"], observations, snap["vlan_cutover"])
-    sid = seed(client, snap)
+    sid = seed(client, _carriage_snapshot(tmp_path, relation, vlans=({"vlan": 10},)))
     response = client.get(url(sid, "inventory") + ("/lists" if surface == "list" else ""),
                           params={"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})})
     assert response.status_code == 200
     body = response.json()
     parent = body["list"] if surface == "list" else body["payload"]["vlans"]["rows"]
-    fact = parent["page"]["items"][0]["selections"]["carriage"]["items"][0]["relation"]
-    assert (fact["state"], fact["value"]) == ("published", relation), fact
+    summary = parent["page"]["items"][0]["selections"]["carriage"]
+    assert summary["state"] == "published" and (summary[relation]["state"], summary[relation]["value"]) == ("published", 1)
     schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
-    validator = api._NativeTransportValidator(schema, surface)
-    native = validator._NativeTransportValidator__native
-    assert native is not None and api._native_instance_allowed(body)
-    calls, exceptions = [], []
-
-    class Observed:
-        def is_valid(self, value):
-            try:
-                result = native.is_valid(value)
-            except Exception as error:
-                exceptions.append(repr(error))
-                raise
-            calls.append(result)
-            return result
-
-    validator._NativeTransportValidator__native = Observed()
+    validator, calls, exceptions = _native_observed(api, schema, surface)
+    assert api._native_instance_allowed(body)
     assert validator.is_valid(body) and api._stock_validator(schema).is_valid(body)
     assert exceptions == [] and len(calls) == 1 and calls[0] is True
+
+
+def test_the_lazy_carriage_page_echoes_the_row_summary_and_pages_the_assessed_cables(client, tmp_path):
+    snapshot = _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=3)
+    sid = seed(client, snapshot)
+    view = client.get(url(sid, "inventory")).json()
+    summary = view["payload"]["vlans"]["rows"]["page"]["items"][0]["selections"]["carriage"]
+    first = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 2})
+    assert first.status_code == 200, first.text[:300]
+    assert first.headers["cache-control"] == "no-store"
+    body = first.json()
+    assert (body["schema"], body["projection_schema"], body["view"]) == ("ui_projection_transport/1", "ui_projection/1",
+                                                                         "carriage")
+    assert body["identity"] == view["identity"] and body["engine"] == view["engine"]
+    assert body["limitations"] == view["limitations"]
+    assert body["payload"]["summary"] == summary and body["payload"]["vlan_index"] == 0
+    assert body["payload"]["pointer"] == "/vlan_carriage/rows/0"
+    page = body["payload"]["page"]
+    assert (page["offset"], page["limit"], page["returned"], page["total"], page["has_more"]) == (0, 2, 2, 3, True)
+    assert [item["index"] for item in page["items"]] == [0, 1]
+    assert all(item["relation"]["value"] == "forwarding" for item in page["items"])
+    rest = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 2, "limit": 2}).json()["payload"]
+    assert rest["summary"] == summary and [item["index"] for item in rest["page"]["items"]] == [2]
+    assert rest["page"]["has_more"] is False
+    owner_page = owner.project_vlan_carriage(snapshot, 0, 0, 2)["carriage"]
+    assert body["payload"] == owner_page
+
+
+@pytest.mark.parametrize("params,status", [({"vlan_index": 0, "limit": 201}, 422), ({}, 422),
+                                           ({"vlan_index": -1}, 422), ({"vlan_index": 0, "offset": -1}, 422),
+                                           ({"vlan_index": 0, "limit": 0}, 422), ({"vlan_index": 1}, 404)])
+def test_carriage_page_bounds_and_unknown_rows_are_refused(client, tmp_path, params, status):
+    sid = seed(client, _carriage_snapshot(tmp_path, vlans=({"vlan": 10},)))
+    assert client.get(_carriage_url(sid), params=params).status_code == status
+    assert client.get(_carriage_url(991), params={"vlan_index": 0}).status_code == 404
+
+
+def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(client, tmp_path, monkeypatch):
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}), trunks=2))
+    admit, page = engine.ui_projection_carriage_admission, engine.ui_projection_carriage
+    admissions, sources = [], []
+
+    def counted_admission(snapshot):
+        admissions.append(snapshot)
+        return admit(snapshot)
+
+    def checked_page(snapshot, vlan_index, offset, limit, admission=None):
+        before = deepcopy(snapshot)
+        sources.append(snapshot)
+        result = page(snapshot, vlan_index, offset, limit, admission)
+        assert snapshot == before  # The cached bound snapshot is read, never written.
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage_admission", counted_admission)
+    monkeypatch.setattr(engine, "ui_projection_carriage", checked_page)
+    for vlan_index, offset in ((0, 0), (0, 1), (1, 0)):
+        response = client.get(_carriage_url(sid), params={"vlan_index": vlan_index, "offset": offset, "limit": 1})
+        assert response.status_code == 200, response.text[:300]
+    assert len(admissions) == 1 and len(sources) == 3
+    assert all(source is admissions[0] for source in sources)  # No copy of the snapshot per page.
+
+
+@pytest.mark.parametrize("forgery", ["summary", "engine", "vlan_index"])
+def test_a_carriage_page_that_drifts_from_its_inventory_row_is_refused(client, tmp_path, monkeypatch, forgery):
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},)))
+    page = engine.ui_projection_carriage
+
+    def forged(snapshot, vlan_index, offset, limit, admission=None):
+        result = page(snapshot, vlan_index, offset, limit, admission)
+        if forgery == "summary":
+            result["carriage"]["summary"]["forwarding"]["value"] += 1
+        elif forgery == "engine":
+            result["engine"]["script_version"] = {**result["engine"]["script_version"], "value": "forged"}
+        else:
+            result["carriage"]["vlan_index"] += 1
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", forged)
+    with pytest.raises(ValueError, match="changed its source, VLAN row or summary"):
+        client.get(_carriage_url(sid), params={"vlan_index": 0})
+
+
+@pytest.mark.parametrize("change", ["returned", "has_more", "total", "limit"])
+def test_the_carriage_response_model_rejects_forged_page_metadata(client, tmp_path, change):
+    from backend.ui_projection_api import UiProjectionCarriageResponse
+    from pydantic import ValidationError
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=2))
+    body = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1}).json()
+    UiProjectionCarriageResponse.model_validate(body)
+    page = body["payload"]["page"]
+    if change == "has_more":
+        page[change] = not page[change]
+    elif change == "limit":
+        page[change] = 201
+    else:
+        page[change] += 1
+    with pytest.raises(ValidationError):
+        UiProjectionCarriageResponse.model_validate(body)
+
+
+def test_the_carriage_route_is_published_with_its_owner_schema(client):
+    from backend import ui_projection_api as api
+    spec = client.app.openapi()
+    path = spec["paths"]["/api/snapshots/{snapshot_id}/ui-projection/inventory/carriage"]["get"]
+    assert path["operationId"] == "get_ui_projection_carriage"
+    assert path["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/UiProjectionCarriageResponse"}
+    schema = spec["components"]["schemas"]["UiProjectionCarriageResponse"]
+    assert schema["x-engine-schema-id"] == owner.SCHEMA_ID
+    assert schema["properties"]["payload"] == {"$ref": "#/components/schemas/UiProjection1_Carriage"}
+    assert "UiProjection1_CarriageList" not in spec["components"]["schemas"]
+    assert api.MAX_PAGE_SIZE == 200
 
 
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
@@ -1568,9 +1658,9 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    # W52 / G14: recomputed statically on the merged W51 + G14 schema; hosted CI must confirm.
-    prospective = {"view": "414419ba7a1a44ec1310a66b66a1a170f9d5ad4a700b0e59f25d9034a557b1df",
-                   "list": "0f6d3e3d54e969f0a1322a3db24f5c1209d0eba6340ff6f077fd4de0985b2b72"}
+    # W52 / G14 v2: recomputed as a pure _native_schema_hash call on the vlan_carriage/2 schema; hosted CI must confirm.
+    prospective = {"view": "fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e",
+                   "list": "5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)

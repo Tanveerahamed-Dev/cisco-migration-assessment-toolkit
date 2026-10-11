@@ -318,6 +318,13 @@ The exact received sample is 3,782,932 bytes; its producer-declared SHA256 is
 It requires a new hosted Scope binding. No local hash, compiler or custody
 controller ran, and no old Scope receipt qualifies these bytes.
 
+Custody history (recorded 2026-10-10, G14 v2): this held sample came from manual
+run `37925393797`, artifact `11613324695`. It was a pre-W54 download, bound at
+content level (the producer-declared SHA256 above), not through the W54 hosted
+receipt and verified Git import. It is history only: G14 v2 changes the stored
+carriage model, so these bytes are superseded and the sample is regenerated
+through the current route (`docs/engine-output-handoff.md`).
+
 Frontend job `113802849236` completed the contract observer, then failed actual
 API agreement after its ten generation-policy controls passed. Unit/build/SPA
 steps were skipped. Diagnostic `11613249556` was independently selected and read
@@ -616,3 +623,51 @@ part of this final handoff. Independent final-patch/source/text and actual new
 prepublication privacy/all12 raw commit/per-parent/NUL-path/log/body/title/current
 policy bindings precede the one final push. Claude owns later combined hosted
 schema/native/types/SPA/golden/UTC/Scope/all-protected/whole-workflow validation.
+
+## G14 v2: bounded stored model and lazy projection (2026-10-10)
+
+The #646 refutation found that `vlan_carriage/1` stored one record per cable and
+VLAN pair (2,016 bytes each, about 605 MB at 300 devices, 200 VLANs and 1,500
+cables), read a bundled member's PVST from the member, published edge cables, and
+let a VLAN inherit another row's state. G14 v2 implements
+`docs/w52-vlan-carriage-v2-design-2026-10-10.md` (a)-(h) on
+`claude/g14-cable-vlan-carriage`, after merging main `2c927d02`:
+
+- **(a) Bundles.** A member reads PVST, allowance and mode through its port
+  channel record. A member row beside the channel row holds `role_ambiguous`; a
+  member with no channel record holds `no_evidence`. Channel names are joined on
+  both sides, and one STP role index is built per host.
+- **(b) Stored model.** `vlan_carriage/2` stores each cable once with its member
+  ends and one code string per VLAN row over the stored closed `code_tables`.
+  Edge cables (a host outside the scanned fleet) are counted, never published.
+  An unreadable cable is one verdict; a source hold holds every row; a VLAN's
+  state is computed from its own row only.
+- **(c) Projection.** The inventory carries one closed `CarriageSummary` per
+  VLAN row (constant size, O(1) references). Cable rows move to the lazy
+  `GET /api/snapshots/{id}/ui-projection/inventory/carriage` page, validated by
+  the compiled Python validator; the page echoes the summary and the client
+  refuses drift. Basis gaps are computed once per snapshot digest.
+- **(d) Allowance.** A literal `none` allowance is kept apart
+  (`InterfaceData.trunk_allowed_none`) from a blank capture, and a later NX-OS
+  table header closes the allowed section.
+- **(e) Budgets.** `tests/test_vlan_carriage_budget.py` builds the 300/200/1,500
+  fleet through the real producers and asserts the design's byte and hosted
+  millisecond ceilings; its first hosted run is findings.
+- **(f) Scope.** Scope does not consume carriage; it is re-bound only.
+- **(g) Route P3s.** See `docs/engine-output-handoff.md` "G14 v2 route
+  follow-ups" and the custody history above.
+
+Every new control drives the real producer: capture text through
+`parse_show_interface_trunk_table` and `build_interfaces`, the typed STP producer
+and `compute_cable_map`, never a hand-built `InterfaceData`. Native pins were
+recomputed as a pure `_native_schema_hash` call and `openapi.ts` was hand-edited
+as openapi-typescript 7.13.0 emits it; the hosted `ui-projection-contract`
+artifact remains the authority if `api:check` disagrees. Locally only
+py_compile, ruff, AST collection scans, pure probes, the repository privacy
+verifier and the marker scan ran; no test executed locally.
+
+A pure probe over the pre-v2 sample predicted the v2 projection sizes: the
+inventory document 4,729,572 to about 2,105,393 bytes, the inventory section
+3,053,023 to about 428,842, the carriage selections 2,634,123 to about 11,980,
+and the stored section 274,106 to about 35,806. These are predictions; the
+hosted regeneration and its measurements supersede them.

@@ -316,8 +316,9 @@ GitHub-only rule; hosted CI is their first execution.
    a private namespace. Relative imports must be the reviewed table; absolute imports must be
    standard library. It is the reviewed frontend receiver's approach and table (the tests compare
    the two). Tests: the same-path, cached, working-tree, closure-escape and pre-loaded-policy
-   producer and receiver tests. They are skipped below Python 3.11, where the closure's `tomllib`
-   is not standard library; the hosted ends run 3.12.
+   producer and receiver tests. They run on every supported Python: since the reconciliation with
+   G14 (below) the closure's `import tomllib` receives a capability-denial object, so the loader
+   needs no TOML module on 3.10, and G14 v2 removed the earlier below-3.11 skip.
 
 Still open: the first hosted dispatch of the receipt workflow (it needs default-branch
 registration), the first hosted execution of every new test, and an independent re-review of the
@@ -363,6 +364,29 @@ replaces each: the local-write and dry-run tests (the receipt never writes the c
 `test_marker_policy_ignores_a_cached_same_path_impostor` and
 `test_bound_policy_loads_this_repository_closure_from_git`). G14's tests now check W54's private
 namespace prefix, so their cleanup assertions are not empty.
+
+## G14 v2 route follow-ups (2026-10-10)
+
+The #646 refutation named five route P3s; G14 v2 (`claude/g14-cable-vlan-carriage`) closes them
+in source, with tests written for their first hosted execution:
+
+- **Skip.** The `BOUND_POLICY` skip in `tests/test_engine_output_handoff.py` is removed; the seven
+  bound-policy controls now run on Python 3.10 too (see disposition 4 above).
+- **Filter ordering.** Two tests configure a clean filter that writes a sentinel and leave its
+  tracked file stat-dirty, so any `git status` would run it. The producer (`phase_before`) and the
+  receiver (`receive`) each refuse with `unsupported filter`, the sentinel never appears, and the
+  receiver makes no API call (`api.calls == []`). `source_index` already ran before the first status.
+- **Replacement refs.** A test plants `git replace <HEAD> <other>`, so an ordinary Git view reads
+  another tree for HEAD; `phase_before` still binds the real commit and its real tree, because
+  every Git call passes `--no-replace-objects`.
+- **Closing status.** `receive` now calls `source_index` before its closing `git status`, as the
+  producer's `_closed_effect` does, so the index, flags and filter attributes are admitted again
+  before the last status. A test records the call order.
+- **Escapes.** `check_output_bytes` also scans `json.dumps(value, ensure_ascii=False)`, the parsed
+  JSON text, so a marker written with `\uXXXX` escapes is refused. The repository privacy
+  verifier (`.github/scripts/verify_repository_privacy.py :: _escape_decoded`) adds a
+  `\uXXXX`-decoded pass to both its worktree and its index scans, with tests in
+  `tests/test_repository_privacy.py`.
 
 ## What it is not
 

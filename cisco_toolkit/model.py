@@ -38,6 +38,9 @@ class InterfaceData:
     dual_connection: str = ""
     trunk_native_vlan: str = ""
     trunk_allowed_vlans: str = ""
+    # W52 / G14: the trunk table's literal 'none' allowed list (an explicit exclusion of every VLAN). It is kept
+    # apart from trunk_allowed_vlans, whose blank value keeps meaning "no allowed list observed".
+    trunk_allowed_none: str = ""
     trunk_status: str = ""
     arp_source_switch: str = ""  # NEW-V11
     cdp_neighbor: str = ""       # NEW-V11

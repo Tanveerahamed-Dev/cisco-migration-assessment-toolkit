@@ -1,0 +1,241 @@
+"""G14 v2 size and latency budgets for stored VLAN carriage on a synthetic 300-device fleet.
+
+The fleet is built through the real producers from synthetic capture text: build.build_interfaces (the trunk
+parser and its build.py assignments, the etherchannel and CDP joins), compute_cable_map and the typed STP producer.
+300 devices, 200 VLAN rows, 1,500 cables: 600 assessed (150 of them two-member bundles) and 900 edge cables to
+unscanned access points. Bytes are exact everywhere; the millisecond ceilings apply on hosted Linux Python 3.12,
+where the first hosted run is a finding. Every measurement is printed as one ``VLAN-CARRIAGE-BUDGET`` JSON line.
+"""
+from copy import deepcopy
+from dataclasses import asdict
+import json
+import sys
+import time
+
+import pytest
+
+from cisco_toolkit import build
+from cisco_toolkit import ui_projection as uip
+from cisco_toolkit.analyze import compute_cable_map
+from cisco_toolkit.stp_topology import produce_stp_topology_observation
+from cisco_toolkit.vlan_carriage import compute_vlan_carriage, validate_vlan_carriage
+
+import synthetic_fixtures as fx
+
+N_DEVICES, N_EDGES, N_VLANS, N_STP_VLANS = 300, 3, 200, 100
+VLANS = list(range(2, 2 + N_VLANS))
+
+
+def _timed_leg():
+    """The millisecond ceilings are hosted Linux Python 3.12 figures, never a coverage-traced or other leg."""
+    coverage = sys.modules.get("coverage")
+    traced = sys.gettrace() is not None or (
+        coverage is not None and getattr(getattr(coverage, "Coverage", None), "current", lambda: None)() is not None)
+    return sys.platform.startswith("linux") and sys.version_info[:2] == (3, 12) and not traced
+
+
+BUDGET = {"section_bytes": 6_000_000, "section_growth_v100_v200": 600_000, "summary_bytes": 4_096,
+          "inventory_growth_bytes": 1_000_000, "compute_ms": 3_000, "validate_ms": 1_500,
+          "document_growth_ms": 2_000, "page_ms": 300, "page_bytes": 3_000_000}
+
+
+def _host(i):
+    return f"sw{i % N_DEVICES:03d}"
+
+
+def _links(i):
+    """(local port, peer host, peer port, channel) of device i: a bundle or a single trunk to i+1 and from i-1,
+    single trunks to i+2 and from i-2."""
+    rows = []
+    if i % 2 == 0:
+        rows += [("Gi1/0/1", _host(i + 1), "Gi1/0/3", "Po1"), ("Gi1/0/2", _host(i + 1), "Gi1/0/4", "Po1")]
+    else:
+        rows += [("Gi1/0/1", _host(i + 1), "Gi1/0/3", "")]
+    if (i - 1) % 2 == 0:
+        rows += [("Gi1/0/3", _host(i - 1), "Gi1/0/1", "Po2"), ("Gi1/0/4", _host(i - 1), "Gi1/0/2", "Po2")]
+    else:
+        rows += [("Gi1/0/3", _host(i - 1), "Gi1/0/1", "")]
+    return rows + [("Gi1/0/5", _host(i + 2), "Gi1/0/6", ""), ("Gi1/0/6", _host(i - 2), "Gi1/0/5", "")]
+
+
+def _logical(i):
+    names = []
+    for local, _peer, _remote, channel in _links(i):
+        if (channel or local) not in names:
+            names.append(channel or local)
+    return names
+
+
+def _captures(i):
+    names = _logical(i)
+    # Two allowance shapes, so VLANs above 120 resolve to forwarding on some trunks and not_carried on others.
+    allowed = {name: "1-4094" if (i + int(name[-1])) % 3 else "2-120" for name in names}
+    trunk = ("Port        Mode             Encapsulation  Status        Native vlan\n"
+             + "".join(f"{name:<11} on               802.1q         trunking      1\n" for name in names)
+             + "\nPort        Vlans allowed on trunk\n" + "".join(f"{name:<11} {allowed[name]}\n" for name in names))
+    groups = {}
+    for local, _peer, _remote, channel in _links(i):
+        if channel:
+            groups.setdefault(channel, []).append(local)
+    etherchannel = "Group  Port-channel  Protocol    Ports\n------+-------------+-----------+--------------\n" + "".join(
+        f"{channel[2:]:<6} {channel}(SU)         LACP      " + "    ".join(m + "(P)" for m in members) + "\n"
+        for channel, members in groups.items())
+    neighbors = [(local, peer, remote, "cisco WS-C3850-24T") for local, peer, remote, _c in _links(i)]
+    neighbors += [(f"Gi1/0/{10 + k}", f"AP-{i:03d}-{k}", "Gi0", "cisco AIR-AP2802I") for k in range(N_EDGES)]
+    cdp = "".join(f"-------------------------\nDevice ID: {peer}\nEntry address(es):\n  IP address: 192.0.2.1\n"
+                  f"Platform: {platform},  Capabilities: Router Switch\n"
+                  f"Interface: {local},  Port ID (outgoing port): {remote}\nHoldtime : 150 sec\n"
+                  for local, peer, remote, platform in neighbors)
+    return {"show interfaces trunk": trunk, "show etherchannel summary": etherchannel if groups else "",
+            "show cdp neighbors detail": cdp}
+
+
+def _observation(i):
+    body, detail = [], []
+    for vid in VLANS[:N_STP_VLANS]:
+        body.append(f"VLAN{vid:04d}\n  Root ID Priority 32778\n          Address aaaa.0001.0001\n"
+                    "          This bridge is the root\n  Bridge ID Priority 32778\n          Address aaaa.0001.0001\n"
+                    "Interface Role Sts Cost Prio.Nbr Type\n---------------- ---- --- --------- -------- -------\n"
+                    + "".join(f"{name} {'Altn BLK' if (i + vid + n) % 7 == 0 else 'Desg FWD'} 4 128.{n + 1} P2p\n"
+                              for n, name in enumerate(_logical(i))) + "\n")
+        detail.append(f"VLAN{vid:04d}\n  Number of topology changes 0 last change occurred 00:00:00 ago\n")
+    return produce_stp_topology_observation("".join(body), "".join(detail),
+                                            state_capture_state="usable", detail_capture_state="usable")
+
+
+@pytest.fixture(scope="module")
+def fleet(tmp_path_factory):
+    root = tmp_path_factory.mktemp("carriage-fleet")
+    interfaces = {}
+    for i in range(N_DEVICES):
+        directory = root / _host(i)
+        directory.mkdir()
+        c2f = {}
+        for cmd, text in _captures(i).items():
+            if text:
+                path = directory / fx.cmd_filename(cmd)
+                path.write_text(text, encoding="utf-8", newline="\n")
+                c2f[cmd] = str(path)
+        interfaces[_host(i)] = build.build_interfaces(_host(i), "ios", c2f)
+    cables = compute_cable_map(interfaces)
+    observations = {_host(i): _observation(i) for i in range(N_DEVICES)}
+    stored = {host: {port: asdict(record) for port, record in records.items()} for host, records in interfaces.items()}
+    rows = [{"vlan": vid} for vid in VLANS]
+    return {"interfaces": stored, "cable_map": cables, "stp_topology_observations": observations, "vlan_cutover": rows}
+
+
+def _bytes(value):
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _timed(call):
+    start = time.perf_counter()
+    result = call()
+    return result, round(1000 * (time.perf_counter() - start), 1)
+
+
+def _report(capsys, kind, measured):
+    with capsys.disabled():
+        print("VLAN-CARRIAGE-BUDGET " + json.dumps({"kind": kind, "timed": _timed_leg(), **measured}, sort_keys=True))
+
+
+def _zeroed(summary):
+    out = deepcopy(summary)
+    for name in uip.CARRIAGE_SUMMARY_COUNTS:
+        if out[name]["state"] == "published":
+            out[name]["value"] = 0
+    return out
+
+
+def test_the_stored_section_and_its_summary_stay_within_their_size_and_latency_budgets(fleet, capsys):
+    cables = fleet["cable_map"]["cables"]
+    assert len(fleet["interfaces"]) == N_DEVICES and len(cables) == 1_500
+    assessed = [c for c in cables if c["b"] in fleet["interfaces"] and c["a"] in fleet["interfaces"]]
+    assert len(assessed) == 600 and sum(1 for c in assessed if len(c["members"]) == 2) == 150
+    args = (fleet["cable_map"], fleet["interfaces"], fleet["stp_topology_observations"])
+    section, compute_ms = _timed(lambda: compute_vlan_carriage(*args, fleet["vlan_cutover"]))
+    verdict, validate_ms = _timed(lambda: validate_vlan_carriage(section))
+    half = compute_vlan_carriage(*args, fleet["vlan_cutover"][:N_VLANS // 2])
+    assert verdict == (True, "ok") and validate_vlan_carriage(half) == (True, "ok")
+    cov = section["coverage"]
+    assert (cov["vlan_rows"], cov["cable_rows"], cov["assessed_cables"], cov["edge_cables"]) == (200, 1_500, 600, 900)
+    assert cov["requested_pairs"] == cov["emitted_pairs"] == 200 * 600
+    snap = {**fleet, "vlan_carriage": section}
+    with_carriage = uip.project_inventory(snap)
+    without = uip.project_inventory({key: value for key, value in snap.items() if key != "vlan_carriage"})
+    summaries = [row["selections"]["carriage"] for row in with_carriage["vlans"]["rows"]["items"]]
+    # C' = 300: the same fleet's stored cable map with every other assessed cable removed (labelled reduction).
+    kept, every = {id(c) for c in assessed[::2]}, {id(c) for c in assessed}
+    smaller = {**fleet["cable_map"], "cables": [c for c in cables if id(c) in kept or id(c) not in every]}
+    small_section = compute_vlan_carriage(smaller, fleet["interfaces"], fleet["stp_topology_observations"],
+                                          fleet["vlan_cutover"])
+    small = uip.project_inventory({**fleet, "cable_map": smaller, "vlan_carriage": small_section})
+    small_summary = small["vlans"]["rows"]["items"][0]["selections"]["carriage"]
+    assert small_section["coverage"]["assessed_cables"] == 300
+    measured = {
+        "section_bytes": _bytes(section), "section_bytes_v100": _bytes(half),
+        "section_growth_v100_v200": _bytes(section) - _bytes(half),
+        "summary_bytes_max": max(_bytes(s) for s in summaries), "summary_bytes_c300": _bytes(small_summary),
+        "summary_bytes_c600": _bytes(summaries[0]),
+        "inventory_bytes": _bytes(with_carriage), "inventory_bytes_without": _bytes(without),
+        "inventory_growth_bytes": _bytes(with_carriage) - _bytes(without),
+        "compute_ms": compute_ms, "validate_ms": validate_ms, "section_state": section["state"],
+        "summary_states": sorted({s["state"] for s in summaries}),
+    }
+    _report(capsys, "engine", measured)
+    assert measured["section_bytes"] <= BUDGET["section_bytes"]
+    assert measured["section_growth_v100_v200"] <= BUDGET["section_growth_v100_v200"]
+    assert measured["summary_bytes_max"] <= BUDGET["summary_bytes"]
+    assert measured["summary_bytes_c300"] <= BUDGET["summary_bytes"]
+    # O(1) summary: its shape and refs do not grow with the assessed cable count; only the counted numbers differ.
+    assert _bytes(_zeroed(small_summary)) == _bytes(_zeroed(summaries[0]))
+    assert small_summary["refs"] == summaries[0]["refs"]
+    assert measured["inventory_growth_bytes"] <= BUDGET["inventory_growth_bytes"]
+    if _timed_leg():
+        assert measured["compute_ms"] <= BUDGET["compute_ms"]
+        assert measured["validate_ms"] <= BUDGET["validate_ms"]
+
+
+def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(fleet, tmp_path, capsys):
+    pytest.importorskip("fastapi")
+    from pathlib import Path
+    webapp = str(Path(__file__).resolve().parents[1] / "webapp")
+    if webapp not in sys.path:
+        sys.path.insert(0, webapp)
+    from backend import ui_projection_api as api
+    from backend.app import create_app
+
+    section = compute_vlan_carriage(fleet["cable_map"], fleet["interfaces"], fleet["stp_topology_observations"],
+                                    fleet["vlan_cutover"])
+    app = create_app(db_path=str(tmp_path / "budget.db"), scope_dist_dir=None)
+    store = app.state.store
+    campaign = store.create_campaign("Synthetic carriage budget")
+    without_id = store.add_snapshot(campaign["id"], "without carriage", dict(fleet), {})["id"]
+    with_id = store.add_snapshot(campaign["id"], "with carriage", {**fleet, "vlan_carriage": section}, {})["id"]
+    warm_id = store.add_snapshot(campaign["id"], "warm-up", {"vlan_cutover": []}, {})["id"]
+    cache = api._ProjectionCache()
+    warm_raw, warm_binding = store.get_snapshot_blob(warm_id)
+    cache.document(warm_raw, warm_binding["sha256"], None)  # first-use imports and code paths, outside the timing
+    raw0, binding0 = store.get_snapshot_blob(without_id)
+    raw1, binding1 = store.get_snapshot_blob(with_id)
+    _document, without_ms = _timed(lambda: cache.document(raw0, binding0["sha256"], None))
+    document, with_ms = _timed(lambda: cache.document(raw1, binding1["sha256"], None))
+    first, first_page_ms = _timed(lambda: api.carriage_page(cache, raw1, binding1, with_id, 0, 0, api.MAX_PAGE_SIZE))
+
+    def warm():
+        response = api.carriage_page(cache, raw1, binding1, with_id, 0, 0, api.MAX_PAGE_SIZE)
+        api._CARRIAGE_VALIDATOR.validate(response)
+        api._require_carriage_page(response["payload"])
+        return response
+
+    response, page_ms = _timed(warm)
+    assert response == first and response["payload"]["page"]["returned"] == api.MAX_PAGE_SIZE
+    assert response["payload"]["summary"] == document["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
+    measured = {"document_ms_without": without_ms, "document_ms_with": with_ms,
+                "document_growth_ms": round(with_ms - without_ms, 1), "first_page_ms": first_page_ms,
+                "page_ms": page_ms, "page_bytes": _bytes(response), "page_items": len(response["payload"]["page"]["items"])}
+    _report(capsys, "api", measured)
+    assert measured["page_bytes"] <= BUDGET["page_bytes"]
+    if _timed_leg():
+        assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
+        assert measured["page_ms"] <= BUDGET["page_ms"]

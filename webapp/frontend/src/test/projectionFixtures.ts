@@ -399,34 +399,52 @@ export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_
     vlans: { total: published(0), rows: empty("/vlans/rows") }, endpoints: { total: published(0), rows: empty("/endpoints/rows"), shared_ip: empty("/endpoints/shared_ip"), dual_homed: empty("/endpoints/dual_homed") }, uncollected_peers: empty("/uncollected_peers"),
   } };
 }
+// G14 v2: the VLAN row carries only the engine's carriage summary; its cable rows arrive through a lazy page that
+// must echo the same summary (carriagePageFixture).
+const CARRIAGE_QUALIFIER = { id: "stored_vlan_carriage_scope", owner: "synthetic.owner", applies_to: ["/inventory/vlans/rows"],
+  text: "Synthetic configured carriage is not simultaneous forwarding or data-plane delivery." };
+export function carriageSummaryFixture(vlan_index = 0) {
+  const count = (value: number, subject: string) => ({ ...published(value), subject });
+  return { state: "unverified", reason: "Synthetic supplied carriage census remains incomplete", subject: `/vlan_carriage/rows/${vlan_index}`,
+    refs: [{ pointer: `/vlan_carriage/rows/${vlan_index}`, role: "subject" }, { pointer: "/vlan_carriage/coverage", role: "witness" }],
+    basis: "synthetic.owner:carriage_summary", vlan_index,
+    assessed: count(2, "/vlan_carriage/coverage/assessed_cables"), forwarding: count(1, `/vlan_carriage/rows/${vlan_index}/codes`),
+    stp_blocked: count(0, `/vlan_carriage/rows/${vlan_index}/codes`), not_carried: count(0, `/vlan_carriage/rows/${vlan_index}/codes`),
+    held: count(1, `/vlan_carriage/rows/${vlan_index}/codes`), edge_not_collected: count(3, "/vlan_carriage/coverage/edge_cables") };
+}
 export function vlanCarriageFixture(sid = 1) {
   const base = inventoryFixture(sid);
+  const row = { index: 0, pointer: "/vlan_cutover/0",
+    ...fields("name readiness stp_root stp_root_state stp_root_reason stp_root_default_election fhrp gateway_svi_hosts endpoint_count endpoint_mix wave scenario app_domain criticality dependencies cutover_window rollback_owner stp_root_claimants stp_root_identities"),
+    vlan: published(10), selections: { carriage: carriageSummaryFixture(0), stp_roots: ownerList([], "/stp_roots"), gateways: { ...ownerList([], "/l3_forwarding"), state: "not_collected", reason: "Synthetic gateway rows not supplied" }, endpoints: null } };
+  return { ...base, limitations: [...base.limitations, CARRIAGE_QUALIFIER], payload: { ...base.payload,
+    vlans: { total: published(1), rows: ownerPage("/vlans/rows", [row]) } } };
+}
+export function carriagePageFixture(sid = 1, summary: object = carriageSummaryFixture(0), offset = 0, limit = 25) {
   const held = (reason: string) => ({ ...withheld(), reason });
   const note = "Synthetic missing B-end evidence; no blocked or forwarding claim";
-  const qualifier = { id: "stored_vlan_carriage_scope", owner: "synthetic.owner", applies_to: ["/inventory/vlans/rows"],
-    text: "Synthetic configured carriage is not simultaneous forwarding or data-plane delivery." };
+  const codes = "/vlan_carriage/rows/0/codes";
   const end = (host: string, present: boolean) => ({ host: published(host), port: published("Gi1/0/1"),
-    signal: present ? published("allowed") : held(note), basis: published(present ? "stored_trunk_allowance" : "none") });
+    signal: present ? { ...published("allowed"), subject: codes } : { ...held(note), subject: codes },
+    basis: { ...published(present ? "stored_trunk_allowance" : "none"), subject: codes } });
   const cables = [2, 0].map((index) => {
     const complete = index === 2;
-    const pointer = `/vlan_carriage/rows/${index}`;
-    const relation = { ...(complete ? published("forwarding") : held(note)), subject: `${pointer}/relation`,
-      refs: [{ pointer: `/cable_map/cables/${index}`, role: "witness" }], caveats: [qualifier.id] };
-    const evidence_shape = published(complete ? "both_ends" : "one_end_only");
-    const basis = published(complete ? "stored_trunk_allowance" : "none");
+    const pointer = `/vlan_carriage/cables/${index}`;
+    const relation = { ...(complete ? published("forwarding") : held(note)), subject: codes,
+      refs: [{ pointer, role: "witness" }], caveats: [CARRIAGE_QUALIFIER.id] };
+    const evidence_shape = { ...published(complete ? "both_ends" : "one_end_only"), subject: codes };
+    const basis = { ...published(complete ? "stored_trunk_allowance" : "none"), subject: codes };
     const member = { index: 0, pointer: `${pointer}/members/0`, relation, evidence_shape, basis,
       a: end("synthetic-a", true), b: end("synthetic-b", complete) };
     return { index, pointer, cable_pointer: `/cable_map/cables/${index}`, relation, evidence_shape, basis,
       ends: published({ a: "synthetic-a", a_port: "Gi1/0/1", b: "synthetic-b", b_port: "Gi1/0/1", is_pc: false }),
       members: { ...ownerList([member], `${pointer}/members`), ...(complete ? {} : { state: "not_collected", reason: note }) } };
   });
-  const carriage = { ...ownerList(cables, "/vlan_carriage/rows"), state: "unverified",
-    reason: "Synthetic supplied carriage census remains incomplete" };
-  const row = { index: 0, pointer: "/vlan_cutover/0",
-    ...fields("name readiness stp_root stp_root_state stp_root_reason stp_root_default_election fhrp gateway_svi_hosts endpoint_count endpoint_mix wave scenario app_domain criticality dependencies cutover_window rollback_owner stp_root_claimants stp_root_identities"),
-    vlan: published(10), selections: { carriage, stp_roots: ownerList([], "/stp_roots"), gateways: { ...ownerList([], "/l3_forwarding"), state: "not_collected", reason: "Synthetic gateway rows not supplied" }, endpoints: null } };
-  return { ...base, limitations: [...base.limitations, qualifier], payload: { ...base.payload,
-    vlans: { total: published(1), rows: ownerPage("/vlans/rows", [row]) } } };
+  const items = cables.slice(offset, offset + limit);
+  const base = vlanCarriageFixture(sid);
+  return { ...common(sid, "carriage"), limitations: base.limitations, payload: {
+    vlan_index: 0, pointer: "/vlan_carriage/rows/0", summary,
+    page: { offset, limit, returned: items.length, total: cables.length, has_more: offset + items.length < cables.length, items } } };
 }
 
 export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected"), coverage_rollup = coverageRollupFixture("not_collected")) {
