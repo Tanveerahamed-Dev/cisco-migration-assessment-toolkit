@@ -81,10 +81,10 @@ jobs:
       # suite still collects these tests again with the subsequent Windows spawn tests.
       - name: Scope handoff import-state contracts
         run: python -m pytest tests/test_scope_compile_handoff.py
-        # Close the changed privacy census before the expensive suite; the full suite
-        # still collects every one of these assertions on every matrix platform.
-        - name: Client artifact name and census contracts
-          run: python -m pytest tests/test_client_artifact_census.py
+      # Close the changed privacy census before the expensive suite; the full suite
+      # still collects every one of these assertions on every matrix platform.
+      - name: Client artifact name and census contracts
+        run: python -m pytest tests/test_client_artifact_census.py
       # Fail promptly on receive liveness regressions; the unchanged complete
       # suite below still collects these transport contracts on every platform.
       - name: Debug helper receive deadline contracts
