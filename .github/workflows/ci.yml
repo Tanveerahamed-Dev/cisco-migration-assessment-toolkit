@@ -111,7 +111,7 @@ jobs:
         run: python -I -B tools/graphify_guarded.py --probe
       # The default suite includes webapp/tests, whose /scope pins run the REAL Atlas Scope compiler and
       # bundler; ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1 makes a missing node/npm ci fail those pins, never skip.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
@@ -182,7 +182,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
@@ -314,7 +314,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
           cache: npm
@@ -472,7 +472,7 @@ jobs:
           --require-source-binding
           --expected-json dist/dist-verification.json
       - name: Preserve the verified distributions
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: distributions-${{ github.sha }}
           path: |
@@ -680,7 +680,7 @@ jobs:
           } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof "step-outcomes.json") -Encoding utf8
       - name: Upload hosted measurement evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: projection-performance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/atlas-ui-projection-performance/
@@ -703,7 +703,7 @@ jobs:
           python-version: "3.12.10"
           architecture: x64
       - name: Download the exact verified distributions from this workflow run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: distributions-${{ github.sha }}
           path: dist

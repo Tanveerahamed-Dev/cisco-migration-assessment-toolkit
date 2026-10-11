@@ -41,7 +41,7 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   build and real-browser E2E). **Every carried question is now closed.** The subsequent frontend
   platform migration removed the temporary RSC-only npm-audit exception. AssessHub's tracked
   platform now declares Node 24, React/React DOM 19.3.0, React Router 8.4.0, Vite 8.2.4 and
-  `@vitejs/plugin-react` 6.1.1. Exact versions and distribution identities belong to
+  `@vitejs/plugin-react` 6.1.2. Exact versions and distribution identities belong to
   `webapp/frontend/package.json` and `package-lock.json`, reconciled by
   `tests/test_frontend_platform_contract.py`; other npm projects retain their own version owners.
   W19's candidate qualification, installed bytes, inventory and final SPA rebuild remain separate
@@ -120,14 +120,14 @@ the PDF, so it does not establish PDF-to-PNG provenance.
 
 The dependency audit is also an explicit release boundary, not a silent waiver. Nano ID is locked to the
 patched 3.3.18 line through both the Master Reference and AssessHub npm overrides. Miniflare
-5.20260801.1-alpha declares an exact Sharp 0.35.2 build-tool edge; a Miniflare-identity-scoped override
+5.20261006.0-alpha declares an exact Sharp 0.35.4 build-tool edge; a Miniflare-identity-scoped override
 resolves that edge to Sharp 0.35.5 with libvips-package 1.3.4 for GHSA-wq5f-xc86-pv6w
 (librsvg CVE-2026-96889), retaining the earlier GHSA-rgj7-g3m4-5g8c remediation. The source/lock
 contract and release SBOM gate bind the exact Miniflare-to-Sharp edge and complete 26-component
 `@img/sharp-*` native family, reject every unscoped npm Sharp version below 0.35.5, a 0.35.5 prerelease, and an
 unparseable version, and exercise the installed native binding against a tracked PNG. This closes
 the modeled advisory boundary in the current lock/install graph, not external
-source-authenticated applicability or VEX review. Vinext 0.0.50's exact
+source-authenticated applicability or VEX review. Vinext 0.2.1's exact
 `image-size` edge is scoped to the tracked `@atlas/bounded-image-size` package, whose source-bound
 PNG/SVG-only parser rejects the advisory-named HEIF, JXL and ICNS families and every other unsupported
 format. The source contract rejects static image imports, numbered metadata-route images and `next/image`
@@ -140,7 +140,7 @@ remain absent; any future Next component fails closed for a new exact compiled-p
 closes the known vendored-parser source blocker, but not the fresh externally authenticated current
 advisory/applicability review. The release gate remains blocked on that external boundary, and a zero-result
 npm audit does not supersede it.
-Vinext 0.0.50's `braces` edge (GHSA-vfj7-8cjw-p6xm, no patched release) resolves to the tracked
+Vinext 0.2.1's `braces` edge (GHSA-vfj7-8cjw-p6xm, no patched release) resolves to the tracked
 `@atlas/bounded-braces`: released braces 3.0.3 plus the unmerged third-party depth patch micromatch/braces#72, one
 entry of the closed bounded-substitution registry in `master-reference/release/pipeline.py`; Vite's compiled braces
 copies stay outside npm resolution and keep the release gate blocked.

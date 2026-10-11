@@ -26,7 +26,7 @@ import { isDeepStrictEqual } from "node:util";
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDirectory, "../..");
 const packageRoot = path.join(projectRoot, "vendor", "bounded-braces");
-const OVERRIDE_SCOPE = "vinext@0.0.50";
+const OVERRIDE_SCOPE = "vinext@0.2.1";
 const OVERRIDE_SPEC = "file:vendor/bounded-braces";
 // fast-glob 3.3.3 out/utils/pattern.js expands every pattern with exactly these options.
 const FAST_GLOB_BRACE_OPTIONS = Object.freeze({ expand: true, nodupes: true, keepEscaping: true });
@@ -272,7 +272,7 @@ const PR_72_LIB_DIFF_LINES = Object.freeze([
 // which the reconstruction test below proves; README.md and package.json are Atlas-authored.
 const VENDORED_SHA256 = Object.freeze({
   LICENSE: "35bdd8a44339719441900fb50fbefc5e2dca1ca662cbaed7a687de842c8b70f2",
-  "README.md": "e1bc416ea24f0964c292d05f86c024d0b26a3144bebce65b2e01b2396f30ed0e",
+  "README.md": "e6d58892eba9a626ff9ff9716928f55a2850b0d8c1a763022d0ce40d136c4dfb",
   "index.js": "332ea07c7b006361aad12aa994ca75dc1db8e8382b884909e2f38f10b85c88a4",
   "lib/compile.js": "b651f7715e6db8942ce61d3394357b4d81c8ece88240aa31a458ea1165edd195",
   "lib/constants.js": "f9fb688959232eee3e6ad7906a5b0e3234815db49ee857ef86983d65b917dc7c",
@@ -451,7 +451,7 @@ function consumerChain() {
   ];
   let from = path.join(projectRoot, "node_modules", "vinext", "package.json");
   let declaring = JSON.parse(readFileSync(from, "utf8"));
-  assert.equal(declaring.version, "0.0.50");
+  assert.equal(declaring.version, "0.2.1");
   const resolved = {};
   for (const [name, version] of hops) {
     assert.ok(declaring.dependencies?.[name], `${declaring.name} declares ${name}`);
@@ -599,7 +599,7 @@ test("the lock substitutes braces only on the exact Vinext edge", () => {
   }
 
   // Only micromatch 4.0.8 declares braces, and every lock path from the root to braces passes
-  // through Vinext 0.0.50: with Vinext removed, braces is unreachable.
+  // through Vinext 0.2.1: with Vinext removed, braces is unreachable.
   const dependents = Object.entries(packages)
     .filter(([key, record]) => key && record.dependencies?.braces)
     .map(([key, record]) => [key, record.version, record.dependencies.braces]);
@@ -1111,7 +1111,7 @@ test("Vite's compiled bundle carries its own unbounded braces 3.0.3 copy outside
   // The release gate models this copy separately; this pins the installed fact it relies on.
   const viteManifest = path.join(projectRoot, "node_modules", "vite", "package.json");
   const vite = JSON.parse(readFileSync(viteManifest, "utf8"));
-  assert.equal(vite.version, "8.2.0");
+  assert.equal(vite.version, "8.2.4");
   const bundle = readFileSync(path.join(path.dirname(viteManifest), "dist", "node", "chunks", "node.js"), "utf8");
   assert.ok(bundle.includes("//#region ../../node_modules/.pnpm/braces@3.0.3/node_modules/braces/lib/parse.js"));
   assert.ok(bundle.includes("node_modules/.pnpm/chokidar@3.6.0"));

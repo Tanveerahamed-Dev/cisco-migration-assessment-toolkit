@@ -37,7 +37,7 @@ as failures. The audit covers runtime and build-time dependencies.
 
 ### Image metadata dependency boundary
 
-Vinext 0.0.50's exact `image-size` edge is overridden to the private, tracked
+Vinext 0.2.1's exact `image-size` edge is overridden to the private, tracked
 `vendor/bounded-image-size` package. Its parser snapshots at most 512 bytes,
 validates bounded PNG IHDR metadata, recognizes only a quote-balanced and
 terminated SVG root marker, and rejects every other image family. Contract
@@ -46,7 +46,7 @@ lock and local-package source receipt, exercise real tracked PNG/SVG assets,
 reject static image imports and metadata-route files across the exact Git-owned
 JS/TS path set, and run hostile inputs in watchdog subprocesses.
 
-Miniflare 5.20260801.1-alpha separately declares Sharp 0.35.2 for local
+Miniflare 5.20261006.0-alpha separately declares Sharp 0.35.4 for local
 Cloudflare build tooling. A Miniflare-version-scoped override resolves that
 single edge to Sharp 0.35.5 with libvips-package 1.3.4 for
 GHSA-wq5f-xc86-pv6w (librsvg CVE-2026-96889), retaining the earlier
@@ -68,10 +68,10 @@ blocked.
 
 ### Braces dependency boundary
 
-Vinext 0.0.50 reaches `braces` through vite-plugin-commonjs,
+Vinext 0.2.1 reaches `braces` through vite-plugin-commonjs,
 vite-plugin-dynamic-import, its nested fast-glob 3.3.3 and micromatch 4.0.8.
 GHSA-vfj7-8cjw-p6xm covers every published braces release and none is patched,
-so the `vinext@0.0.50` override object also maps `braces` to the private,
+so the `vinext@0.2.1` override object also maps `braces` to the private,
 tracked `vendor/bounded-braces` package: released braces 3.0.3 plus only the
 `lib/` hunks of micromatch/braces#72, an OPEN, unmerged third-party pull
 request (head `d0d575e55e74a4e0218e5248fafb79efc3e54ebb`, author FSDevelop).
