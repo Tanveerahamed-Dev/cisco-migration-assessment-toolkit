@@ -1913,7 +1913,8 @@ def _envelope(state: str, value: Any, subject: Optional[str], refs: List[Dict[st
     if owner_token is not None and owner_token != _FAULT and owner_token != state:
         fact["engine_state"] = owner_token
         fact["engine_state_owner"] = token_owner
-    cav = [c for c in _ALL_LIMITATION_IDS if c in set(caveats)]
+    caveat_set = set(caveats)
+    cav = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
     if cav:
         fact["caveats"] = cav
     return fact
@@ -2093,7 +2094,8 @@ def _factlist(ctx: _Ctx, path: Optional[str], basis: str, items: List[Any], base
     if owner is not None and owner != _FAULT and owner != state:
         out["engine_state"] = owner
         out["engine_state_owner"] = "ssot.abstention_reason"
-    cav = [c for c in _LIMITATION_IDS if c in set(caveats)]
+    caveat_set = set(caveats)
+    cav = [c for c in _LIMITATION_IDS if c in caveat_set]
     if cav:
         out["caveats"] = cav
     out["items"] = items
@@ -3533,7 +3535,10 @@ def _listing(ctx: _Ctx, state: str, reason: Optional[str], toks: Optional[Tuple[
         out["reason"] = reason
     cav += _one_hop(ctx, state, all_secs)
     # a withheld list still qualifies the rows it carries (an incomplete list shows what it has)
-    kept = [c for c in _ALL_LIMITATION_IDS if c in set(cav)] if (state in (_PUB, _CBE) or items) else []
+    kept = []
+    if state in (_PUB, _CBE) or items:
+        caveat_set = set(cav)
+        kept = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
     if kept:
         out["caveats"] = kept
     out["items"] = items
@@ -4915,6 +4920,17 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 static[(ci, mi, side)] = bad
     typed_chars = {carriage_end_char("forwarding"), carriage_end_char("blocked")}
     configured_chars = {carriage_end_char("allowed"), carriage_end_char("excluded")}
+    # Owner-derived immutable signals and exact role joins are shared only within this admission of one
+    # read-only snapshot. Every end still checks its own static witnesses and configured allowance below.
+    signals = {char: decode_carriage_end(char)["signal"] for char in typed_chars | configured_chars}
+    role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
+
+    def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any) -> List[Any]:
+        key = (host, interface, vid)
+        if key not in role_rows:
+            role_rows[key] = carriage_role_rows(observation, interface, vid, index=index)
+        return role_rows[key]
+
     positions = []
     for ci, offset, _count in carriage_code_offsets(section):
         for member in section["cables"][ci]["members"]:
@@ -4939,17 +4955,16 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     if end["host"] not in indexes:
                         indexes[end["host"]] = carriage_role_index(observation)
                     index = indexes[end["host"]]
-                    rows = carriage_role_rows(observation, end["stp_interface"], row["vlan"], index=index)
-                    beside = (carriage_role_rows(observation, end["port"], row["vlan"], index=index)
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index)
+                    beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index)
                               if end["stp_interface"] != end["port"] else [])
                     ok = (len(rows) == 1 and not beside and carriage_role_compatible(rows[0][1])
-                          and rows[0][1]["state"] == decode_carriage_end(char)["signal"])
-                    ok = ok and carriage_allowance_matches(configured[key], row["vlan"],
-                                                           decode_carriage_end(char)["signal"])
+                          and rows[0][1]["state"] == signals[char])
+                    ok = ok and carriage_allowance_matches(configured[key], row["vlan"], signals[char])
                 if not ok:
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "stp_pointer"))
             elif char in configured_chars:
-                if not carriage_allowance_matches(configured[key], row["vlan"], decode_carriage_end(char)["signal"]):
+                if not carriage_allowance_matches(configured[key], row["vlan"], signals[char]):
                     found.append(("vlan_carriage", "cables", ci, "members", mi, side, "allowance_pointer"))
             else:
                 continue
@@ -5062,7 +5077,8 @@ def _carriage_summary(ctx: _Ctx, adm: _CarriageAdmission, vi: int, valid_vlan: b
                            "basis": _B_CARRIAGE + ".rows[]"}
     if state != _PUB:
         out["reason"] = reason
-    kept = [c for c in _ALL_LIMITATION_IDS if c in set(caveats)]
+    caveat_set = set(caveats)
+    kept = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
     if kept:
         out["caveats"] = kept
     out["vlan_index"] = vi

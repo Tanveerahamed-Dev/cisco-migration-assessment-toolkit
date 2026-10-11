@@ -223,7 +223,7 @@ def _assert_live_pair(name: str, measured: dict) -> None:
     assert measured["corpus_sha256"] == pinned["corpus_sha256"], (
         f"the {name} corpus was regenerated (its bytes no longer carry the SHA-256 the /1 digests were measured on). "
         "Re-measure and update the corpus_sha256 AND its digests together in _V1_LIVE, only while every frozen-corpus "
-        "pin still holds (module docstring)")
+        "pin still holds (module docstring). Actual hosted tuple: " + repr(measured))
     assert measured == pinned, (
         "cutover_operator_evidence/1 no longer recomputes the bytes the pre-W50 engine stored for an UNCHANGED "
         "corpus, so every stored receipt would fail re-verification. Restore _rehearsal_impact_evidence_v1 and the "

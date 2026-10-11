@@ -123,3 +123,53 @@ I13 derived-number ownership guard, the webapp helper-classification guard and t
 three wrapper failures. The full early LF case passed. Its published budget measurements
 are non-timed-leg observations, not Linux 3.12 latency passes. Current held-old-sample
 Scope and CodeQL succeeded; this does not qualify the forthcoming sample/compiler family.
+
+## Full import verification and corrective source checkpoint
+
+The first real hosted `verify_import`, run `38129579632` / job `114440927725`, succeeded
+on exact import `58ae0389` / tree `c6b41be4`. All three outputs are admitted bytes,
+including the unchanged sheet schema; no held or partial substitution occurred. The disposition
+is `IMPORT_MATCHES_ADMITTED_BYTES_REVIEW_ONLY`. Its small verification artifact remains
+metadata only. Later test, projection-performance and derivative binding changes do not
+convert this receipt into final combined-source readiness.
+
+Eligible Python 3.12 job `114429408342` preserved 8 failed / 16,566 passed / 144 skipped /
+3 xfailed / 8 warnings / 26 subtests. In addition to the seven Python 3.11 failures, the API
+budget failed document growth at 3,909.8 ms against unchanged 2,000 ms. Its measured cold
+783.9 ms and warm 794.3 ms pages also exceed 300 ms; those later assertions were not reached.
+Stored bytes, VLAN doubling growth, inventory growth and page-byte bounds passed their
+preceding assertions. The primary latency cause remains unconfirmed.
+
+This correction forwards the carriage argument in the hostile transport test double, joins
+the four derived carriage counts to an independent stored-code oracle, and classifies the two
+actual helper paths in both existing webapp filters. Assertions remain intact. W50 reports its
+actual complete measured tuple on mismatch; frozen and live equality guards remain unchanged.
+An early eligible hosted Python 3.12 step runs the four existing carriage/operator control
+files before the unchanged complete default suite and real UTC sample check.
+
+Projection edits hoist per-call caveat sets, decode positive signals once and memoize logical
+role joins within one admission. Source identity, per-end current allowances/static witnesses,
+owned copies, complete Python validation and mutable-schema fallback remain load-bearing.
+Hosted-only inclusive stage diagnostics call each original exactly once and stay inside the
+unchanged outer 2,000/300 ms timers. Fresh budget recovery is unverified; no cap or guard changed.
+
+Fresh Scope producer `38129509119` / `114440714457`, actual tested `a671e8c2` with ordered
+`0b411c16 + 58ae0389` and equal tree `c6b41be4`, refused the stale d015 binding family:
+47 failed / 7,411 passed / 27 skipped, ten failed files plus four suite initialization headers.
+Export, capture, upload and typecheck completed; strict mutations, build, hub, B3, mount and
+browser tails were skipped. Diagnostic `11699111669` was received once as six inert files.
+This preserves the failure and supplies fresh sample-a22 compiler data for independent review;
+upload success is not late product execution or archive-custody proof.
+
+Independent review of that diagnostic joined all 460 current source inputs and four old
+outputs to exact Git, equal before/after records and all 28 new binding fields. The complete
+new four-file family is adopted with only `GOLDEN_SHA` changed to the admitted a22 sample.
+Every nonmetadata subtree matches: 26 compiled device records, 44 links, 140 findings,
+377 evidence records and all owner-impact holds/citations/caps remain unchanged. Fabric also
+updates its genuine sample generation clock; its compact bytes retain no final LF. No other
+golden expectation changes. The eight corrective source paths and owned records are outside
+the compiler input set; the changed test-support literal intentionally needs fresh final
+compilation and full late runtime proof. An initial copy path used `files/` instead of the
+actual `members/` and refused all four before any data overwrite; the actual inventory was
+then read and the exact four member paths copied. This is a local file-tool error, not a
+compiler or transport failure. No local compiler, digest, schema or receipt controller ran.

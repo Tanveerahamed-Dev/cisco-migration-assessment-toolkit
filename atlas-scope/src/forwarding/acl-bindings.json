@@ -3,10 +3,10 @@
   "source": "webapp/sample_data/sample_fleet.snapshot.json",
   "sourceOrigin": "repository-file",
   "sourceDigestForm": "lf-normalised",
-  "sourceSha256": "d015e974606ca78d623f1e9547df82e9a316708506be3438f59151342a22026a",
-  "sourceBytes": 3782932,
-  "sourceExactSha256": "sha256:d015e974606ca78d623f1e9547df82e9a316708506be3438f59151342a22026a",
-  "sourceGitBlob": "444afbd6ccf16da57ae64ac9f8655d5e93578a50"
+  "sourceSha256": "a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5",
+  "sourceBytes": 3401409,
+  "sourceExactSha256": "sha256:a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5",
+  "sourceGitBlob": "9005c92a594e8ff7d65e57743498ad33b37d6a73"
  },
  "hosts": {
   "access1": [

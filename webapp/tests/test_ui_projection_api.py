@@ -2564,11 +2564,11 @@ def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(cli
     project = engine.ui_projection
     produced = []
 
-    def forged(snapshot, host=None):
+    def forged(snapshot, host=None, carriage=None):
         if forgery == "equal_content_other_bytes":
-            document = project(engine.bind_ui_projection_snapshot(other_bytes), host)
+            document = project(engine.bind_ui_projection_snapshot(other_bytes), host, carriage)
         else:
-            document = project(snapshot, host)
+            document = project(snapshot, host, carriage)
             if forgery == "digest":
                 document["engine"]["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
             else:

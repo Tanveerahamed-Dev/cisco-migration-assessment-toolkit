@@ -38,6 +38,7 @@ from jsonschema import Draft202012Validator
 from cisco_toolkit import analyze, coverage_matrix, nrfu_export, ssot, stp_topology
 from cisco_toolkit import parse as parse_mod
 from cisco_toolkit import ui_projection as uip
+from cisco_toolkit.vlan_carriage import CODE_ALPHABET
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -1689,6 +1690,21 @@ def _independent_coverage_abstention_count(snap, host):
     return count
 
 
+def _independent_carriage_count(snap, vi, name):
+    """Count the stored cable verdict characters independently; never call the projection's count/join."""
+    section = snap["vlan_carriage"]
+    codes = section["rows"][vi]["codes"]
+    tokens, offset = [], 0
+    for cable in section["cables"]:
+        if cable["scope"] != "assessed":
+            continue
+        tokens.append(section["code_tables"]["verdict"][CODE_ALPHABET.index(codes[offset])])
+        offset += 1 + 3 * len(cable["members"])
+    assert offset == len(codes)
+    assert name in ("forwarding", "stp_blocked", "not_carried", "held")
+    return sum(":" not in token if name == "held" else token.startswith(name + ":") for token in tokens)
+
+
 @pytest.mark.parametrize("name", ("a", "bl", "mg", "real", "g_phys_bad", "g_poison_str"))
 def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
     snap = snaps[name] if isinstance(snaps[name], dict) else {}
@@ -1732,6 +1748,13 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
                 expected_rows = [index for index, row in enumerate(snap["coverage_matrix"]["rows"])
                                  if isinstance(row, dict) and row.get("device") == host]
                 assert {_ptr("coverage_matrix", "rows", index) for index in expected_rows} <= set(witnesses)
+            elif fact["basis"] == "vlan_carriage.carriage_row_counts:vlan_carriage.rows[].codes":
+                tokens = fact["subject"].split("/")
+                assert len(tokens) == 5 and tokens[:3] == ["", "vlan_carriage", "rows"] and tokens[-1] == "codes"
+                vi, measure = int(tokens[3]), where.rsplit("/", 1)[-1]
+                assert type(value) is int and value == _independent_carriage_count(snap, vi, measure), (where, value)
+                assert {"pointer": f"/vlan_carriage/rows/{vi}", "role": "witness"} in fact["refs"]
+                assert {"pointer": "/vlan_carriage/coverage", "role": "witness"} in fact["refs"]
             elif fact["subject"] is not None:
                 assert _resolve(snap, fact["subject"]) == value, (where, fact["subject"], value)
             else:

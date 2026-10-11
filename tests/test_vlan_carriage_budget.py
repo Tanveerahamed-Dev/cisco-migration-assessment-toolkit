@@ -9,6 +9,7 @@ where the first hosted run is a finding. Every measurement is printed as one ``V
 from copy import deepcopy
 from dataclasses import asdict
 import json
+import os
 import sys
 import time
 
@@ -196,7 +197,7 @@ def test_the_stored_section_and_its_summary_stay_within_their_size_and_latency_b
         assert measured["validate_ms"] <= BUDGET["validate_ms"]
 
 
-def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(fleet, tmp_path, capsys):
+def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(fleet, tmp_path, capsys, monkeypatch):
     pytest.importorskip("fastapi")
     from pathlib import Path
     webapp = str(Path(__file__).resolve().parents[1] / "webapp")
@@ -204,6 +205,54 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         sys.path.insert(0, webapp)
     from backend import ui_projection_api as api
     from backend.app import create_app
+
+    # Transparent hosted diagnostics: the unchanged outer timers and ceilings still decide. Times are inclusive
+    # (admission includes gaps, validation includes schema fingerprinting), so these figures must not be summed.
+    phase = None
+    stages = {}
+
+    def traced(name, original):
+        def call(*args, **kwargs):
+            if phase is None:
+                return original(*args, **kwargs)
+            started = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                stage = stages.setdefault(phase, {}).setdefault(name, {"count": 0, "ms": 0.0})
+                stage["count"] += 1
+                stage["ms"] += 1000 * (time.perf_counter() - started)
+        return call
+
+    diagnostics = os.environ.get("GITHUB_ACTIONS") == "true" and _timed_leg()
+    if diagnostics:
+        for module, name, label in (
+            (api.engine, "bind_ui_projection_snapshot", "snapshot_bind"),
+            (api.engine, "ui_projection_carriage_admission", "carriage_admission"),
+            (uip, "_carriage_gaps", "basis_gaps"),
+            (api.engine, "ui_projection", "document_production"),
+            (api.engine, "ui_projection_carriage", "page_production"),
+            (uip, "bound_snapshot_source", "mutation_sensitive_identity"),
+            (api, "deepcopy", "owned_copy"),
+            (api, "_require_json_native", "json_native"),
+            (api, "_schema_fingerprint", "schema_fingerprint"),
+            (api, "_require_engine_source", "engine_source_guard"),
+            (api, "_require_carriage_page", "page_metadata_guard"),
+        ):
+            monkeypatch.setattr(module, name, traced(label, getattr(module, name)))
+
+        class TracedValidator:
+            """Retain the complete original validator, schema and behavior; only its outer validate is timed."""
+            def __init__(self, original, label):
+                self.original = original
+                self.validate = traced(label, original.validate)
+
+            def __getattr__(self, name):
+                return getattr(self.original, name)
+
+        for name, label in (("_DOCUMENT_VALIDATOR", "document_validation"),
+                            ("_CARRIAGE_VALIDATOR", "page_validation")):
+            monkeypatch.setattr(api, name, TracedValidator(getattr(api, name), label))
 
     section = compute_vlan_carriage(fleet["cable_map"], fleet["interfaces"], fleet["stp_topology_observations"],
                                     fleet["vlan_cutover"])
@@ -218,7 +267,9 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     cache.document(warm_raw, warm_binding["sha256"], None)  # first-use imports and code paths, outside the timing
     raw0, binding0 = store.get_snapshot_blob(without_id)
     raw1, binding1 = store.get_snapshot_blob(with_id)
+    phase = "document_without"
     _document, without_ms = _timed(lambda: cache.document(raw0, binding0["sha256"], None))
+    phase = "document_with"
     document, with_ms = _timed(lambda: cache.document(raw1, binding1["sha256"], None))
 
     def warm():
@@ -227,14 +278,25 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
         api._require_carriage_page(response["payload"])
         return response
 
+    phase = "first_page"
     first, first_page_ms = _timed(warm)
+    phase = "page"
     response, page_ms = _timed(warm)
+    phase = None
     assert response == first and response["payload"]["page"]["returned"] == api.MAX_PAGE_SIZE
     assert response["payload"]["summary"] == document["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
     measured = {"document_ms_without": without_ms, "document_ms_with": with_ms,
                 "document_growth_ms": round(with_ms - without_ms, 1), "first_page_ms": first_page_ms,
                 "page_ms": page_ms, "page_bytes": _bytes(response), "page_items": len(response["payload"]["page"]["items"])}
     _report(capsys, "api", measured)
+    if diagnostics:
+        with capsys.disabled():
+            print("VLAN-CARRIAGE-STAGES " + json.dumps({
+                "inclusive_not_additive": True,
+                "phases": {key: {name: {"count": value["count"], "ms": round(value["ms"], 1)}
+                                 for name, value in sorted(stage.items())}
+                           for key, stage in stages.items()},
+            }, sort_keys=True))
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
