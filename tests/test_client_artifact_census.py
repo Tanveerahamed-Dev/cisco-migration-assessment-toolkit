@@ -1255,3 +1255,8 @@ def test_browser_non_html_binding_graph_does_not_expand_paths(tmp_path):
     source += "HTML = " + repr('<script>a.download = "private.json"</script>') + "\n"
     _write(tmp_path, "new-root/generated.py", source)
     assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_opaque_grouped_property_calls_do_not_recurse_or_hide_the_next_exit(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'a[(first)(second)] = value;\na.download = "private.json";')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}

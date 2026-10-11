@@ -1902,7 +1902,7 @@ def _download_template(expression: str) -> str | None:
     templates = []
     literal = False
     for part in parts:
-        if part.startswith("(") and part.endswith(")"):
+        if part != expression and part.startswith("(") and part.endswith(")"):
             grouped = _download_template(part)
             if grouped is not None:
                 literal = True
@@ -2508,7 +2508,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/qualify_scale.py::write_json": (
         1, DELEGATED, (), "path-parameter JSON writer; filenames belong to classified callers"),
     ".github/scripts/qualify_scale.py::stage": (
-        10, NON_CLIENT, ("snapshot", "workbook"),
+        10, NON_CLIENT, ("snapshot", "workbook", "devices-inventory"),
         "the hosted scale workflow's fixed generated corpus, API and compiler evidence; " + _SYNTHETIC),
     ".github/scripts/qualify_scale.py::stage.request": (
         1, NON_CLIENT, (),
@@ -2517,7 +2517,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, ("engine-log",),
         "stdout/stderr of fixed synthetic hosted scale stages; " + _SYNTHETIC),
     ".github/scripts/qualify_scale.py::main": (
-        6, NON_CLIENT, (),
+        6, NON_CLIENT, ("devices-inventory", "engine-log", "snapshot", "workbook"),
         "hosted scale budgets, source metadata and measurements of the fixed generated corpus; " + _SYNTHETIC),
     "atlas-scope/tools/fixtures/engine-sparse-interfaces.py::<module>": (
         1, NON_CLIENT, (), "the Atlas Scope sparse-interfaces fixture; " + _SYNTHETIC),
