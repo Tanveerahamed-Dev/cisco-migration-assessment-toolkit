@@ -1293,3 +1293,28 @@ def test_filename_forwarder_discovery_does_not_depend_on_helper_name_prefix(tmp_
     _write(tmp_path, "new-root/export.mjs", 'function saveEvidence(blob, target) { a.download = target; }\n'
            'saveEvidence(payload, "private.json");\n')
     assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("setter", ['a["download"] = filename', 'a.setAttribute("download", filename)',
+                                   'Reflect.set(a, "download", filename)',
+                                   'Object.assign(a, {download: filename})'])
+def test_browser_forwarder_roles_cover_every_supported_setter(tmp_path, setter):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>function downloadBlob(blob, filename) {'
+           + setter + ';} downloadBlob(blob, "private.json");</script>')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+def test_conflicting_nested_browser_helper_roles_refuse_instead_of_selecting_wrong_argument(tmp_path):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>'
+           'function downloadBlob(blob, filename) { a.download = filename; }'
+           'function outer() { function downloadBlob(filename, blob) { a.download = filename; } }'
+           'downloadBlob("safe.snapshot.json", "private.json");</script>')
+    with pytest.raises(ValueError, match="same-name browser helper roles conflict"):
+        census.download_names(tmp_path)
+
+
+def test_no_prefix_forwarder_missing_filename_retains_an_implicit_obligation(tmp_path):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>'
+           'function saveEvidence(blob, filename="private.json") { a.download = filename; }'
+           'saveEvidence(blob);</script>')
+    assert any(e == "<implicit browser filename>" and t is None for _l, e, t in census.download_names(tmp_path))

@@ -1668,15 +1668,17 @@ def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
     raise ValueError("unterminated browser call arguments")
 
 
-def _js_helper_parameters(text: str, tokens: list[_JsToken]) -> tuple[set[str], dict[str, int]]:
+def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> tuple[set[str], dict[str, int]]:
     """Derive local declarations and direct filename-parameter forwarders, without name lists.
 
     A wrapper constructing its filename inside its body does not make its ID/payload arguments
     filename exits. Its emitted expression remains scanned. Native parameter forwarders retain
     every direct caller as an obligation, even when the helper has no 'download' name prefix.
     """
-    declarations = set()
+    constructed = set()
     forwarders = {}
+    roles = {}
+    _classes, classify = _registry()
 
     def closing(start: int) -> int:
         stack = []
@@ -1708,16 +1710,59 @@ def _js_helper_parameters(text: str, tokens: list[_JsToken]) -> tuple[set[str], 
         if after >= len(tokens) or tokens[after].value != "{":
             continue
         end = closing(after)
-        declarations.add(name)
+        expressions = []
         for position in range(after + 1, end):
-            if (tokens[position].value == "download" and position > 0
-                    and tokens[position - 1].value in {".", "?."}
-                    and position + 1 < end and tokens[position + 1].value == "="):
-                expression, _stop = _js_expression(text, tokens, position + 2)
-                for argument, match in enumerate(parameter_names):
-                    if match and expression == match.group(0):
-                        forwarders[name] = argument
-    return declarations, forwarders
+            value = tokens[position].value.strip("\"'")
+            following = position + 1
+            if following < end and tokens[following].value == "]":
+                following += 1
+            if (value == "download" and following < end and tokens[following].value in {"=", ":"}
+                    and position > 0 and tokens[position - 1].value in {".", "?.", "[", "{", ","}):
+                expression, _stop = _js_expression(text, tokens, following + 1)
+                expressions.append(expression)
+            if value == "[":
+                key, stop = _js_expression(text, tokens, position + 1)
+                if (_download_template(key) == "download" and stop + 1 < end
+                        and tokens[stop].value == "]" and tokens[stop + 1].value in {"=", ":"}):
+                    expression, _stop = _js_expression(text, tokens, stop + 2)
+                    expressions.append(expression)
+            opening = position + 1
+            if opening < end and tokens[opening].value == "?.":
+                opening += 1
+            if opening >= end or tokens[opening].value != "(":
+                continue
+            args = _js_arguments(text, tokens, opening)
+            if value == "setAttribute" and args and _download_template(args[0]) == "download":
+                expressions.append(args[1] if len(args) > 1 else "<implicit browser filename>")
+            elif (value == "set" and position >= 2 and tokens[position - 2].value == "Reflect"
+                  and len(args) > 1 and _download_template(args[1]) == "download"):
+                expressions.append(args[2] if len(args) > 2 else "<implicit browser filename>")
+            elif value.startswith("download") and value != name and len(args) > 1:
+                expressions.append(args[1])
+        indexes = set()
+        for expression in expressions:
+            for argument, match in enumerate(parameter_names):
+                if match and expression == match.group(0):
+                    indexes.add(argument)
+        if len(indexes) > 1:
+            raise ValueError("browser helper has conflicting filename parameter roles")
+        role = next(iter(indexes)) if indexes else None
+        proof = bool(expressions) and all(
+            (template is not None and classify("Downloads/" + template) is not None)
+            or ((relative, expression) in DOWNLOAD_NAME_PASSTHROUGH and expression not in {
+                match.group(0) for match in parameter_names if match
+            }) for expression in expressions for template in [_download_template(expression)]
+        )
+        if name in roles and roles[name] != (role, proof) and (
+            role is not None or roles[name][0] is not None or name.startswith("download")
+        ):
+            raise ValueError("same-name browser helper roles conflict; lexical ownership requires review")
+        roles[name] = (role, proof)
+        if role is not None:
+            forwarders[name] = role
+        elif proof:
+            constructed.add(name)
+    return constructed, forwarders
 
 
 def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
@@ -1883,7 +1928,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
         for first_line, text in scripts:
             try:
                 tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
-                declarations, forwarders = _js_helper_parameters(text, tokens)
+                declarations, forwarders = _js_helper_parameters(text, tokens, relative)
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
             for index, token in enumerate(tokens):
@@ -1929,7 +1974,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     arguments = _js_arguments(text, tokens, call_start)
                     argument = forwarders.get(value, 1)
                     if len(arguments) <= argument:
-                        if value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
+                        if value in forwarders or value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
                             found.append((f"{relative}:{first_line + token.line - 1}",
                                           "<implicit browser filename>", None))
                         continue  # event handlers with no filename parameter
