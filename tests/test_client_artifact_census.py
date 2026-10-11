@@ -1266,3 +1266,12 @@ def test_bogus_markup_and_regex_sections_do_not_hide_a_later_download(tmp_path):
     _write(tmp_path, "new-root/generated.py", "REGEX = " + repr('(?P<name>a)(?<![A-Za-z0-9])') + '\n')
     _write(tmp_path, "new-root/export.html", '<![A-Za-z0-9]><a download="private.json">save</a>')
     assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_python_docstrings_are_documentation_not_script_producers(tmp_path):
+    documentation = "<script> Don't parse this explanation as JavaScript; <a download='documentation.json'>"
+    source = repr(documentation) + "\n"
+    source += "def html():\n    " + repr(documentation) + "\n"
+    source += "    return " + repr('<script>a.download = "private.json"</script>') + "\n"
+    _write(tmp_path, "new-root/generated.py", source)
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}

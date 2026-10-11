@@ -1673,6 +1673,12 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         return [(1, source)]
     tree = ast.parse(source, filename=relative)
     documents = []
+    docstrings = {
+        id(n.body[0].value) for n in ast.walk(tree)
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and n.body and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant) and isinstance(n.body[0].value.value, str)
+    }
 
     def local_bindings(node: ast.AST) -> dict[str, list[ast.AST]]:
         function = _Function(relative, relative, "<browser-source>", node, frozenset(), None)
@@ -1755,6 +1761,8 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         return ["0"]
 
     def visit(node: ast.AST) -> None:
+        if id(node) in docstrings:
+            return  # Python documentation is not a generated browser-language value
         scope = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         saved_scopes = list(scopes)
         if scope:
