@@ -60,6 +60,7 @@ otherwise move with it.
 from __future__ import annotations
 
 import ast
+import copy
 import re
 import subprocess
 import sys
@@ -570,9 +571,120 @@ class _Program:
                 continue
             if isinstance(node, ast.Name) and node.id in function.assignments:
                 continue  # a local rebinding of the name, not the writer
-            arguments = [] if call is None else [*call.args, *(k.value for k in call.keywords)]
-            found.append((f"writer:{target.key}", arguments))
+            targets: list[ast.AST] = []
+            if call is not None:
+                callee = self.resolve_function(function, call.func)
+                if callee is target:
+                    targets = self._writer_targets(target, call)
+                elif callee is not None:
+                    targets = self._callback_targets(callee, call, target, node)
+                else:
+                    # Unknown callback dispatch cannot establish a target-parameter mapping.
+                    # Retain its possible literals rather than silently discarding evidence.
+                    targets = [*call.args, *(k.value for k in call.keywords)]
+            found.append((f"writer:{target.key}", targets))
         return found
+
+    def _bindings(self, function: _Function, call: ast.Call) -> dict[str, ast.AST]:
+        args = function.node.args
+        parameters = [*args.posonlyargs, *args.args]
+        bindings = {parameter.arg: value for parameter, value in zip(parameters, call.args)}
+        defaults = dict(zip([p.arg for p in parameters[-len(args.defaults):]], args.defaults)) if args.defaults else {}
+        for name, value in defaults.items():
+            bindings.setdefault(name, value)
+        if args.vararg:
+            bindings[args.vararg.arg] = ast.Tuple(elts=call.args[len(parameters):], ctx=ast.Load())
+        for keyword in call.keywords:
+            if keyword.arg is not None:
+                bindings[keyword.arg] = keyword.value
+        if args.kwarg:
+            extra = [k for k in call.keywords if k.arg is not None and k.arg not in function.parameters]
+            bindings[args.kwarg.arg] = ast.Dict(
+                keys=[ast.Constant(k.arg) for k in extra], values=[k.value for k in extra])
+        for parameter, default in zip(args.kwonlyargs, args.kw_defaults):
+            if default is not None:
+                bindings.setdefault(parameter.arg, default)
+        return bindings
+
+    def _expanded(self, function: _Function, node: ast.AST, bindings: dict[str, ast.AST],
+                  seen: frozenset[str] = frozenset()) -> ast.AST:
+        if isinstance(node, ast.Name):
+            if node.id in bindings:
+                return bindings[node.id]  # this expression belongs to the caller's scope
+            if node.id in seen:
+                return ast.Constant("0")
+            values = self.resolver(function)(node)
+            if values:
+                expanded = [self._expanded(function, v, bindings, seen | {node.id}) for v in values]
+                return expanded[0] if len(expanded) == 1 else ast.BoolOp(op=ast.Or(), values=expanded)
+            return ast.Constant("0")
+        expanded = copy.copy(node)
+        for name, value in ast.iter_fields(node):
+            if isinstance(node, ast.Call) and name == "func":
+                continue  # preserve Path/str/path constructors; substitute their arguments
+            if isinstance(value, ast.AST):
+                setattr(expanded, name, self._expanded(function, value, bindings, seen))
+            elif isinstance(value, list):
+                setattr(expanded, name, [self._expanded(function, v, bindings, seen)
+                                        if isinstance(v, ast.AST) else v for v in value])
+        return expanded
+
+    def _expanded_call(self, function: _Function, call: ast.Call,
+                       bindings: dict[str, ast.AST]) -> ast.Call:
+        args: list[ast.AST] = []
+        keywords: list[ast.keyword] = []
+        for argument in call.args:
+            value = self._expanded(function, argument.value if isinstance(argument, ast.Starred) else argument, bindings)
+            if isinstance(argument, ast.Starred) and isinstance(value, (ast.Tuple, ast.List)):
+                args.extend(value.elts)
+            else:
+                args.append(value)
+        for keyword in call.keywords:
+            value = self._expanded(function, keyword.value, bindings)
+            if keyword.arg is None and isinstance(value, ast.Dict):
+                keywords.extend(ast.keyword(arg=k.value, value=v) for k, v in zip(value.keys, value.values)
+                                if isinstance(k, ast.Constant) and isinstance(k.value, str))
+            else:
+                keywords.append(ast.keyword(arg=keyword.arg, value=value))
+        return ast.Call(func=call.func, args=args, keywords=keywords)
+
+    def _writer_targets(self, function: _Function, call: ast.Call,
+                        seen: frozenset[str] = frozenset()) -> list[ast.AST]:
+        if function.key in seen:
+            return []
+        bindings = self._bindings(function, call)
+        targets: list[ast.AST] = []
+        file = self.file_of[function.key]
+        for inner in function.calls:
+            primitive = write_primitive(inner, file.imports.qualify, self.resolver(function))
+            if primitive:
+                targets.extend(self._expanded(function, t, bindings) for t in primitive[1])
+            else:
+                callee = self.resolve_function(function, inner.func)
+                if callee is not None and callee.key in self.writers:
+                    targets.extend(self._writer_targets(callee, self._expanded_call(function, inner, bindings),
+                                                        seen | {function.key}))
+        return targets
+
+    def _callback_targets(self, wrapper: _Function, call: ast.Call, target: _Function,
+                          reference: ast.AST, seen: frozenset[str] = frozenset()) -> list[ast.AST]:
+        if wrapper.key in seen:
+            return []
+        bindings = self._bindings(wrapper, call)
+        targets: list[ast.AST] = []
+        identity = ast.dump(reference, include_attributes=False)
+        for inner in wrapper.calls:
+            expanded = self._expanded_call(wrapper, inner, bindings)
+            if isinstance(inner.func, ast.Name) and inner.func.id in bindings:
+                if ast.dump(bindings[inner.func.id], include_attributes=False) == identity:
+                    targets.extend(self._writer_targets(target, expanded))
+            else:
+                callee = self.resolve_function(wrapper, inner.func)
+                if callee is not None and any(ast.dump(n, include_attributes=False) == identity
+                                              for a in expanded.args for n in ast.walk(a)):
+                    targets.extend(self._callback_targets(callee, expanded, target, reference,
+                                                          seen | {wrapper.key}))
+        return targets
 
 
 def _references(node: ast.AST, names: set[str]) -> bool:
@@ -744,10 +856,13 @@ _DOWNLOAD_PATTERNS = (
     re.compile(r"\bdownload=\{\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[^}]+?)\s*\}"),
     re.compile(r"\bdownload\s*=\s*(\"[^\"]*\"|'[^']*')"),
     re.compile(r"\.download\s*=\s*([^;\n]+?)\s*;"),
+    re.compile(r"\[\s*[\"']download[\"']\s*\]\s*=\s*([^;\n]+?)\s*;"),
     re.compile(r"\bexportFilename=\{\s*(`[^`]*`|\"[^\"]*\"|[^}]+?)\s*\}"),
     re.compile(r"\bexportFilename\s*=\s*(`[^`]*`|\"[^\"]*\"|[A-Za-z_$][\w$]*)\s*,"),
 )
-_DOWNLOAD_CALL = re.compile(r"\b(downloadJsonDocument|downloadBlob|setAttribute)\s*\(")
+_JS_GAP = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*"
+_DOWNLOAD_CALL = re.compile(r"\b(downloadJsonDocument|downloadBlob|setAttribute)" + _JS_GAP
+                            + r"(?:\?\." + _JS_GAP + r")?\(")
 #: Download-name expressions that are not literals, each with why its name still classifies.
 DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
     ("webapp/frontend/src/receiptExport.ts", "filename"):

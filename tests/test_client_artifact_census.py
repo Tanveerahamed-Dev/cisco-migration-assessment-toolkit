@@ -259,6 +259,25 @@ def test_unclassified_operator_and_non_client_names_stay_explicit(tmp_path, disp
     assert census.unclassified_site_literals(tmp_path) == {"cisco_toolkit/writer.py::emit": {"operator.json"}}
 
 
+@pytest.mark.parametrize("filename,problem", [("delivery.snapshot.json", False), ("delivery.json", True)])
+def test_callback_projection_checks_targets_not_phase_or_payload_literals(tmp_path, filename, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def write(target, payload):\n    Path(target).write_text(payload)\n\n"
+           "def phase(label, fn, *args, **kwargs):\n    fn(*args, **kwargs)\n\n"
+           "def emit(label, kind, fn, *args, **kwargs):\n    phase(label, fn, *args, **kwargs)\n\n"
+           f"def main():\n    emit('HTML Explorer', 'html', write, {filename!r}, 'literal payload')\n")
+    rows = {
+        "cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "path writer"),
+        "cisco_toolkit/writer.py::main": (1, census.CLIENT, ("snapshot",), "client data"),
+    }
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"])
+    assert problems == ([f"client write site resolves to unclassified name {filename!r}: "
+                         "cisco_toolkit/writer.py::main"] if problem else [])
+    assert census.unclassified_site_literals(tmp_path) == (
+        {"cisco_toolkit/writer.py::main": {filename}} if problem else {})
+
+
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):
     _write(tmp_path, "cisco_toolkit/writer.py",
            "from pathlib import Path\n\n\ndef emit(path):\n"
@@ -688,6 +707,17 @@ def test_engine_html_attribute_forms_and_implicit_names_are_not_silently_skipped
     assert {template for _location, _expression, template in names} == {
         "topology.svg", "flow-frames.txt", None}
     assert any(expression == "<implicit browser filename>" for _location, expression, _template in names)
+
+
+def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
+    _write(tmp_path, "cisco_toolkit/explorer.html",
+           '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'
+           'downloadBlob?.(blob, "unknown.json");\n'
+           'a["download"] = "unknown.json";</script>\n')
+    names = census.download_names(tmp_path)
+    assert len(names) == 3
+    assert all(template == "unknown.json" for _location, _expression, template in names)
+    assert dv.client_artifact_class("Downloads/unknown.json") is None
 
 
 def test_the_comparison_download_suffix_is_the_registered_class():
