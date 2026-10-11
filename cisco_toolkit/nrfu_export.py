@@ -1276,7 +1276,7 @@ def _safe_name(s) -> str:
 
 
 def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str]:
-    """Emit the per-device NRFU command files: <out_dir>/<wave>/<host>.txt — one file per device per
+    """Emit the per-device NRFU command files: <out_dir>/<wave>/<host>.nrfu.txt — one file per device per
     wave, the READ-ONLY commands as executable lines and the expected baseline / evidence citation as
     '!' comment lines (paste-safe: Cisco CLIs ignore '!' lines). Pure function of the snapshot: reuses
     the published snap['nrfu_commands'] when present (one source of truth), else computes it. Returns
