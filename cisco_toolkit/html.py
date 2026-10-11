@@ -3826,7 +3826,7 @@ _REDACT_AUTH_MODE_RUN = (
 # cannot consume the password/secret keyword. These same expressions run in the long-line sweep.
 _REDACT_REQUIRED_RES = [
     _redact_family(
-        r"\b(?:username{H}{S}+(?:{H}(?!(?:password|secret)(?={h}|\Z)){S}+){0,32}{H}(?:password|secret)"
+        r"\b(?:username{H}{S}+(?:{H}(?:privilege|role|algorithm-type|view){H}{S}+){0,8}{H}(?:password|secret)"
         r"|neighbor{H}{S}+{H}password|enable{H}(?:password|secret))",
         (r"level{H}\d+", _REDACT_TYPE_THEN_VALUE, _REDACT_HASH, r"scrypt", r"ENC", r"encrypted",
          r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text", r"fallback"),
@@ -4118,6 +4118,12 @@ def _redact_grammar_sub(has_next: bool, delim: str = ""):
 
 
 _REDACT_GRAMMAR_SUBS = {False: _redact_grammar_sub(False), True: _redact_grammar_sub(True)}
+_REDACT_NTP_KEY_ID_RE = re.compile(_g(
+    r"\bntp{H}authentication-key{H}(?P<id>\d{1,10})(?={H}" + _REDACT_HASH + r"{H}{S})"), re.IGNORECASE)
+_REDACT_KEYCHAIN_HEADER_RE = re.compile(_g(r"^{h}*key{H}chain{H}{S}+{h}*\Z"), re.IGNORECASE)
+_REDACT_KEYCHAIN_MEMBER_RE = re.compile(_g(r"^{h}*key{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
+_REDACT_TRUSTED_KEY_RE = re.compile(_g(
+    r"^{h}*ntp{H}trusted-key{H}\d{1,10}(?:{H}\d{1,10})*{h}*\Z"), re.IGNORECASE)
 
 
 #: Every grammar family names one of these words, so a line without any of them is skipped by the
@@ -5028,8 +5034,17 @@ def _redact_sweep_bad_tokens(masked: str, anchor: int, delim: str = ""):
             yield _redact_core_span(masked, m.start(), m.end(), delim)
 
 
-def _redact_sweep_masked(line: str) -> str:
-    return _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
+    masked = _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+    ids = [m.span("id") for m in _REDACT_NTP_KEY_ID_RE.finditer(line)] if config_slots else []
+    if ids:
+        parts, position = [], 0
+        for a, b in ids:
+            parts.extend((masked[position:a], " " * (b - a)))
+            position = b
+        parts.append(masked[position:])
+        masked = "".join(parts)
+    return masked
 
 
 def _redact_word_end(masked: str, end: int) -> int:
@@ -5958,7 +5973,7 @@ def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bo
         line = _redact_sweep_url(line)
     if "<" in line:
         line = _redact_sweep_xml(line)
-    masked = _redact_sweep_masked(line)
+    masked = _redact_sweep_masked(line, config_slots=not forced)
     anchor = 0 if forced else _redact_sweep_anchor(line, masked, forti, prose, join)
     spans = []
     if anchor is not None:
@@ -6161,6 +6176,7 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
     banner = ""                 # the delimiter while inside a banner body
     prev = None                 # the previous SCRUBBED line
     prev_raw = prev_nb_raw = None   # the same two lines as they were read (before this scrub)
+    keychain_indent = None         # a complete key-chain statement owns deeper-indented member IDs
     changed = False
     for index, line in enumerate(lines):
         blank = not _REDACT_WS_RE.sub("", line)
@@ -6187,6 +6203,19 @@ def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
         # the very key that opens the state.
         opener = pending is not None and not blank and not in_block and _redact_opens_state(out, banner)
         forced = not blank and in_block
+        lead = _REDACT_LEAD_RE.match(out).end()
+        if not blank and keychain_indent is not None and lead <= keychain_indent:
+            keychain_indent = None
+        if not forced and not banner and _REDACT_KEYCHAIN_HEADER_RE.fullmatch(out):
+            keychain_indent = lead
+        if (not forced and not banner
+                and (keychain_indent is not None and lead > keychain_indent
+                     and _REDACT_KEYCHAIN_MEMBER_RE.fullmatch(out)
+                     or _REDACT_TRUSTED_KEY_RE.fullmatch(out))):
+            pending = None
+            prev, prev_raw = out, line
+            prev_nb, prev_nb_raw = out, line
+            continue
         cont = pending if (pending is not None and not blank and not opener) else None
         start = None if (banner or forced) else _REDACT_BANNER_RE.match(out)
         delim = banner or (start.group("d") if start else "")

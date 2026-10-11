@@ -332,6 +332,9 @@ _CRED_KEY_RUN = (
     r"(?:" + _cred_step(_CRED_KEY_ENCODINGS, _CRED_KEY_ENDS) + r")*"
     r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H}(?!" + _cred_clause_end(_CRED_KEY_ENDS) + r"))?"
     r"(?:" + _cred_step(_CRED_KEY_ENCODINGS, _CRED_KEY_ENDS) + r")*")
+_SWEEP_NTP_ID_RE = re.compile(_v(
+    r"(?<![\w.-])ntp{H}authentication-key{H}(?P<id>\d{1,10}){H}"
+    + _CRED_HASH + r"{H}(?={S})"), re.IGNORECASE)
 _CRED_AUTH_MODE_RUN = (
     r"(?:" + _cred_step(_CRED_HASH + r"|simple|hmac-sha256") + r")?"
     r"(?:key-id{H}\d{1,10}{H}|\d{1,10}{H}(?={S}))?"
@@ -839,6 +842,11 @@ _DASHES_RE = re.compile(r"-+\Z")
 _FORTI_CONFIG_RE = re.compile(_v(r"^{h}*config{H}(?P<path>[^\r\n]*?){h}*\Z"), re.IGNORECASE)
 _FORTI_END_RE = re.compile(_v(r"^{h}*end{h}*\Z"), re.IGNORECASE)
 _FORTI_SET_NAME_RE = re.compile(_v(r"^{h}*set{H}name(?={h}|\Z)"), re.IGNORECASE)
+_KEYCHAIN_HEADER_RE = re.compile(_v(
+    r"^{h}*key{H}chain{H}[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}{h}*\Z"), re.IGNORECASE)
+_KEYCHAIN_MEMBER_RE = re.compile(_v(r"^{h}*key{H}\d{1,10}{h}*\Z"), re.IGNORECASE)
+_TRUSTED_KEY_STATEMENT_RE = re.compile(_v(
+    r"^{h}*ntp{H}trusted-key{H}\d{1,10}(?:{H}\d{1,10})*{h}*\Z"), re.IGNORECASE)
 _CHAP_HEADER_RE = re.compile(_v(r"^{h}*#{h}*client{H}server{H}secret(?={h}|\Z)"), re.IGNORECASE)
 _JSON_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*(?P<b>(?:[\[{]{h}*)+)\Z"""))
 _JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
@@ -1074,8 +1082,21 @@ def _sweep_token_ok(token: str, delim: str = "") -> bool:
             or bool(_SWEEP_IFACE_RE.fullmatch(core)) or bool(_SWEEP_SYNTH_RE.fullmatch(core)))
 
 
-def _sweep_masked(line: str) -> str:
-    return _SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
+    masked = _SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+    if not config_slots:
+        return masked
+
+    def ntp_id(match: re.Match[str]) -> str:
+        if not _sweep_line_word_lead(masked, match.start()):
+            return match.group(0)
+        start, end = match.start("id") - match.start(), match.end("id") - match.start()
+        text = match.group(0)
+        return text[:start] + " " * (end - start) + text[end:]
+
+    # This is an NTP key identifier only in a complete algorithm/value statement.
+    # The independent required-slot check still reads the original line's real key value.
+    return _SWEEP_NTP_ID_RE.sub(ntp_id, masked)
 
 
 def _sweep_credential_name(name: str, quoted: bool) -> bool:
@@ -2195,6 +2216,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
     chap = False
     expect = False
     banner = ""
+    keychain_indent: int | None = None
     prev: str | None = None
     for index, line in enumerate(lines):
         blank = not _CRED_WS_RE.sub("", line)
@@ -2202,6 +2224,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             if table[index] is not None:
                 region = table[index]
             pending, block, csv, prev_nb = None, None, None, None
+            keychain_indent = None
             prev = line
             continue
         in_block = block is not None and _block_holds(block, line)
@@ -2211,6 +2234,26 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             _block_open(line) is not None or (not banner and bool(_SWEEP_BANNER_RE.match(line)))
             or bool(_CHAP_HEADER_RE.match(line)))
         forced = not blank and in_block
+        keychain_member = False
+        if forced or banner:
+            keychain_indent = None
+        elif not blank:
+            indentation = _SWEEP_LEAD_RE.match(line).end()
+            if _KEYCHAIN_HEADER_RE.fullmatch(line):
+                keychain_indent = indentation
+            elif keychain_indent is not None:
+                if indentation <= keychain_indent:
+                    keychain_indent = None
+                else:
+                    keychain_member = bool(_KEYCHAIN_MEMBER_RE.fullmatch(line))
+        if keychain_member or (not forced and not banner and _TRUSTED_KEY_STATEMENT_RE.fullmatch(line)):
+            # A complete numeric key reference is structure only in its validated statement
+            # context. Never extend this exemption to a credential block, arbitrary digits,
+            # or any line that also carries a key-string/value clause.
+            pending = None
+            prev = prev_nb = line
+            expect = False
+            continue
         cont = pending if (pending is not None and not blank and not opener) else None
         csv_row = False
         if csv is not None and not blank:
@@ -2256,7 +2299,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             kinds.extend(_sweep_url_findings(line))
             if "<" in line:
                 kinds.extend(_sweep_xml_findings(line))
-            masked = _sweep_masked(line)
+            masked = _sweep_masked(line, config_slots=not forced)
             anchor = 0 if forced else _sweep_anchor(line, masked, forti[index], prose, join)
             if anchor is not None and _sweep_residue(masked, anchor, delim):
                 kinds.append("credential residue after a credential keyword")
