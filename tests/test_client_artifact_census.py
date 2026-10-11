@@ -1217,3 +1217,19 @@ def test_python_generated_script_string_pieces_are_assembled_before_lexing(tmp_p
     _write(tmp_path, "new-root/generated.py", "def html(value):\n"
            + "    return f\"<script>const text='{value}'; a.download='private.json';</script>\"\n")
     assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_python_module_expression_keeps_its_defining_scope(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "NAME = 'private.json'\n"
+           + "SCRIPT = f\"a.download = '{NAME}'\"\n"
+           + "def html():\n    NAME = 'flow-frames.txt'\n    return f'<script>{SCRIPT}</script>'\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_non_html_binding_graph_does_not_expand_paths(tmp_path):
+    source = "value0 = 'plain'\n"
+    source += "".join(f"value{i} = value{i-1} + value{i-1}\n" for i in range(1, 25))
+    source += 'result = f"{value24}"\n'
+    source += "HTML = " + repr('<script>a.download = "private.json"</script>') + "\n"
+    _write(tmp_path, "new-root/generated.py", source)
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}

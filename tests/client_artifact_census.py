@@ -1479,47 +1479,78 @@ def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
         walker = _BodyWalker(function)
         for statement in node.body:
             walker.visit(statement)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            parameters = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+            parameters += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+            for parameter in parameters:
+                function.assignments.setdefault(parameter.arg, [_UnknownValue()])
         return function.assignments
 
     scopes = [local_bindings(tree)]
     class_scopes: set[int] = set()
 
-    def bindings(name: str) -> list[ast.AST]:
-        for scope in reversed(scopes):
-            if name in scope:
-                return scope[name]
-        return []
+    def bindings(name: str, active: tuple[dict, ...]) -> tuple[list[ast.AST], tuple[dict, ...]]:
+        for index in range(len(active) - 1, -1, -1):
+            if name in active[index]:
+                return active[index][name], active[:index + 1]
+        return [], active
 
-    def contains_html(node: ast.AST, seen: frozenset[str] = frozenset()) -> bool:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # '<' in a regex lookbehind or arithmetic prose is not an HTML boundary.
-            # A bare trailing '<' can still introduce an interpolated tag name.
-            return bool(re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|!DOCTYPE\b|!--)",
-                                  node.value, re.I)) or node.value.endswith("<")
-        if isinstance(node, ast.Name) and node.id not in seen:
-            return any(contains_html(value, seen | {node.id}) for value in bindings(node.id))
-        return any(contains_html(child, seen) for child in ast.iter_child_nodes(node))
+    html_cache: dict[tuple[int, tuple[int, ...]], bool] = {}
 
-    def expand(node: ast.AST, seen: frozenset[str] = frozenset(), depth: int = 0) -> list[str]:
+    def contains_html(node: ast.AST) -> bool:
+        active = tuple(scopes)
+        root_key = (id(node), tuple(map(id, active)))
+        if root_key in html_cache:
+            return html_cache[root_key]
+        pending = [(node, active)]
+        visited = set()
+        while pending:
+            current, context = pending.pop()
+            identity = (id(current), tuple(map(id, context)))
+            if identity in visited:
+                continue
+            visited.add(identity)
+            if isinstance(current, ast.Constant) and isinstance(current.value, str):
+                # Regex lookbehinds and arithmetic '<' text are not HTML boundaries.
+                if (re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|!DOCTYPE\b|!--)", current.value, re.I)
+                        or current.value.endswith("<")):
+                    html_cache[root_key] = True
+                    return True
+            if isinstance(current, ast.Name):
+                values, owner = bindings(current.id, context)
+                pending.extend((value, owner) for value in values)
+            pending.extend((child, context) for child in ast.iter_child_nodes(current))
+        html_cache[root_key] = False
+        return False
+
+    def expand(node: ast.AST, seen: frozenset[tuple[str, int]] = frozenset(), depth: int = 0,
+               active: tuple[dict, ...] | None = None) -> list[str]:
         _name_depth(depth)
+        active = tuple(scopes) if active is None else active
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return [node.value]
-        if isinstance(node, ast.Name) and node.id not in seen and bindings(node.id):
-            return _bounded_names([s for value in bindings(node.id)
-                                   for s in expand(value, seen | {node.id}, depth + 1)], text_limit=False)
+        if isinstance(node, ast.Name):
+            values, owner = bindings(node.id, active)
+            identity = (node.id, id(owner[-1]))
+            if values and identity not in seen:
+                return _bounded_names([s for value in values
+                                       for s in expand(value, seen | {identity}, depth + 1, owner)],
+                                      text_limit=False)
+            return ["0"]
         if isinstance(node, ast.FormattedValue):
-            return expand(node.value, seen, depth + 1)
+            return expand(node.value, seen, depth + 1, active)
         if isinstance(node, ast.JoinedStr):
             values = [""]
             for part in node.values:
-                values = _bounded_names([a + b for a, b in _name_product(values, expand(part, seen, depth + 1))],
+                values = _bounded_names([a + b for a, b in _name_product(values, expand(part, seen, depth + 1, active))],
                                         text_limit=False)
             return values
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return _bounded_names([a + b for a, b in _name_product(
-                expand(node.left, seen, depth + 1), expand(node.right, seen, depth + 1))], text_limit=False)
+                expand(node.left, seen, depth + 1, active), expand(node.right, seen, depth + 1, active))], text_limit=False)
         if isinstance(node, ast.IfExp):
-            return _bounded_names(expand(node.body, seen, depth + 1) + expand(node.orelse, seen, depth + 1),
+            return _bounded_names(expand(node.body, seen, depth + 1, active) + expand(node.orelse, seen, depth + 1, active),
                                   text_limit=False)
         return ["0"]
 
