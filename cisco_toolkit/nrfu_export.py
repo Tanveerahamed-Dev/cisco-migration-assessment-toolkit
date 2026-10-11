@@ -34,7 +34,7 @@ Result shape:
             command, expected, source_key, evidence_family?, evidence_state?,
             projection_custody?}]}]}], summary}
 
-write_nrfu_pack(snap, out_dir) emits the per-device .txt command files per wave (pure function of the
+write_nrfu_pack(snap, out_dir) emits the per-device .nrfu.txt command files per wave (pure function of the
 snapshot). A --nrfu-pack CLI flag is DEFERRED — call write_nrfu_pack directly or consume the published
 snap['nrfu_commands'] section.
 """
@@ -1315,7 +1315,7 @@ def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str
                 if c.get("projection_custody"):
                     lines.append(f"!   projection_custody: {_one_line(c.get('projection_custody'))}")
                 lines += [cmd_line, ""]
-            path = os.path.join(wdir, f"{_safe_name(host)}.txt")
+            path = os.path.join(wdir, f"{_safe_name(host)}.nrfu.txt")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
             written.append(path)

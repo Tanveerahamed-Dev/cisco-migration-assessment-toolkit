@@ -64,7 +64,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import itertools
 import re
+import string
 import subprocess
 import sys
 from collections import Counter
@@ -783,8 +785,7 @@ def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
 
 
 def _closed_values(node: ast.AST, resolve, depth: int) -> list[object] | None:
-    if depth > 8:
-        return None
+    _name_depth(depth)
     if isinstance(node, ast.Name):
         values = resolve(node)
         if not values:
@@ -795,11 +796,109 @@ def _closed_values(node: ast.AST, resolve, depth: int) -> list[object] | None:
             if closed is None:
                 return None
             out.extend(closed)
-        return out[:16]
+        return _bounded_names(out)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Dict)):
+        if isinstance(node, ast.Dict):
+            if any(k is None for k in node.keys):
+                return None
+            children = [*node.keys, *node.values]
+        else:
+            children = node.elts
+        values = [_closed_values(child, resolve, depth + 1) for child in children]
+        if any(value is None for value in values):
+            return None
+        combinations = _name_product(*values)
+        if isinstance(node, ast.Dict):
+            size = len(node.keys)
+            return [dict(zip(parts[:size], parts[size:])) for parts in combinations]
+        return [tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
     try:
         return [ast.literal_eval(node)]
     except (ValueError, TypeError, SyntaxError):
         return None
+
+
+_NAME_ALTERNATIVES = 256
+_NAME_DEPTH = 32
+_NAME_BYTES = 16_384
+
+
+class NameModelLimit(ValueError):
+    """An incomplete census is a refusal, never a truncated successful census."""
+
+
+def _name_depth(depth: int) -> None:
+    if depth > _NAME_DEPTH:
+        raise NameModelLimit("filename model depth exceeded; review the unresolved target")
+
+
+def _bounded_names(values: list, *, text_limit: bool = True):
+    if len(values) > _NAME_ALTERNATIVES:
+        raise NameModelLimit("filename model alternatives exceeded; no target was discarded")
+    if text_limit and any(isinstance(value, str) and len(value) > _NAME_BYTES for value in values):
+        raise NameModelLimit("filename model output length exceeded")
+    return values
+
+
+def _name_product(*values: list) -> list[tuple]:
+    size = 1
+    for value in values:
+        size *= len(value)
+        if size > _NAME_ALTERNATIVES:
+            raise NameModelLimit("filename model alternatives exceeded; no target was discarded")
+    return list(itertools.product(*values))
+
+
+def _format_bound(spec: str) -> None:
+    if len(spec) > 64 or any(int(n) > 4096 for n in re.findall(r"\d+", spec)):
+        raise NameModelLimit("formatted filename specification exceeds the bounded name model")
+
+
+def _closed_format(node: ast.AST, resolve, depth: int) -> list[str] | None:
+    """Evaluate only closed builtin format operands, never execute source functions."""
+    if isinstance(node, ast.BinOp):
+        patterns = _closed_values(node.left, resolve, depth + 1)
+        operands = _closed_values(node.right, resolve, depth + 1)
+        if patterns is None or operands is None:
+            return None
+        out = []
+        for pattern, operand in _name_product(patterns, operands):
+            if not isinstance(pattern, str):
+                return None
+            # Bound numeric widths before invoking Python's actual percent semantics.
+            for field in re.findall(r"%(?:\([^)]*\))?[-#0 +]*[\d.*]*[A-Za-z%]", pattern):
+                _format_bound(field)
+                if "*" in field:
+                    raise NameModelLimit("dynamic percent width requires a reviewed filename model")
+            try:
+                out.append(_NameTemplate(pattern % operand))
+            except (TypeError, ValueError, KeyError):
+                raise NameModelLimit("closed percent filename cannot be evaluated") from None
+        return _bounded_names(out)
+    assert isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    patterns = _closed_values(node.func.value, resolve, depth + 1)
+    positional = [_closed_values(a, resolve, depth + 1) for a in node.args]
+    keywords = [_closed_values(k.value, resolve, depth + 1) for k in node.keywords]
+    if patterns is None or any(v is None for v in positional + keywords):
+        return None
+    if any(k.arg is None for k in node.keywords) or any(isinstance(a, ast.Starred) for a in node.args):
+        return None
+    out = []
+    formatter = string.Formatter()
+    for pattern, *parts in _name_product(patterns, *positional, *keywords):
+        if not isinstance(pattern, str):
+            return None
+        args = parts[:len(positional)]
+        kwargs = dict(zip((k.arg for k in node.keywords), parts[len(positional):]))
+        try:
+            for _literal, _field, spec, _conversion in formatter.parse(pattern):
+                # Nested width/precision is resolved from the same closed builtin operands.
+                _format_bound(spec)
+                _format_bound(formatter.vformat(spec, args, kwargs))
+            out.append(_NameTemplate(pattern.format(*args, **kwargs)))
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+            raise NameModelLimit("closed format filename cannot be evaluated") from None
+    return _bounded_names(out)
 
 
 def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str | None]:
@@ -819,19 +918,17 @@ def _formatted_names(part: ast.FormattedValue, resolve, depth: int) -> list[str 
         elif part.conversion == ord("a"):
             value = ascii(value)
         for spec in specs:
-            if len(spec) > 64 or any(int(n) > 4096 for n in re.findall(r"\d+", spec)):
-                raise ValueError("formatted filename specification exceeds the bounded name model")
+            _format_bound(spec)
             try:
                 out.append(_NameTemplate(format(value, spec)))
             except (ValueError, TypeError):
                 out.append(None)
-    return out[:16]
+    return _bounded_names(out)
 
 
 def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
     """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
-    if depth > 4:
-        return [None]
+    _name_depth(depth)
     text = _constant_text(node)
     if text is not None:
         return [_NameTemplate(text)]
@@ -840,19 +937,25 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
         for part in node.values:
             pieces = (_formatted_names(part, resolve, depth + 1) if isinstance(part, ast.FormattedValue)
                       else _templates(part, resolve, depth + 1))
-            out = [_combine_names(a, b) for a in out for b in pieces][:16]
+            out = _bounded_names([_combine_names(a, b) for a, b in _name_product(out, pieces)])
         return out
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [_combine_names(a, b) for a in _templates(node.left, resolve, depth + 1)
-                for b in _templates(node.right, resolve, depth + 1)][:16]
+        return _bounded_names([_combine_names(a, b) for a, b in _name_product(
+            _templates(node.left, resolve, depth + 1), _templates(node.right, resolve, depth + 1))])
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return _templates(node.right, resolve, depth + 1)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and _constant_text(node.left):
-        return [_NameTemplate(re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left)), False)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        closed = _closed_format(node, resolve, depth)
+        if closed is not None:
+            return closed
+        if _constant_text(node.left):
+            return [_NameTemplate(re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left)), False)]
     if isinstance(node, ast.Name):
         values = resolve(node)
         out = [t for value in values for t in _templates(value, resolve, depth + 1)]
-        return out[:16] or [None]
+        return _bounded_names(out) or [None]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return _bounded_names([t for value in node.elts for t in _templates(value, resolve, depth + 1)])
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
@@ -860,8 +963,12 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
             return [_NameTemplate("0" + t, False) if func.attr == "with_suffix" and t is not None else t
                     for t in _templates(node.args[0], resolve, depth + 1)]
-        if isinstance(func, ast.Attribute) and func.attr == "format" and _constant_text(func.value):
-            return [_NameTemplate(re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value)), False)]
+        if isinstance(func, ast.Attribute) and func.attr == "format":
+            closed = _closed_format(node, resolve, depth)
+            if closed is not None:
+                return closed
+            if _constant_text(func.value):
+                return [_NameTemplate(re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value)), False)]
         if isinstance(func, ast.Name) and func.id == "__census_sqlite_path" and node.args:
             return [_NameTemplate(unquote(t.removeprefix("file:").split("?", 1)[0]),
                                   getattr(t, "complete", True)) if t is not None else None
@@ -869,9 +976,9 @@ def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str | None]:
         if isinstance(func, ast.Name) and func.id in {"Path", "PurePath", "PurePosixPath", "str"} and node.args:
             return _templates(node.args[-1], resolve, depth + 1)
     if isinstance(node, ast.IfExp):
-        return _templates(node.body, resolve, depth + 1) + _templates(node.orelse, resolve, depth + 1)
+        return _bounded_names(_templates(node.body, resolve, depth + 1) + _templates(node.orelse, resolve, depth + 1))
     if isinstance(node, ast.BoolOp):
-        return [t for value in node.values for t in _templates(value, resolve, depth + 1)]
+        return _bounded_names([t for value in node.values for t in _templates(value, resolve, depth + 1)])
     return [None]
 
 
@@ -984,19 +1091,11 @@ def gitignore_block_in(text: str) -> str | None:
 
 # --------------------------------------------------------------------------- download names
 
-#: Browser producers, plus every tracked engine HTML file (discovered below).
-DOWNLOAD_SOURCE_ROOTS = ("webapp/frontend/src", "atlas-scope/src")
-_DOWNLOAD_PATTERNS = (
-    re.compile(r"\bdownload=\{\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[^}]+?)\s*\}"),
-    re.compile(r"\bdownload\s*=\s*(\"[^\"]*\"|'[^']*')"),
-    re.compile(r"\.download\s*=\s*([^;\n]+?)\s*;"),
-    re.compile(r"\[\s*[\"']download[\"']\s*\]\s*=\s*([^;\n]+?)\s*;"),
-    re.compile(r"\bexportFilename=\{\s*(`[^`]*`|\"[^\"]*\"|[^}]+?)\s*\}"),
-    re.compile(r"\bexportFilename\s*=\s*(`[^`]*`|\"[^\"]*\"|[A-Za-z_$][\w$]*)\s*,"),
-)
-_JS_GAP = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*"
-_DOWNLOAD_CALL = re.compile(r"\b(downloadJsonDocument|downloadBlob|setAttribute)" + _JS_GAP
-                            + r"(?:\?\." + _JS_GAP + r")?\(")
+# Browser source discovery is independent of product roots. Build/vendor outputs are
+# derivatives, not authored sources; their source files remain in this scan.
+_BROWSER_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".html", ".py"})
+_BROWSER_DERIVATIVES = frozenset({"dist", "dist-hub", "node_modules", "vendor", "__pycache__"})
+
 #: Download-name expressions that are not literals, each with why its name still classifies.
 DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
     ("webapp/frontend/src/receiptExport.ts", "filename"):
@@ -1016,27 +1115,15 @@ def _is_frontend_test(relative: str) -> bool:
 
 
 def download_sources(root: Path = ROOT) -> list[str]:
-    """SPA/Scope sources and all tracked engine HTML, never a named explorer-file subset."""
-    found: set[str] = set()
-    for base in DOWNLOAD_SOURCE_ROOTS:
-        directory = root / base
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.rglob("*")):
-            if path.suffix not in {".ts", ".tsx"} or "node_modules" in path.parts:
-                continue
-            relative = path.relative_to(root).as_posix()
-            if _is_frontend_test(relative):
-                continue
-            found.add(relative)
+    """Every tracked authored browser language and Python HTML/JS generator, in every root."""
     if (root / ".git").exists():
-        listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", "*.html"], cwd=root, check=True, capture_output=True
-        ).stdout.decode("utf-8").split("\0")
-        found.update(p for p in listed if p.startswith("cisco_toolkit/") and p.endswith(".html"))
-    elif (root / "cisco_toolkit").is_dir():
-        found.update(p.relative_to(root).as_posix() for p in (root / "cisco_toolkit").rglob("*.html"))
-    return sorted(found)
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True,
+                                capture_output=True).stdout.decode("utf-8").split("\0")
+    else:
+        listed = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+    return sorted(p for p in listed if Path(p).suffix in _BROWSER_SUFFIXES
+                  and not (set(Path(p).parts) & (_BROWSER_DERIVATIVES | _SKIPPED_DIRECTORIES))
+                  and not is_test_path(p) and not _is_frontend_test(p))
 
 
 def _js_parts(text: str, start: int, stop: str, separator: str) -> list[str]:
@@ -1088,45 +1175,295 @@ class _HtmlDownloads(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.names: list[tuple[int, str, str | None]] = []
+        self.scripts: list[tuple[int, str]] = []
+        self.in_script = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
+        if tag == "script":
+            self.in_script = True
         if "download" in values:
             name = values["download"]
             expression = repr(name) if name else "<implicit browser filename>"
             self.names.append((self.getpos()[0], expression, name or None))
 
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self.in_script = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_script:
+            self.scripts.append((self.getpos()[0], data))
+
+
+@dataclass(frozen=True)
+class _JsToken:
+    value: str
+    start: int
+    end: int
+    line: int
+
+
+def _js_tokens(text: str) -> list[_JsToken]:
+    """Lex strings/templates/comments as units; formatting and ASI do not hide exits."""
+    tokens = []
+    index = 0
+    line = 1
+
+    def quoted_end(start: int, depth: int = 0) -> int:
+        if depth > 128:
+            raise ValueError("browser token nesting bound exceeded")
+        quote = text[start]
+        cursor = start + 1
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+            elif text[cursor] == quote:
+                return cursor + 1
+            elif quote == "`" and text[cursor:cursor + 2] == "${":
+                cursor += 2
+                braces = 1
+                while cursor < len(text) and braces:
+                    if text[cursor] in "\"'`":
+                        cursor = quoted_end(cursor, depth + 1)
+                        continue
+                    if text[cursor] == "{":
+                        braces += 1
+                    elif text[cursor] == "}":
+                        braces -= 1
+                    cursor += 1
+                if braces:
+                    raise ValueError("unterminated browser template expression")
+            else:
+                cursor += 1
+        raise ValueError("unterminated browser string")
+    while index < len(text):
+        begin, first_line = index, line
+        char = text[index]
+        if char.isspace():
+            line += char == "\n"
+            index += 1
+            continue
+        if text[index:index + 2] in {"//", "/*"}:
+            if text[index:index + 2] == "//":
+                end = text.find("\n", index + 2)
+                index = len(text) if end < 0 else end
+            else:
+                end = text.find("*/", index + 2)
+                if end < 0:
+                    raise ValueError("unterminated browser comment")
+                index = end + 2
+            line += text[begin:index].count("\n")
+            continue
+        if char in "\"'`":
+            index = quoted_end(index)
+            line += text[begin:index].count("\n")
+        elif char == "/" and (not tokens or tokens[-1].value in {
+            "(", "=", ":", ",", "[", "!", "?", "return", "=>", "&&", "||", "??"
+        }):
+            # Regex literals can contain quotes, comment-looking slashes and delimiters.
+            # Keep the complete regex as one token; never read its contents as JS exits.
+            index += 1
+            in_class = False
+            while index < len(text):
+                if text[index] == "\\":
+                    index += 2
+                    continue
+                if text[index] == "[":
+                    in_class = True
+                elif text[index] == "]":
+                    in_class = False
+                elif text[index] == "/" and not in_class:
+                    index += 1
+                    while index < len(text) and text[index].isalpha():
+                        index += 1
+                    break
+                elif text[index] == "\n":
+                    raise ValueError("unterminated browser regex literal")
+                index += 1
+            else:
+                raise ValueError("unterminated browser regex literal")
+        elif char.isalnum() or char in "_$":
+            index += 1
+            while index < len(text) and (text[index].isalnum() or text[index] in "_$"):
+                index += 1
+        elif text[index:index + 2] in {"?.", "=>", "==", "!=", "+=", "&&", "||", "??"}:
+            index += 2
+        else:
+            index += 1
+        tokens.append(_JsToken(text[begin:index], begin, index, first_line))
+    return tokens
+
+
+def _js_expression(text: str, tokens: list[_JsToken], start: int) -> tuple[str, int]:
+    if start >= len(tokens):
+        return "<unresolved filename>", start
+    stack = []
+    index = start
+    continuation = {"+", "-", "*", "/", "%", ".", "?.", "?", ":", "&&", "||", "??", "=", ","}
+    while index < len(tokens):
+        token = tokens[index]
+        if (index == start + 1 and tokens[start].value[:1] in {"\"", "'", "`"}
+                and token.value not in continuation):
+            break
+        if not stack:
+            if token.value in {";", ",", ")", "]", "}", ">"}:
+                break
+            if (index > start and token.line > tokens[index - 1].line
+                    and token.value not in continuation
+                    and tokens[index - 1].value not in continuation):
+                break  # automatic semicolon insertion, not a required literal semicolon
+        if token.value in {"(", "[", "{"}:
+            stack.append(token.value)
+        elif token.value in {")", "]", "}"}:
+            if not stack:
+                break
+            stack.pop()
+            if not stack and index + 1 < len(tokens) and tokens[index + 1].value not in continuation:
+                index += 1
+                break
+        index += 1
+    expression = text[tokens[start].start:tokens[index - 1].end].strip() if index > start else "<unresolved filename>"
+    return expression, index
+
+
+def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
+    if not relative.endswith(".py"):
+        return [(1, source)]
+    tree = ast.parse(source, filename=relative)
+    documents = []
+    bindings: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and node.value is not None:
+                    bindings.setdefault(target.id, []).append(node.value)
+
+    def expand(node: ast.AST, seen: frozenset[str] = frozenset(), depth: int = 0) -> list[str]:
+        _name_depth(depth)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+            return _bounded_names([s for value in bindings[node.id]
+                                   for s in expand(value, seen | {node.id}, depth + 1)], text_limit=False)
+        if isinstance(node, ast.FormattedValue):
+            return expand(node.value, seen, depth + 1)
+        if isinstance(node, ast.JoinedStr):
+            values = [""]
+            for part in node.values:
+                values = _bounded_names([a + b for a, b in _name_product(values, expand(part, seen, depth + 1))],
+                                        text_limit=False)
+            return values
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _bounded_names([a + b for a, b in _name_product(
+                expand(node.left, seen, depth + 1), expand(node.right, seen, depth + 1))], text_limit=False)
+        return ["0"]
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+            # Language boundary, not a product/file/API subset. Every script-bearing generated
+            # HTML string is read, including f-strings without executing the generator.
+            for text in expand(node):
+                if "<" in text:
+                    documents.append((getattr(node, "lineno", 1), text))
+            # Also retain independently assembled child fragments. Deduplication is performed
+            # after obligations are found, never by discarding possible name alternatives.
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+    visit(tree)
+    return documents
+
 
 def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
-    """Direct browser download names: ``(file:line, expression, template or None)``."""
-    found: list[tuple[str, str, str | None]] = []
+    """Structural direct browser exits. Unknown names remain review obligations.
+
+    Native download assignments/attributes, object download properties (including Object.assign),
+    direct download helpers/saveAs and browser-open exits are read from tokens. General aliases
+    and interprocedural JS flow remain outside this static model, explicitly, not silently.
+    """
+    found = []
     for relative in download_sources(root):
-        text = (root / relative).read_text(encoding="utf-8")
-        for pattern in _DOWNLOAD_PATTERNS:
-            for match in pattern.finditer(text):
-                expression = match.group(1).strip()
-                line = text.count("\n", 0, match.start()) + 1
-                found.append((f"{relative}:{line}", expression, _download_template(expression)))
-        for match in _DOWNLOAD_CALL.finditer(text):
-            if re.search(r"\bfunction\s*$", text[max(0, match.start() - 30):match.start()]):
-                continue  # declaration, not a download; its .download assignment is still scanned
-            arguments = _js_parts(text, match.end(), ")", ",")
-            if match.group(1) == "setAttribute" and (
-                not arguments or _download_template(arguments[0]) != "download"
-            ):
-                continue
-            expression = arguments[1] if len(arguments) >= 2 else "<unresolved filename>"
-            line = text.count("\n", 0, match.start()) + 1
-            found.append((f"{relative}:{line}", expression, _download_template(expression)))
-        if relative.endswith(".html"):
+        source = (root / relative).read_text(encoding="utf-8")
+        documents = _browser_documents(relative, source)
+        scripts = []
+        for first_line, text in documents:
+            # HTMLParser owns native HTML attributes. JS/JSX syntax belongs to tokens.
             parser = _HtmlDownloads()
-            parser.feed(text)
-            found.extend((f"{relative}:{line}", expression, template)
-                         for line, expression, template in parser.names)
+            if relative.endswith((".html", ".py")):
+                parser.feed(text)
+                found.extend((f"{relative}:{first_line + line - 1}", expression, template)
+                             for line, expression, template in parser.names)
+                scripts.extend((first_line + line - 1, script) for line, script in parser.scripts)
+            else:
+                scripts.append((first_line, text))
+        for first_line, text in scripts:
+            tokens = _js_tokens(text)
+            in_tag = False
+            tag_braces = 0
+            for index, token in enumerate(tokens):
+                if token.value == "<" and index + 1 < len(tokens) and (
+                    tokens[index + 1].value[:1].isalpha() or tokens[index + 1].value == "/"
+                ):
+                    in_tag = True
+                elif in_tag and token.value == "{" :
+                    tag_braces += 1
+                elif in_tag and token.value == "}":
+                    tag_braces -= 1
+                elif token.value == ">" and not tag_braces:
+                    in_tag = False
+                value = token.value.strip("\"'")
+                after = index + 1
+                if after < len(tokens) and tokens[after].value == "]":
+                    after += 1  # a["download"] = ...
+                if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:
+                    receiver_property = index > 0 and tokens[index - 1].value in {".", "?.", "["}
+                    object_property = tokens[after].value == ":" and index > 0 and tokens[index - 1].value in {"{", ","}
+                    if value == "download" and not (receiver_property or object_property or in_tag):
+                        continue  # local download callback/variable is not a browser filename
+                    # Native HTML quoted/unquoted attributes were already read by HTMLParser.
+                    if relative.endswith((".html", ".py")) and tokens[after].value == "=" and (
+                        index == 0 or tokens[index - 1].value not in {".", "?.", "["}
+                    ):
+                        continue
+                    expression, _end = _js_expression(text, tokens, after + 1)
+                    if expression.startswith("{") and expression.endswith("}"):
+                        expression = expression[1:-1].strip()  # JSX attribute
+                    found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                                  _download_template(expression)))
+                # Direct native/helper calls. Match the download family structurally rather
+                # than selecting two helper names; browser open always requires disposition.
+                call_start = index + 1
+                if call_start < len(tokens) and tokens[call_start].value == "?.":
+                    call_start += 1
+                if call_start >= len(tokens) or tokens[call_start].value != "(":
+                    continue
+                if index and tokens[index - 1].value == "function":
+                    continue
+                if (value.startswith("download") or value == "saveAs"):
+                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    if len(arguments) < 2:
+                        continue  # event handlers with no filename parameter
+                    expression = arguments[1]
+                elif value == "setAttribute":
+                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    if not arguments or _download_template(arguments[0]) != "download":
+                        continue
+                    expression = arguments[1] if len(arguments) >= 2 else "<implicit browser filename>"
+                elif value == "open" and index >= 2 and tokens[index - 2].value in {"window", "globalThis"}:
+                    arguments = _js_parts(text, tokens[call_start].end, ")", ",")
+                    expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
+                else:
+                    continue
+                found.append((f"{relative}:{first_line + token.line - 1}", expression,
+                              _download_template(expression)))
     return sorted(set(found))
 
 
 def _download_template(expression: str) -> str | None:
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        expression = expression[1:-1].strip()
     parts = _js_parts(expression, 0, "", "+")
     templates = []
     literal = False
@@ -1193,7 +1530,6 @@ def bundle_artifact_name_shapes(source: str) -> list[tuple[str, str]]:
     tree = ast.parse(source)
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                     and n.name == "_forbidden_client_artifact")
-    result = next(n.value for n in function.body if isinstance(n, ast.Return))
     shapes: set[tuple[str, str]] = set()
 
     def literals(node: ast.AST) -> list[str]:
@@ -1223,14 +1559,51 @@ def bundle_artifact_name_shapes(source: str) -> list[tuple[str, str]]:
                     and isinstance(right, ast.Name) and right.id in {"allowed_snapshot", "allowed_container"}):
                 return
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name) and node.func.value.id == "leaf"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id in {"leaf", "relative"}
                 and node.func.attr in {"startswith", "endswith"} and len(node.args) == 1):
+            if node.func.value.id == "relative" and node.func.attr == "startswith":
+                raise ValueError("unrecognised bundle client-name selector: path prefix is contextual")
             kind = "leaf-prefix" if node.func.attr == "startswith" else "suffix"
             shapes.update((kind, value) for value in literals(node.args[0]))
             return
         raise ValueError(f"unrecognised bundle client-name selector: {ast.unparse(node)}")
 
-    visit(result)
+    # Validate the whole permitted function. Each early positive return contributes its
+    # condition; unfamiliar control flow is refused rather than excluded from the corpus.
+    bindings = {
+        "folded": "relative.casefold()", "leaf": "PurePosixPath(folded).name",
+        "suffix": "PurePosixPath(folded).suffix",
+    }
+    assigned = set()
+    for statement in function.body:
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue  # docstring
+        if isinstance(statement, ast.Assign):
+            if len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+                raise ValueError("unrecognised bundle client-name selector: new local binding")
+            name = statement.targets[0].id
+            if name in assigned:
+                raise ValueError("unrecognised bundle client-name selector: reassigned selector binding")
+            assigned.add(name)
+            if name in bindings:
+                expected = ast.parse(bindings[name], mode="eval").body
+                if ast.dump(statement.value) != ast.dump(expected):
+                    raise ValueError("unrecognised bundle client-name selector: changed selector binding")
+            elif name in {"allowed_snapshot", "allowed_container"}:
+                literals(statement.value)
+            else:
+                raise ValueError("unrecognised bundle client-name selector: new local binding")
+            continue
+        if isinstance(statement, ast.Return):
+            visit(statement.value)
+            continue
+        if (isinstance(statement, ast.If) and not statement.orelse and len(statement.body) == 1
+                and isinstance(statement.body[0], ast.Return)
+                and isinstance(statement.body[0].value, ast.Constant)
+                and statement.body[0].value.value is True):
+            visit(statement.test)
+            continue
+        raise ValueError(f"unrecognised bundle client-name selector: {ast.unparse(statement)}")
     return sorted(shapes)
 
 
@@ -1394,9 +1767,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, ("topology-mermaid", "topology-graphviz"),
         "topology.mmd and topology.dot beside the workbook"),
     "cisco_toolkit/nrfu_export.py::write_nrfu_pack": (
-        1, DELEGATED, (),
-        "per-device NRFU command files <out_dir>/<wave>/<host>.txt in a caller-owned directory; no "
-        "caller exists today, so the first one becomes its own census row"),
+        1, CLIENT, ("nrfu-command-pack",),
+        "direct library export <out_dir>/<wave>/<host>.nrfu.txt: host, commands, baselines and citations"),
     "cisco_toolkit/precert.py::main": (
         1, CLIENT, ("readiness-certificate",),
         "<snapshot>.precert-readiness.json (or the operator's --out path)"),
@@ -1862,6 +2234,7 @@ _UNCLASSIFIED_LITERALS: dict[str, dict[str, set[str]]] = {}
 _UNRESOLVED_NAME_TEMPLATES: dict[str, dict[str, set[str]]] = {}
 _NON_CLIENT_LITERAL_ORIGINS: dict[str, dict[tuple[str, str], str]] = {}
 _CLIENT_LITERAL_OBLIGATIONS: dict[str, dict[str, set[str]]] = {}
+_NAME_MODEL_PROBLEMS: dict[str, list[str]] = {}
 
 
 def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set[str]]]:
@@ -1875,6 +2248,7 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         unresolved: dict[str, set[str]] = {}
         non_client: dict[tuple[str, str], str] = {}
         client_literals: dict[str, set[str]] = {}
+        model_problems: list[str] = []
         _classes, classify = _registry()
         for file in program.files:
             for function in [file.top, *file.functions]:
@@ -1885,7 +2259,12 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                 resolve = program.resolver(function)
                 for _kind, targets in sites:
                     for target in targets:
-                        for template in _templates(target, resolve):
+                        try:
+                            templates = _templates(target, resolve)
+                        except NameModelLimit as error:
+                            model_problems.append(f"filename model refusal at {function.key}: {error}")
+                            continue
+                        for template in templates:
                             if template is None:
                                 continue
                             leaf = re.split(r"[/\\]", template)[-1]
@@ -1907,6 +2286,7 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         _UNRESOLVED_NAME_TEMPLATES[key] = unresolved
         _NON_CLIENT_LITERAL_ORIGINS[key] = non_client
         _CLIENT_LITERAL_OBLIGATIONS[key] = client_literals
+        _NAME_MODEL_PROBLEMS[key] = sorted(set(model_problems))
     return _ANALYSES[key]
 
 
@@ -1933,7 +2313,7 @@ def census_problems(
         registry_keys = [row[0] for row in _registry()[0]]
     known = frozenset(registry_keys)
     observed, writers, resolved = analysis(root)
-    problems: list[str] = []
+    problems: list[str] = list(_NAME_MODEL_PROBLEMS[str(Path(root).resolve())])
     for key in sorted(set(observed) - set(census)):
         problems.append(f"unclassified write site: {key} ({observed[key]} write(s))")
     for key in sorted(set(census) - set(observed)):
