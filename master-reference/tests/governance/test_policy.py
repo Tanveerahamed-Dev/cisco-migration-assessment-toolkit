@@ -707,6 +707,15 @@ def test_unsupported_architecture_version_refuses_before_inspecting_foreign_fiel
         assert "contract:runtime_phases_missing" in errors
 
 
+_HOSTED_SCALE_IMPORT_PAIRS = {
+    (".github/scripts/qualify_scale.py", "cisco_toolkit/analyze.py"),
+    (".github/scripts/qualify_scale.py", "webapp/backend/app.py"),
+    (".github/scripts/qualify_scale.py", "webapp/backend/ui_projection_api.py"),
+    (".github/scripts/qualify_scale.py", "webapp/sample_data/build_scale.py"),
+    (".github/scripts/test_qualify_scale.py", "webapp/sample_data/build_scale.py"),
+}
+
+
 def test_scope_shared_contract_declares_only_exact_reviewed_file_edges() -> None:
     contract = load_contract()
     assert validate_contract(contract) == ()
@@ -726,7 +735,8 @@ def test_scope_shared_contract_declares_only_exact_reviewed_file_edges() -> None
         ("atlas-scope/src/contract-mode/load.test.ts", fixture), (helper, fixture),
     }
     declared = {(row["source_path"], row["target_path"]) for row in contract["allowed_static_path_edges"]}
-    assert declared == expected
+    assert declared == expected | _HOSTED_SCALE_IMPORT_PAIRS
+    assert {pair for pair in declared if pair[0].startswith("atlas-scope/")} == expected
     assert validate_static_edges([_scope_frontend_edge(*pair) for pair in sorted(expected)], contract) == ()
 
 
@@ -784,7 +794,7 @@ def test_forbidden_analysis_edge_wins_over_an_exact_path_declaration() -> None:
 
 def test_real_resolved_scope_contract_imports_reconcile_without_runtime_claims() -> None:
     contract = load_contract()
-    declarations = contract["allowed_static_path_edges"]
+    declarations = [row for row in contract["allowed_static_path_edges"] if row["source_path"].startswith("atlas-scope/")]
     paths = sorted({row[key] for row in declarations for key in ("source_path", "target_path")})
     # Use relative module specifiers as the TypeScript parser emits them, so the
     # actual resolver and ownership path are exercised, not just component labels.
@@ -804,3 +814,30 @@ def test_real_resolved_scope_contract_imports_reconcile_without_runtime_claims()
     assert receipt["static_edge_count"] == 15
     assert receipt["runtime_observed"] is False
     assert all(edge["runtime_observed"] is False for edge in receipt["static_edges"])
+
+
+def test_hosted_scale_imports_resolve_exact_python_paths_without_broad_edges() -> None:
+    contract = load_contract()
+    assert ["release_distribution", "assesshub_backend"] not in contract["allowed_edges"]
+    assert ["release_distribution", "analysis"] not in contract["allowed_edges"]
+    declarations = [row for row in contract["allowed_static_path_edges"] if row["source_path"].startswith(".github/scripts/")]
+    assert {(row["source_path"], row["target_path"]) for row in declarations} == _HOSTED_SCALE_IMPORT_PAIRS
+    paths = sorted({path for pair in _HOSTED_SCALE_IMPORT_PAIRS for path in pair})
+    imports = [{"id": f"import:scale:{i}", "path": source,
+                "module": target.removesuffix(".py").replace("/", "."), "kind": "import", "names": []}
+               for i, (source, target) in enumerate(sorted(_HOSTED_SCALE_IMPORT_PAIRS))]
+    receipt = build_architecture_conformance(
+        paths=paths, file_languages={path: "python" for path in paths}, imports=imports, calls=[],
+        contract=contract, source_commit="a" * 40, source_tree_digest="b" * 64,
+    )
+    assert receipt["status"] == "passed", receipt["errors"]
+    assert receipt["static_edge_count"] == 5
+    assert receipt["runtime_observed"] is False
+    for target, component in (("webapp/backend/storage.py", "assesshub_backend"),
+                              ("cisco_toolkit/ui_projection.py", "analysis")):
+        # The known qualifier still cannot import any other provider merely
+        # because it belongs to an approved provider's component.
+        edge = {"from_component": "release_distribution", "to_component": component,
+                "source_path": ".github/scripts/qualify_scale.py", "target_path": target,
+                "classification": "static_structure_only", "runtime_observed": False}
+        assert validate_static_edges([edge], contract) == (f"edge:0:undeclared:release_distribution->{component}",)

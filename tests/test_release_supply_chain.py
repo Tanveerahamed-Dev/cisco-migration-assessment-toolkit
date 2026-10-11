@@ -41,6 +41,7 @@ _RUNNER_JOBS = {
         "atlas-scope": ("Atlas Scope typecheck + vitest + build + hub build", _LINUX_IMAGE),
     },
     "ci.yml": {
+        "scale-qualification": ("Synthetic 300-device scale budgets (opt-in dispatch)", _LINUX_IMAGE),
         "lint": ("Ruff lint", _LINUX_IMAGE),
         "test": (_TEST_JOB_NAME, _MATRIX_RUNNER),
         "typecheck": ("mypy", _LINUX_IMAGE),
@@ -57,6 +58,9 @@ _RUNNER_JOBS = {
     # Manual, hosted-only receipt of that handoff as review data; never a required check.
     "engine-output-receipt.yml": {
         "receive": ("Receive engine outputs as review data (manual)", _LINUX_IMAGE),
+    },
+    "scale-qualification.yml": {
+        "qualify": ("Synthetic 300-device scale budgets (weekly or manual)", _LINUX_IMAGE),
     },
     "master-reference-ci.yml": {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
@@ -177,7 +181,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 20
+    assert linux_selectors == 22
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
