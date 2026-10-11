@@ -57,7 +57,9 @@ and its census validation. Peak RSS is the maximum sampled **sum** of live group
 residents (50 ms intervals, including the ingest engine child), with the exact
 leader `wait4` high-water mark as a floor. Shared pages can be counted twice and
 short child spikes between samples can be missed; this is an explicit RSS
-measurement contract, not Python heap or cache accounting. Artifact size is
+measurement contract, not Python heap or cache accounting. RSS includes process
+startup and may include inherited pre-exec memory; it measures neither net
+allocations nor steady-state application memory. Artifact size is
 the complete stage-owned uncompressed output tree; log/report files and toolchain
 installation are excluded. Any execution failure or budget breach fails the
 job, retains the partial measurements and logs, and marks dependent stages
@@ -151,6 +153,8 @@ control's unchanged 128 MiB RSS ceiling after the census loaded substantial
 modules in the same pytest process. The leader high-water floor can include
 inherited pre-exec memory. Privacy census and failure controls now run in
 separate fresh pytest processes, with both logs retained before measurement.
+Inherited-memory causation is a source-consistent inference: the failed logs
+do not distinguish sampled RSS from the leader high-water floor.
 No test assertion, stage budget or measurement contract is changed. The failed
 run produced no scale report; job logs preserve it. Fresh corrected-source
 hosted qualification remains required.
