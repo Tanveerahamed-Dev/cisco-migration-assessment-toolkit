@@ -544,7 +544,7 @@ describe("Snapshot cockpit · Protocol Assurance portfolio", () => {
 
     const link = screen.getByRole("link", { name: /complete json export/i });
     expect(link).toHaveAttribute("href", "/api/snapshots/1/protocol-assurance/export");
-    expect(link).toHaveAttribute("download", "protocol-assurance-snapshot-1.json");
+    expect(link).toHaveAttribute("download", "snapshot-1.protocol-assurance.json");
   });
 
   it("renders missing or malformed family evidence as neutral NOT VERIFIED without inventing a verdict", async () => {

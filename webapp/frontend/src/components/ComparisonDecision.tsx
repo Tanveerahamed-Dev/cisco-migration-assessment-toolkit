@@ -129,9 +129,17 @@ export function protocolFamilySummaryMismatches(value: ProtocolFamilyChangeSet):
   return failures;
 }
 
-function safeFilename(value: string) {
+/** The registered client-artifact suffix of a comparison receipt (cisco_toolkit/distribution_verify.py ::
+ *  CLIENT_ARTIFACT_NAME_CLASSES "comparison-receipt"): every downloaded receipt file ends with it, so the
+ *  repository and archive privacy gates and .gitignore recognise the file wherever it is saved. */
+export const COMPARISON_RECEIPT_SUFFIX = ".comparison.json";
+const DEFAULT_COMPARISON_EXPORT = `atlas-receipt${COMPARISON_RECEIPT_SUFFIX}`;
+
+export function safeFilename(value: string) {
   const stem = value.trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
-  return stem || "atlas-comparison-receipt.json";
+  if (!stem) return DEFAULT_COMPARISON_EXPORT;
+  if (stem.toLowerCase().endsWith(COMPARISON_RECEIPT_SUFFIX)) return stem;
+  return `${stem.replace(/\.json$/i, "")}${COMPARISON_RECEIPT_SUFFIX}`;
 }
 
 function downloadCompleteJson(value: CompareResponse, filename: string) {
@@ -888,7 +896,7 @@ function ReceiptCustody({ value }: { value: CompareResponse }) {
 export default function ComparisonDecision({
   value,
   currentBaseline,
-  exportFilename = "atlas-comparison-receipt.json",
+  exportFilename = DEFAULT_COMPARISON_EXPORT,
   impactsView,
 }: {
   value: CompareResponse;

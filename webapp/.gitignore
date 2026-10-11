@@ -4,7 +4,11 @@ frontend/node_modules/
 # sdists built without Node are complete and byte-reviewable.
 frontend/.vite/
 *.tsbuildinfo
-data/              # local SQLite store (assesshub.db)
+# The local SQLite store (assesshub.db and its backups). The comment used to share the
+# pattern's line, and an inline # is part of a .gitignore pattern, so data/ was never ignored.
+# The README stays visible.
+data/*
+!data/README.md
 *.db
 __pycache__/
 .pytest_cache/
