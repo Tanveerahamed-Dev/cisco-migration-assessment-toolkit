@@ -615,10 +615,15 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
                                  for name, value in sorted(stage.items())}
                            for key, stage in stages.items()},
             }, sort_keys=True))
+        page_pin = _page_profile_pin(api, cache, raw1, binding1, api._PROJECTION_VERSION,
+                                     (with_id, 0, 0, api.MAX_PAGE_SIZE), response, phase)
         profile = _post_timer_prefix_comparison(cache, raw1, binding1, api._PROJECTION_VERSION,
-                                               Path(__file__).resolve().parents[1], phase)
+                                               Path(__file__).resolve().parents[1], phase, expected_default=False)
         with capsys.disabled():
             print("VLAN-CARRIAGE-ADMISSION-PROFILE " + json.dumps(profile, sort_keys=True))
+        page_profile = _post_timer_page_profile(page_pin, warm, Path(__file__).resolve().parents[1], phase)
+        with capsys.disabled():
+            print("VLAN-CARRIAGE-PAGE-PROFILE " + json.dumps(page_profile, sort_keys=True))
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
@@ -819,7 +824,7 @@ def test_round2_byte_accounting_refuses_non_finite_context_instead_of_emitting_n
         uip.project_vlan_carriage(round2_scale, 0, 0, 200)
 
 
-def _profile_control_subject(monkeypatch):
+def _profile_control_subject(monkeypatch, *, prefix=True):
     from types import SimpleNamespace
     from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
     from test_ui_projection_vlan_carriage import _round2_bundle
@@ -837,6 +842,7 @@ def _profile_control_subject(monkeypatch):
     value["stp_topology_observations"]["switch-b"]["state_capture_state"] = "error"  # Held gap-order control.
     raw = json.dumps(value).encode("utf-8")
     subject = bind_snapshot_json_bytes(raw)
+    monkeypatch.setattr(uip, "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED", prefix)  # BEFORE the genuine baseline.
     baseline = uip.carriage_admission(subject)
     binding = {key: uip.bound_snapshot_source(subject)[key] for key in ("sha256", "bytes")}
     entry = SimpleNamespace(snapshot=subject, carriage=baseline, documents={None: {"declared": "owned document"}})
@@ -1111,7 +1117,7 @@ def _comparison_restore(owner, flag, hook):
     return errors
 
 
-def _post_timer_prefix_comparison(cache, raw, binding, version, repo, phase):
+def _post_timer_prefix_comparison(cache, raw, binding, version, repo, phase, *, expected_default=True):
     """Two unchanged one-call diagnostics, pinned across both; never acceptance latency."""
     if os.environ.get("GITHUB_ACTIONS") != "true" or not _timed_leg():
         return None
@@ -1129,7 +1135,8 @@ def _post_timer_prefix_comparison(cache, raw, binding, version, repo, phase):
                   and type(binding.get("bytes")) is int and before["sha256"] == binding["sha256"]
                   and before["bytes"] == binding["bytes"] == len(raw), "complete source/raw binding")
     owner, flag, hook = uip.carriage_admission, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED, sys.getprofile()
-    _profile_need(flag is True, "comparison requires declared prefix default")
+    _profile_need(type(expected_default) is bool and flag is expected_default,
+                  "comparison requires declared prefix default")
     _profile_need(hook is None or callable(hook), "comparison profile hook form")
     names = ("_CARRIAGE_CPU_ROUTING_ENABLED", "_CARRIAGE_ROUTING_TOKEN_ENABLED",
              "_CARRIAGE_ROLE_CELLS_ENABLED", "_CARRIAGE_LOOP_DISPATCH_ENABLED")
@@ -1543,3 +1550,569 @@ def test_prefix_comparison_refuses_in_place_document_values_during_real_renderin
     assert calls == ([(subject, True)] if failed_mode else [(subject, True), (subject, False)])
     assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
     assert sys.getprofile() is hook
+
+
+def _page_alias_graph(value):
+    """Private ordinal topology AND strong original mutable references; never rendered."""
+    seen, occurrences, objects = {}, [], []
+
+    def visit(node, path):
+        if type(node) not in (dict, list):
+            return
+        identity = id(node)
+        ordinal = seen.get(identity)
+        if ordinal is not None:
+            occurrences.append((path, ordinal))
+            return
+        ordinal = len(objects)
+        seen[identity] = ordinal
+        objects.append(node)
+        occurrences.append((path, ordinal))
+        children = node.items() if type(node) is dict else enumerate(node)
+        for key, child in children:
+            visit(child, path + (key,))
+
+    visit(value, ())
+    return tuple(occurrences), tuple(objects)
+
+
+def _page_source_mutables(*values):
+    """Retain source containers, including the binder's dict subclass; never invoke a foreign copy hook."""
+    from types import MappingProxyType
+
+    seen, objects = set(), []
+
+    def visit(node):
+        if isinstance(node, (dict, list)):
+            if id(node) in seen:
+                return
+            seen.add(id(node))
+            objects.append(node)
+            children = dict.values(node) if isinstance(node, dict) else list.__iter__(node)
+        elif type(node) is MappingProxyType:
+            children = node.values()
+        elif type(node) is tuple:
+            children = node
+        else:
+            return
+        for child in children:
+            visit(child)
+
+    for value in values:
+        visit(value)
+    return tuple(objects)
+
+
+def _page_profile_pin(api, cache, raw, binding, version, query, response, phase):
+    _profile_need(phase is None and type(raw) is bytes and type(binding) is dict, "page pin phase or raw type")
+    _profile_need(type(query) is tuple and len(query) == 4 and all(type(value) is int for value in query), "page query")
+    key = (*version, binding["sha256"])
+    entry = cache.entries.get(key)
+    _profile_need(entry is not None and entry.snapshot is not None and entry.carriage is not None, "page cached subject")
+    snapshot, admission, documents = entry.snapshot, entry.carriage, entry.documents
+    document_items = tuple(documents.items())
+    source = uip.bound_snapshot_source(snapshot)
+    _profile_need(source.get("source_bound") is True and type(source.get("sha256")) is str
+                  and type(source.get("bytes")) is int and _profile_same(source["sha256"], binding.get("sha256"))
+                  and _profile_same(source["bytes"], binding.get("bytes")) and source["bytes"] == len(raw), "page raw binding")
+    slots = _comparison_baseline(admission)
+    names = ("_CARRIAGE_CPU_ROUTING_ENABLED", "_CARRIAGE_ROUTING_TOKEN_ENABLED", "_CARRIAGE_ROLE_CELLS_ENABLED",
+             "_CARRIAGE_LOOP_DISPATCH_ENABLED", "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED")
+    owners = [(api, "carriage_page", api.carriage_page), (api, "_CARRIAGE_VALIDATOR", api._CARRIAGE_VALIDATOR),
+              (api, "_require_carriage_page", api._require_carriage_page)]
+    regen = [(api.engine, name, getattr(api.engine, name)) for name in
+             ("bind_ui_projection_snapshot", "ui_projection_carriage_admission", "ui_projection")]
+    regen.append((uip, "carriage_admission", uip.carriage_admission))
+    schema = api._CARRIAGE_VALIDATOR.schema
+    return {"api": api, "cache": cache, "raw": raw, "binding": binding, "binding_values": _comparison_value(binding),
+            "key": key, "entry": entry, "snapshot": snapshot, "admission": admission, "slots": slots,
+            "documents": documents, "document_items": document_items, "doc_values": _comparison_value(documents),
+            "main_document": next(value for host, value in document_items if host is None),
+            "source": source, "query": query, "response": response, "wire_values": _comparison_value(response),
+            "wire_graph": _page_alias_graph(response), "wire_bytes": _bytes(response),
+            "source_objects": _page_source_mutables(snapshot, documents, *slots[0], schema),
+            "owners": owners, "regen": regen, "flag_names": names, "flags": tuple(getattr(uip, name) for name in names),
+            "lookups": (cache.document, cache.carriage_source),
+            "lookup_attributes": tuple((name, name in vars(cache), vars(cache).get(name))
+                                       for name in ("document", "carriage_source")),
+            "validator_call": api._CARRIAGE_VALIDATOR.validate,
+            "schema": schema, "schema_values": _comparison_value(schema)}
+
+
+def _page_profile_bindings(pin, *, observers=None):
+    from types import MethodType
+
+    _profile_need(pin["owners"][1][2].schema is pin["schema"], "page schema replaced")
+    current, owner = pin["owners"][1][2].validate, pin["validator_call"]
+    _profile_need(current is owner or (type(current) is type(owner) is MethodType
+                  and current.__self__ is owner.__self__ and current.__func__ is owner.__func__), "page validator method replaced")
+    for target, name, owner in pin["owners"] + pin["regen"]:
+        expected = observers.get((target, name), owner) if observers is not None else owner
+        _profile_need(getattr(target, name) is expected, "page owner binding mutated")
+    for name, owner in zip(("document", "carriage_source"), pin["lookups"]):
+        current = getattr(pin["cache"], name)
+        expected = observers.get((pin["cache"], name), owner) if observers is not None else owner
+        _profile_need(current is expected or (type(current) is type(expected) is MethodType
+                      and current.__self__ is expected.__self__ and current.__func__ is expected.__func__), "page cache lookup binding mutated")
+
+
+def _page_profile_retained(pin, *, observers=None):
+    entry, documents, response = pin["entry"], pin["documents"], pin["response"]
+    _profile_need(pin["cache"].entries.get(pin["key"]) is entry and entry.snapshot is pin["snapshot"]
+                  and entry.carriage is pin["admission"] and entry.documents is documents, "page cache replaced")
+    _profile_need(_comparison_value(documents) == pin["doc_values"]
+                  and _profile_same(tuple(documents), tuple(key for key, _ in pin["document_items"]))
+                  and all(documents[key] is value for key, value in pin["document_items"]), "page documents mutated")
+    _comparison_baseline_unchanged(pin["admission"], pin["slots"])
+    _profile_need(_comparison_value(pin["binding"]) == pin["binding_values"], "page binding mutated")
+    source = uip.bound_snapshot_source(pin["snapshot"])
+    _profile_need(source.get("source_bound") is True and _profile_same(source, pin["source"]), "page current source mutated")
+    _profile_need(_comparison_value(response) == pin["wire_values"], "original page values mutated")
+    graph = _page_alias_graph(response)
+    _profile_need(graph[0] == pin["wire_graph"][0] and len(graph[1]) == len(pin["wire_graph"][1])
+                  and all(a is b for a, b in zip(graph[1], pin["wire_graph"][1])), "original page containers replaced")
+    current_objects = _page_source_mutables(pin["snapshot"], documents, *pin["slots"][0], pin["schema"])
+    _profile_need(len(current_objects) == len(pin["source_objects"])
+                  and all(a is b for a, b in zip(current_objects, pin["source_objects"])), "page source aliases replaced")
+    _profile_need(_comparison_value(pin["schema"]) == pin["schema_values"], "page schema mutated")
+    _profile_need(all(getattr(uip, name) is value for name, value in zip(pin["flag_names"], pin["flags"])), "page flags mutated")
+    _page_profile_bindings(pin, observers=observers)
+
+
+def _post_timer_page_profile(pin, warm, repo, phase):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not _timed_leg():
+        return None
+    _profile_need(phase is None, "page measured phase still active")
+    _page_profile_retained(pin)  # Pins precede the EARLIER admission pair and its renderer.
+    hook, calls, lookup_calls, returned, latched, observers = sys.getprofile(), [], [], [], [], {}
+    _profile_need(hook is None or callable(hook), "page profile hook form")
+    page_owner, validator, metadata_owner = (item[2] for item in pin["owners"])
+
+    def observe(name, owner, *args, **kwargs):
+        try:
+            _page_profile_bindings(pin, observers=observers)  # Cheap fresh bindings, not full source/value scans.
+            _profile_need(not kwargs and len(calls) < 3 and name == ("page", "schema", "metadata")[len(calls)],
+                          "page exact call sequence")
+            if name == "page":
+                _profile_need(len(args) == 7 and args[0] is pin["cache"] and args[1] is pin["raw"]
+                              and args[2] is pin["binding"] and _profile_same(tuple(args[3:]), pin["query"]), "page exact query")
+            else:
+                _profile_need(len(returned) == 1 and type(returned[0]) is dict and len(args) == 1
+                              and args[0] is (returned[0] if name == "schema" else returned[0]["payload"]), "page validator subject")
+            calls.append(name)
+            result = owner(*args, **kwargs)
+            if name == "page":
+                returned.append(result)
+            return result
+        except BaseException as error:
+            if not latched:
+                latched.append(error)
+            raise
+
+    def forbidden(*_args, **_kwargs):
+        try:
+            _profile_need(False, "page diagnostic attempted genuine regeneration")
+        except BaseException as error:
+            if not latched:
+                latched.append(error)
+            raise
+
+    def lookup(name, owner, *args, **kwargs):
+        try:
+            _page_profile_bindings(pin, observers=observers)
+            expected = ("document", "carriage_source")
+            _profile_need(not kwargs and len(lookup_calls) < 2 and name == expected[len(lookup_calls)]
+                          and len(args) == (3 if name == "document" else 2) and args[0] is pin["raw"]
+                          and _profile_same(args[1], pin["binding"]["sha256"])
+                          and (name != "document" or args[2] is None), "page exact cached lookup")
+            lookup_calls.append(name)
+            value = owner(*args, **kwargs)  # Saved genuine lookup, not a repinned replacement.
+            if name == "document":
+                _profile_need(value is pin["main_document"], "page cached document return replaced")
+            else:
+                _profile_need(type(value) is tuple and len(value) == 2 and value[0] is pin["snapshot"]
+                              and value[1] is pin["admission"], "page cached source return replaced")
+            return value
+        except BaseException as error:
+            if not latched:
+                latched.append(error)
+            raise
+
+    class ObservedValidator:
+        def validate(self, *args, **kwargs):
+            return observe("schema", pin["validator_call"], *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(validator, name)
+
+    api = pin["api"]
+    observers[(api, "carriage_page")] = lambda *a, **kw: observe("page", page_owner, *a, **kw)
+    observers[(api, "_CARRIAGE_VALIDATOR")] = ObservedValidator()
+    observers[(api, "_require_carriage_page")] = lambda *a, **kw: observe("metadata", metadata_owner, *a, **kw)
+    for target, name, _owner in pin["regen"]:
+        observers[(target, name)] = forbidden
+    def cached_observer(name, owner):
+        def cached(*args, **kwargs):
+            return lookup(name, owner, *args, **kwargs)
+        return cached
+
+    for name, owner in zip(("document", "carriage_source"), pin["lookups"]):
+        observers[(pin["cache"], name)] = cached_observer(name, owner)
+    primary = None
+    try:
+        for (target, name), observed in observers.items():
+            setattr(target, name, observed)
+        profiler, failed = _profile_factory(), False
+        try:
+            profiler.enable()
+            result = warm()  # ONE unchanged warm closure and its TWO original validators.
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                profiler.disable()
+            except BaseException:
+                if not failed:
+                    raise
+        if latched:
+            raise latched[0]
+        _profile_need(calls == ["page", "schema", "metadata"] and lookup_calls == ["document", "carriage_source"]
+                      and len(returned) == 1 and result is returned[0], "page genuine calls")
+        _page_profile_retained(pin, observers=observers)
+        _profile_need(_comparison_value(result) == pin["wire_values"] and _bytes(result) == pin["wire_bytes"], "page complete wire equality")
+        graph = _page_alias_graph(result)
+        forbidden_ids = {id(value) for value in (*pin["source_objects"], *pin["wire_graph"][1])}
+        _profile_need(graph[0] == pin["wire_graph"][0] and all(id(value) not in forbidden_ids for value in graph[1]), "page owned alias topology")
+
+        def result_unchanged():
+            current = _page_alias_graph(result)
+            _profile_need(_comparison_value(result) == pin["wire_values"] and _bytes(result) == pin["wire_bytes"]
+                          and current[0] == graph[0] and len(current[1]) == len(graph[1])
+                          and all(a is b for a, b in zip(current[1], graph[1])), "profiled page mutated after validation")
+
+        report = {"status": "POST_TIMER_PAGE_DIAGNOSTIC_ONLY", "complete_equivalence": True, "source_purity": True,
+                  "not_acceptance_latency": True, "inclusive_not_additive": True, "instrumented_profile": True,
+                  "page_calls": 1, "schema_calls": 1, "metadata_calls": 1, "admission_calls": 0, "row_limit": 40}
+        try:
+            report["rows"] = _render_profile_rows(profiler, repo)
+        except Exception as error:
+            name = type(error).__name__
+            report.update(render_status="UNAVAILABLE", rows=[],
+                          error_class=name if len(name) <= 160 and re.fullmatch(r"[A-Za-z_]\w*", name) else "Error")
+        if latched:
+            raise latched[0]
+        _profile_need(type(report["rows"]) is list and len(report["rows"]) <= 40, "page report row bound")
+        _page_profile_retained(pin, observers=observers)
+        result_unchanged()
+    except BaseException as error:
+        primary = latched[0] if latched else error
+        raise primary
+    finally:
+        errors = []
+        for target, name, owner in pin["owners"] + pin["regen"]:
+            try:
+                setattr(target, name, owner)
+            except BaseException as error:
+                errors.append(error)
+        for name, present, own_value in pin["lookup_attributes"]:
+            try:
+                if present:
+                    setattr(pin["cache"], name, own_value)
+                else:
+                    delattr(pin["cache"], name)  # Restore descriptor lookup, not a new permanent method shadow.
+            except BaseException as error:
+                errors.append(error)
+        try:
+            sys.setprofile(hook)
+        except BaseException as error:
+            errors.append(error)
+        if errors and primary is None and not latched:
+            raise errors[0]
+    if latched:
+        raise latched[0]
+    _page_profile_retained(pin)
+    result_unchanged()
+    _profile_need(sys.getprofile() is hook, "page profiler restoration")
+    return report
+
+
+def test_prefix_comparison_false_default_uses_true_false_real_calls_and_restores_false(monkeypatch):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch, prefix=False)
+    owner, calls = uip.carriage_admission, []
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    report = _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None, expected_default=False)
+    assert calls == [(subject, True), (subject, False)] and report["order"] == [True, False]
+    assert report["complete_equivalence"] is report["source_purity"] is True
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is False
+
+
+@pytest.mark.parametrize("declared", [True, 0])
+def test_prefix_comparison_keeps_exact_declared_default_and_bool_type_guard(monkeypatch, declared):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch, prefix=False)
+    calls = []
+
+    def forbidden(*_args):
+        calls.append(True)
+        raise AssertionError("wrong default reached owner or profiler")
+
+    monkeypatch.setattr(uip, "carriage_admission", forbidden)
+    monkeypatch.setattr(sys.modules[__name__], "_profile_factory", forbidden)
+    with pytest.raises(AssertionError, match="declared prefix default"):
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None, expected_default=declared)
+    assert calls == [] and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is False
+
+
+def _page_control_subject(monkeypatch, *, effect=None, error=None):
+    from pathlib import Path
+    webapp = str(Path(__file__).resolve().parents[1] / "webapp")
+    if webapp not in sys.path:
+        monkeypatch.syspath_prepend(webapp)
+    from backend import ui_projection_api as api
+
+    _fake, raw, binding, _version, _subject, _baseline = _profile_control_subject(monkeypatch, prefix=False)
+    cache = api._ProjectionCache()
+    cache.document(raw, binding["sha256"], None)  # REAL pure document producer/admission, before diagnostic pins.
+    query, events, active, responses, method_restore, document_restore = (37, 0, 0, api.MAX_PAGE_SIZE), [], [False], [], [], []
+    owners = (api.carriage_page, api._CARRIAGE_VALIDATOR, api._require_carriage_page)
+
+    def page(*args, **kwargs):
+        events.append("page")
+        result = owners[0](*args, **kwargs)
+        if active[0]:
+            if effect == "doc-value":
+                cache.entries[(*api._PROJECTION_VERSION, binding["sha256"])].documents[None]["schema"] += "-mutated"
+            elif effect == "result-alias":
+                result["payload"]["page"]["items"] = responses[0]["payload"]["page"]["items"]
+            elif effect == "page-error":
+                raise error
+            elif effect == "validator-late-restore":
+                method_restore.append(control_validator.validate)
+                control_validator.validate = lambda _response: None
+        return result
+
+    class Validator:
+        def validate(self, *args, **kwargs):
+            events.append("schema")
+            result = owners[1].validate(*args, **kwargs)
+            if active[0] and effect == "schema-error":
+                raise error
+            return result
+
+        def __getattr__(self, name):
+            return getattr(owners[1], name)
+
+    def metadata(*args, **kwargs):
+        events.append("metadata")
+        result = owners[2](*args, **kwargs)
+        if active[0] and effect == "metadata-error":
+            raise error
+        if active[0] and effect == "validator-late-restore":
+            control_validator.validate = method_restore[0]  # Would erase the drift before a post-only pin check.
+        if active[0] and effect == "lookup-document":
+            cache.entries[(*api._PROJECTION_VERSION, binding["sha256"])].documents[None] = document_restore[0]
+        return result
+
+    monkeypatch.setattr(api, "carriage_page", page)
+    control_validator = Validator()
+    monkeypatch.setattr(api, "_CARRIAGE_VALIDATOR", control_validator)
+    monkeypatch.setattr(api, "_require_carriage_page", metadata)
+
+    def warm():
+        response = api.carriage_page(cache, raw, binding, *query)
+        api._CARRIAGE_VALIDATOR.validate(response)
+        api._require_carriage_page(response["payload"])
+        return response
+
+    responses.append(warm())  # GENUINE original response for THIS small query; not a copied payload.
+    events.clear()
+    if effect == "regeneration":
+        document_owner = cache.document
+
+        def regenerate(*args):
+            if active[0]:
+                cache.entries[(*api._PROJECTION_VERSION, binding["sha256"])].documents.clear()
+            return document_owner(*args)  # Its genuine complete-document producer MUST be refused.
+
+        monkeypatch.setattr(cache, "document", regenerate)
+    elif effect in ("lookup-document", "lookup-admission"):
+        name = "document" if effect == "lookup-document" else "carriage_source"
+        lookup_owner = getattr(cache, name)
+
+        def equal_replacement(*args):
+            value = lookup_owner(*args)  # Delegate the REAL lookup before replacing only its return.
+            if not active[0]:
+                return value
+            if effect == "lookup-document":
+                document_restore.append(value)
+                replacement = deepcopy(value)
+                cache.entries[(*api._PROJECTION_VERSION, binding["sha256"])].documents[None] = replacement
+                return replacement  # CURRENT map and return agree; only the PRE-pinned object can refute it.
+            snapshot, admission = value
+            same_slots = (getattr(admission, slot) for slot in uip._CarriageAdmission.__slots__)
+            return snapshot, uip._CarriageAdmission(*same_slots)  # Genuine owner constructor; not a dataclass.
+
+        monkeypatch.setattr(cache, name, equal_replacement)
+    pin = _page_profile_pin(api, cache, raw, binding, api._PROJECTION_VERSION, query, responses[0], None)
+    active[0] = True
+    return pin, warm, events
+
+
+def test_post_timer_page_profile_uses_genuine_small_query_and_allows_unused_cache_constructors(monkeypatch):
+    pin, warm, events = _page_control_subject(monkeypatch)
+    api, constructed, constructor = pin["api"], [], pin["api"]._SnapshotProjection
+
+    def ordinary_default():
+        constructed.append(True)
+        return constructor()
+
+    monkeypatch.setattr(api, "_SnapshotProjection", ordinary_default)
+    before = sys.getprofile()
+    cache_attributes = tuple(vars(pin["cache"]).items())
+    report = _post_timer_page_profile(pin, warm, "repo", None)
+    assert events == ["page", "schema", "metadata"] and constructed == [True, True]
+    assert pin["response"]["payload"]["page"]["returned"] < pin["query"][3]
+    assert report["page_calls"] == report["schema_calls"] == report["metadata_calls"] == 1
+    assert report["admission_calls"] == 0 and report["complete_equivalence"] is report["source_purity"] is True
+    assert 0 < len(report["rows"]) <= 40 and sys.getprofile() is before
+    _page_profile_retained(pin)
+    assert tuple(vars(pin["cache"])) == tuple(name for name, _value in cache_attributes)
+    assert all(vars(pin["cache"])[name] is value for name, value in cache_attributes)
+
+
+@pytest.mark.parametrize("step", ["page", "schema", "metadata"])
+def test_post_timer_page_profile_preserves_genuine_late_error_object_and_all_bindings(monkeypatch, step):
+    declared = RuntimeError("declared real " + step + " refusal")
+    pin, warm, events = _page_control_subject(monkeypatch, effect=step + "-error", error=declared)
+    hook = sys.getprofile()
+    with pytest.raises(RuntimeError) as raised:
+        _post_timer_page_profile(pin, warm, "repo", None)
+    assert raised.value is declared and raised.value.args == ("declared real " + step + " refusal",)
+    assert events == ["page", "schema", "metadata"][:("page", "schema", "metadata").index(step) + 1]
+    assert sys.getprofile() is hook
+    _page_profile_retained(pin)
+
+
+@pytest.mark.parametrize("effect", ["original-equal-replacement", "doc-value", "result-alias", "regeneration"])
+def test_post_timer_page_profile_refuses_original_replacement_mutation_alias_and_real_regeneration(monkeypatch, effect):
+    pin, warm, events = _page_control_subject(monkeypatch, effect=effect)
+    if effect == "original-equal-replacement":
+        renderer = _render_profile_rows
+
+        def earlier(profiler, repo):
+            items = pin["response"]["payload"]["page"]["items"]
+            pin["response"]["payload"]["page"]["items"] = deepcopy(items)
+            return renderer(profiler, repo)
+
+        with monkeypatch.context() as pair:
+            pair.setattr(sys.modules[__name__], "_render_profile_rows", earlier)
+            _post_timer_prefix_comparison(pin["cache"], pin["raw"], pin["binding"], pin["api"]._PROJECTION_VERSION,
+                                          "repo", None, expected_default=False)
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _post_timer_page_profile(pin, warm, "repo", None)
+    if effect == "original-equal-replacement":
+        assert events == []  # Strong refs refuse BEFORE the later helper can freshly bless equal containers.
+    for target, name, owner in pin["owners"] + pin["regen"]:
+        assert getattr(target, name) is owner
+
+
+@pytest.mark.parametrize("format_only", [True, False])
+def test_post_timer_page_profile_formatting_fallback_never_swallows_an_extra_real_call(monkeypatch, format_only):
+    pin, warm, events = _page_control_subject(monkeypatch)
+    saved = []
+
+    def renderer(*_args):
+        if format_only:
+            raise ValueError("/private/person/payload")
+        try:
+            warm()  # Attempts a SECOND genuine page call after all three required operations.
+        except AssertionError as error:
+            saved.append(error)
+            raise
+
+    monkeypatch.setattr(sys.modules[__name__], "_render_profile_rows", renderer)
+    if format_only:
+        report = _post_timer_page_profile(pin, warm, "repo", None)
+        assert report["render_status"] == "UNAVAILABLE" and report["rows"] == []
+        assert "private/person" not in json.dumps(report)
+    else:
+        with pytest.raises(AssertionError) as raised:
+            _post_timer_page_profile(pin, warm, "repo", None)
+        assert len(saved) == 1 and raised.value is saved[0]
+    assert events == ["page", "schema", "metadata"]
+    _page_profile_retained(pin)
+
+
+def test_post_timer_page_profile_attempts_all_restorations_without_replacing_a_real_error(monkeypatch):
+    declared = RuntimeError("primary real page refusal")
+    pin, warm, _events = _page_control_subject(monkeypatch, effect="page-error", error=declared)
+    owner, actual_setattr, restored = pin["owners"][0][2], setattr, []
+
+    def restoration(target, name, value):
+        if any(target is expected and name == slot and value is original for expected, slot, original in pin["owners"] + pin["regen"]):
+            restored.append(name)
+            if name == "carriage_page":
+                raise TypeError("declared restoration refusal")
+        return actual_setattr(target, name, value)
+
+    monkeypatch.setattr(sys.modules[__name__], "setattr", restoration, raising=False)
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            _post_timer_page_profile(pin, warm, "repo", None)
+        assert raised.value is declared
+        assert restored == [name for _target, name, _owner in pin["owners"] + pin["regen"]]
+    finally:
+        actual_setattr(pin["api"], "carriage_page", owner)
+
+
+def test_post_timer_page_profile_copied_answer_cannot_replace_genuine_warm_calls(monkeypatch):
+    pin, _warm, events = _page_control_subject(monkeypatch)
+    with pytest.raises(AssertionError, match="page genuine calls"):
+        _post_timer_page_profile(pin, lambda: deepcopy(pin["response"]), "repo", None)
+    assert events == []
+    _page_profile_retained(pin)
+
+
+def test_post_timer_page_profile_refuses_a_validator_method_replaced_by_earlier_renderer(monkeypatch):
+    pin, warm, events = _page_control_subject(monkeypatch)
+    renderer = _render_profile_rows
+
+    def earlier(profiler, repo):
+        pin["owners"][1][2].validate = lambda _response: None  # SAME instance/schema, wrong actual callable.
+        return renderer(profiler, repo)
+
+    with monkeypatch.context() as pair:
+        pair.setattr(sys.modules[__name__], "_render_profile_rows", earlier)
+        _post_timer_prefix_comparison(pin["cache"], pin["raw"], pin["binding"], pin["api"]._PROJECTION_VERSION,
+                                      "repo", None, expected_default=False)
+    with pytest.raises(AssertionError, match="page validator method replaced"):
+        _post_timer_page_profile(pin, warm, "repo", None)
+    assert events == []  # Refuse BEFORE any later warm call can bless a silently bypassed validator.
+
+
+def test_post_timer_page_profile_checks_live_binding_before_schema_even_if_metadata_would_restore_it(monkeypatch):
+    pin, warm, events = _page_control_subject(monkeypatch, effect="validator-late-restore")
+    with pytest.raises(AssertionError, match="page validator method replaced"):
+        _post_timer_page_profile(pin, warm, "repo", None)
+    assert events == ["page"]  # Neither a saved schema call nor the late restoration may conceal the swap.
+    assert pin["owners"][1][2].validate is not pin["validator_call"]
+
+
+@pytest.mark.parametrize("replacement", ["document", "admission"])
+def test_post_timer_page_profile_refuses_equal_real_lookup_return_replacements(monkeypatch, replacement):
+    pin, warm, events = _page_control_subject(monkeypatch, effect="lookup-" + replacement)
+    owned_attributes = tuple(vars(pin["cache"]).items())
+    with pytest.raises(AssertionError, match="page cached .* return replaced"):
+        _post_timer_page_profile(pin, warm, "repo", None)
+    assert events == ["page"]  # Stop BEFORE the page producer/schema/metadata can bless the different objects.
+    assert tuple(vars(pin["cache"])) == tuple(name for name, _value in owned_attributes)
+    assert all(vars(pin["cache"])[name] is value for name, value in owned_attributes)
+    if replacement == "document":
+        assert pin["documents"][None] is not pin["main_document"]  # Late metadata restoration was not reached.
+        pin["documents"][None] = pin["main_document"]  # Restore ONLY this authored mutation for the pin assertion.
+    _page_profile_retained(pin)
