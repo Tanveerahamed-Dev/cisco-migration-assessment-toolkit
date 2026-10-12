@@ -4580,7 +4580,7 @@ _REDACT_SCALAR_QUOTED_RE = re.compile(r"\"(?:[^\"\\\r\n]|\\[^\r\n])*\"|'(?:[^'\\
 # Executable-word boundaries alone: quoted/escaped operators remain part of the word.
 _REDACT_EXEC_WORD_RE = re.compile(
     "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\;&|()<>]|\\\\[^\r\n]|\\\\\\Z"
-    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'[^'\r\n]*(?:'|\\Z))+"
     "|[;&|()<>]")
 #: 'echo user:PASSWORD | chpasswd' and a PostgreSQL .pgpass line 'host:port:database:user:PASSWORD' (exactly
 #: five fields, a host with a letter, a dot or '*': a MAC address or a time is no .pgpass line).
@@ -5948,12 +5948,14 @@ def _redact_snmp_public_option(words, position: int):
     return count
 
 
-def _redact_snmp_shape(line: str) -> bool:
+def _redact_snmp_shape(line: str, *, shell_witness: bool = True) -> bool:
     """A strong pair or two different weak pairs, after decoding their actual argument values."""
     # Retain main's raw witness path, including a witness inside sh/bash's quoted -c word.
     # The existing argv walk then owns that entire word as the required -c operand.
     if (_REDACT_SNMP_SHAPE_STRONG_RE.search(line)
             or len({m.group(0)[:2] for m in _REDACT_SNMP_SHAPE_WEAK_RE.finditer(line)}) >= 2):
+        return True
+    if shell_witness and _redact_shell_snmp_witness(line):
         return True
     words = [_redact_decode_word(m.group(0))[0] for m in _REDACT_ARGV_WORD_RE.finditer(line)]
     weak, i = set(), 0
@@ -5978,7 +5980,7 @@ def _redact_snmp_shape(line: str) -> bool:
     return len(weak) >= 2
 
 
-def _redact_argv_runs(line: str):
+def _redact_argv_runs(line: str, *, shell_witness: bool = True):
     """``(kind, start, shape_only)`` of every shell-argument run on ``line``, by start: each command of the
     closed list (`_REDACT_ARGV_CMD_RE`) from its end, an SNMPCMD_ARGS directive that starts a statement from
     its end, or else a net-snmp argument vector found by its shape (`_redact_snmp_shape`) from the line
@@ -5992,7 +5994,7 @@ def _redact_argv_runs(line: str):
                           and _redact_directive_config(line, m)), None)
         if directive is not None:
             runs.append(("snmp", directive.end(), False))
-        elif _redact_snmp_shape(line):
+        elif _redact_snmp_shape(line, shell_witness=shell_witness):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
 
@@ -6033,6 +6035,20 @@ def _redact_spelled_snmp_runs(line: str):
     """
     if not any(char in line for char in "\"'\\"):
         return
+    for word in _redact_shell_command_words(line):
+        raw = word.group(0)
+        if not any(char in raw for char in "\"'\\"):
+            continue
+        decoded = _redact_shell_executable(raw)
+        found = None if decoded is None else _REDACT_ARGV_CMD_RE.fullmatch(decoded)
+        if found is not None:
+            kind = _redact_argv_kind(found.group("cmd"))
+            if kind in {"snmp", "snmp-create", "encode_keychange"}:
+                yield kind, word.end(), False
+
+
+def _redact_shell_command_words(line: str):
+    """Executable words at the same bounded boundaries as the spelling observer."""
     command, redirection = True, False
     for word in _REDACT_EXEC_WORD_RE.finditer(line, _redact_capture_value_start(line)):
         raw = word.group(0)
@@ -6050,14 +6066,59 @@ def _redact_spelled_snmp_runs(line: str):
         if raw in {"sudo", "env"} or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", raw):
             continue
         command = False
-        if not any(char in raw for char in "\"'\\"):
+        yield word
+
+
+def _redact_shell_snmp_witness(line: str, depth: int = 0) -> bool:
+    """An actual sh/bash -c carrier with a known SNMP command and a private owned slot.
+
+    Recognition alone feeds the existing shape/outer -c operand path. It does not
+    decode credential bytes for an exemption or introduce another masking policy.
+    """
+    if depth >= 8 or "-c" not in line or "sh" not in line:
+        return False
+    for carrier in _redact_shell_command_words(line):
+        name = _redact_shell_executable(carrier.group(0))
+        if name is None or not re.fullmatch(r"(?:[\w.~/-]{0,128}/)?(?:sh|bash)", name):
             continue
-        decoded = _redact_shell_executable(raw)
-        found = None if decoded is None else _REDACT_ARGV_CMD_RE.fullmatch(decoded)
-        if found is not None:
-            kind = _redact_argv_kind(found.group("cmd"))
-            if kind in {"snmp", "snmp-create", "encode_keychange"}:
-                yield kind, word.end(), False
+        words = iter(_REDACT_EXEC_WORD_RE.finditer(line, carrier.end()))
+        option, value = next(words, None), next(words, None)
+        if option is None or value is None or _redact_shell_executable(option.group(0)) != "-c":
+            continue
+        script = _redact_shell_executable(value.group(0))
+        if not script:
+            continue
+        if _REDACT_ARGV_CMD_RE.search(script):
+            continue                                      # the existing bounded recursive path already owns it
+        commands = list(_redact_shell_command_words(script))
+        ranges = []
+        for index, command in enumerate(commands):
+            raw = command.group(0)
+            if not any(char in raw for char in "\"'\\"):
+                continue
+            spelling = _redact_shell_executable(raw)
+            found = None if spelling is None else _REDACT_ARGV_CMD_RE.fullmatch(spelling)
+            if found is not None and _redact_argv_kind(found.group("cmd")) in {"snmp", "snmp-create", "encode_keychange"}:
+                ranges.append((command.end(), commands[index + 1].start() if index + 1 < len(commands) else len(script)))
+        if ranges:
+            position = 0
+            for a, b, kind in _redact_argv_walk(script, shell_witness=False)[0]:
+                word = _REDACT_EXEC_WORD_RE.match(script, a)
+                if word is not None:
+                    b = min(b, word.end())
+                marker_end = a + len(_REDACT_PLACEHOLDER)
+                if (script.startswith(_REDACT_PLACEHOLDER, a)
+                        and (marker_end == len(script) or script[marker_end] in _REDACT_WS_CHARS
+                             or script[marker_end] in ";&|()<>")):
+                    b = marker_end
+                while position < len(ranges) and ranges[position][1] <= a:
+                    position += 1
+                if (position < len(ranges) and ranges[position][0] <= a < b <= ranges[position][1]
+                        and _redact_operand_span(script, a, b, kind) is not None):
+                    return True
+        if _redact_shell_snmp_witness(script, depth + 1):
+            return True
+    return False
 
 
 def _redact_argv_option(text: str, options, shape_only: bool):
@@ -6144,7 +6205,7 @@ def _redact_operand_span(line: str, start: int, end: int, kind: str):
     return a, b
 
 
-def _redact_argv_walk(line: str, carry=None):
+def _redact_argv_walk(line: str, carry=None, *, shell_witness: bool = True):
     """``(operands, pending)``: every credential operand of the shell-argument runs on ``line`` as ``(start,
     end, kind)`` word spans, and -- when the last run reaches the line end and either an option there still
     expects its operand or the line ends in a shell continuation backslash -- ``(run kind, expected operand kind
@@ -6152,7 +6213,7 @@ def _redact_argv_walk(line: str, carry=None):
     state: this line then starts inside that run. One pass over the line's argument words
     (`_REDACT_ARGV_WORD_RE`). A listed option where an operand was expected ('-x -X PRIV') is both: it is
     taken as that operand (fail safe) and read as an option, so the value after it is redacted too."""
-    runs = _redact_argv_runs(line)
+    runs = _redact_argv_runs(line, shell_witness=shell_witness)
     if carry is not None:
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:

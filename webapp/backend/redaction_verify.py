@@ -1991,7 +1991,7 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
             or kind == "level" and core in {"noauthnopriv", "authnopriv", "authpriv"})
 
 
-def _sweep_snmp_shape(line: str) -> bool:
+def _sweep_snmp_shape(line: str, *, shell_witness: bool = True) -> bool:
     """Recognize argument semantics, not their optional quote/escape spelling."""
     # Preserve 00647ebd's existing raw witness path. It can see a valid vector inside
     # a quoted sh/bash command word, allowing the existing outer '-c' operand walk
@@ -2021,7 +2021,7 @@ def _sweep_snmp_shape(line: str) -> bool:
             return True
         if option == "-v" and folded in {"1", "3"} or option in {"-a", "-x"} and folded in _SWEEP_SNMP_PROTOCOLS:
             weak.add(option)
-    return len(weak) >= 2
+    return len(weak) >= 2 or (shell_witness and _sweep_shell_snmp_witness(line))
 
 
 def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
@@ -2127,7 +2127,7 @@ def _sweep_snmp_public_option(words: list[re.Match[str]], index: int) -> int | N
     return following if rest else -1
 
 
-def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
+def _sweep_argv_runs(line: str, *, shell_witness: bool = True) -> list[tuple[str, int, bool]]:
     """``(kind, start, shape_only)`` of every shell-argument run, by start (the producer's rule restated):
     each listed command from its end, an SNMPCMD_ARGS directive that starts a statement, or else a net-snmp
     vector by its shape from the line start. Each run ends where the next one starts."""
@@ -2140,7 +2140,7 @@ def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
                           and _sweep_directive_config(line, m)), None)
         if directive is not None:
             runs.append(("snmp", directive.end(), False))
-        elif _sweep_snmp_shape(line):
+        elif _sweep_snmp_shape(line, shell_witness=shell_witness):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
 
@@ -2171,18 +2171,16 @@ def _sweep_shell_executable(raw: str) -> str | None:
     return None if quote else "".join(result)
 
 
-def _sweep_spelled_snmp_runs(line: str) -> list[tuple[str, int, bool]]:
-    """New quote/escape spellings only at command boundaries, with two literal wrappers.
+def _sweep_shell_command_words(line: str) -> list[re.Match[str]]:
+    """Literal command-word positions with the existing two-wrapper boundary policy.
 
     The pre-existing raw run path remains separate. Operator characters inside quotes
     are data, and a redirection's following filename never becomes an executable.
     """
-    if not any(char in line for char in {"\"", "'", chr(92)}):
-        return []
     prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
     start = prefix.end() if prefix is not None else 0
     command, redirect = True, False
-    runs = []
+    commands = []
     for word in _SWEEP_SHELL_WORD_RE.finditer(line, start):
         raw = word.group(0)
         if raw in {"<", ">"}:
@@ -2198,15 +2196,81 @@ def _sweep_spelled_snmp_runs(line: str) -> list[tuple[str, int, bool]]:
             continue
         if command and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", raw):
             continue
-        if command and any(char in raw for char in {"\"", "'", chr(92)}):
-            name = _sweep_shell_executable(raw)
-            found = _SWEEP_ARGV_CMD_RE.fullmatch(name) if name is not None else None
-            if found is not None:
-                kind = _sweep_argv_kind(found.group("cmd"))
-                if kind in {"snmp", "snmp-create", "encode_keychange"}:
-                    runs.append((kind, word.end(), False))
+        if command:
+            commands.append(word)
         command = False
+    return commands
+
+
+def _sweep_spelled_snmp_runs(line: str) -> list[tuple[str, int, bool]]:
+    """Only newly resolved quote/escape spellings; every pre-existing raw run stays."""
+    if not any(char in line for char in {"\"", "'", chr(92)}):
+        return []
+    runs = []
+    for word in _sweep_shell_command_words(line):
+        raw = word.group(0)
+        if not any(char in raw for char in {"\"", "'", chr(92)}):
+            continue
+        name = _sweep_shell_executable(raw)
+        found = _SWEEP_ARGV_CMD_RE.fullmatch(name) if name is not None else None
+        if found is not None:
+            kind = _sweep_argv_kind(found.group("cmd"))
+            if kind in {"snmp", "snmp-create", "encode_keychange"}:
+                runs.append((kind, word.end(), False))
     return runs
+
+
+def _sweep_shell_snmp_witness(line: str, *, depth: int = 0) -> bool:
+    """An actual sh/bash -c carrier with an owned private slot in a spelled SNMP command.
+
+    This only enables the existing shape-only outer '-c' operand path. Plain commands,
+    public operands and echo literals keep their previous treatment; no refusal policy
+    or new whole-string replacement is introduced. Nested ownership is bounded at eight.
+    """
+    if depth >= 8 or not any(char in line for char in {"\"", "'", chr(92)}):
+        return False
+    words = list(_SWEEP_SHELL_WORD_RE.finditer(line))
+    starts = [word.start() for word in words]
+    for command in _sweep_shell_command_words(line):
+        name = _sweep_shell_executable(command.group(0))
+        if name is None or not re.fullmatch(r"(?:[\w.~/-]{0,128}/)?(?:sh|bash)", name):
+            continue
+        position = bisect.bisect_left(starts, command.end())
+        if (position + 1 >= len(words)
+                or _sweep_shell_executable(words[position].group(0)) != "-c"):
+            continue
+        script = _sweep_shell_executable(words[position + 1].group(0))
+        if script is None or _SWEEP_ARGV_CMD_RE.search(script):
+            continue
+        spelled = {end for _kind, end, _shape in _sweep_spelled_snmp_runs(script)}
+        if spelled:
+            commands = _sweep_shell_command_words(script)
+            operands = sorted(_sweep_argv_walk(script, shell_witness=False)[0])
+            operand_index = 0
+            for index, inner in enumerate(commands):
+                if inner.end() not in spelled:
+                    continue
+                stop = commands[index + 1].start() if index + 1 < len(commands) else len(script)
+                while operand_index < len(operands) and operands[operand_index][0] < inner.end():
+                    operand_index += 1
+                while operand_index < len(operands) and operands[operand_index][0] < stop:
+                    start, end, kind = operands[operand_index]
+                    operand_index += 1
+                    if kind in {"value", "create-auth", "create-priv"}:
+                        if not _sweep_operand_bad(script[start:end], kind):
+                            continue
+                        if script.startswith(_PLACEHOLDER, start):
+                            marker_end = start + len(_PLACEHOLDER)
+                            if (marker_end >= end or script[marker_end] in _CRED_WS_CHARS + ";&|()<>"):
+                                end = min(end, marker_end)
+                        token = _SWEEP_SHELL_WORD_RE.match(script, start)
+                        if script[start:end] != _PLACEHOLDER:
+                            end = min(end, token.end()) if token is not None else end
+                        if _sweep_operand_bad(script[start:end], kind):
+                            return True
+        if _sweep_shell_snmp_witness(script, depth=depth + 1):
+            return True
+    return False
 
 
 def _sweep_argv_option(text: str, options: tuple[tuple[str, str], ...],
@@ -2252,11 +2316,11 @@ def _sweep_operand_bad(text: str, kind: str) -> bool:
     return bool(core) and not marker
 
 
-def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
+def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None, *, shell_witness: bool = True
                      ) -> tuple[list[tuple[int, int, str]], tuple[str, str | None] | None]:
     """The producer's ``_redact_argv_walk`` restated: every credential operand word span, and the run kind and
     expected operand kind when the vector continues on the next line (``carry``: this line continues one)."""
-    runs = _sweep_argv_runs(line)
+    runs = _sweep_argv_runs(line, shell_witness=shell_witness)
     if carry is not None:
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:
