@@ -87,6 +87,9 @@ _RUNNER_JOBS = {
         "visual": ("Design visual regression · Windows 2025 x64 Chromium", "windows-2025"),
         "gate": ("Webapp CI gate", _LINUX_IMAGE),
     },
+    "w60b-redaction.yml": {
+        "redaction": ("W60b exact archival redaction and output custody", _LINUX_IMAGE),
+    },
 }
 _TEST_CONTEXTS = (
     "Tests · py3.10 · ubuntu-latest",
@@ -178,7 +181,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 21
+    assert linux_selectors == 22
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
