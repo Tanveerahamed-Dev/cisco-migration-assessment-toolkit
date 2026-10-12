@@ -134,6 +134,26 @@ def _sources(rows, prefix):
             if source.startswith(prefix + ":")}
 
 
+def _current_expect(row):
+    """Only explicit W60b public-syntax corrections override historical W60 bytes."""
+    return row.get("w60b_expect", row["expect"])
+
+
+def test_w60b_public_syntax_corrections_preserve_every_historical_oracle():
+    corrected = [row for row in EVERY_ROW if "w60b_expect" in row]
+    assert len(corrected) == 2
+    assert {row["source"] for row in corrected} == {
+        "w60-review-r4:create-v3-user", "w60-review-r4b:config-after-2c"}
+    for row in corrected:
+        assert row["w60_expect"] == row["expect"] and row["w60b_correction"]
+        assert row["expect"] != row["w60b_expect"]
+        if row["source"] == "w60-review-r4b:config-after-2c":
+            assert _current_expect(row) == row["line"], "the whole public wrapper statement must survive"
+        else:
+            assert _current_expect(row).endswith("-X DES opsuser"), "the complete public algorithm option must survive"
+            assert all(secret not in _current_expect(row) for secret in row["secrets"])
+
+
 def _write_capture(root, body):
     """One device capture holding ``body`` byte-for-byte: non-UTF-8 bytes (surrogate-escaped in the
     corpus) and CR-only / CRLF line ends included -- `newline=""` stops text mode rewriting them."""
@@ -199,14 +219,14 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
         assert platform in platforms, f"no {platform} credential form in the corpus"
     for row in MUST_REDACT:
         assert row["secrets"], row
-        assert html._REDACT_PLACEHOLDER in row["expect"], row
+        assert html._REDACT_PLACEHOLDER in _current_expect(row), row
         assert set(row["flags"]) <= {"notail"}, row
         for secret in row["secrets"]:
             assert secret in row["line"], (secret, row["line"])   # the sentinel really is in the input
     for row in OVER_REDACTED:
         assert row["note"] and row["expect"] != row["line"], row
     for row in QUALIFIER_SHAPED:
-        assert row["secrets"] and row["note"] and html._REDACT_PLACEHOLDER in row["expect"], row
+        assert row["secrets"] and row["note"] and html._REDACT_PLACEHOLDER in _current_expect(row), row
         for secret in row["secrets"]:
             assert _words(secret, row["line"]) >= 1, row
     for row in EVERY_ROW:
@@ -216,7 +236,7 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
 @pytest.mark.parametrize("row", MUST_REDACT, ids=_ids(MUST_REDACT))
 def test_the_producer_redacts_every_secret(row):
     out = html._redact_config_values(row["line"])
-    assert out == row["expect"]
+    assert out == _current_expect(row)
     for secret in row["secrets"]:
         assert secret not in out
     assert html._redact_config_values(out) == out, "the scrub is not idempotent on its own output"
@@ -230,9 +250,10 @@ def test_structural_lines_are_left_byte_identical(row):
 @pytest.mark.parametrize("row", OVER_REDACTED, ids=_ids(OVER_REDACTED))
 def test_over_redaction_is_the_documented_result(row):
     """Fail-safe: a line with no credential may lose words after a credential keyword. Each such line is
-    pinned to its documented result so the over-redaction is a decision, not drift."""
+    pinned to its documented result so the over-redaction is a decision, not drift. Explicit W60b corrections
+    retain the original oracle as history and additionally require complete public-syntax preservation."""
     out = html._redact_config_values(row["line"])
-    assert out == row["expect"]
+    assert out == _current_expect(row)
     assert html._redact_config_values(out) == out
 
 
@@ -272,7 +293,7 @@ def test_the_real_scrub_and_verifier_agree_in_both_directions(row, tmp_path):
     scanned, changed = html.redact_collection_dir(str(root))
     assert (scanned, changed) == (1, 1)
     body = _read(capture)
-    assert body == "hostname core1\n" + row["expect"] + "\n"
+    assert body == "hostname core1\n" + _current_expect(row) + "\n"
     assert _certified(root), "the verifier refused the producer's own output"
 
     if "notail" in row["flags"]:
@@ -290,7 +311,7 @@ def test_qualifier_shaped_secrets_lose_their_value_slot(row, tmp_path):
     ends in its VALUE. The word survives where the line also uses it as structure, so the measure is its
     whole-word count, which must drop; the verifier refuses the raw line and certifies the output."""
     out = html._redact_config_values(row["line"])
-    assert out == row["expect"]
+    assert out == _current_expect(row)
     for secret in row["secrets"]:
         assert _words(secret, out) < _words(secret, row["line"]), (secret, out)
     assert html._redact_config_values(out) == out
@@ -306,7 +327,9 @@ def test_structural_lines_are_certified(row, tmp_path):
         assert (scanned, changed) == (1, 0)
         assert _read(capture) == before
     else:
-        assert _read(capture) == "hostname core1\n" + row["expect"] + "\n"
+        assert _read(capture) == "hostname core1\n" + _current_expect(row) + "\n"
+        if _current_expect(row) == row["line"]:
+            assert (scanned, changed) == (1, 0), "a corrected public statement must require no rewrite"
     assert _certified(tmp_path), "a structural line was refused (false positive)"
 
 
@@ -527,7 +550,7 @@ def test_every_verifier_family_has_a_needle_and_every_needle_is_its_own():
     # Non-vacuity of the speed filter: each family still recognises a corpus line WITH the filter on.
     recognised = set()
     for row in MUST_REDACT:
-        for line in rv._cred_lines(row["expect"]):
+        for line in rv._cred_lines(_current_expect(row)):
             for family, _start, _value, _end in rv._cred_clauses(line, artifact=False):
                 recognised.add(family.name)
     assert recognised == set(names), f"families no corpus line exercises: {sorted(set(names) - recognised)}"
