@@ -615,8 +615,8 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
                                  for name, value in sorted(stage.items())}
                            for key, stage in stages.items()},
             }, sort_keys=True))
-        profile = _post_timer_admission_profile(cache, raw1, binding1, api._PROJECTION_VERSION,
-                                                Path(__file__).resolve().parents[1], phase)
+        profile = _post_timer_prefix_comparison(cache, raw1, binding1, api._PROJECTION_VERSION,
+                                               Path(__file__).resolve().parents[1], phase)
         with capsys.disabled():
             print("VLAN-CARRIAGE-ADMISSION-PROFILE " + json.dumps(profile, sort_keys=True))
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
@@ -1056,3 +1056,490 @@ def test_profile_rows_are_bounded_path_safe_and_formatting_never_hides_budget_fa
     assert "hidden-person" not in json.dumps(output) and output["complete_equivalence"] is True
     with pytest.raises(AssertionError):
         assert BUDGET["document_growth_ms"] + 1 <= BUDGET["document_growth_ms"]  # Original decision still fails.
+
+
+def _comparison_value(value):
+    """Immutable diagnostic metadata seal; neither a source digest nor a produced answer."""
+    from types import MappingProxyType
+
+    kind = type(value)
+    if kind in (dict, MappingProxyType):
+        return kind, tuple((_comparison_value(key), _comparison_value(item)) for key, item in value.items())
+    if kind in (tuple, list):
+        return kind, tuple(_comparison_value(item) for item in value)
+    if kind is float:
+        _profile_need(math.isfinite(value), "baseline non-finite metadata")
+        return kind, value.hex()
+    _profile_need(kind in (type(None), str, int, bool), "baseline metadata type")
+    return kind, value
+
+
+def _comparison_baseline(baseline):
+    slots = ("source", "section", "failed", "gaps", "offsets", "observations")
+    _profile_need(type(baseline) is uip._CarriageAdmission and uip._CarriageAdmission.__slots__ == slots,
+                  "comparison baseline owner")
+    references = tuple(getattr(baseline, name) for name in slots)
+    observations, records = [], []
+    for host, pair in baseline.observations.items():
+        _profile_need(type(pair) is tuple and len(pair) == 2, "baseline observation pair")
+        record, index = pair
+        observations.append((_comparison_value(host), _comparison_value(index)))
+        records.append(record)
+    metadata = tuple(_comparison_value(value) for value in
+                     (baseline.source, baseline.failed, baseline.gaps, baseline.offsets))
+    return references, metadata, type(baseline.observations), tuple(observations), tuple(records)
+
+
+def _comparison_baseline_unchanged(baseline, seal):
+    current = _comparison_baseline(baseline)
+    _profile_need(all(a is b for a, b in zip(current[0], seal[0])), "baseline slots replaced")
+    _profile_need(current[1:4] == seal[1:4], "baseline metadata mutated")
+    _profile_need(len(current[4]) == len(seal[4])
+                  and all(a is b for a, b in zip(current[4], seal[4])), "baseline source aliases replaced")
+
+
+def _comparison_restore(owner, flag, hook):
+    """Attempt every owned restoration; never short circuit on a first failure."""
+    errors = []
+    for restore, args in ((setattr, (uip, "carriage_admission", owner)),
+                          (setattr, (uip, "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED", flag)),
+                          (sys.setprofile, (hook,))):
+        try:
+            restore(*args)
+        except BaseException as error:
+            errors.append(error)
+    return errors
+
+
+def _post_timer_prefix_comparison(cache, raw, binding, version, repo, phase):
+    """Two unchanged one-call diagnostics, pinned across both; never acceptance latency."""
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not _timed_leg():
+        return None
+    _profile_need(phase is None, "measured phase still active")
+    _profile_need(type(raw) is bytes and type(binding) is dict, "raw subject type")
+    key = (*version, binding["sha256"])
+    entry = cache.entries.get(key)
+    _profile_need(entry is not None and entry.snapshot is not None and entry.carriage is not None, "cached subject")
+    snapshot, baseline, documents = entry.snapshot, entry.carriage, entry.documents
+    document_items, seal = tuple(documents.items()), _comparison_baseline(baseline)
+    document_values = _comparison_value(documents)  # Complete typed/order seal, not merely root object pins.
+    before = uip.bound_snapshot_source(snapshot)
+    _profile_need(before.get("source_bound") is True and type(before.get("sha256")) is str
+                  and type(binding.get("sha256")) is str and type(before.get("bytes")) is int
+                  and type(binding.get("bytes")) is int and before["sha256"] == binding["sha256"]
+                  and before["bytes"] == binding["bytes"] == len(raw), "complete source/raw binding")
+    owner, flag, hook = uip.carriage_admission, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED, sys.getprofile()
+    _profile_need(flag is True, "comparison requires declared prefix default")
+    _profile_need(hook is None or callable(hook), "comparison profile hook form")
+    names = ("_CARRIAGE_CPU_ROUTING_ENABLED", "_CARRIAGE_ROUTING_TOKEN_ENABLED",
+             "_CARRIAGE_ROLE_CELLS_ENABLED", "_CARRIAGE_LOOP_DISPATCH_ENABLED")
+    old_flags = tuple(getattr(uip, name) for name in names)
+    calls, results, reports, expected, latched = [], [], [], True, []
+
+    def retained():
+        _profile_need(cache.entries.get(key) is entry and entry.snapshot is snapshot
+                      and entry.carriage is baseline, "comparison cache subject replaced")
+        _profile_need(entry.documents is documents
+                      and _profile_same(tuple(documents), tuple(host for host, _doc in document_items))
+                      and all(documents[host] is doc for host, doc in document_items), "comparison documents replaced")
+        _profile_need(_comparison_value(documents) == document_values, "comparison document values mutated")
+        _comparison_baseline_unchanged(baseline, seal)
+        source = uip.bound_snapshot_source(snapshot)
+        _profile_need(source.get("source_bound") is True and _profile_same(source, before), "comparison source purity")
+        _profile_need(all(getattr(uip, name) is value for name, value in zip(names, old_flags)), "old flags changed")
+
+    def observed(value):
+        try:
+            actual = uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED
+            _profile_need(value is snapshot and actual is expected and len(calls) < 2 and len(calls) == len(reports),
+                          "comparison actual admission call")
+            calls.append(actual)
+            result = owner(value)  # EXACT genuine owner and subject, no fabricated diagnostic answer.
+            results.append(result)
+            return result
+        except BaseException as error:
+            if not latched:
+                latched.append(error)  # A renderer/helper may catch it; never let formatting erase a refusal.
+            raise
+
+    primary = None
+    try:
+        uip.carriage_admission = observed
+        for expected in (True, False):
+            retained()
+            uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED = expected
+            try:
+                report = _post_timer_admission_profile(cache, raw, binding, version, repo, phase)
+            except BaseException:
+                if latched:
+                    raise latched[0]
+                raise
+            if latched:
+                raise latched[0]  # OUTSIDE the unchanged helper's formatting-only fallback catch.
+            _profile_need(uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is expected
+                          and uip.carriage_admission is observed and len(calls) == len(reports) + 1
+                          and len(results) == len(calls), "comparison mode or real call changed")
+            retained()
+            _profile_need(type(report) is dict and report.get("complete_equivalence") is True
+                          and report.get("source_purity") is True and type(report.get("rows")) is list
+                          and len(report["rows"]) <= 40, "comparison original report")
+            reports.append(report)
+        _profile_need(calls == [True, False], "comparison call order")
+        _profile_admission_equal(snapshot, results[0], results[1])
+        retained()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        errors = _comparison_restore(owner, flag, hook)
+        if errors and primary is None and not latched:
+            raise errors[0]
+    if latched:
+        raise latched[0]
+    _profile_need(uip.carriage_admission is owner and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is flag
+                  and sys.getprofile() is hook, "comparison restoration")
+    retained()
+    return {"status": "DIAGNOSTIC_ONLY_AFTER_TIMERS", "order": calls, "complete_equivalence": True,
+            "source_purity": True, "not_acceptance_latency": True, "inclusive_not_additive": True,
+            "instrumented_profile": True, "row_limit_per_mode": 40, "row_limit_total": 80,
+            "profiles": [{"prefix_enabled": enabled, "profile": report}
+                         for enabled, report in zip(calls, reports)]}
+
+
+def test_prefix_comparison_uses_two_real_calls_same_subject_and_keeps_baseline(monkeypatch):
+    cache, raw, binding, version, subject, baseline = _profile_control_subject(monkeypatch)
+    owner, calls, hook = uip.carriage_admission, [], sys.getprofile()
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    output = _post_timer_prefix_comparison(cache, raw, binding, version, "declared-repository", None)
+    assert calls == [(subject, True), (subject, False)]
+    assert cache.entries[(*version, binding["sha256"])].carriage is baseline
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook and output["complete_equivalence"] is output["source_purity"] is True
+    assert output["order"] == [True, False] and output["row_limit_total"] == 80
+    assert all(0 < len(row["profile"]["rows"]) <= 40 for row in output["profiles"])
+
+
+@pytest.mark.parametrize("when", ["first", "second"])
+@pytest.mark.parametrize("damage", ["entry", "snapshot", "baseline", "metadata", "documents", "document-object",
+                                      "source", "result-index", "old-flag"])
+def test_prefix_comparison_refuses_real_pair_mutation_or_replacement(monkeypatch, when, damage):
+    from types import MappingProxyType
+
+    cache, raw, binding, version, subject, baseline = _profile_control_subject(monkeypatch)
+    owner, calls = uip.carriage_admission, []
+    entry = cache.entries[(*version, binding["sha256"])]
+
+    def genuine(value):
+        result = owner(value)
+        calls.append(value)
+        if len(calls) == (1 if when == "first" else 2):
+            if damage == "entry":
+                cache.entries[(*version, binding["sha256"])] = type(entry)(
+                    snapshot=entry.snapshot, carriage=entry.carriage, documents=entry.documents)
+            elif damage == "snapshot":
+                entry.snapshot = deepcopy(subject)
+            elif damage == "baseline":
+                entry.carriage = result
+            elif damage == "metadata":
+                baseline.source["comparison mutation"] = True
+                result.source["comparison mutation"] = True  # Old helper equality alone would bless both.
+            elif damage == "documents":
+                entry.documents = deepcopy(entry.documents)
+            elif damage == "document-object":
+                entry.documents[None] = deepcopy(entry.documents[None])
+            elif damage == "source":
+                subject["comparison mutation"] = True
+            elif damage == "result-index":
+                result.gaps = MappingProxyType(dict(reversed(tuple(result.gaps.items()))))
+                assert tuple(result.gaps) != tuple(baseline.gaps)
+            else:
+                monkeypatch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", False)
+        return result
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    monkeypatch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+
+
+@pytest.mark.parametrize("where", ["nonhosted", "nontimed", "active-phase", "fake-helper"])
+def test_prefix_comparison_gates_and_fake_reports_cannot_replace_genuine_calls(monkeypatch, where):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+    owner = uip.carriage_admission
+    if where == "nonhosted":
+        monkeypatch.setenv("GITHUB_ACTIONS", "false")
+    elif where == "nontimed":
+        monkeypatch.setattr(sys.modules[__name__], "_timed_leg", lambda: False)
+    elif where == "fake-helper":
+        monkeypatch.setattr(sys.modules[__name__], "_post_timer_admission_profile",
+                            lambda *_args: {"complete_equivalence": True, "source_purity": True, "rows": []})
+    if where in ("nonhosted", "nontimed"):
+        assert _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None) is None
+    else:
+        with pytest.raises(AssertionError, match="Admission diagnostic"):
+            _post_timer_prefix_comparison(cache, raw, binding, version, "repo",
+                                         "page" if where == "active-phase" else None)
+    assert uip.carriage_admission is owner and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+@pytest.mark.parametrize("error", [RuntimeError, TypeError])
+def test_prefix_comparison_restores_both_bindings_and_profile_after_real_error(monkeypatch, failed_mode, error):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, calls, hook = uip.carriage_admission, [], sys.getprofile()
+
+    def genuine(value):
+        calls.append(uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED)
+        if calls[-1] is failed_mode:
+            raise error("declared original admission error")
+        return owner(value)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    with pytest.raises(error) as raised:
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert raised.value.args == ("declared original admission error",)
+    assert calls == ([True] if failed_mode else [True, False])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+@pytest.mark.parametrize("primary_error", [True, False])
+def test_prefix_comparison_attempts_all_restorations_and_preserves_primary_error(monkeypatch, primary_error):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+    real_setattr, owner, events, hook = setattr, uip.carriage_admission, [], sys.getprofile()
+
+    def genuine(value):
+        if primary_error:
+            raise RuntimeError("primary admission refusal")
+        return owner(value)
+
+    def restoration(target, name, value):
+        events.append(name)
+        if name == "carriage_admission":
+            raise TypeError("declared owner restoration failure")
+        return real_setattr(target, name, value)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "setattr", restoration, raising=False)
+    try:
+        with pytest.raises(RuntimeError if primary_error else TypeError) as raised:
+            _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+        assert raised.value.args == (("primary admission refusal",) if primary_error
+                                     else ("declared owner restoration failure",))
+        assert events == ["carriage_admission", "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED"]
+        assert uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True and sys.getprofile() is hook
+    finally:
+        real_setattr(uip, "carriage_admission", owner)
+
+
+def test_prefix_comparison_safe_rendering_does_not_hide_real_equality_or_budget(monkeypatch):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+
+    def refused(*_args):
+        raise ValueError("/private/person/payload")
+
+    monkeypatch.setattr(sys.modules[__name__], "_render_profile_rows", refused)
+    output = _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert all(row["profile"]["render_status"] == "UNAVAILABLE" for row in output["profiles"])
+    assert "private/person" not in json.dumps(output) and output["complete_equivalence"] is True
+    with pytest.raises(AssertionError):
+        assert BUDGET["document_growth_ms"] + 1 <= BUDGET["document_growth_ms"]
+
+
+def test_prefix_comparison_does_not_repin_a_regenerated_second_helper_subject(monkeypatch):
+    from types import SimpleNamespace
+
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    helper, owner, calls = _post_timer_admission_profile, uip.carriage_admission, []
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    def replacement(*args):
+        report = helper(*args)
+        copied = deepcopy(subject)
+        cache.entries[(*version, binding["sha256"])] = SimpleNamespace(
+            snapshot=copied, carriage=owner(copied), documents={None: {"declared": "replacement document"}})
+        cache.carriage_source = lambda _raw, _digest: (
+            cache.entries[(*version, binding["sha256"])].snapshot,
+            cache.entries[(*version, binding["sha256"])].carriage)
+        return report
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_post_timer_admission_profile", replacement)
+    with pytest.raises(AssertionError, match="comparison cache subject replaced"):
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert calls == [(subject, True)]  # Refuse BEFORE a second helper can pin the replacement.
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+@pytest.mark.parametrize("subject_kind", ["wrong", "extra"])
+def test_prefix_comparison_renderer_cannot_swallow_an_observer_refusal(monkeypatch, failed_mode, subject_kind):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, renderer, saved, calls, hook = uip.carriage_admission, _render_profile_rows, [], [], sys.getprofile()
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    def hostile(profiler, repo):
+        if uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is failed_mode:
+            try:
+                uip.carriage_admission(deepcopy(subject) if subject_kind == "wrong" else subject)
+            except AssertionError as error:
+                saved.append(error)
+                raise  # The ORIGINAL helper catches it as formatting failure; the wrapper must not.
+        return renderer(profiler, repo)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_render_profile_rows", hostile)
+    with pytest.raises(AssertionError) as raised:
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert len(saved) == 1 and raised.value is saved[0]
+    assert calls == ([(subject, True)] if failed_mode else [(subject, True), (subject, False)])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+@pytest.mark.parametrize("subject_kind", ["wrong", "extra"])
+@pytest.mark.parametrize("secondary_error", [False, True])
+def test_prefix_comparison_catching_helper_cannot_relabel_first_observer_error(
+        monkeypatch, failed_mode, subject_kind, secondary_error):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, helper, saved, calls, hook = uip.carriage_admission, _post_timer_admission_profile, [], [], sys.getprofile()
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    def catching(*args):
+        report = helper(*args)  # GENUINE first/second owner call and complete old-helper assertions.
+        if uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is failed_mode:
+            try:
+                uip.carriage_admission(deepcopy(subject) if subject_kind == "wrong" else subject)
+            except AssertionError as error:
+                saved.append(error)
+            if secondary_error:
+                raise TypeError("secondary helper error must not replace original refusal")
+        return report
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_post_timer_admission_profile", catching)
+    with pytest.raises(AssertionError) as raised:
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert len(saved) == 1 and raised.value is saved[0]
+    assert calls == ([(subject, True)] if failed_mode else [(subject, True), (subject, False)])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+def test_prefix_comparison_catching_helper_cannot_mask_genuine_owner_error(monkeypatch, failed_mode):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, helper, calls, hook = uip.carriage_admission, _post_timer_admission_profile, [], sys.getprofile()
+    declared = RuntimeError("declared genuine admission refusal")
+
+    def genuine(value):
+        calls.append(uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED)
+        if calls[-1] is failed_mode:
+            raise declared
+        return owner(value)
+
+    def catching(*args):
+        try:
+            return helper(*args)
+        except RuntimeError as error:
+            assert error is declared
+            return {"complete_equivalence": True, "source_purity": True, "rows": []}
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_post_timer_admission_profile", catching)
+    with pytest.raises(RuntimeError) as raised:
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert raised.value is declared and raised.value.args == ("declared genuine admission refusal",)
+    assert calls == ([True] if failed_mode else [True, False])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+def test_prefix_comparison_latches_a_caught_third_call_during_owned_cleanup(monkeypatch):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, restore, calls, saved, hook = uip.carriage_admission, _comparison_restore, [], [], sys.getprofile()
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    def cleanup(original_owner, flag, original_hook):
+        try:
+            uip.carriage_admission(subject)  # The two real helper calls are already complete.
+        except AssertionError as error:
+            saved.append(error)
+        return restore(original_owner, flag, original_hook)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_comparison_restore", cleanup)
+    with pytest.raises(AssertionError) as raised:
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert len(saved) == 1 and raised.value is saved[0]
+    assert calls == [(subject, True), (subject, False)]
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+def test_prefix_comparison_refuses_in_place_document_values_after_real_owner_call(monkeypatch, failed_mode):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, calls, hook = uip.carriage_admission, [], sys.getprofile()
+    entry = cache.entries[(*version, binding["sha256"])]
+    documents, document = entry.documents, entry.documents[None]
+
+    def genuine(value):
+        result = owner(value)
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        if calls[-1][1] is failed_mode:
+            document["declared"] = "mutated in place by real owner callback"
+        return result
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    with pytest.raises(AssertionError, match="comparison document values mutated"):
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert entry.documents is documents and documents[None] is document
+    assert calls == ([(subject, True)] if failed_mode else [(subject, True), (subject, False)])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook
+
+
+@pytest.mark.parametrize("failed_mode", [True, False])
+def test_prefix_comparison_refuses_in_place_document_values_during_real_rendering(monkeypatch, failed_mode):
+    cache, raw, binding, version, subject, _baseline = _profile_control_subject(monkeypatch)
+    owner, renderer, calls, hook = uip.carriage_admission, _render_profile_rows, [], sys.getprofile()
+    entry = cache.entries[(*version, binding["sha256"])]
+    documents, document = entry.documents, entry.documents[None]
+
+    def genuine(value):
+        calls.append((value, uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED))
+        return owner(value)
+
+    def hostile(profiler, repo):
+        if uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is failed_mode:
+            document["declared"] = "mutated in place after old-helper equality/source checks"
+        return renderer(profiler, repo)
+
+    monkeypatch.setattr(uip, "carriage_admission", genuine)
+    monkeypatch.setattr(sys.modules[__name__], "_render_profile_rows", hostile)
+    with pytest.raises(AssertionError, match="comparison document values mutated"):
+        _post_timer_prefix_comparison(cache, raw, binding, version, "repo", None)
+    assert entry.documents is documents and documents[None] is document
+    assert calls == ([(subject, True)] if failed_mode else [(subject, True), (subject, False)])
+    assert uip.carriage_admission is genuine and uip._CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+    assert sys.getprofile() is hook

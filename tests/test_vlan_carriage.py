@@ -3070,20 +3070,21 @@ def test_native_role_prefix_keeps_spoofed_key_lookup_in_original_helper_frame(mo
 
     binding_owner, admission_owner = uip.carriage_cable_binding, uip.carriage_observation_admission
     real_type, outcomes, domains = type, [], []
+
+    class ForeignHost(str):
+        def __hash__(self):
+            return str.__hash__(self)
+
+        def __eq__(self, other):
+            caller = sys._getframe(1).f_code.co_name
+            trace.append((caller, str(self), real_type(other), str(other)))
+            if caller == "empty_identity" and fault is not None:
+                raise fault("original empty-identity lookup callback")
+            return str.__eq__(self, other)
+
     for enabled in (False, True):
         snap, trace, changed, callbacks = _role_cell_subject(), [], [], []
         end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
-
-        class ForeignHost(str):
-            def __hash__(self):
-                return str.__hash__(self)
-
-            def __eq__(self, other):
-                caller = sys._getframe(1).f_code.co_name
-                trace.append((caller, str(self), real_type(other), str(other)))
-                if caller == "empty_identity" and fault is not None:
-                    raise fault("original empty-identity lookup callback")
-                return str.__eq__(self, other)
 
         def spoof(value):
             return str if real_type(value) is ForeignHost else real_type(value)
