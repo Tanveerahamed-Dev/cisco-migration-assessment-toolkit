@@ -10,6 +10,8 @@ in-memory bundle fixture and real STP/carriage owners; they make no additional C
 from copy import deepcopy
 from dataclasses import asdict
 import json
+import math
+import marshal
 
 import pytest
 
@@ -2009,3 +2011,276 @@ def test_caller_loop_gap_extension_fallback_preserves_real_witness_order_and_hoo
         traces.append(tuple(trace))
         outputs.append(found)
     assert traces[0] == traces[1] and outputs[0] == outputs[1] == gaps
+
+
+# Literal B0 mechanism oracle; no alternative producer/admission algorithm.
+def _literal_b0_key_reference(record):
+    """Optional complete current value key, never an observation-validity claim or a persistent receipt.
+
+    Keep the original exact finite plain-JSON eligibility/count/depth/codepoint limits. Lazy iterator frames
+    count every value/container occurrence (including repeated aliases), never bulk-enqueue a wide container.
+    Full fresh same-process marshal-v2 bytes distinguish value types; dictionary order changes conservatively
+    miss reuse. Every noneligible/encoding/resource case retains the unchanged owner-admission path.
+    """
+    if type(record) is not dict:
+        return None
+    nodes, characters = 0, 0
+    frames = [(iter((record,)), 0)]
+    try:
+        while frames:
+            iterator, depth = frames[-1]
+            try:
+                node = next(iterator)
+            except StopIteration:
+                frames.pop()
+                continue
+            nodes += 1
+            if nodes > 65_536 or depth > 32:
+                return None
+            kind = type(node)
+            if kind is dict:
+                for key in node:
+                    if type(key) is not str:
+                        return None
+                    characters += len(key)
+                    if characters > 1_000_000:
+                        return None
+                frames.append((iter(node.values()), depth + 1))
+            elif kind is list:
+                frames.append((iter(node), depth + 1))
+            elif kind is str:
+                characters += len(node)
+                if characters > 1_000_000:
+                    return None
+            elif node is None or kind in (bool, int):
+                continue
+            elif kind is float and math.isfinite(node):
+                continue
+            else:
+                return None
+    except (TypeError, ValueError, RuntimeError, RecursionError, OverflowError, MemoryError):
+        return None
+    try:
+        encoded = marshal.dumps(record, 2)
+    except Exception:
+        # An optional stdlib encoder/audit refusal (e.g. OSError) cannot replace full owner admission.
+        # Process-control BaseExceptions intentionally propagate rather than being hidden as a cache miss.
+        return None
+    # This only bounds optional retained data. It never limits a source the full owner may admit.
+    return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
+
+
+def test_withdrawn_default_selects_literal_bf33_once_and_keeps_candidate_controls_live(monkeypatch):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, calls = _cpu_routing_subject(), []
+    original = uip._carriage_bf33_rows
+
+    def literal(*args):
+        positions, allowance_helper = args[2], args[-1]
+        assert all(type(position) is tuple and len(position) == 7 for position in positions)
+        assert allowance_helper.__code__.co_argcount == 3
+        calls.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(uip, "_carriage_bf33_rows", literal)
+    monkeypatch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+    monkeypatch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+    assert uip._CARRIAGE_LOOP_DISPATCH_ENABLED is False
+    default = _cpu_routing_outputs(snap)
+    assert calls == [True]
+    calls.clear()
+    with monkeypatch.context() as candidate:
+        candidate.setattr(uip, "_CARRIAGE_LOOP_DISPATCH_ENABLED", True)
+        assert _cpu_routing_outputs(snap) == default
+    assert calls == []  # The candidate18 lane remains real, not a disabled-versus-disabled comparison.
+
+
+def _key_boundary_record(case):
+    if case == "ancestor-resume":
+        return {"first": [[], {"child": [1, "two", {}]}, False], "later": {"last": [3, None]}}
+    if case.startswith("depth-"):
+        _name, layers, leaf = case.split("-")
+        value = [] if leaf == "empty" else 7
+        for _ in range(int(layers)):
+            value = [value]
+        return {"nested": value}
+    if case.startswith("nodes-"):
+        return {"items": [0] * int(case.split("-")[1])}
+    if case.startswith("aliases-"):
+        shared = [1, 2]
+        return {"items": [shared] * int(case.split("-")[1])}
+    if case.startswith("text-"):
+        return {"k": "\U0001f642" * int(case.split("-")[1])}
+    if case == "cycle":
+        record = {}
+        record["again"] = record
+        return record
+    if case == "wide-lazy":
+        return {"items": [0] * 100000}
+    return {"value": {"nan": float("nan"), "positive-infinity": float("inf"),
+                      "negative-infinity": float("-inf")}[case]}
+
+
+@pytest.mark.parametrize("case,accepted", [
+    ("ancestor-resume", True), ("depth-31-scalar", True), ("depth-32-scalar", False),
+    ("depth-31-empty", True), ("depth-32-empty", False),
+    ("nodes-65534", True), ("nodes-65535", False),
+    ("aliases-21844", True), ("aliases-21845", False),
+    ("text-999999", True), ("text-1000000", False), ("cycle", False), ("wide-lazy", False),
+    ("nan", False), ("positive-infinity", False), ("negative-infinity", False),
+])
+def test_complete_key_for_iteration_matches_literal_node_depth_text_and_alias_limits(monkeypatch, case, accepted):
+    from cisco_toolkit import ui_projection as uip
+
+    record = _key_boundary_record(case)
+    encoder_owner, calls = marshal.dumps, []
+
+    def encoder(current, version):
+        assert current is record and version == 2
+        calls.append(True)
+        return encoder_owner(current, version)
+
+    monkeypatch.setattr(marshal, "dumps", encoder)
+    expected = _literal_b0_key_reference(record)
+    assert uip._carriage_observation_key(record) == expected
+    assert (expected is not None) is accepted
+    assert calls == ([True, True] if accepted else [])
+
+
+@pytest.mark.parametrize("kind", ["dict", "list", "str", "int", "buffer", "key"])
+def test_complete_key_rejects_nonplain_before_any_encoder_or_buffer_protocol(monkeypatch, kind):
+    from cisco_toolkit import ui_projection as uip
+
+    buffer_calls, encoder_calls = [], []
+
+    class ForeignDict(dict):
+        pass
+
+    class ForeignList(list):
+        pass
+
+    class ForeignStr(str):
+        pass
+
+    class ForeignInt(int):
+        pass
+
+    class Buffer:
+        def __buffer__(self, flags):
+            buffer_calls.append(flags)
+            raise AssertionError("eligibility invoked foreign buffer protocol")
+
+    values = {"dict": ForeignDict(x=1), "list": ForeignList([1]), "str": ForeignStr("value"),
+              "int": ForeignInt(1), "buffer": Buffer()}
+    record = {ForeignStr("key"): 1} if kind == "key" else {"value": values[kind]}
+
+    def forbidden(*args):
+        encoder_calls.append(args)
+        raise AssertionError("nonplain value reached full encoder")
+
+    monkeypatch.setattr(marshal, "dumps", forbidden)
+    assert _literal_b0_key_reference(record) is None
+    assert uip._carriage_observation_key(record) is None
+    assert encoder_calls == buffer_calls == []
+
+
+@pytest.mark.parametrize("effect", ["ancestor-mutation", "outside-catch-oserror"])
+def test_complete_key_resumes_the_real_parent_and_preserves_walk_exception_domain(monkeypatch, effect):
+    from cisco_toolkit import ui_projection as uip
+
+    finite_owner, outputs, traces = math.isfinite, [], []
+    for checker in (_literal_b0_key_reference, uip._carriage_observation_key):
+        record, calls = {"nested": [0.5], "after": 1}, []
+
+        def finite(value):
+            genuine = finite_owner(value)
+            calls.append(value)
+            if effect == "ancestor-mutation":
+                record["added-after-child"] = True  # Same already-started parent dict iterator MUST resume.
+            else:
+                raise OSError("outside the original walk catch")
+            return genuine
+
+        def forbidden(*_args):
+            raise AssertionError("failed walk reached encoder")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(math, "isfinite", finite)
+            patch.setattr(marshal, "dumps", forbidden)
+            if effect == "outside-catch-oserror":
+                with pytest.raises(OSError) as raised:
+                    checker(record)
+                outputs.append((type(raised.value), raised.value.args))
+            else:
+                outputs.append(checker(record))
+        traces.append(calls)
+    assert outputs[0] == outputs[1] and traces == [[0.5], [0.5]]
+
+
+@pytest.mark.parametrize("fault", ["type-error", "memory-error", "audit-oserror", "nonbytes", "over-byte-cap"])
+def test_complete_key_keeps_original_optional_full_encoder_failures(monkeypatch, fault):
+    from cisco_toolkit import ui_projection as uip
+
+    encoder_owner, calls = marshal.dumps, []
+    record = {"first": [1, {"last": "complete"}], "after": [False, -0.0]}
+
+    def encoder(value, version):
+        assert value is record and version == 2
+        actual = encoder_owner(value, version)  # The real encoder always reads the WHOLE current value first.
+        assert type(actual) is bytes
+        calls.append(True)
+        if fault == "nonbytes":
+            return bytearray(actual)
+        if fault == "over-byte-cap":
+            return b"x" * (8 * 1024 * 1024 + 1)
+        raise {"type-error": TypeError, "memory-error": MemoryError, "audit-oserror": OSError}[fault]("optional encoding")
+
+    monkeypatch.setattr(marshal, "dumps", encoder)
+    assert _literal_b0_key_reference(record) is None and uip._carriage_observation_key(record) is None
+    assert calls == [True, True]
+
+
+def test_complete_key_fresh_full_encoding_preserves_type_order_and_late_host_mutation(monkeypatch):
+    from cisco_toolkit import ui_projection as uip
+
+    encoder_owner, calls, keys = marshal.dumps, [], []
+    record = {"first": [True, 1, 0.0, -0.0], "nested": {"last": "before"}}
+
+    def encoder(current, version):
+        assert current is record and version == 2
+        calls.append(current["nested"]["last"])
+        return encoder_owner(current, version)
+
+    with monkeypatch.context() as encoding:
+        encoding.setattr(marshal, "dumps", encoder)
+        for value in ("before", "changed"):
+            record["nested"]["last"] = value
+            expected = _literal_b0_key_reference(record)
+            keys.append(uip._carriage_observation_key(record))
+            assert keys[-1] == expected
+    assert keys[0] != keys[1] and calls == ["before", "before", "changed", "changed"]
+    assert uip._carriage_observation_key({"n": False}) != uip._carriage_observation_key({"n": 0})
+    assert uip._carriage_observation_key({"n": 0.0}) != uip._carriage_observation_key({"n": -0.0})
+    assert uip._carriage_observation_key({"a": 1, "b": 2}) != uip._carriage_observation_key({"b": 2, "a": 1})
+
+
+@pytest.mark.parametrize("damage", ["none", "later-host-state", "extra-field", "key-order"])
+def test_complete_key_literal_oracle_keeps_genuine_source_current_full_outputs(monkeypatch, damage):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, outputs = _cpu_routing_subject(), []
+    first = _cpu_routing_outputs(snap)
+    if damage == "later-host-state":
+        snap["stp_topology_observations"][B] = _stp({30: [("Po10", "Desg", "FWD")]})
+    elif damage == "extra-field":
+        snap["stp_topology_observations"][B]["unexpected"] = 1
+    elif damage == "key-order":
+        snap["stp_topology_observations"][B] = dict(reversed(tuple(snap["stp_topology_observations"][B].items())))
+    current = _cpu_routing_outputs(snap)
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_carriage_observation_key", _literal_b0_key_reference)
+        outputs.append(_cpu_routing_outputs(snap))
+    assert outputs == [current]
+    if damage in ("later-host-state", "extra-field"):
+        assert current != first
