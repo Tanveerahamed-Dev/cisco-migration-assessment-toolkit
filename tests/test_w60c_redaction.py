@@ -22,13 +22,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = ROOT / "tests/fixtures/w60c_redaction_corpus.json"
 CORPUS = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 CURRENT_MAIN = "0dc2f5d6f4d122ef74f8098e173e2be0bc2c902f"
+LATEST_MAIN = "dbcc2c81a6fdf29ec958b610c8f8f3c060c171b3"
 ROUND3 = "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
 PRE_P26 = "8b9cf50566649fac97c954beb26411a450dbb93d"
 ROWS = CORPUS["rows"]
 FINDINGS = frozenset({"P1-3", "P1-4", "P2-5", "P2-6"})
 ACTIVE_FINDINGS = FINDINGS - {"P2-6"}
 VIEW_FIXES = FINDINGS | {"P2-5-carrier", "P2-5-operand-boundary", "P2-6-defer-revert",
-                        "P1-4-continuation-closure"}
+                        "P1-4-continuation-closure", "P2-5-decoded-carrier"}
 _HISTORICAL_FINDINGS = frozenset({"R4-P1-directive", "R4-P1-prefix", "R4-P2-executable", "R4-P2-field"})
 HISTORICAL_ROWS = [row for row in w60b.ROWS if row["id"].startswith("r4:")
                    and row["finding"] in _HISTORICAL_FINDINGS]
@@ -109,8 +110,26 @@ def test_w60c_exact_private_counter_preserves_boundaries_and_detects_prefix_only
     assert _slot_count(secret, text) == count
 
 
+def test_w60c_round2_retains_exact_reviewer_schematics_and_independent_variants():
+    rows = [row for row in ROWS if row["id"].startswith("r2:")]
+    assert len(rows) == 34 and sum(row["mode"] == "must_redact" for row in rows) == 24
+    exact = {row["id"]: row for row in rows if row["id"].startswith("r2:review-")}
+    assert exact["r2:review-shell-executable"]["text"] == (
+        "s'h' -c \"snmp''get -c EXAMPLE-PRIVATE EXAMPLE-HOST\"\n")
+    assert exact["r2:review-shell-executable"]["expect"] == "s'h' -c \"<redacted>\"\n"
+    assert exact["r2:review-shell-option"]["text"] == (
+        "sh -'c' \"snmp''get -'c' EXAMPLE-PRIVATE EXAMPLE-HOST\"\n")
+    assert exact["r2:review-shell-option"]["expect"] == "sh -'c' \"<redacted>\"\n"
+    assert sum(row["id"].startswith("r2:carrier-") for row in rows) == 22
+    assert sum(row["id"].startswith("r2:control-") for row in rows) == 10
+    assert all(row["review"] == "PR660-comment6119252180" for row in rows)
+    assert CORPUS["round2_review"]["comment_id"] == 6119252180
+    assert CORPUS["round2_review"]["independently_authored_private_variants"] == 22
+
+
 def test_w60c_corpus_has_each_scoped_family_and_fresh_positive_negative_controls():
     assert CORPUS["current_main_ref"] == CURRENT_MAIN and CORPUS["round3_ref"] == ROUND3
+    assert CORPUS["latest_main_ref"] == LATEST_MAIN
     assert set(CORPUS["scope"]) == set(CORPUS["scope_requested"]) == FINDINGS
     assert set(CORPUS["active_scope"]) == ACTIVE_FINDINGS and CORPUS["values_policy"]
     deferred = {row["finding"]: row for row in CORPUS["deferred"]}
@@ -120,9 +139,9 @@ def test_w60c_corpus_has_each_scoped_family_and_fresh_positive_negative_controls
     residual = [row for row in w60b.ROWS if row["id"] == deferred["P3-7"]["immutable_legacy_row"]]
     assert len(residual) == 1 and "hostname <redacted>" in residual[0]["expect"]
     assert len({row["id"] for row in ROWS}) == len(ROWS)
-    assert len(ROWS) == 154 and sum(row["mode"] == "must_redact" for row in ROWS) == 112
+    assert len(ROWS) == 188 and sum(row["mode"] == "must_redact" for row in ROWS) == 136
     assert len(VERIFIER_CONTROLS) == 7 and len(HISTORICAL_ROWS) == 18 and len(HISTORICAL_VERIFIER_CONTROLS) == 6
-    assert len(ACTIVE_ROWS) == 126 and len(ACTIVE_HISTORICAL_ROWS) == 13
+    assert len(ACTIVE_ROWS) == 160 and len(ACTIVE_HISTORICAL_ROWS) == 13
     assert len(DEFERRED_ROWS) == 28 and len(DEFERRED_HISTORICAL_ROWS) == 5
     assert len(ACTIVE_VERIFIER_CONTROLS) == 5 and len(ACTIVE_HISTORICAL_VERIFIER_CONTROLS) == 5
     assert len(DEFERRED_VERIFIER_CONTROLS) == 2 and len(DEFERRED_HISTORICAL_VERIFIER_CONTROLS) == 1
@@ -229,11 +248,11 @@ def archival_replay(tmp_path_factory):
     assert all(len(ref) == 40 and all(char in "0123456789abcdef" for char in ref) for ref in fix_refs.values())
     for ref in fix_refs.values():
         subprocess.run(["git", "merge-base", "--is-ancestor", ref, "HEAD"], cwd=ROOT, check=True, timeout=30)
-    archive_refs = list(dict.fromkeys([CURRENT_MAIN, ROUND3, *fix_refs.values()]))
+    archive_refs = list(dict.fromkeys([CURRENT_MAIN, LATEST_MAIN, ROUND3, *fix_refs.values()]))
     sources = {ref: w60b._archive(ref, scratch) for ref in archive_refs}
     sources["candidate"] = ROOT
     results = {}
-    for ref in (CURRENT_MAIN, ROUND3, "candidate"):
+    for ref in (CURRENT_MAIN, LATEST_MAIN, ROUND3, "candidate"):
         output_path = scratch / (ref + ".json")
         subprocess.run([sys.executable, "-I", "-B", "-c", w60b._BATCH_SCRIPT, str(sources[ref]), str(case_path),
                         str(scratch / (ref + "-captures")), str(output_path)],
@@ -244,7 +263,8 @@ def archival_replay(tmp_path_factory):
     return cases, results, sources, scratch
 
 
-@pytest.mark.parametrize("ref", [CURRENT_MAIN, ROUND3], ids=["current-main-0dc2f5d6", "round3"])
+@pytest.mark.parametrize("ref", [CURRENT_MAIN, LATEST_MAIN, ROUND3],
+                         ids=["original-main-0dc2f5d6", "latest-main-dbcc2c81", "round3"])
 def test_w60c_all_legacy_and_fresh_cases_have_zero_archive_regressions(ref, archival_replay):
     cases, results, _sources, _scratch = archival_replay
     removed_slots = 0
@@ -293,7 +313,7 @@ def test_w60c_inherited_source_review_probe_emits_runtime_evidence(archival_repl
     """
     _cases, results, _sources, _scratch = archival_replay
     for probe in CORPUS["source_review_probe_inputs"]:
-        for ref in (CURRENT_MAIN, ROUND3, "candidate"):
+        for ref in (CURRENT_MAIN, LATEST_MAIN, ROUND3, "candidate"):
             result = results[ref]["w60c-review-probe:" + probe["id"]]
             raw_count = sum(_slot_count(secret, probe["text"]) for secret in probe["secrets"])
             remaining = sum(_slot_count(secret, result["output"]) for secret in probe["secrets"])
@@ -329,7 +349,8 @@ def test_w60c_each_finding_fix_and_final_head_keep_exact_main_views(archival_rep
         path = scratch / Path(name).name
         path.write_bytes(raw)
         inputs.append(str(path))
-    view_refs = {"current-main": CURRENT_MAIN, **CORPUS["fix_commit_refs"], "final-head": "candidate"}
+    view_refs = {"current-main": CURRENT_MAIN, "latest-main": LATEST_MAIN,
+                 **CORPUS["fix_commit_refs"], "final-head": "candidate"}
     outputs = {}
     for label, ref in view_refs.items():
         destination = scratch / (label + "-views")

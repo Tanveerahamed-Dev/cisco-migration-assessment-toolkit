@@ -31,7 +31,8 @@
     "P2-5-carrier": "0242751d2b0763770e80b248a61212a9eae731ec",
     "P2-5-operand-boundary": "fabd9144f3dbf7d5d90098d4acf6ae2154793371",
     "P2-6-defer-revert": "b8c7d215aa0592b32dceecb549492ee16e47c747",
-    "P1-4-continuation-closure": "ab24e774167395fccd2e60b6c54ccfcf631e2246"
+    "P1-4-continuation-closure": "ab24e774167395fccd2e60b6c54ccfcf631e2246",
+    "P2-5-decoded-carrier": "8bea6581a2c853beeb0222d164a752efa214f2ca"
   },
   "view_sha256": {
     "snapshot.json": "6fb01cc4781e1db9b637722f2a6e1e9dbe6724a3140e007306baffd27f150445",
@@ -1916,6 +1917,418 @@
       "structural": [],
       "review": "PR656-comment6112757283",
       "note": "Physically canonical output markers in proven public operand slots must not create a new private carrier witness; actual operator boundaries preserve following public command syntax."
+    },
+    {
+      "id": "r2:review-shell-executable",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -c \"snmp''get -c EXAMPLE-PRIVATE EXAMPLE-HOST\"\n",
+      "secrets": [
+        "EXAMPLE-PRIVATE"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Exact independent reviewer schematic; valid shell executable quote fragments must reach the existing owned outer -c operand.",
+      "expect": "s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:review-shell-option",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -'c' \"snmp''get -'c' EXAMPLE-PRIVATE EXAMPLE-HOST\"\n",
+      "secrets": [
+        "EXAMPLE-PRIVATE"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Exact independent reviewer schematic; the shell and credential option words are quoted, so neither literal -c fast-path witness is present.",
+      "expect": "sh -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-middle-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1001 EXAMPLE-HOST-1001\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1001"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-middle-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1002 EXAMPLE-HOST-1002\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1002"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-middle-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\"h\" -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1003 EXAMPLE-HOST-1003\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1003"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\"h\" -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-middle-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\"h\" -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1004 EXAMPLE-HOST-1004\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1004"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\"h\" -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-escaped-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\\h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1005 EXAMPLE-HOST-1005\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1005"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\\h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-escaped-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\\h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1006 EXAMPLE-HOST-1006\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1006"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\\h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-prefix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'s'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1007 EXAMPLE-HOST-1007\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1007"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "'s'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-prefix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'s'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1008 EXAMPLE-HOST-1008\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1008"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "'s'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-prefix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "\"s\"h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1009 EXAMPLE-HOST-1009\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1009"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "\"s\"h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-prefix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "\"s\"h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1010 EXAMPLE-HOST-1010\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1010"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "\"s\"h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-fragment-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba's'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1011 EXAMPLE-HOST-1011\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1011"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba's'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-fragment-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba's'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1012 EXAMPLE-HOST-1012\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1012"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba's'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-suffix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bas'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1013 EXAMPLE-HOST-1013\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1013"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "bas'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-suffix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bas'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1014 EXAMPLE-HOST-1014\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1014"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "bas'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-escaped-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba\\s\\h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1015 EXAMPLE-HOST-1015\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1015"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba\\s\\h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-escaped-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba\\s\\h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1016 EXAMPLE-HOST-1016\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1016"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba\\s\\h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-sh-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/bin/s'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1017 EXAMPLE-HOST-1017\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1017"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/bin/s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-sh-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/bin/s'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1018 EXAMPLE-HOST-1018\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1018"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/bin/s'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-bash-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/usr/bin/ba's'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1019 EXAMPLE-HOST-1019\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1019"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/usr/bin/ba's'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-bash-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/usr/bin/ba's'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1020 EXAMPLE-HOST-1020\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1020"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/usr/bin/ba's'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-sh-option-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1021 EXAMPLE-HOST-1021\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1021"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored EXAMPLE-only option spelling. Both outer and inner community option lack the contiguous -c bytes, while the decoded words are valid.",
+      "expect": "sh -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-sh-option-escaped",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -\\c \"snmp''get -\\c EXAMPLE-R2-PRIVATE-1022 EXAMPLE-HOST-1022\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1022"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored EXAMPLE-only option spelling. Both outer and inner community option lack the contiguous -c bytes, while the decoded words are valid.",
+      "expect": "sh -\\c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:control-echo-literal",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "echo s'h' -c \"snmp''get -c EXAMPLE-PUBLIC-1031 EXAMPLE-HOST-1031\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-lookalike-executable",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h'-helper -c \"snmp''get -c EXAMPLE-PUBLIC-1032 EXAMPLE-HOST-1032\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-singlequote-literal-backslash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'s\\h' -c \"snmp''get -c EXAMPLE-PUBLIC-1033 EXAMPLE-HOST-1033\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-doublequote-literal-backslash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "\"s\\h\" -c \"snmp''get -c EXAMPLE-PUBLIC-1034 EXAMPLE-HOST-1034\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-executable",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h' -c \"snmp''get -c <redacted> EXAMPLE-HOST-1035\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-option",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -'c' \"snmp''get -'c' <redacted> EXAMPLE-HOST-1036\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-bash-path",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "/usr/bin/ba's'h -\\c \"snmp''get -\\c '<redacted>' EXAMPLE-HOST-1037\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-attached-marker",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s\\h -c \"snmp''get '-c<redacted>';echo EXAMPLE-PUBLIC-1038\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-public-protocol",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h' -c \"snmp''get -a SHA EXAMPLE-HOST-1039\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-public-protocol-bash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "/bin/ba's'h -'c' \"snmp''get -x AES EXAMPLE-HOST-1040\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
     }
   ],
   "verifier_only_controls": [
@@ -2028,5 +2441,17 @@
     "P1-3",
     "P1-4",
     "P2-5"
-  ]
+  ],
+  "latest_main_ref": "dbcc2c81a6fdf29ec958b610c8f8f3c060c171b3",
+  "round2_review": {
+    "comment_id": 6119252180,
+    "reviewed_head": "0da7628aaa01c26b8f5b7dac35a51a768a52c2e7",
+    "exact_schematic_ids": [
+      "r2:review-shell-executable",
+      "r2:review-shell-option"
+    ],
+    "independently_authored_private_variants": 22,
+    "preservation_controls": 10,
+    "scope": "Producer literal guard only; verifier guard and all earlier assertions stay unchanged. The comment reports22 reviewer diagnostic variants without publishing that full private battery; these22 corpus variants are independently authored, not claimed identical to that battery."
+  }
 }
