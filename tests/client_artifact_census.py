@@ -2478,7 +2478,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                         index == 0 or tokens[index - 1].value not in {".", "?.", "["}
                     ):
                         continue
-                    if index in jsx_downloads:
+                    if token.in_tag:
                         expression = _jsx_filename_expression(text, tokens, after + 1)
                     else:
                         expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)

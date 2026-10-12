@@ -1112,6 +1112,19 @@ def test_jsx_and_html_quoted_text_do_not_receive_javascript_escape_semantics(tmp
     assert r"topology\x2esvg" in {template for _location, _expression, template in census.download_names(tmp_path)}
 
 
+@pytest.mark.parametrize("attribute", ["download", "exportFilename"])
+@pytest.mark.parametrize("prefix,suffix", [("receipt", ".comparison.json"), ("private", ".json")])
+def test_every_jsx_filename_exit_unwraps_expressions_without_a_name_exemption(tmp_path, attribute, prefix, suffix):
+    _write(tmp_path, "new-root/view.tsx",
+           f'const View = () => <Widget {attribute}={{`{prefix}-${{id}}{suffix}`}} />;')
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == [prefix + "-0" + suffix]
+    artifact_class = dv.client_artifact_class("Downloads/" + prefix + "-0" + suffix)
+    assert _repository_gate()._client_artifact_class("Downloads/" + prefix + "-0" + suffix) == artifact_class
+    assert (artifact_class is None) == (prefix == "private")
+    assert ("new-root/view.tsx", names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
 def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
     _write(tmp_path, "cisco_toolkit/explorer.html",
            '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'
