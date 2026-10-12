@@ -851,6 +851,118 @@ def test_single_native_download_attribute_and_separate_elements_keep_their_names
         assert _repository_gate()._client_artifact_class("Downloads/" + template) is not None
 
 
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("method,arguments", [
+    ("setAttribute", '"{attribute}", "{filename}"'),
+    ("setAttributeNS", 'null, "{attribute}", "{filename}"'),
+])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+@pytest.mark.parametrize("access", ["dot", "bracket", "optional"])
+def test_html_attribute_setters_retain_ascii_case_alias_names(tmp_path, attribute, method, arguments, filename, access):
+    receiver = f'a["{method}"]' if access == "bracket" else f"a.{method}"
+    opening = "?.(" if access == "optional" else "("
+    _write(tmp_path, "new-root/export.js", receiver + opening
+           + arguments.format(attribute=attribute, filename=filename) + ");")
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == [filename]
+    artifact_class = dv.client_artifact_class("Downloads/" + filename)
+    assert _repository_gate()._client_artifact_class("Downloads/" + filename) == artifact_class
+    assert (artifact_class is None) == (filename == "private.json")
+    assert ("new-root/export.js", names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("force", ["", ", true", ", false", ", enabled"])
+def test_download_attribute_toggles_keep_implicit_names_and_never_use_force_as_a_filename(tmp_path, attribute, force):
+    _write(tmp_path, "new-root/export.js", f'a.toggleAttribute("{attribute}"{force});')
+    assert census.download_names(tmp_path) == [("new-root/export.js:1", "<implicit browser filename>", None)]
+    assert ("new-root/export.js", "<implicit browser filename>") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("method,arguments", [
+    ("setAttribute", "'{attribute}', 'private.json'"),
+    ("setAttributeNS", "null, '{attribute}', 'private.json'"),
+])
+@pytest.mark.parametrize("handler", ["onclick", "href"])
+def test_inline_html_handlers_keep_case_alias_setter_obligations(tmp_path, attribute, method, arguments, handler):
+    prefix = "javascript:" if handler == "href" else ""
+    markup = f'<a {handler}="{prefix}a.{method}({arguments.format(attribute=attribute)})">Save</a>'
+    _write(tmp_path, "new-root/inline.html", markup)
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"private.json"}
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("setter", ['a.setAttribute("{attribute}", filename)',
+                                   'a.setAttributeNS(null, "{attribute}", filename)',
+                                   'a["setAttribute"]("{attribute}", filename)',
+                                   'return <a {attribute}={{filename}} />'])
+def test_case_alias_setter_and_intrinsic_jsx_helpers_keep_the_filename_parameter_role(tmp_path, attribute, setter):
+    _write(tmp_path, "new-root/export.tsx", "function saveEvidence(payload, filename) { "
+           + setter.format(attribute=attribute) + '; }\nsaveEvidence(blob, "private.json");')
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("relative", ["new-root/view.tsx", "new-root/view.jsx", "new-root/view.js"])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+def test_intrinsic_jsx_ascii_case_aliases_keep_single_filename_obligations(tmp_path, attribute, relative, filename):
+    _write(tmp_path, relative, f'const View = () => <a {attribute}="{filename}" href={{blobUrl}} />;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [filename]
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+def test_intrinsic_jsx_bare_case_aliases_keep_implicit_filename_obligations(tmp_path, attribute):
+    _write(tmp_path, "new-root/view.tsx", f"const View = () => <a href={{blobUrl}} {attribute} />;")
+    assert census.download_names(tmp_path) == [("new-root/view.tsx:1", "<implicit browser filename>", None)]
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd", "download"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("tag", ["a", "button", "my-link"])
+def test_intrinsic_jsx_case_colliding_download_props_refuse_both_orders(tmp_path, attribute, reverse, tag):
+    props = ['download="topology.svg"', f'{attribute}="private.json"']
+    if reverse:
+        props.reverse()
+    _write(tmp_path, "new-root/view.tsx", f'const View = () => <{tag}\n'
+           + props[0] + '\n' + props[1] + ' href={blobUrl} />;')
+    with pytest.raises(ValueError, match=re.escape(
+        "browser census refuses new-root/view.tsx:3: duplicate JSX HTML download attributes"
+    )):
+        census.download_names(tmp_path)
+
+
+def test_case_alias_recognition_keeps_js_properties_and_component_props_case_sensitive(tmp_path):
+    _write(tmp_path, "new-root/view.tsx",
+           'a.DOWNLOAD = "private.json"; a["DoWnLoAd"] = "private.json";\n'
+           'Reflect.set(a, "DOWNLOAD", "private.json"); Object.assign(a, {DOWNLOAD: "private.json"});\n'
+           'const View = () => <Component DOWNLOAD="private.json" DoWnLoAd="private.json" />;\n'
+           'const Member = () => <ui.Anchor DOWNLOAD="private.json" />;\n'
+           'a.setAttribute("data-download", "private.json"); a.toggleAttribute("hidden", true);\n'
+           'a.setAttributeNS(null, "ns:DOWNLOAD", "private.json");\n'
+           'a.SETATTRIBUTE("DOWNLOAD", "private.json");\n'
+           'a.download = "topology.svg";\nconst Lowercase = () => <Component download="flow-path.svg" />;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [
+        "topology.svg", "flow-path.svg"]
+
+
+def test_jsx_alias_reader_keeps_nested_elements_values_and_type_arguments_separate(tmp_path):
+    _write(tmp_path, "new-root/view.tsx",
+           'const View = () => <Component<Map<string, Payload>> label="DOWNLOAD"\n'
+           ' body={<a DOWNLOAD="private.json" title="download" />}>\n'
+           ' <a DoWnLoAd="topology.svg" data-download="private.json" />\n</Component>;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [
+        "private.json", "topology.svg"]
+
+
+def test_case_alias_helper_roles_keep_constructed_names_and_toggle_force_separate():
+    source = 'function downloadReceipt(payload, id) { a.setAttribute("DOWNLOAD", "topology.svg"); }\n'
+    source += 'function saveFlag(force) { a.toggleAttribute("DoWnLoAd", force); }'
+    declarations, forwarders = census._js_helper_parameters(source, census._js_tokens(source), "new-root/export.js")
+    assert declarations == {"downloadReceipt"}
+    assert forwarders == {}
+
+
 def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
     _write(tmp_path, "cisco_toolkit/explorer.html",
            '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'

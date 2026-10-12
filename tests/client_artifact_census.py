@@ -1752,7 +1752,7 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
         if jsx and char == "<" and index + 1 < len(text) and (
             text[index + 1].isalpha() or text[index + 1] in {"/", ">"}
         ) and (child_text or not tokens or tokens[-1].value in {
-            "(", "=", "return", "=>", "?", ":", "&&", "||", "??", ",", "["
+            "(", "=", "return", "=>", "?", ":", "&&", "||", "??", ",", "[", "{"
         }) and not re.match(r"<[A-Za-z_$][\w$]*(?:\s*[,=]|\s+extends\b|\s*>\s*\()", text[index:]):
             tag_mode = True
             tag_closing = text[index + 1] == "/"
@@ -1875,6 +1875,87 @@ def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
     raise ValueError("unterminated browser call arguments")
 
 
+def _ascii_lower(value: str) -> str:
+    """HTML attribute-name folding changes ASCII capitals only, never JS property names."""
+    return value.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _html_attribute_filename(method: str, arguments: list[str]) -> str | None:
+    """A literal download attribute setter's value; toggles retain an implicit obligation."""
+    if method not in {"setAttribute", "setAttributeNS", "toggleAttribute"}:
+        return None
+    name_index = 1 if method == "setAttributeNS" else 0
+    if len(arguments) <= name_index:
+        return None
+    attribute = _download_template(arguments[name_index])
+    if attribute is None or _ascii_lower(attribute) != "download":
+        return None
+    value_index = name_index + 1
+    if method == "toggleAttribute" or len(arguments) <= value_index:
+        return "<implicit browser filename>"
+    return arguments[value_index]
+
+
+def _jsx_download_attributes(text: str, tokens: list[_JsToken]) -> list[tuple[bool, list[int]]]:
+    """Read literal opening-tag attributes, excluding values, spreads and component members.
+
+    Case aliases belong only to intrinsic string tags. Component props and ordinary JS
+    properties retain their original case; exact lowercase component download props remain
+    obligations as before. Each element's indices stay grouped for duplicate refusal.
+    """
+    groups = []
+    for start, token in enumerate(tokens):
+        if not token.in_tag or token.value != "<" or start + 1 >= len(tokens):
+            continue
+        if start and tokens[start - 1].in_tag and tokens[start - 1].value not in {">", "{", "}"}:
+            continue  # a component's nested type argument is not another JSX element
+        cursor = start + 1
+        if tokens[cursor].value in {"/", ">"}:
+            continue
+        name_start = cursor
+        cursor += 1
+        while cursor < len(tokens) and tokens[cursor].value in {".", "-", ":"}:
+            cursor += 2  # member/custom-element/namespace name, not an attribute
+        if cursor > len(tokens):
+            raise ValueError("unresolved JSX tag name")
+        tag = text[tokens[name_start].start:tokens[cursor - 1].end]
+        intrinsic = bool(re.fullmatch(r"[a-z][A-Za-z0-9_-]*", tag))
+        if cursor < len(tokens) and tokens[cursor].value == "<":
+            depth = 1  # component type arguments are not opening-tag attributes
+            cursor += 1
+            while cursor < len(tokens) and depth:
+                depth += (tokens[cursor].value == "<") - (tokens[cursor].value == ">")
+                cursor += 1
+            if depth:
+                raise ValueError("unresolved JSX component type arguments")
+        attributes = []
+        while cursor < len(tokens) and tokens[cursor].value not in {">", "/"}:
+            if tokens[cursor].value == "{":
+                _spread, cursor = _js_expression(text, tokens, cursor, attribute=True)
+                continue
+            attribute_index = cursor
+            cursor += 1
+            while cursor < len(tokens) and tokens[cursor].value in {"-", ":"}:
+                cursor += 2
+            if cursor > len(tokens):
+                raise ValueError("unresolved JSX attribute name")
+            attribute = text[tokens[attribute_index].start:tokens[cursor - 1].end]
+            if attribute == "download" or intrinsic and _ascii_lower(attribute) == "download":
+                attributes.append(attribute_index)
+            if cursor < len(tokens) and tokens[cursor].value == "=":
+                cursor += 1
+                if cursor >= len(tokens):
+                    raise ValueError("unresolved JSX attribute value")
+                if tokens[cursor].value[:1] in {"\"", "'", "`"}:
+                    cursor += 1
+                elif tokens[cursor].value == "{":
+                    _value, cursor = _js_expression(text, tokens, cursor, attribute=True)
+                else:
+                    raise ValueError("unresolved JSX attribute value")
+        groups.append((intrinsic, attributes))
+    return groups
+
+
 def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> tuple[set[str], dict[str, int]]:
     """Derive local declarations and direct filename-parameter forwarders, without name lists.
 
@@ -1886,6 +1967,7 @@ def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> t
     forwarders = {}
     roles = {}
     _classes, classify = _registry()
+    jsx_downloads = {index for _intrinsic, indices in _jsx_download_attributes(text, tokens) for index in indices}
 
     def closing(start: int) -> int:
         stack = []
@@ -1921,6 +2003,10 @@ def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> t
         for position in range(after + 1, end):
             value = tokens[position].value.strip("\"'")
             following = position + 1
+            if position in jsx_downloads and following < end and tokens[following].value == "=":
+                expression, _stop = _js_expression(text, tokens, following + 1, attribute=True)
+                expressions.append(expression[1:-1].strip() if expression.startswith("{")
+                                   and expression.endswith("}") else expression)
             if following < end and tokens[following].value == "]":
                 following += 1
             if (value == "download" and following < end and tokens[following].value in {"=", ":"}
@@ -1934,13 +2020,17 @@ def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> t
                     expression, _stop = _js_expression(text, tokens, stop + 2)
                     expressions.append(expression)
             opening = position + 1
+            if (value in {"setAttribute", "setAttributeNS", "toggleAttribute"} and opening < end
+                    and tokens[opening].value == "]" and position > 0 and tokens[position - 1].value == "["):
+                opening += 1
             if opening < end and tokens[opening].value == "?.":
                 opening += 1
             if opening >= end or tokens[opening].value != "(":
                 continue
             args = _js_arguments(text, tokens, opening)
-            if value == "setAttribute" and args and _download_template(args[0]) == "download":
-                expressions.append(args[1] if len(args) > 1 else "<implicit browser filename>")
+            attribute_filename = _html_attribute_filename(value, args)
+            if attribute_filename is not None:
+                expressions.append(attribute_filename)
             elif (value == "set" and position >= 2 and tokens[position - 2].value == "Reflect"
                   and len(args) > 1 and _download_template(args[1]) == "download"):
                 expressions.append(args[2] if len(args) > 2 else "<implicit browser filename>")
@@ -2166,13 +2256,24 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
         for first_line, text, source_lines in scripts:
             try:
                 tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
-                declarations, forwarders = _js_helper_parameters(text, tokens, relative)
+                jsx_groups = _jsx_download_attributes(text, tokens)
             except ValueError as error:
                 raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
 
             def location(token: _JsToken) -> str:
                 line = source_lines[token.start] if source_lines is not None else first_line + token.line - 1
                 return f"{relative}:{line}"
+
+            jsx_downloads = set()
+            for intrinsic, indices in jsx_groups:
+                if intrinsic and len(indices) > 1:
+                    raise ValueError(f"browser census refuses {location(tokens[indices[1]])}: "
+                                     "duplicate JSX HTML download attributes")
+                jsx_downloads.update(indices)
+            try:
+                declarations, forwarders = _js_helper_parameters(text, tokens, relative)
+            except ValueError as error:
+                raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
 
             for index, token in enumerate(tokens):
                 if token.value == "[":
@@ -2184,8 +2285,10 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                         found.append((location(token), expression,
                                       _download_template(expression)))
                 value = token.value.strip("\"'")
+                if index in jsx_downloads:
+                    value = "download"
                 after = index + 1
-                if (token.in_tag and token.value == "download" and after < len(tokens)
+                if (index in jsx_downloads and after < len(tokens)
                         and tokens[after].value not in {"=", ":"}
                         and (index == 0 or tokens[index - 1].value not in {"=", "<", "/", ":"})):
                     href = _jsx_href(text, tokens, index)
@@ -2199,7 +2302,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:
                     receiver_property = index > 0 and tokens[index - 1].value in {".", "?.", "["}
                     object_property = tokens[after].value == ":" and index > 0 and tokens[index - 1].value in {"{", ","}
-                    if value == "download" and not (receiver_property or object_property or token.in_tag):
+                    if value == "download" and not (receiver_property or object_property or index in jsx_downloads):
                         continue  # local download callback/variable is not a browser filename
                     # Native HTML quoted/unquoted attributes were already read by HTMLParser.
                     if relative.endswith((".html", ".py")) and tokens[after].value == "=" and (
@@ -2214,6 +2317,9 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                 # Direct native/helper calls. Match the download family structurally rather
                 # than selecting two helper names; browser open always requires disposition.
                 call_start = index + 1
+                if (value in {"setAttribute", "setAttributeNS", "toggleAttribute"} and call_start < len(tokens)
+                        and tokens[call_start].value == "]" and index > 0 and tokens[index - 1].value == "["):
+                    call_start += 1
                 if call_start < len(tokens) and tokens[call_start].value == "?.":
                     call_start += 1
                 if call_start >= len(tokens) or tokens[call_start].value != "(":
@@ -2231,11 +2337,11 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                                           "<implicit browser filename>", None))
                         continue  # event handlers with no filename parameter
                     expression = arguments[argument]
-                elif value == "setAttribute":
+                elif value in {"setAttribute", "setAttributeNS", "toggleAttribute"}:
                     arguments = _js_arguments(text, tokens, call_start)
-                    if not arguments or _download_template(arguments[0]) != "download":
+                    expression = _html_attribute_filename(value, arguments)
+                    if expression is None:
                         continue
-                    expression = arguments[1] if len(arguments) >= 2 else "<implicit browser filename>"
                 elif value == "set" and index >= 2 and tokens[index - 2].value == "Reflect":
                     arguments = _js_arguments(text, tokens, call_start)
                     if len(arguments) < 2 or _download_template(arguments[1]) != "download":
