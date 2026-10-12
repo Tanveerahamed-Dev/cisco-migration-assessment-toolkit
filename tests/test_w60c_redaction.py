@@ -30,7 +30,7 @@ HISTORICAL_ROWS = [row for row in w60b.ROWS if row["id"].startswith("r4:")
                    and row["finding"] in _HISTORICAL_FINDINGS]
 VERIFIER_CONTROLS = CORPUS["verifier_only_controls"]
 HISTORICAL_VERIFIER_CONTROLS = [row for row in w60b.CORPUS["verifier_only_controls"]
-                               if row["finding"] in _HISTORICAL_FINDINGS]
+                               if row.get("finding") in _HISTORICAL_FINDINGS]
 
 
 def test_w60c_corpus_has_each_scoped_family_and_fresh_positive_negative_controls():
