@@ -392,6 +392,7 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
             (uip, "carriage_observation_admission", "observation_owner_admission"),
             (uip, "_carriage_observation_key", "complete_observation_key"),
             (uip, "carriage_role_index", "role_owner_index"),
+            (uip, "_carriage_role_query", "role_owner_query"),
             (uip, "carriage_allowance_admission", "allowance_owner_admission"),
             (api, "deepcopy", "owned_copy"),
             (api, "_require_json_native", "json_native"),

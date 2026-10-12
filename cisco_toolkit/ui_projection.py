@@ -4894,6 +4894,16 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
     return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
 
 
+# Ordinary private dispatch coherence, not secret authority or a mutable-snapshot sandbox.
+_CARRIAGE_ROLE_ROWS_OWNER = carriage_role_rows
+_CARRIAGE_SHARED_EMPTY_LIMIT = 16_384
+
+
+def _carriage_role_query(observation: Any, interface: str, vid: int, *, index: Any) -> Any:
+    """One original owner query; hosted coarse timing can wrap this without changing owner identity."""
+    return carriage_role_rows(observation, interface, vid, index=index)
+
+
 class _CarriageRoutingPlan:
     """Optional per-position dispatch to answers already retained by this ONE checked admission.
 
@@ -5057,6 +5067,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
     allowance_matches: Dict[Tuple[int, int, str], bool] = {}
     shared_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
+    shared_empty_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
     shared_compatibility: Dict[Tuple[int, int], bool] = {}
 
     def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str) -> bool:
@@ -5066,7 +5077,24 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             allowance_matches[query] = carriage_allowance_matches(allowances[identity], vid, signal)
         return allowance_matches[query]
 
-    def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any) -> List[Any]:
+    def empty_identity(host: str, interface: str, vid: int, observation: Any, index: Any,
+                       share_empty: bool) -> Optional[int]:
+        # Optional retention only: saturation/foreign dispatch never refuses a source the owner can read.
+        if (not share_empty or type(host) is not str or type(interface) is not str or type(vid) is not int
+                or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
+                or type(_CARRIAGE_SHARED_EMPTY_LIMIT) is not int
+                or len(shared_empty_positions) >= _CARRIAGE_SHARED_EMPTY_LIMIT):
+            return None
+        identity, current = shared_hosts.get(host), observations.get(host)
+        if (type(identity) is not int or type(current) is not tuple or len(current) != 3
+                or type(current[0]) is not str or current[0] != _PUB or current[2] is not observation
+                or observation_ids.get(host) != identity or indexes.get(host) is not index
+                or shared_indexes.get(identity) is not index):
+            return None
+        return identity
+
+    def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any,
+                     *, share_empty: bool = False) -> List[Any]:
         key = (host, interface, vid)
         if key not in role_rows:
             identity = shared_hosts.get(host)
@@ -5075,12 +5103,22 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                 # Only immutable positions cross hosts; each row object comes from THIS host's current record.
                 role_rows[key] = [(i, observation["roles"][i]) for i in shared_positions[query]]
             else:
-                rows = carriage_role_rows(observation, interface, vid, index=index)
+                empty_id = empty_identity(host, interface, vid, observation, index, share_empty)
+                empty_query = (empty_id, interface, vid) if empty_id is not None else None
+                if empty_query is not None and empty_query in shared_empty_positions:
+                    # Genuine immutable absence, applied to THIS host; no end/VLAN verdict or row alias.
+                    role_rows[key] = []
+                    return role_rows[key]
+                rows = _carriage_role_query(observation, interface, vid, index=index)
                 if query is not None and type(rows) is list and rows and all(
                         type(pair) is tuple and len(pair) == 2 and type(pair[0]) is int
                         and 0 <= pair[0] < len(observation["roles"])
                         and pair[1] is observation["roles"][pair[0]] for pair in rows):
                     shared_positions[query] = tuple(pair[0] for pair in rows)
+                elif (empty_query is not None and type(rows) is list and not rows
+                      and empty_identity(host, interface, vid, observation, index, share_empty) == empty_id):
+                    # Recheck binding/host/index after the actual query: a callback cannot seed stale reuse.
+                    shared_empty_positions[empty_query] = ()
                 role_rows[key] = rows
         return role_rows[key]
 
@@ -5153,8 +5191,10 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         index = role_index(index_host, observation)
                         if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
-                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index)
-                    beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index)
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
+                                        share_empty=plan is not None)
+                    beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
+                                           share_empty=plan is not None)
                               if end["stp_interface"] != end["port"] else [])
                     ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
                           and rows[0][1]["state"] == signals[char])
@@ -5181,7 +5221,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
                     eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
-                                                observation, index)) == 0
+                                                observation, index, share_empty=plan is not None)) == 0
                 if not eligible:
                     found.append(stp_gap)
                     current = ("stp_topology_observations", end["host"])

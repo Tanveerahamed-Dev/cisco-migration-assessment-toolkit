@@ -946,6 +946,239 @@ def test_declared_owner_typeerror_holds_the_whole_admission_before_separate_lazy
     assert results[0] == results[1]
 
 
+def _empty_query_snapshot():
+    snap = _round2_bundle({host: _round2_observation(vid=99) for host in ("switch-a", "switch-b")})
+    snap["vlan_cutover"] = [{"vlan": vid} for vid in (10, 20, 30)]
+    snap["vlan_carriage"] = _round2_compute(snap)
+    return snap
+
+
+@pytest.mark.parametrize("damage", ["none", "forwarding", "blocked", "error", "logical-alias", "key-order",
+                                    "physical-beside"])
+def test_empty_query_reuse_preserves_real_full_outputs_and_current_counterexamples(monkeypatch, damage):
+    snap = _empty_query_snapshot()
+    if damage == "physical-beside":
+        snap["stp_topology_observations"] = {
+            host: _round2_observation() for host in ("switch-a", "switch-b")}
+        snap["vlan_carriage"] = _round2_compute(snap)
+        snap["stp_topology_observations"]["switch-b"] = _stp(
+            {10: [("Po10", "Desg", "FWD"), ("Gi1/0/1", "Altn", "BLK")]})
+    elif damage in ("forwarding", "blocked"):
+        snap["stp_topology_observations"]["switch-b"] = _round2_observation(
+            state="FWD" if damage == "forwarding" else "BLK")
+    elif damage == "error":
+        snap["stp_topology_observations"]["switch-b"] = stp_topology.produce_stp_topology_observation(
+            "", "", state_capture_state="error", detail_capture_state="error")
+    elif damage == "logical-alias":
+        snap["interfaces"]["switch-b"]["Po010"] = _round2_record("Po010")
+    elif damage == "key-order":
+        snap["stp_topology_observations"]["switch-b"] = dict(reversed(tuple(
+            snap["stp_topology_observations"]["switch-b"].items())))
+    before = deepcopy(snap)
+    planned = _routing_outputs(snap)
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == planned
+    assert snap == before
+    assert bool(planned[0]) is (damage not in ("none", "key-order"))
+    checked(snap)
+
+
+@pytest.mark.parametrize("cap", [0, 1, 16_384])
+def test_empty_query_optional_retention_zero_and_saturation_keep_original_admission(monkeypatch, cap):
+    snap = _empty_query_snapshot()
+    dispatch, calls = uip._carriage_role_query, []
+
+    def observed(record, interface, vid, *, index):
+        answer = dispatch(record, interface, vid, index=index)
+        assert type(answer) is list and not answer  # Real public owner supplies unrelated-VLAN absence.
+        calls.append((record, interface, vid))
+        return answer
+
+    monkeypatch.setattr(uip, "_carriage_role_query", observed)
+    monkeypatch.setattr(uip, "_CARRIAGE_SHARED_EMPTY_LIMIT", cap)
+    planned = _routing_outputs(snap)
+    planned_calls = list(calls)
+    calls.clear()
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == planned
+    assert len(calls) == 6 and {vid for _record, _interface, vid in calls} == {10, 20, 30}
+    assert all(any(record is snap["stp_topology_observations"][host] for host in ("switch-a", "switch-b"))
+               for record, _interface, _vid in calls)
+    assert all(any(record is snap["stp_topology_observations"][host] for record, _interface, _vid in calls)
+               for host in ("switch-a", "switch-b"))
+    if cap in (0, 1):
+        assert planned_calls == calls  # After the first seed saturates cap1, every next query is ORIGINAL.
+    else:
+        assert len(planned_calls) < len(calls)
+    checked(snap)
+
+
+@pytest.mark.parametrize("shape", ["ordinary-empty", "foreign-empty", "foreign-index", "record-copy"])
+def test_empty_owner_foreign_shapes_and_wrapped_side_effects_stay_per_host(monkeypatch, shape):
+    snap = _empty_query_snapshot()
+    query, index_owner, admission_owner = (uip.carriage_role_rows, uip.carriage_role_index,
+                                           uip.carriage_observation_admission)
+    dispatch, calls = uip._carriage_role_query, []
+
+    class ForeignRows(list):
+        pass
+
+    class ForeignIndex(dict):
+        pass
+
+    def wrapped(record, interface, vid, *, index=None):
+        answer = query(record, interface, vid, index=index)
+        assert not answer
+        return ForeignRows(answer) if shape == "foreign-empty" else answer
+
+    def observed(record, interface, vid, *, index):
+        answer = dispatch(record, interface, vid, index=index)
+        calls.append((record, interface, vid))
+        return answer
+
+    def copied_admission(record):
+        state, reason, admitted = admission_owner(record)
+        return state, reason, deepcopy(admitted) if admitted is not None else None
+
+    monkeypatch.setattr(uip, "_carriage_role_query", observed)
+    if shape == "foreign-index":
+        monkeypatch.setattr(uip, "carriage_role_index", lambda record: ForeignIndex(index_owner(record)))
+    elif shape == "record-copy":
+        monkeypatch.setattr(uip, "carriage_observation_admission", copied_admission)
+    else:
+        monkeypatch.setattr(uip, "carriage_role_rows", wrapped)
+    planned = _routing_outputs(snap)
+    assert len(calls) == 6
+    calls.clear()
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == planned
+    assert len(calls) == 6 and not planned[0]
+
+
+def test_empty_query_index_callback_keeps_the_current_host_and_original_record_domain(monkeypatch):
+    seed, results, domains = _empty_query_snapshot(), [], []
+    owner_index, dispatch = uip.carriage_role_index, uip._carriage_role_query
+    for enabled in (False, True):
+        snap, changed, calls = deepcopy(seed), [], []
+        end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+        first_host, next_host = end["host"], snap["vlan_carriage"]["cables"][0]["members"][0]["b"]["host"]
+
+        def index_callback(record):
+            index = owner_index(record)
+            if not changed:
+                assert record is snap["stp_topology_observations"][first_host]
+                end["host"] = next_host
+                changed.append(True)
+            return index
+
+        def observed(record, interface, vid, *, index):
+            answer = dispatch(record, interface, vid, index=index)
+            calls.append(("first" if record is snap["stp_topology_observations"][first_host] else "next",
+                          interface, vid))
+            return answer
+
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            patch.setattr(uip, "carriage_role_index", index_callback)
+            patch.setattr(uip, "_carriage_role_query", observed)
+            results.append(_routing_outputs(snap))
+        assert changed == [True] and calls[0][0] == "first"
+        domains.append(calls)
+    assert results[0] == results[1] and domains[0][0] == domains[1][0]
+    assert all(call in domains[0] for call in domains[1])  # Later coherent pure queries may safely reuse absence.
+
+
+@pytest.mark.parametrize("switch", ["during-return", "after-seed"])
+def test_current_owner_binding_is_rechecked_after_empty_return_and_before_later_hits(monkeypatch, switch):
+    snap = _empty_query_snapshot()
+    expected = _routing_outputs(snap)
+    dispatch, public_owner = uip._carriage_role_query, uip.carriage_role_rows
+    original_calls, replacement_calls, changed = [], [], []
+
+    def replacement(record, interface, vid, *, index=None):
+        answer = public_owner(record, interface, vid, index=index)
+        replacement_calls.append(record)
+        return answer
+
+    def replace():
+        if not changed:
+            monkeypatch.setattr(uip, "carriage_role_rows", replacement)
+            changed.append(True)
+
+    def observed(record, interface, vid, *, index):
+        answer = dispatch(record, interface, vid, index=index)
+        original_calls.append(record)
+        if switch == "during-return":
+            replace()  # Before seed: the actual query returned, then its public binding changed.
+        return answer
+
+    class SwitchPlan(uip._CarriageRoutingPlan):
+        def __getattribute__(self, name):
+            if name == "host" and original_calls and switch == "after-seed":
+                replace()  # The next position's original host read occurs AFTER the first seed.
+            return super().__getattribute__(name)
+
+    monkeypatch.setattr(uip, "_carriage_role_query", observed)
+    monkeypatch.setattr(uip, "_carriage_routing_plan", SwitchPlan)
+    assert _routing_outputs(snap) == expected
+    assert changed == [True] and replacement_calls
+    assert any(record is snap["stp_topology_observations"]["switch-b"] for record in replacement_calls)
+
+
+def test_empty_query_next_admission_reads_the_new_current_role_instead_of_prior_absence(monkeypatch):
+    snap = _empty_query_snapshot()
+    first = _routing_outputs(snap)
+    assert not first[0]
+    snap["stp_topology_observations"]["switch-b"] = _round2_observation(state="FWD")
+    changed = _routing_outputs(snap)
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_carriage_routing_plan", lambda: None)
+        assert _routing_outputs(snap) == changed
+    assert 0 in changed[0]
+    relation = changed[2][0]["carriage"]["page"]["items"][0]["relation"]
+    assert relation["state"] == UV and relation["value"] is None
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError])
+def test_empty_query_owner_errors_keep_original_propagation_and_guard_scoped_holds(monkeypatch, error_type):
+    seed, results = _empty_query_snapshot(), []
+    owner = uip.carriage_role_rows
+    for enabled in (False, True):
+        snap, calls = deepcopy(seed), []
+
+        def refused(record, interface, vid, *, index=None):
+            assert not owner(record, interface, vid, index=index)  # Genuine public query before fault injection.
+            calls.append(record)
+            raise error_type("declared current empty-query refusal")
+
+        with monkeypatch.context() as patch:
+            if not enabled:
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            patch.setattr(uip, "carriage_role_rows", refused)
+            if error_type is RuntimeError:
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                results.append((type(raised.value), raised.value.args))
+            else:
+                admission = uip.carriage_admission(snap)
+                assert admission.source["state"] == UV and list(admission.gaps) == [0, 1, 2]
+                assert not admission.observations
+        assert len(calls) == 1 and calls[0] is snap["stp_topology_observations"]["switch-a"]
+        if error_type is TypeError:
+            # Separate lazy rendering is an unguarded owner domain: restore its owner before using held admission.
+            result = _routing_outputs(snap, admission=admission)
+            assert all(item["relation"]["value"] is None
+                       for output in result[2] for item in output["carriage"]["page"]["items"])
+            results.append(result)
+    assert results[0] == results[1]
+    if error_type is RuntimeError:
+        assert results == [(RuntimeError, ("declared current empty-query refusal",))] * 2
+
+
 @pytest.mark.parametrize("owner", ["admission", "index"])
 def test_routing_changed_inside_an_original_owner_callback_is_not_read_again_in_a_different_order(
         tmp_path, monkeypatch, owner):
