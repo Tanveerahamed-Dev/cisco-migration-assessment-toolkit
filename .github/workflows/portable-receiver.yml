@@ -1,0 +1,253 @@
+name: Verify Atlas portable draft as receiver
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_tag:
+        description: "Exact draft candidate tag, e.g. v3.33.0-rc.5"
+        required: true
+        type: string
+      source_commit:
+        description: "Expected full source commit of the candidate"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: portable-receiver-${{ inputs.draft_tag }}-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  receive:
+    name: Verify downloaded portable draft
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      DRAFT_TAG: ${{ inputs.draft_tag }}
+      ASSET_DIR: ${{ runner.temp }}/portable-receiver-assets
+      RECEIPT_DIR: ${{ runner.temp }}/portable-receiver-receipt
+    steps:
+      - name: Admit the exact receiver request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA-1' >&2; exit 1; }
+          [[ "$DRAFT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'draft_tag must be a portable candidate tag' >&2; exit 1; }
+          [ "${#DRAFT_TAG}" -le 96 ] || { echo 'draft tag is too long' >&2; exit 1; }
+          [ ! -e "$ASSET_DIR" ] && [ ! -e "$RECEIPT_DIR" ] || { echo 'receiver directories already exist' >&2; exit 1; }
+          mkdir "$ASSET_DIR" "$RECEIPT_DIR"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
+      - name: Bind the clean source and install only the receiver validator
+        id: source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse 'HEAD^{commit}')" = "$SOURCE_COMMIT" ] || { echo 'source checkout differs from request' >&2; exit 1; }
+          git fetch --no-tags origin main
+          # The receiver workflow merges after the candidate. Its source must remain a reviewed
+          # main ancestor, not necessarily the current main tip.
+          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+          python -B - "$RECEIPT_DIR/expected-source.json" <<'PY'
+          import os, pathlib, re, sys
+          from portable.release_contract import canonical_json, source_identity
+          source = source_identity(pathlib.Path.cwd())
+          repository = os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + ".git"
+          version = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)", source["version"])
+          if source["commit"] != os.environ["SOURCE_COMMIT"] or source["repository"] != repository:
+              raise SystemExit("independent source identity differs from the request/repository")
+          if not version or "v" + version[1] + "-rc." + version[2] != os.environ["DRAFT_TAG"]:
+              raise SystemExit("source product version and draft tag differ")
+          pathlib.Path(sys.argv[1]).write_bytes(canonical_json(source))
+          PY
+          venv="$RUNNER_TEMP/portable-receiver-venv"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --only-binary=:all: 'cyclonedx-python-lib[json-validation]==11.12.0' 'jsonschema==4.26.0'
+          printf 'python=%s\n' "$venv/bin/python" >> "$GITHUB_OUTPUT"
+      - name: Download the actual draft into the empty directory
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # gh resolves pending draft tags through GraphQL before fetching their release ID.
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$RECEIPT_DIR/resolved-before.json"
+          release_id="$(python -B -c 'import json,os; d=json.load(open(os.environ["RECEIPT_DIR"]+"/resolved-before.json")); n=d["databaseId"]; assert type(n) is int and n>0; print(n)')"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RECEIPT_DIR/release-before.json"
+          cd source
+          python -B - <<'PY'
+          import json, os, pathlib, re
+          from portable.release_contract import MAX_METADATA_BYTES, MAX_RELEASE_SET_BYTES, MAX_ZIP_FILE_BYTES, PLATFORM_ID, _sidecar_map, canonical_json
+          receipt = pathlib.Path(os.environ["RECEIPT_DIR"])
+          source = json.loads((receipt / "expected-source.json").read_text())
+          release = json.loads((receipt / "release-before.json").read_text())
+          if (type(release.get("id")) is not int or release["id"] <= 0 or release.get("draft") is not True
+              or release.get("prerelease") is not True or release.get("published_at") is not None
+              or release.get("tag_name") != os.environ["DRAFT_TAG"] or release.get("target_commitish") != source["commit"]):
+              raise SystemExit("release is not the exact requested draft prerelease")
+          base = f"Atlas-{source['version']}-{PLATFORM_ID}"
+          zip_name = base + ".zip"
+          names = {zip_name, zip_name + ".sha256", base + ".SHA256SUMS", base + ".release.json", *_sidecar_map(base).values()}
+          assets = release.get("assets")
+          if not isinstance(assets, list) or len(assets) != len(names):
+              raise SystemExit("draft asset denominator differs from the source contract")
+          rows = []
+          seen = set()
+          for asset in assets:
+              name, size, digest = asset.get("name"), asset.get("size"), asset.get("digest")
+              limit = MAX_ZIP_FILE_BYTES if name == zip_name else MAX_METADATA_BYTES
+              if (name not in names or name in seen or type(asset.get("id")) is not int or asset["id"] <= 0
+                  or asset.get("state") != "uploaded" or type(size) is not int or not 0 <= size <= limit
+                  or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
+                  raise SystemExit("draft asset name, identity, state, size or digest is invalid")
+              seen.add(name)
+              rows.append({"id": asset["id"], "name": name, "size": size, "digest": digest})
+          if sum(row["size"] for row in rows) > MAX_RELEASE_SET_BYTES:
+              raise SystemExit("draft exceeds the receiver byte bound")
+          rows.sort(key=lambda row: row["name"])
+          (receipt / "expected-assets.json").write_bytes(canonical_json(rows))
+          zip_row = next(row for row in rows if row["name"] == zip_name)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"release_id={release['id']}\nzip={zip_name}\nsha256={zip_row['digest'][7:]}\n")
+          PY
+          [ -z "$(find "$ASSET_DIR" -mindepth 1 -print -quit)" ] || { echo 'asset directory is not empty' >&2; exit 1; }
+          gh release download "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --dir "$ASSET_DIR"
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$RECEIPT_DIR/resolved-after.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RECEIPT_DIR/release-after.json"
+      - name: Verify received bytes, member checksums, SBOM and source materials
+        env:
+          RECEIVER_PYTHON: ${{ steps.source.outputs.python }}
+          EXPECTED_ZIP_SHA256: ${{ steps.draft.outputs.sha256 }}
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B - <<'PY'
+          import hashlib, json, os, pathlib, stat
+          receipt = pathlib.Path(os.environ["RECEIPT_DIR"])
+          before = json.loads((receipt / "release-before.json").read_text())
+          after = json.loads((receipt / "release-after.json").read_text())
+          resolved = json.loads((receipt / "resolved-after.json").read_text())
+          keys = ("id", "draft", "prerelease", "published_at", "tag_name", "target_commitish")
+          if any(before.get(key) != after.get(key) for key in keys) or resolved.get("databaseId") != before["id"]:
+              raise SystemExit("release identity changed during receipt")
+          expected = json.loads((receipt / "expected-assets.json").read_text())
+          actual = sorted(({"id": row.get("id"), "name": row.get("name"), "size": row.get("size"), "digest": row.get("digest")}
+                           for row in after.get("assets", [])), key=lambda row: row["name"])
+          if actual != expected or any(row.get("state") != "uploaded" for row in after.get("assets", [])):
+              raise SystemExit("draft asset identity changed during receipt")
+          root = pathlib.Path(os.environ["ASSET_DIR"])
+          files = list(root.iterdir())
+          if {path.name for path in files} != {row["name"] for row in expected}:
+              raise SystemExit("downloaded file denominator differs")
+          for row in expected:
+              path = root / row["name"]
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1 or info.st_size != row["size"]:
+                  raise SystemExit("downloaded file kind or size differs")
+              with path.open("rb") as stream:
+                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
+              if "sha256:" + digest != row["digest"]:
+                  raise SystemExit("downloaded bytes differ from GitHub's asset digest")
+          PY
+          "$RECEIVER_PYTHON" -B -m portable.verify_release --release-dir "$ASSET_DIR" --expected-source-json "$RECEIPT_DIR/expected-source.json" --expected-sha256 "$EXPECTED_ZIP_SHA256" --source-root . > "$RECEIPT_DIR/portable-verification.json"
+          # The full validator is mandatory; --stdlib-only is deliberately not used.
+      - name: Verify GitHub provenance and CycloneDX attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP_NAME: ${{ steps.draft.outputs.zip }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer="github.com/$GITHUB_REPOSITORY/.github/workflows/portable-release.yml"
+          gh attestation verify "$ASSET_DIR/$ZIP_NAME" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" --signer-digest "$SOURCE_COMMIT" --source-digest "$SOURCE_COMMIT" --source-ref refs/heads/main --deny-self-hosted-runners --format json > "$RECEIPT_DIR/provenance-attestation.json"
+          gh attestation verify "$ASSET_DIR/$ZIP_NAME" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" --signer-digest "$SOURCE_COMMIT" --source-digest "$SOURCE_COMMIT" --source-ref refs/heads/main --deny-self-hosted-runners --predicate-type https://cyclonedx.org/bom --format json > "$RECEIPT_DIR/sbom-attestation.json"
+      - name: Require signed SBOM parity and emit the receiver receipt
+        env:
+          ZIP_NAME: ${{ steps.draft.outputs.zip }}
+          RECEIVER_WORKFLOW_COMMIT: ${{ github.sha }}
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B - <<'PY'
+          import json, os, pathlib
+          from portable.release_contract import canonical_json
+          receipt = pathlib.Path(os.environ["RECEIPT_DIR"])
+          assets = pathlib.Path(os.environ["ASSET_DIR"])
+          source = json.loads((receipt / "expected-source.json").read_text())
+          result = json.loads((receipt / "portable-verification.json").read_text())
+          if (result.get("status") != "SELF_CONSISTENCY_PASS" or result.get("source") != source
+              or result.get("source_expectation_matched") is not True or result.get("zip_digest_expectation_matched") is not True
+              or result.get("bundle", {}).get("sbom_schema_validation") != "cyclonedx_1_6_strict_pass"):
+              raise SystemExit("full receiver verifier did not return the exact expected success")
+          zip_name = os.environ["ZIP_NAME"]
+          base = zip_name.removesuffix(".zip")
+          sbom = json.loads((assets / (base + ".cdx.json")).read_text())
+          verified = {}
+          for filename, predicate_type in (("provenance-attestation.json", "https://slsa.dev/provenance/v1"),
+                                           ("sbom-attestation.json", "https://cyclonedx.org/bom")):
+              entries = json.loads((receipt / filename).read_text())
+              if not isinstance(entries, list) or not entries:
+                  raise SystemExit("attestation verifier returned no verified statements")
+              for entry in entries:
+                  statement = entry.get("verificationResult", {}).get("statement", {})
+                  if statement.get("predicateType") != predicate_type or not any(
+                      subject.get("digest", {}).get("sha256") == result["zip_sha256"]
+                      for subject in statement.get("subject", [])):
+                      raise SystemExit("verified attestation subject or predicate differs")
+                  if predicate_type == "https://cyclonedx.org/bom" and canonical_json(statement.get("predicate")) != canonical_json(sbom):
+                      raise SystemExit("signed CycloneDX predicate differs from the received SBOM")
+              verified[predicate_type] = True
+          qualification = json.loads((assets / (base + ".qualification.json")).read_text())
+          release = json.loads((receipt / "release-after.json").read_text())
+          rows = json.loads((receipt / "expected-assets.json").read_text())
+          zip_row = next(row for row in rows if row["name"] == zip_name)
+          report = {
+              "schema": "atlas.portable-receiver-receipt/1",
+              "status": "RECEIVER_INTEGRITY_AND_ATTESTATION_PASS",
+              "receiver_workflow_commit": os.environ["RECEIVER_WORKFLOW_COMMIT"],
+              "receiver_run_id": os.environ["GITHUB_RUN_ID"],
+              "receiver_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "source": source,
+              "draft_tag": release["tag_name"],
+              "release_id": release["id"],
+              "release_url": release["html_url"],
+              "draft_only": True,
+              "publication_effect": "NONE",
+              "assets": rows,
+              "zip": zip_row,
+              "portable_verification": result,
+              "verified_attestation_predicates": verified,
+              "signed_sbom_matches_received": True,
+              "external_pending": qualification["external_pending"],
+              "field_qualified": qualification["field_qualified"],
+              "signature_reverification_performed": result["bundle"]["signature_reverification_performed"],
+          }
+          (receipt / "receiver-receipt.json").write_bytes(canonical_json(report))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+              output.write(f"Receiver integrity and attestation PASS\n\nDraft: {release['html_url']}\n\nSource: {source['commit']} / {source['version']}\n\nZIP: {zip_name}, {zip_row['size']} bytes, {result['zip_sha256']}\n\nExternal pending: {', '.join(qualification['external_pending'])}\n\nNo publication or field-acceptance effect.\n")
+          PY
+      - name: Upload the successful receiver receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portable-receiver-${{ inputs.source_commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portable-receiver-receipt/*
+          if-no-files-found: error
+          retention-days: 30

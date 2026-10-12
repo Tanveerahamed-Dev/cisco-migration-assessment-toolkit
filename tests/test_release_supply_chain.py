@@ -65,6 +65,9 @@ _RUNNER_JOBS = {
     "master-reference-ci.yml": {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
     },
+    "portable-receiver.yml": {
+        "receive": ("Verify downloaded portable draft", _LINUX_IMAGE),
+    },
     "portable-release.yml": {
         "gate": ("Full source and frontend gate (unprivileged runner)", "windows-2025"),
         "portable": ("Build and qualify Atlas.exe", "windows-2025"),
@@ -181,7 +184,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 22
+    assert linux_selectors == 23
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
