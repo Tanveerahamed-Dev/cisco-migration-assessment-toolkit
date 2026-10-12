@@ -65,6 +65,10 @@ _RUNNER_JOBS = {
     "master-reference-ci.yml": {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
     },
+    "portable-receiver.yml": {
+        "fetch": ("Fetch portable draft assets without candidate code", _LINUX_IMAGE),
+        "receive": ("Verify downloaded portable draft", _LINUX_IMAGE),
+    },
     "portable-release.yml": {
         "gate": ("Full source and frontend gate (unprivileged runner)", "windows-2025"),
         "portable": ("Build and qualify Atlas.exe", "windows-2025"),
@@ -181,7 +185,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 22
+    assert linux_selectors == 24
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
@@ -469,6 +473,36 @@ def test_runner_yaml_loader_refuses_shadowed_keys(original, replacement):
         yaml.load(source.replace(original, replacement, 1), Loader=_RunnerWorkflowLoader)
 
 
+def _selects_self_hosted_runner(document: dict) -> bool:
+    """Inspect only literal runner labels, never step commands or other workflow text."""
+    jobs = document.get("jobs")
+    assert isinstance(jobs, dict) and jobs, "workflow must contain jobs"
+    for job in jobs.values():
+        assert isinstance(job, dict), "workflow job must be a mapping"
+        selector = job.get("runs-on")
+        labels = selector.get("labels") if isinstance(selector, dict) else selector
+        if labels == "self-hosted" or isinstance(labels, list) and "self-hosted" in labels:
+            return True
+    return False
+
+
+@pytest.mark.parametrize("selector", [
+    "self-hosted",
+    ["self-hosted", "Linux", "X64"],
+    {"group": "local-fleet", "labels": "self-hosted"},
+    {"group": "local-fleet", "labels": ["self-hosted", "Linux"]},
+])
+def test_self_hosted_detector_uses_runner_labels_not_attestation_deny_flag(selector):
+    document = yaml.load(
+        "on:\n  workflow_dispatch:\njobs:\n  verify:\n    runs-on: ubuntu-24.04\n"
+        "    steps:\n      - run: gh attestation verify candidate.zip --deny-self-hosted-runners\n",
+        Loader=_RunnerWorkflowLoader,
+    )
+    assert not _selects_self_hosted_runner(document)
+    document["jobs"]["verify"]["runs-on"] = selector
+    assert _selects_self_hosted_runner(document)
+
+
 def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():
     """Tracked workflows must not intentionally route automatic events to this fleet.
 
@@ -482,21 +516,13 @@ def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():
     offenders = []
     self_hosted_workflows = []
     for path in _workflow_paths():
-        body = "\n".join(
-            line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        if "self-hosted" not in body:
+        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
+        if not _selects_self_hosted_runner(document):
             continue
         self_hosted_workflows.append(path.name)
-        events = re.search(r"(?ms)^on:\n.*?(?=^permissions:)", body)
-        if events is None:
-            offenders.append(f"{path.name}: missing bounded event block")
-            continue
-        event_block = events.group(0)
-        event_names = re.findall(r"(?m)^  ([a-z][a-z0-9_]*):", event_block)
-        if event_names != ["workflow_dispatch"]:
-            offenders.append(f"{path.name}: events={event_names!r}")
+        events = document.get("on")
+        if not isinstance(events, dict) or list(events) != ["workflow_dispatch"]:
+            offenders.append(f"{path.name}: events={events!r}")
     assert not offenders, (
         "self-hosted workflows must never have automatic or pull-request triggers: "
         + ", ".join(offenders)
