@@ -4686,6 +4686,10 @@ _REDACT_SCHEME_OPEN_RE = re.compile(_g(
     + "|".join(sorted(_REDACT_SWEEP_SCHEMES)) + r"))?){h}*\Z"), re.IGNORECASE)
 _REDACT_EMPTY_AUTH_HEADER_RE = re.compile(_g(
     r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*\Z"), re.IGNORECASE)
+_REDACT_AUTH_COMMENT_RE = re.compile(_g(r"^{h}*(?P<c>//|!){h}*"))
+_REDACT_COMMENT_MARKER_AUTH_RE = re.compile(_g(
+    r"[\"']?(?:proxy-)?authorization[\"']?{h}*:{h}*(?:<redacted>|\"<redacted>\"|'<redacted>'){h}*\Z"),
+    re.IGNORECASE)
 _REDACT_CAPTURE_PREFIX_RE = re.compile(_g(
     r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _REDACT_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _REDACT_WS + r"]{1,256}:{H})?{h}*"))
@@ -5324,9 +5328,15 @@ def _redact_dangle(line: str, carry=None):
             return ("value", [], False)
     if ":" in line:
         masked = _redact_sweep_masked(line)
+        comment = _REDACT_AUTH_COMMENT_RE.match(line)
+        if comment is not None and _REDACT_COMMENT_MARKER_AUTH_RE.fullmatch(line, comment.end()):
+            return "scheme", ["comment:" + comment.group("c")], False
         for kind, regex in (("scheme", _REDACT_SCHEME_OPEN_RE), ("header-value", _REDACT_EMPTY_AUTH_HEADER_RE)):
             found = regex.search(masked)
             if found is not None:
+                if (comment is not None
+                        and line[comment.end():found.start()].strip(_REDACT_WS_CHARS) in {"", "\"", "'"}):
+                    return kind, ["comment:" + comment.group("c")], False
                 prefix_end = _redact_capture_value_start(line)
                 decoration = prefix_end > _REDACT_LEAD_RE.match(line).end() and prefix_end <= found.start()
                 return kind, ["capture"] if decoration else [], False
@@ -5437,6 +5447,17 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
     After a dangling authorization scheme (kind ``"scheme"``, round 4) the first blank-delimited token is
     the credential, whatever it spells (an argument vector that continues is read by `_redact_argv_walk`)."""
     if kind in ("scheme", "header-value"):
+        comments = [part[8:] for part in tail if part.startswith("comment:")]
+        if comments:
+            prefix = _REDACT_AUTH_COMMENT_RE.match(line)
+            if prefix is not None and prefix.group("c") == comments[0]:
+                start = max(start, prefix.end())
+            words = list(_REDACT_ARGV_WORD_RE.finditer(line, start))
+            if not words:
+                return None
+            # A proven comment header owns the complete continued credential field.
+            # A placeholder before a private tail is not evidence that the field is safe.
+            return _redact_operand_span(line, words[0].start(), words[-1].end(), "value")
         if "capture" in tail:
             start = max(start, _redact_capture_value_start(line))
         if kind == "header-value":

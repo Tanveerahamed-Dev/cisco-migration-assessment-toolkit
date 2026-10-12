@@ -780,6 +780,11 @@ _SWEEP_EMPTY_AUTH_HEADER_RE = re.compile(_v(
 _SWEEP_CAPTURE_PREFIX_RE = re.compile(_v(
     r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _CRED_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _CRED_WS + r"]{1,256}:{H})?{h}*"))
+_SWEEP_COMMENT_PREFIX_RE = re.compile(_v(r"^{h}*(?P<p>//|!){h}*"))
+_SWEEP_COMMENT_MASKED_HEADER_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*"
+    r"(?:<redacted>|(?P<q>[\"'])<redacted>(?P=q)){h}*\Z"),
+    re.IGNORECASE)
 _PUBLIC_HTTP_HEADER_RE = re.compile(_v(
     r"^{h}*(?:host{h}*:{h}*[A-Za-z0-9.\-:\[\]]{1,255}"
     r"|accept{h}*:{h}*(?:\*|[A-Za-z0-9!#$&^_.+-]+)/(?:\*|[A-Za-z0-9!#$&^_.+-]+)"
@@ -1440,6 +1445,10 @@ def _sweep_header_capture_tail(line: str, header_start: int) -> list[str]:
     A number or a colon-shaped token on the value line can itself be the credential. It is
     never authenticated as a capture prefix merely by resembling one.
     """
+    comment = _SWEEP_COMMENT_PREFIX_RE.match(line)
+    if (comment is not None and comment.end() <= header_start
+            and line[comment.end():header_start].strip(_CRED_WS_CHARS) in {"", "\"", "'"}):
+        return ["comment:" + comment.group("p")]
     prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
     leading = _SWEEP_LEAD_RE.match(line).end()
     return ["capture"] if prefix is not None and leading < prefix.end() <= header_start else []
@@ -1503,6 +1512,11 @@ def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tup
         found = _SWEEP_EMPTY_AUTH_HEADER_RE.search(masked)
         if found is not None:
             return ("header-value", _sweep_header_capture_tail(line, found.start()), False)
+        found = _SWEEP_COMMENT_MASKED_HEADER_RE.search(line)
+        if found is not None:
+            tail = _sweep_header_capture_tail(line, found.start())
+            if any(item.startswith("comment:") for item in tail):
+                return ("scheme", tail, False)
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _sweep_argv_walk(line, carry)[1]
         if pending is not None:
@@ -1600,6 +1614,15 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
     if kind in {"scheme", "header-value"}:
         prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line) if "capture" in tail else None
         value_start = max(start, prefix.end() if prefix else 0)
+        comment = next((item[len("comment:"):] for item in tail if item.startswith("comment:")), None)
+        if comment is not None:
+            decoration = _SWEEP_COMMENT_PREFIX_RE.match(line)
+            if decoration is not None and decoration.group("p") == comment:
+                value_start = max(value_start, decoration.end())
+            value = line[value_start:].strip(_CRED_WS_CHARS)
+            # This complete carried comment field owns the continuation, so an
+            # initial placeholder never certifies a still-private second token.
+            return bool(value) and _sweep_operand_bad(value, "value")
         if kind == "scheme":
             quote = next((item[-1] for item in tail if item in {"curl-header-'", 'curl-header-"'}), None)
             if quote is not None and _sweep_curl_closed_header_value(line, value_start, quote):
