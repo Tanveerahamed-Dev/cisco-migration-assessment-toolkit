@@ -3160,3 +3160,180 @@ def test_native_role_prefix_exercises_real_consolidation_without_relocating_help
         witnessed.append({name: len(values) for name, values in seen.items()})
         outcomes.append(_cpu_routing_outputs(snap, admission=admission))
     assert witnessed[0] == witnessed[1] and outcomes[0] == outcomes[1]
+
+
+# Literal CURRENT210 str-first/native-FOR_ITER mechanism, not a second fact/admission owner.
+def _literal_210_key_reference(record):
+    if type(record) is not dict:
+        return None
+    nodes, characters = 0, 0
+    frames = [(iter((record,)), 0)]
+    try:
+        while frames:
+            frame = frames.pop()
+            iterator, depth = frame
+            for node in iterator:
+                nodes += 1
+                if nodes > 65_536 or depth > 32:
+                    return None
+                kind = type(node)
+                if kind is str:
+                    characters += len(node)
+                    if characters > 1_000_000:
+                        return None
+                    continue
+                if kind is dict:
+                    for key in node:
+                        if type(key) is not str:
+                            return None
+                        characters += len(key)
+                        if characters > 1_000_000:
+                            return None
+                    child = (iter(node.values()), depth + 1)
+                elif kind is list:
+                    child = (iter(node), depth + 1)
+                elif node is None or kind in (bool, int):
+                    continue
+                elif kind is float and math.isfinite(node):
+                    continue
+                else:
+                    return None
+                frames.append(frame)
+                frames.append(child)
+                break
+    except (TypeError, ValueError, RuntimeError, RecursionError, OverflowError, MemoryError):
+        return None
+    try:
+        encoded = marshal.dumps(record, 2)
+    except Exception:
+        return None
+    return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
+
+
+@pytest.mark.parametrize("shape", ["mixed", "empty-ancestors", "repeated-alias"])
+def test_active_key_frame_keeps_current_literal_mixed_ancestor_resume_and_aliases(monkeypatch, shape):
+    from cisco_toolkit import ui_projection as uip
+
+    if shape == "mixed":
+        record = {"first": [True, 1, -0.0, "text", None, {"child": [2.5, {}]}], "after": [False, []]}
+    elif shape == "empty-ancestors":
+        record = {"first": [{}, [], {"child": []}], "after": [{"last": []}, True]}
+    else:
+        shared = {"same": ["leaf", {}]}
+        record = {"first": [shared, shared], "after": {"same": shared}}
+    before, encoder_owner, calls = deepcopy(record), marshal.dumps, []
+
+    def encode(current, version):
+        assert current is record and version == 2
+        calls.append(current)
+        return encoder_owner(current, version)  # The actual encoder reads the COMPLETE current graph twice.
+
+    monkeypatch.setattr(marshal, "dumps", encode)
+    expected = _literal_210_key_reference(record)
+    assert type(expected) is bytes and uip._carriage_observation_key(record) == expected
+    assert len(calls) == 2 and all(value is record for value in calls) and record == before
+    if shape == "repeated-alias":
+        assert record["first"][0] is record["first"][1] is record["after"]["same"]
+
+
+@pytest.mark.parametrize("effect", ["none", "ancestor-size", "outside-catch-error"])
+def test_active_key_frame_keeps_real_iterator_creation_resume_mutation_and_error_order(monkeypatch, effect):
+    from cisco_toolkit import ui_projection as uip
+
+    iterator_owner, encoder_owner, traces, outcomes = iter, marshal.dumps, [], []
+    for checker in (_literal_210_key_reference, uip._carriage_observation_key):
+        record, trace, changed, created = {"first": [{"number": 0.5}, [], {"last": "nested"}], "after": "end"}, [], [], []
+
+        class CurrentIterator:
+            def __init__(self, source, number):
+                self.source, self.number = source, number
+
+            def __iter__(self):
+                trace.append(("resume", self.number))
+                return self
+
+            def __next__(self):
+                trace.append(("next", self.number))
+                value = next(self.source)
+                trace.append(("yield", self.number, type(value).__name__))
+                if type(value) is float and value == 0.5 and not changed:
+                    changed.append(True)
+                    if effect == "ancestor-size":
+                        record["added-after-child"] = True
+                    elif effect == "outside-catch-error":
+                        raise OSError("original current walker iterator refusal")
+                return value
+
+        def iterator(value):
+            source = iterator_owner(value)  # Delegate the REAL current native iterator exactly once.
+            created.append(source)
+            trace.append(("create", len(created)))
+            return CurrentIterator(source, len(created))
+
+        def encode(current, version):
+            assert current is record and version == 2 and effect == "none"
+            trace.append(("full-encode", version))
+            return encoder_owner(current, version)
+
+        with monkeypatch.context() as patch:
+            patch.setitem(checker.__globals__, "iter", iterator)
+            patch.setattr(marshal, "dumps", encode)
+            if effect == "outside-catch-error":
+                with pytest.raises(OSError) as raised:
+                    checker(record)
+                outcomes.append((type(raised.value), raised.value.args))
+            else:
+                outcomes.append(checker(record))
+        assert changed == [True]
+        assert sum(event[0] == "full-encode" for event in trace) == (1 if effect == "none" else 0)
+        traces.append(tuple(trace))
+    assert outcomes[0] == outcomes[1] and traces[0] == traces[1]
+    if effect == "none":
+        assert type(outcomes[0]) is bytes
+    elif effect == "ancestor-size":
+        assert outcomes[0] is None
+    else:
+        assert outcomes[0] == (OSError, ("original current walker iterator refusal",))
+
+
+def test_active_key_frame_witnesses_real_parent_only_scheduling_without_a_disabled_oracle():
+    from cisco_toolkit import ui_projection as uip
+
+    # Seven actual containers, including empty children and a later ancestor sibling.
+    record = {"first": [{"leaf": []}, {}, ["text"]], "after": {"last": True}}
+    keys, operations = [], []
+    for checker, stack_name in ((_literal_210_key_reference, "frames"), (uip._carriage_observation_key, "parents")):
+        code, counts = checker.__code__, {"append": 0, "pop": 0}
+
+        def observe(frame, event, operation):
+            if frame.f_code is code and event == "c_call":
+                name = getattr(operation, "__name__", None)
+                if name in counts and getattr(operation, "__self__", None) is frame.f_locals.get(stack_name):
+                    counts[name] += 1
+
+        previous = sys.getprofile()
+        try:
+            sys.setprofile(observe)
+            keys.append(checker(record))
+        finally:
+            sys.setprofile(previous)
+        operations.append(counts)
+    assert type(keys[0]) is bytes and keys[0] == keys[1]
+    assert operations == [{"append": 14, "pop": 15}, {"append": 7, "pop": 7}]
+
+
+@pytest.mark.parametrize("damage", ["none", "later-host-state"])
+def test_active_key_frame_keeps_current_literal_genuine_full_owner_document_and_pages(monkeypatch, damage):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, outputs = _cpu_routing_subject(), []
+    if damage == "later-host-state":
+        snap["stp_topology_observations"][B] = _stp({30: [("Po10", "Desg", "FWD")]})
+    before, active = deepcopy(snap), uip._carriage_observation_key
+    for checker in (_literal_210_key_reference, active):
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_carriage_observation_key", checker)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+            outputs.append(_cpu_routing_outputs(snap))
+    assert outputs[0] == outputs[1] and snap == before

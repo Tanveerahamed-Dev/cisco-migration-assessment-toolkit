@@ -4849,10 +4849,10 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
     if type(record) is not dict:
         return None
     nodes, characters = 0, 0
-    frames = [(iter((record,)), 0)]
+    frame = (iter((record,)), 0)
+    parents = []
     try:
-        while frames:
-            frame = frames.pop()
+        while True:
             iterator, depth = frame
             for node in iterator:
                 nodes += 1
@@ -4880,11 +4880,15 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
                     continue
                 else:
                     return None
-                # Resume the SAME advanced parent only AFTER this child, preserving all-keys-first DFS.
-                # No per-value next()/StopIteration block, recursion, queued container or alias dedup.
-                frames.append(frame)
-                frames.append(child)
+                # The child becomes active directly; only the SAME advanced parent is suspended.
+                # Resume it AFTER the child, without a redundant child-stack append/pop or any pre-read.
+                parents.append(frame)
+                frame = child
                 break
+            else:
+                if not parents:
+                    break
+                frame = parents.pop()
     except (TypeError, ValueError, RuntimeError, RecursionError, OverflowError, MemoryError):
         return None
     try:
