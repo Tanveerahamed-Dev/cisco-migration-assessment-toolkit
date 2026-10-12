@@ -2553,7 +2553,45 @@ def test_role_cells_capture_current_logical_row_before_the_real_physical_callbac
     assert outputs[0] == outputs[1] and traces[0] == traces[1]
 
 
-@pytest.mark.parametrize("change", ["factory-drift", "foreign-host", "final-none", "lookup-error"])
+def _literal_runtime_role_lookup(retained, change, operation="dual"):
+    """An isolated actual dict/tuple lookup oracle, never an alternate STP or projection algorithm."""
+    trace, state = [], {"eq": 0}
+    store = {("switch-c", "Po10", 10): retained}
+
+    class ForeignHost(str):
+        def __hash__(self):
+            trace.append("hash")
+            return str.__hash__(self)
+
+        def __eq__(self, other):
+            trace.append("eq")
+            state["eq"] += 1
+            if ((change == "final-none" and state["eq"] == 1)
+                    or (change == "final-none-on-final" and state["eq"] == 2)):
+                store[("switch-c", "Po10", 10)] = None
+                trace.append("replace-final")
+            if change == "lookup-error":
+                raise RuntimeError("original unsafe role-map callback refusal")
+            return str.__eq__(self, other)
+
+    key = (ForeignHost("switch-c"), "Po10", 10)  # SAME fresh tuple for both operations on this interpreter.
+    value, error = None, None
+    try:
+        if operation == "dual":
+            assert key in store
+            value = store[key]
+        elif operation == "one-get":
+            value = store.get(key)
+        else:
+            first = store.get(key)
+            store[key]  # Deliberate stale-first mutant: performs FINAL lookup but ignores its returned value.
+            value = first
+    except RuntimeError as exc:
+        error = (type(exc), exc.args)
+    return tuple(trace), state["eq"], value, error
+
+
+@pytest.mark.parametrize("change", ["factory-drift", "foreign-host", "final-none", "lookup-error", "final-none-on-final"])
 def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_materialization(monkeypatch, change):
     from cisco_toolkit import ui_projection as uip
 
@@ -2563,7 +2601,7 @@ def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_m
         current = snap["stp_topology_observations"]["switch-c"]
         original_roles = current["roles"]
         ends = [member["a"] for member in snap["vlan_carriage"]["cables"][1]["members"]]
-        state = {"active": False, "eq": 0, "map": None}
+        state = {"active": False, "eq": 0, "map": None, "start": 0}
 
         class ForeignHost(str):
             def __hash__(self):
@@ -2575,7 +2613,8 @@ def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_m
                 if state["active"]:
                     trace.append("eq")
                     state["eq"] += 1
-                    if state["eq"] == 1 and change == "final-none":
+                    if ((state["eq"] == 1 and change == "final-none")
+                            or (state["eq"] == 2 and change == "final-none-on-final")):
                         state["map"][("switch-c", "Po10", 10)] = None
                         trace.append("replace-final")
                     if change == "lookup-error":
@@ -2595,11 +2634,11 @@ def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_m
             if changed and type(args[0]) is ForeignHost and args[1:3] == ("Po10", 10):
                 # Test-only inspection of the REAL flat map; this is not a private-namespace isolation claim.
                 bindings = dict(zip(join.__code__.co_freevars, join.__closure__))
-                state.update(active=True, eq=0, map=bindings["role_rows"].cell_contents)
+                state.update(active=True, eq=0, map=bindings["role_rows"].cell_contents, start=len(trace))
 
         def after(args, answer, cell, _join):
             if state["active"]:
-                domains.append(tuple(trace[-5:]))
+                domains.append((tuple(trace[state["start"]:]), answer))
                 state["active"] = False
             if args[0] == "switch-c" and args[1:3] == ("Po10", 10) and not changed:
                 assert cell is enabled
@@ -2612,7 +2651,7 @@ def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_m
                     for end in ends:
                         end["host"] = ForeignHost("switch-c")
             elif changed and args[1:3] == ("Po10", 10) and str(args[0]) == "switch-c":
-                if change not in ("final-none", "lookup-error"):
+                if change not in ("final-none", "final-none-on-final", "lookup-error"):
                     assert answer is initial[-1]  # No allocation/list/pair reconstruction after the transition.
 
         with monkeypatch.context() as patch:
@@ -2629,14 +2668,26 @@ def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_m
         for end in ends:
             end["host"] = "switch-c"
         current["roles"] = original_roles
-        if change == "foreign-host":
-            assert trace and len(trace) % 4 == 0
-            assert all(trace[i:i+4] == ["hash", "eq", "hash", "eq"] for i in range(0, len(trace), 4))
-        if change == "final-none":
-            assert trace == ["hash", "eq", "replace-final", "hash", "eq"]
+        if change != "factory-drift":
+            expected_trace, comparisons, expected_value, expected_error = _literal_runtime_role_lookup(initial[-1], change)
+            if change == "lookup-error":
+                assert trace == list(expected_trace) and result == expected_error and comparisons == 1
+            else:
+                assert domains and comparisons == 2 and expected_error is None
+                for actual_trace, actual_value in domains:
+                    assert actual_trace == expected_trace and actual_value is expected_value
+                assert trace == list(expected_trace) * len(domains)
+                one_trace, one_comparisons, _one_value, one_error = _literal_runtime_role_lookup(
+                    initial[-1], change, "one-get")
+                assert one_error is None and one_comparisons == 1 and one_trace != expected_trace
+        if change in ("final-none", "final-none-on-final"):
             assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
-        if change == "lookup-error":
-            assert trace == ["hash", "eq"]
+            assert expected_value is None
+        if change == "final-none-on-final":
+            stale_trace, stale_comparisons, stale_value, stale_error = _literal_runtime_role_lookup(
+                initial[-1], change, "stale-first")
+            assert stale_error is None and stale_comparisons == 2 and stale_trace == expected_trace
+            assert stale_value is initial[-1] and stale_value is not expected_value
         traces.append(tuple(trace))
         outputs.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
     assert outputs[0] == outputs[1] and traces[0] == traces[1]

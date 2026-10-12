@@ -711,6 +711,9 @@ _SWEEP_ARGV_WS = _CRED_WS.replace("\udc80-\udcff", "")
 _SWEEP_ARGV_WORD_RE = re.compile(
     "(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
+_SWEEP_SHELL_WORD_RE = re.compile(
+    "[;|&()<>]|(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\;|&()<>]|\\\\[^\r\n]|\\\\\\Z"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'[^'\r\n]*(?:'|\\Z))+")
 _SWEEP_CHPASSWD_RE = re.compile(_v(
     r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
 _SWEEP_PGPASS_RE = re.compile(_v(
@@ -780,6 +783,11 @@ _SWEEP_EMPTY_AUTH_HEADER_RE = re.compile(_v(
 _SWEEP_CAPTURE_PREFIX_RE = re.compile(_v(
     r"^{h}*(?:(?:[#+>\-]{H})+|\d{1,9}{H}|[^\r\n" + _CRED_WS
     + r"]{1,256}:\d{1,9}:{h}*|[^\r\n" + _CRED_WS + r"]{1,256}:{H})?{h}*"))
+_SWEEP_COMMENT_PREFIX_RE = re.compile(_v(r"^{h}*(?P<p>//|!){h}*"))
+_SWEEP_COMMENT_MASKED_HEADER_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*"
+    r"(?:<redacted>|(?P<q>[\"'])<redacted>(?P=q)){h}*\Z"),
+    re.IGNORECASE)
 _PUBLIC_HTTP_HEADER_RE = re.compile(_v(
     r"^{h}*(?:host{h}*:{h}*[A-Za-z0-9.\-:\[\]]{1,255}"
     r"|accept{h}*:{h}*(?:\*|[A-Za-z0-9!#$&^_.+-]+)/(?:\*|[A-Za-z0-9!#$&^_.+-]+)"
@@ -1440,6 +1448,10 @@ def _sweep_header_capture_tail(line: str, header_start: int) -> list[str]:
     A number or a colon-shaped token on the value line can itself be the credential. It is
     never authenticated as a capture prefix merely by resembling one.
     """
+    comment = _SWEEP_COMMENT_PREFIX_RE.match(line)
+    if (comment is not None and comment.end() <= header_start
+            and line[comment.end():header_start].strip(_CRED_WS_CHARS) in {"", "\"", "'"}):
+        return ["comment:" + comment.group("p")]
     prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
     leading = _SWEEP_LEAD_RE.match(line).end()
     return ["capture"] if prefix is not None and leading < prefix.end() <= header_start else []
@@ -1503,6 +1515,11 @@ def _sweep_dangle(line: str, carry: tuple[str, str | None] | None = None) -> tup
         found = _SWEEP_EMPTY_AUTH_HEADER_RE.search(masked)
         if found is not None:
             return ("header-value", _sweep_header_capture_tail(line, found.start()), False)
+        found = _SWEEP_COMMENT_MASKED_HEADER_RE.search(line)
+        if found is not None:
+            tail = _sweep_header_capture_tail(line, found.start())
+            if any(item.startswith("comment:") for item in tail):
+                return ("scheme", tail, False)
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _sweep_argv_walk(line, carry)[1]
         if pending is not None:
@@ -1600,6 +1617,15 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
     if kind in {"scheme", "header-value"}:
         prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line) if "capture" in tail else None
         value_start = max(start, prefix.end() if prefix else 0)
+        comment = next((item[len("comment:"):] for item in tail if item.startswith("comment:")), None)
+        if comment is not None:
+            decoration = _SWEEP_COMMENT_PREFIX_RE.match(line)
+            if decoration is not None and decoration.group("p") == comment:
+                value_start = max(value_start, decoration.end())
+            value = line[value_start:].strip(_CRED_WS_CHARS)
+            # This complete carried comment field owns the continuation, so an
+            # initial placeholder never certifies a still-private second token.
+            return bool(value) and _sweep_operand_bad(value, "value")
         if kind == "scheme":
             quote = next((item[-1] for item in tail if item in {"curl-header-'", 'curl-header-"'}), None)
             if quote is not None and _sweep_curl_closed_header_value(line, value_start, quote):
@@ -1901,7 +1927,7 @@ def _sweep_public_operand(text: str, kind: str) -> bool:
             or kind == "level" and core in {"noauthnopriv", "authnopriv", "authpriv"})
 
 
-def _sweep_snmp_shape(line: str) -> bool:
+def _sweep_snmp_shape(line: str, *, shell_witness: bool = True) -> bool:
     """Recognize argument semantics, not their optional quote/escape spelling."""
     # Preserve 00647ebd's existing raw witness path. It can see a valid vector inside
     # a quoted sh/bash command word, allowing the existing outer '-c' operand walk
@@ -1931,7 +1957,7 @@ def _sweep_snmp_shape(line: str) -> bool:
             return True
         if option == "-v" and folded in {"1", "3"} or option in {"-a", "-x"} and folded in _SWEEP_SNMP_PROTOCOLS:
             weak.add(option)
-    return len(weak) >= 2
+    return len(weak) >= 2 or (shell_witness and _sweep_shell_snmp_witness(line))
 
 
 def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
@@ -1946,18 +1972,24 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
         return True
     valued = ("-3m", "-3M", "-3k", "-3K", "-Cn", "-CE", "-v", "-u", "-l", "-a", "-x", "-c",
               "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p")
-    words = iter(_SWEEP_ARGV_WORD_RE.finditer(line, directive.end()))
+    words = list(_SWEEP_ARGV_WORD_RE.finditer(line, directive.end()))
     targets: list[str] = []
-    for word in words:
-        token = _sweep_decode_word(word.group(0))[0]
-        if token == "-Ci" and not targets:
+    index = 0
+    while index < len(words):
+        token = _sweep_decode_word(words[index].group(0))[0]
+        public = _sweep_snmp_public_option(words, index) if not targets else None
+        if public is not None:
+            if public < 0:
+                return False
+            index = public
             continue
+        index += 1
         option = next((name for name in valued if token.startswith(name)), None) if not targets else None
         if option is not None:
             if token == option:
-                operand = next(words, None)
-                if operand is None or not _sweep_decode_word(operand.group(0))[0]:
+                if index == len(words) or not _sweep_decode_word(words[index].group(0))[0]:
                     return False
+                index += 1
             continue
         targets.append(token)
         if len(targets) > 3:
@@ -1969,20 +2001,218 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
     return len(targets) in {2, 3} and all(_SWEEP_SNMP_OID_RE.fullmatch(oid) for oid in targets[1:])
 
 
-def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
+def _sweep_snmp_public_option(words: list[re.Match[str]], index: int) -> int | None:
+    """The first unconsumed word after an accepted public option, or -1 if incomplete.
+
+    Logging has its own compound arity: priority and file/facility may be in the option
+    word, its next word, or separate words. This independently follows the pinned
+    Net-SNMP snmp_log_options/decode_priority grammar, not the credential allowlist.
+    """
+    token = _sweep_decode_word(words[index].group(0))[0]
+    following = index + 1
+    if token in {"-d", "-h", "-H", "-V", "-Ci"}:
+        return following
+    if token == "-C":
+        if following >= len(words):
+            return -1
+        modifiers = _sweep_decode_word(words[following].group(0))[0]
+        return following + 1 if re.fullmatch(r"i+", modifiers) else None
+    if token.startswith("-C") and re.fullmatch(r"i+", token[2:]):
+        return following
+    valued = ("-D", "-m", "-M", "-O", "-I", "-P", "-T", "-s", "-Z", "-Y", "-r", "-t")
+    option = next((name for name in valued if token.startswith(name)), None)
+    if option is not None:
+        if token != option:
+            return following
+        return following + 1 if following < len(words) and _sweep_decode_word(words[following].group(0))[0] else -1
+    if token == "-L":
+        if following >= len(words):
+            return -1
+        token += _sweep_decode_word(words[following].group(0))[0]
+        following += 1
+    if not token.startswith("-L") or len(token) < 3 or token[2] not in "eonEONfsFS":
+        return None
+    mode = token[2]
+    rest = token[3:]
+    if rest.startswith("="):
+        rest = rest[1:]
+    rest = rest.lstrip(_CRED_WS_CHARS)
+    if mode in "eon":
+        return following
+    if not rest:
+        if following >= len(words):
+            return -1
+        rest = _sweep_decode_word(words[following].group(0))[0]
+        following += 1
+    if mode in "EONFS":
+        priority = re.match(r"[0-7!aAcCeEwWnNiIdD](?:-[0-7!aAcCeEwWnNiIdD])?", rest)
+        if priority is None:
+            return -1
+        rest = rest[priority.end():]
+        if mode in "EON":
+            return following
+        if mode == "F":
+            rest = rest.lstrip(" ")
+        if not rest:
+            if following >= len(words):
+                return -1
+            rest = _sweep_decode_word(words[following].group(0))[0]
+            following += 1
+    if mode in "sS" and rest[:1] not in "dDuU01234567":
+        return -1
+    return following if rest else -1
+
+
+def _sweep_argv_runs(line: str, *, shell_witness: bool = True) -> list[tuple[str, int, bool]]:
     """``(kind, start, shape_only)`` of every shell-argument run, by start (the producer's rule restated):
     each listed command from its end, an SNMPCMD_ARGS directive that starts a statement, or else a net-snmp
     vector by its shape from the line start. Each run ends where the next one starts."""
     runs = [(_sweep_argv_kind(m.group("cmd")), m.end(), False) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
+    known_ends = {run[1] for run in runs}
+    runs.extend(run for run in _sweep_spelled_snmp_runs(line) if run[1] not in known_ends)
     if "-" in line:
         directive = next((m for m in _sweep_line_words(line)
                           if m.group(0).casefold() in _SWEEP_SNMP_DIRECTIVES
                           and _sweep_directive_config(line, m)), None)
         if directive is not None:
             runs.append(("snmp", directive.end(), False))
-        elif _sweep_snmp_shape(line):
+        elif _sweep_snmp_shape(line, shell_witness=shell_witness):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
+
+
+def _sweep_shell_executable(raw: str) -> str | None:
+    """Resolve a literal executable word using shell quoting, never config escapes.
+
+    Single-quote backslashes stay literal; in double quotes only the shell's four
+    escapable characters lose their slash. Unfinished quotes cannot prove a name.
+    """
+    result: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char in {"\"", "'"} and (not quote or quote == char):
+            quote = "" if quote else char
+            index += 1
+            continue
+        if char == chr(92) and quote != "'" and index + 1 < len(raw):
+            following = raw[index + 1]
+            if not quote or following in {"$", "`", "\"", chr(92)}:
+                result.append(following)
+                index += 2
+                continue
+        result.append(char)
+        index += 1
+    return None if quote else "".join(result)
+
+
+def _sweep_shell_command_words(line: str) -> list[re.Match[str]]:
+    """Literal command-word positions with the existing two-wrapper boundary policy.
+
+    The pre-existing raw run path remains separate. Operator characters inside quotes
+    are data, and a redirection's following filename never becomes an executable.
+    """
+    prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+    start = prefix.end() if prefix is not None else 0
+    command, redirect = True, False
+    commands = []
+    for word in _SWEEP_SHELL_WORD_RE.finditer(line, start):
+        raw = word.group(0)
+        if raw in {"<", ">"}:
+            redirect = True
+            continue
+        if raw in {";", "|", "&", "(", ")"}:
+            command, redirect = raw != ")", False
+            continue
+        if redirect:
+            redirect = False
+            continue
+        if command and raw in {"sudo", "env"}:
+            continue
+        if command and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", raw):
+            continue
+        if command:
+            commands.append(word)
+        command = False
+    return commands
+
+
+def _sweep_spelled_snmp_runs(line: str) -> list[tuple[str, int, bool]]:
+    """Only newly resolved quote/escape spellings; every pre-existing raw run stays."""
+    if not any(char in line for char in {"\"", "'", chr(92)}):
+        return []
+    runs = []
+    for word in _sweep_shell_command_words(line):
+        raw = word.group(0)
+        if not any(char in raw for char in {"\"", "'", chr(92)}):
+            continue
+        name = _sweep_shell_executable(raw)
+        found = _SWEEP_ARGV_CMD_RE.fullmatch(name) if name is not None else None
+        if found is not None:
+            kind = _sweep_argv_kind(found.group("cmd"))
+            if kind in {"snmp", "snmp-create", "encode_keychange"}:
+                runs.append((kind, word.end(), False))
+    return runs
+
+
+def _sweep_shell_snmp_witness(line: str, *, depth: int = 0) -> bool:
+    """An actual sh/bash -c carrier with an owned private slot in a spelled SNMP command.
+
+    This only enables the existing shape-only outer '-c' operand path. Plain commands,
+    public operands and echo literals keep their previous treatment; no refusal policy
+    or new whole-string replacement is introduced. Nested ownership is bounded at eight.
+    """
+    if depth >= 8 or not any(char in line for char in {"\"", "'", chr(92)}):
+        return False
+    words = list(_SWEEP_SHELL_WORD_RE.finditer(line))
+    starts = [word.start() for word in words]
+    for command in _sweep_shell_command_words(line):
+        name = _sweep_shell_executable(command.group(0))
+        if name is None or not re.fullmatch(r"(?:[\w.~/-]{0,128}/)?(?:sh|bash)", name):
+            continue
+        position = bisect.bisect_left(starts, command.end())
+        if (position + 1 >= len(words)
+                or _sweep_shell_executable(words[position].group(0)) != "-c"):
+            continue
+        script = _sweep_shell_executable(words[position + 1].group(0))
+        if script is None or _SWEEP_ARGV_CMD_RE.search(script):
+            continue
+        spelled = {end for _kind, end, _shape in _sweep_spelled_snmp_runs(script)}
+        if spelled:
+            commands = _sweep_shell_command_words(script)
+            operands = sorted(_sweep_argv_walk(script, shell_witness=False)[0])
+            actual_words = list(_SWEEP_SHELL_WORD_RE.finditer(script))
+            operand_index, word_index = 0, 0
+            for index, inner in enumerate(commands):
+                if inner.end() not in spelled:
+                    continue
+                stop = commands[index + 1].start() if index + 1 < len(commands) else len(script)
+                while operand_index < len(operands) and operands[operand_index][0] < inner.end():
+                    operand_index += 1
+                while operand_index < len(operands) and operands[operand_index][0] < stop:
+                    start, end, kind = operands[operand_index]
+                    operand_index += 1
+                    if kind in {"value", "create-auth", "create-priv"}:
+                        if not _sweep_operand_bad(script[start:end], kind):
+                            continue
+                        if script.startswith(_PLACEHOLDER, start):
+                            marker_end = start + len(_PLACEHOLDER)
+                            if (marker_end >= end or script[marker_end] in _CRED_WS_CHARS + ";&|()<>"):
+                                end = min(end, marker_end)
+                        while (word_index + 1 < len(actual_words)
+                               and actual_words[word_index + 1].start() <= start):
+                            word_index += 1
+                        token = (actual_words[word_index] if actual_words
+                                 and actual_words[word_index].start() <= start < actual_words[word_index].end()
+                                 else None)
+                        if script[start:end] != _PLACEHOLDER:
+                            end = min(end, token.end()) if token is not None else end
+                        if _sweep_operand_bad(script[start:end], kind):
+                            return True
+        if _sweep_shell_snmp_witness(script, depth=depth + 1):
+            return True
+    return False
 
 
 def _sweep_argv_option(text: str, options: tuple[tuple[str, str], ...],
@@ -2028,16 +2258,17 @@ def _sweep_operand_bad(text: str, kind: str) -> bool:
     return bool(core) and not marker
 
 
-def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
+def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None, *, shell_witness: bool = True
                      ) -> tuple[list[tuple[int, int, str]], tuple[str, str | None] | None]:
     """The producer's ``_redact_argv_walk`` restated: every credential operand word span, and the run kind and
     expected operand kind when the vector continues on the next line (``carry``: this line continues one)."""
-    runs = _sweep_argv_runs(line)
+    runs = _sweep_argv_runs(line, shell_witness=shell_witness)
     if carry is not None:
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:
         return [], None
-    words = [m.span() for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
+    word_matches = list(_SWEEP_ARGV_WORD_RE.finditer(line))
+    words = [m.span() for m in word_matches]
     starts = [a for a, _b in words]
     operands: list[tuple[int, int, str]] = []
     pending: tuple[str, str | None] | None = None
@@ -2060,6 +2291,18 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
                 if not _sweep_netuse_structural(text):
                     operands.append((a, b, "value"))
                 continue
+            if kind_name == "snmp" and not shape_only and expect is None:
+                public = _sweep_snmp_public_option(word_matches, position - 1)
+                if public is not None and public > 0:
+                    public_end = words[public - 1][1]
+                    position = public
+                    # A public logging/debug operand spelling a command is still that
+                    # operand. It cannot split the statement before a later private flag.
+                    while next_run < len(runs) and a < runs[next_run][1] <= public_end:
+                        consumed_commands.add(next_run)
+                        next_run += 1
+                    stop = runs[next_run][1] if next_run < len(runs) else len(line) + 1
+                    continue
             option = _sweep_argv_option(text, options, shape_only)
             if expect is not None:
                 operands.append((a, b, expect))

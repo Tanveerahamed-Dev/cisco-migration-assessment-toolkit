@@ -1,0 +1,2457 @@
+{
+  "schema": "w60c-synthetic-redaction-corpus/1",
+  "current_main_ref": "0dc2f5d6f4d122ef74f8098e173e2be0bc2c902f",
+  "round3_ref": "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c",
+  "review": "PR656-comment6112757283",
+  "values_policy": "Every invented credential, user, host, path and arbitrary identifier is EXAMPLE-only. Exact fixed public-vocabulary and punctuation grammar constants deliberately used in required private scalar slots are synthetic collision controls, not real or substituted credentials. Canonical <redacted> is the output/control marker.",
+  "scope": [
+    "P1-3",
+    "P1-4",
+    "P2-5",
+    "P2-6"
+  ],
+  "deferred": [
+    {
+      "finding": "P3-7",
+      "reason": "Fail-safe ISAKMP hostname over-redaction; no claimed repair unless an independent narrow proven-operand rule exists.",
+      "immutable_legacy_row": "isakmp-peer:complete-inline-enc-hostname"
+    },
+    {
+      "finding": "P2-6",
+      "owner_decision": "Owner hard-stop/fallback decision2026-10-12: forward-revert P26 source and defer this finding; ship only clean P13/P14/P25, with every legacy assertion and mandatory gate unchanged.",
+      "reason": "The rejected explicit-scalar implementation broke immutable legacy public metadata and byte oracles. Strict future expectations remain recorded verbatim; every deferred case actively requires exact immutable-main producer bytes and raw/post verifier behavior, and remains in full secret/certification differentials.",
+      "source_revert_ref": "b8c7d215aa0592b32dceecb549492ee16e47c747"
+    }
+  ],
+  "fix_commit_refs": {
+    "P1-3": "b582a63be6eaecbaaf4f3bdf41e02fb74cc41851",
+    "P1-4": "f2b2a6336b7998933ca8d2fe556f6652935aceea",
+    "P2-5": "8b9cf50566649fac97c954beb26411a450dbb93d",
+    "P2-6": "22ac66b347f8946c362320370e6ab7f791eeb2e4",
+    "P2-5-carrier": "0242751d2b0763770e80b248a61212a9eae731ec",
+    "P2-5-operand-boundary": "fabd9144f3dbf7d5d90098d4acf6ae2154793371",
+    "P2-6-defer-revert": "b8c7d215aa0592b32dceecb549492ee16e47c747",
+    "P1-4-continuation-closure": "ab24e774167395fccd2e60b6c54ccfcf631e2246",
+    "P2-5-decoded-carrier": "8bea6581a2c853beeb0222d164a752efa214f2ca"
+  },
+  "view_sha256": {
+    "snapshot.json": "6fb01cc4781e1db9b637722f2a6e1e9dbe6724a3140e007306baffd27f150445",
+    "sample_fleet.snapshot.json": "67debf50b2fb6ee09471c181b4d876acd59b4b50f683a7554880f57cd72c2552"
+  },
+  "rows": [
+    {
+      "id": "directive:610",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -d -c EXAMPLE-COMMUNITY-610 EXAMPLE-HOST-610\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-610"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -d -c <redacted> EXAMPLE-HOST-610\n"
+    },
+    {
+      "id": "directive:611",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -D EXAMPLE-DEBUG-610 -c EXAMPLE-COMMUNITY-611 EXAMPLE-HOST-611\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-611"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -D EXAMPLE-DEBUG-610 -c <redacted> EXAMPLE-HOST-611\n"
+    },
+    {
+      "id": "directive:612",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -DEXAMPLE-DEBUG-611 -c EXAMPLE-COMMUNITY-612 EXAMPLE-HOST-612\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-612"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -DEXAMPLE-DEBUG-611 -c <redacted> EXAMPLE-HOST-612\n"
+    },
+    {
+      "id": "directive:613",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -O n -c EXAMPLE-COMMUNITY-613 EXAMPLE-HOST-613\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-613"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -O n -c <redacted> EXAMPLE-HOST-613\n"
+    },
+    {
+      "id": "directive:614",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -On -c EXAMPLE-COMMUNITY-614 EXAMPLE-HOST-614\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-614"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -On -c <redacted> EXAMPLE-HOST-614\n"
+    },
+    {
+      "id": "directive:615",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -I b -c EXAMPLE-COMMUNITY-615 EXAMPLE-HOST-615\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-615"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -I b -c <redacted> EXAMPLE-HOST-615\n"
+    },
+    {
+      "id": "directive:616",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Ib -c EXAMPLE-COMMUNITY-616 EXAMPLE-HOST-616\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-616"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Ib -c <redacted> EXAMPLE-HOST-616\n"
+    },
+    {
+      "id": "directive:617",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -C i -c EXAMPLE-COMMUNITY-617 EXAMPLE-HOST-617\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-617"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -C i -c <redacted> EXAMPLE-HOST-617\n"
+    },
+    {
+      "id": "directive:618",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Ci -c EXAMPLE-COMMUNITY-618 EXAMPLE-HOST-618\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-618"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Ci -c <redacted> EXAMPLE-HOST-618\n"
+    },
+    {
+      "id": "directive:619",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -m EXAMPLE-MIB-618 -c EXAMPLE-COMMUNITY-619 EXAMPLE-HOST-619\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-619"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -m EXAMPLE-MIB-618 -c <redacted> EXAMPLE-HOST-619\n"
+    },
+    {
+      "id": "directive:620",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -M /tmp/EXAMPLE-MIB-619 -c EXAMPLE-COMMUNITY-620 EXAMPLE-HOST-620\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-620"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -M /tmp/EXAMPLE-MIB-619 -c <redacted> EXAMPLE-HOST-620\n"
+    },
+    {
+      "id": "directive:621",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Y EXAMPLE-TOKEN-620 -c EXAMPLE-COMMUNITY-621 EXAMPLE-HOST-621\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-621"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Y EXAMPLE-TOKEN-620 -c <redacted> EXAMPLE-HOST-621\n"
+    },
+    {
+      "id": "directive:622",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -T EXAMPLE-TRANSPORT-621 -c EXAMPLE-COMMUNITY-622 EXAMPLE-HOST-622\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-622"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -T EXAMPLE-TRANSPORT-621 -c <redacted> EXAMPLE-HOST-622\n"
+    },
+    {
+      "id": "directive:623",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -s EXAMPLE-CONTEXT-622 -c EXAMPLE-COMMUNITY-623 EXAMPLE-HOST-623\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-623"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -s EXAMPLE-CONTEXT-622 -c <redacted> EXAMPLE-HOST-623\n"
+    },
+    {
+      "id": "directive:624",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -r 2 -t 3 -c EXAMPLE-COMMUNITY-624 EXAMPLE-HOST-624\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-624"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -r 2 -t 3 -c <redacted> EXAMPLE-HOST-624\n"
+    },
+    {
+      "id": "directive:625",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Le -c EXAMPLE-COMMUNITY-625 EXAMPLE-HOST-625\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-625"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Le -c <redacted> EXAMPLE-HOST-625\n"
+    },
+    {
+      "id": "directive:626",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Lo -c EXAMPLE-COMMUNITY-626 EXAMPLE-HOST-626\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-626"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Lo -c <redacted> EXAMPLE-HOST-626\n"
+    },
+    {
+      "id": "directive:627",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Ln -c EXAMPLE-COMMUNITY-627 EXAMPLE-HOST-627\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-627"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Ln -c <redacted> EXAMPLE-HOST-627\n"
+    },
+    {
+      "id": "directive:628",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LE 3 -c EXAMPLE-COMMUNITY-628 EXAMPLE-HOST-628\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-628"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LE 3 -c <redacted> EXAMPLE-HOST-628\n"
+    },
+    {
+      "id": "directive:629",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LO4 -c EXAMPLE-COMMUNITY-629 EXAMPLE-HOST-629\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-629"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LO4 -c <redacted> EXAMPLE-HOST-629\n"
+    },
+    {
+      "id": "directive:630",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LN 5 -c EXAMPLE-COMMUNITY-630 EXAMPLE-HOST-630\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-630"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LN 5 -c <redacted> EXAMPLE-HOST-630\n"
+    },
+    {
+      "id": "directive:631",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Lf /tmp/EXAMPLE-LOG-631 -c EXAMPLE-COMMUNITY-631 EXAMPLE-HOST-631\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-631"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Lf /tmp/EXAMPLE-LOG-631 -c <redacted> EXAMPLE-HOST-631\n"
+    },
+    {
+      "id": "directive:632",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Lf/tmp/EXAMPLE-LOG-632 -c EXAMPLE-COMMUNITY-632 EXAMPLE-HOST-632\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-632"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Lf/tmp/EXAMPLE-LOG-632 -c <redacted> EXAMPLE-HOST-632\n"
+    },
+    {
+      "id": "directive:633",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Lf=/tmp/EXAMPLE-LOG-633 -c EXAMPLE-COMMUNITY-633 EXAMPLE-HOST-633\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-633"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Lf=/tmp/EXAMPLE-LOG-633 -c <redacted> EXAMPLE-HOST-633\n"
+    },
+    {
+      "id": "directive:634",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs '-Lf /tmp/EXAMPLE-LOG-634' -c EXAMPLE-COMMUNITY-634 EXAMPLE-HOST-634\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-634"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs '-Lf /tmp/EXAMPLE-LOG-634' -c <redacted> EXAMPLE-HOST-634\n"
+    },
+    {
+      "id": "directive:635",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Ls d -c EXAMPLE-COMMUNITY-635 EXAMPLE-HOST-635\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-635"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Ls d -c <redacted> EXAMPLE-HOST-635\n"
+    },
+    {
+      "id": "directive:636",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Ls0 -c EXAMPLE-COMMUNITY-636 EXAMPLE-HOST-636\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-636"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Ls0 -c <redacted> EXAMPLE-HOST-636\n"
+    },
+    {
+      "id": "directive:637",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF 3 /tmp/EXAMPLE-LOG-637 -c EXAMPLE-COMMUNITY-637 EXAMPLE-HOST-637\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-637"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LF 3 /tmp/EXAMPLE-LOG-637 -c <redacted> EXAMPLE-HOST-637\n"
+    },
+    {
+      "id": "directive:638",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF4 /tmp/EXAMPLE-LOG-638 -c EXAMPLE-COMMUNITY-638 EXAMPLE-HOST-638\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-638"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LF4 /tmp/EXAMPLE-LOG-638 -c <redacted> EXAMPLE-HOST-638\n"
+    },
+    {
+      "id": "directive:639",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF5 /tmp/EXAMPLE-LOG-639 -c EXAMPLE-COMMUNITY-639 EXAMPLE-HOST-639\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-639"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LF5 /tmp/EXAMPLE-LOG-639 -c <redacted> EXAMPLE-HOST-639\n"
+    },
+    {
+      "id": "directive:640",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs '-LF 3 /tmp/EXAMPLE-LOG-640' -c EXAMPLE-COMMUNITY-640 EXAMPLE-HOST-640\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-640"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs '-LF 3 /tmp/EXAMPLE-LOG-640' -c <redacted> EXAMPLE-HOST-640\n"
+    },
+    {
+      "id": "directive:641",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF 3-5 /tmp/EXAMPLE-LOG-641 -c EXAMPLE-COMMUNITY-641 EXAMPLE-HOST-641\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-641"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LF 3-5 /tmp/EXAMPLE-LOG-641 -c <redacted> EXAMPLE-HOST-641\n"
+    },
+    {
+      "id": "directive:642",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LS 3 d -c EXAMPLE-COMMUNITY-642 EXAMPLE-HOST-642\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-642"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LS 3 d -c <redacted> EXAMPLE-HOST-642\n"
+    },
+    {
+      "id": "directive:643",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LS4 0 -c EXAMPLE-COMMUNITY-643 EXAMPLE-HOST-643\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-643"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LS4 0 -c <redacted> EXAMPLE-HOST-643\n"
+    },
+    {
+      "id": "directive:644",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs '-LS3d' -c EXAMPLE-COMMUNITY-644 EXAMPLE-HOST-644\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-644"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs '-LS3d' -c <redacted> EXAMPLE-HOST-644\n"
+    },
+    {
+      "id": "directive:645",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "InFoRmSeSs -d -Lf /tmp/EXAMPLE-LOG-MIXED -c EXAMPLE-COMMUNITY-645 EXAMPLE-HOST-645\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-645"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "InFoRmSeSs -d -Lf /tmp/EXAMPLE-LOG-MIXED -c <redacted> EXAMPLE-HOST-645\n"
+    },
+    {
+      "id": "directive:646",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "PrOxY -D EXAMPLE-DEBUG-PROXY -LF 3 /tmp/EXAMPLE-LOG-PROXY -c EXAMPLE-COMMUNITY-646 EXAMPLE-HOST-646 .1.3.6.1.2.1\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-646"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "PrOxY -D EXAMPLE-DEBUG-PROXY -LF 3 /tmp/EXAMPLE-LOG-PROXY -c <redacted> EXAMPLE-HOST-646 .1.3.6.1.2.1\n"
+    },
+    {
+      "id": "directive:647",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "prOXy -d -LS4 d -c EXAMPLE-COMMUNITY-647 EXAMPLE-HOST-647 .1.3.6.1.2.1 .1.3.6.1.4.1.8072\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-647"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "prOXy -d -LS4 d -c <redacted> EXAMPLE-HOST-647 .1.3.6.1.2.1 .1.3.6.1.4.1.8072\n"
+    },
+    {
+      "id": "directive:648",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -Lf -c -c EXAMPLE-COMMUNITY-648 EXAMPLE-HOST-648\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-648"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -Lf -c -c <redacted> EXAMPLE-HOST-648\n"
+    },
+    {
+      "id": "directive:649",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF 3 snmpget -c EXAMPLE-COMMUNITY-649 EXAMPLE-HOST-649\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-649"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "TrApSeSs -LF 3 snmpget -c <redacted> EXAMPLE-HOST-649\n"
+    },
+    {
+      "id": "directive:noauth-public",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "TrApSeSs -d -Lf /tmp/EXAMPLE-PUBLIC-LOG-651 -v 3 -u EXAMPLE-USER-651 -l noAuthNoPriv EXAMPLE-HOST-651\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:logging-quoted-public",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "InFoRmSeSs '-LF 3 /tmp/EXAMPLE-PUBLIC-LOG-652' -v 3 -u EXAMPLE-USER-652 -l noAuthNoPriv EXAMPLE-HOST-652\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:prose-uppercase",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "TRAPSESS -d is an EXAMPLE public instruction with more than three words\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:proxy-without-oid",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "PrOxY -d EXAMPLE-HOST-654 EXAMPLE-PROSE-654\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:lookalike-word",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "TrApSeSs-helper -d -c EXAMPLE-PUBLIC-655 EXAMPLE-HOST-655\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:public-logging-file-command-word",
+      "finding": "P1-3",
+      "mode": "must_keep",
+      "text": "TrApSeSs -Lf snmpget EXAMPLE-HOST-656\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "prefix:wrapped-650",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// Authorization: EXAMPLE-SCHEME-660\n// EXAMPLE-WRAPPED-CREDENTIAL-650\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-650"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "// Authorization: <redacted>\n// <redacted>\n"
+    },
+    {
+      "id": "prefix:wrapped-651",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "! Proxy-Authorization: EXAMPLE-SCHEME-661\n! EXAMPLE-WRAPPED-CREDENTIAL-651\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-651"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "! Proxy-Authorization: <redacted>\n! <redacted>\n"
+    },
+    {
+      "id": "prefix:wrapped-652",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "  // aUtHoRiZaTiOn: Basic\n  // EXAMPLE-WRAPPED-CREDENTIAL-652\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-652"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "  // aUtHoRiZaTiOn: Basic\n  // <redacted>\n"
+    },
+    {
+      "id": "prefix:wrapped-653",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "\t! PrOxY-AuThOrIzAtIoN: Bearer\n\t! EXAMPLE-WRAPPED-CREDENTIAL-653\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-653"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "\t! PrOxY-AuThOrIzAtIoN: Bearer\n\t! <redacted>\n"
+    },
+    {
+      "id": "prefix:wrapped-654",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// Authorization:\n// EXAMPLE-WRAPPED-CREDENTIAL-654\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-654"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "// Authorization:\n// <redacted>\n"
+    },
+    {
+      "id": "prefix:wrapped-655",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "! Proxy-Authorization:\n! EXAMPLE-WRAPPED-CREDENTIAL-655\n",
+      "secrets": [
+        "EXAMPLE-WRAPPED-CREDENTIAL-655"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "! Proxy-Authorization:\n! <redacted>\n"
+    },
+    {
+      "id": "prefix:canonical-basic",
+      "finding": "P1-4",
+      "mode": "must_keep",
+      "text": "// Authorization: Basic\n// <redacted>\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "prefix:canonical-bearer",
+      "finding": "P1-4",
+      "mode": "must_keep",
+      "text": "! Proxy-Authorization: Bearer\n! <redacted>\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "prefix:clean-no-continuation",
+      "finding": "P1-4",
+      "mode": "must_keep",
+      "text": "// Authorization: Basic\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "prefix:response-header",
+      "finding": "P1-4",
+      "mode": "must_keep",
+      "text": "// WWW-Authenticate: Basic\n// Content-Length: 671\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "prefix:ordinary-comment",
+      "finding": "P1-4",
+      "mode": "must_keep",
+      "text": "! EXAMPLE-PUBLIC-COMMENT-672\n! EXAMPLE-PUBLIC-COMMENT-673\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:joined-empty",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "snmp\"\"get -c EXAMPLE-EXEC-COMMUNITY-656 EXAMPLE-HOST-656\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-656"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "snmp\"\"get -c <redacted> EXAMPLE-HOST-656\n"
+    },
+    {
+      "id": "executable:joined-leading",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'snmp'get -c EXAMPLE-EXEC-COMMUNITY-657 EXAMPLE-HOST-657\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-657"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "'snmp'get -c <redacted> EXAMPLE-HOST-657\n"
+    },
+    {
+      "id": "executable:joined-pieces",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sn\"mp\"get -c EXAMPLE-EXEC-COMMUNITY-658 EXAMPLE-HOST-658\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-658"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "sn\"mp\"get -c <redacted> EXAMPLE-HOST-658\n"
+    },
+    {
+      "id": "executable:unquoted-escape",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "snm\\pget -c EXAMPLE-EXEC-COMMUNITY-659 EXAMPLE-HOST-659\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-659"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "snm\\pget -c <redacted> EXAMPLE-HOST-659\n"
+    },
+    {
+      "id": "executable:quoted-name",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "\"snmpget\" -c EXAMPLE-EXEC-COMMUNITY-660 EXAMPLE-HOST-660\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-660"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "\"snmpget\" -c <redacted> EXAMPLE-HOST-660\n"
+    },
+    {
+      "id": "executable:path-joined",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/usr/bin/'snmp'get -c EXAMPLE-EXEC-COMMUNITY-661 EXAMPLE-HOST-661\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-661"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "/usr/bin/'snmp'get -c <redacted> EXAMPLE-HOST-661\n"
+    },
+    {
+      "id": "executable:bulk-joined",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "snmp'bulk'walk -c EXAMPLE-EXEC-COMMUNITY-662 EXAMPLE-HOST-662\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-662"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "snmp'bulk'walk -c <redacted> EXAMPLE-HOST-662\n"
+    },
+    {
+      "id": "executable:trap-escaped",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "snm\\ptrap -c EXAMPLE-EXEC-COMMUNITY-663 EXAMPLE-HOST-663\n",
+      "secrets": [
+        "EXAMPLE-EXEC-COMMUNITY-663"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "snm\\ptrap -c <redacted> EXAMPLE-HOST-663\n"
+    },
+    {
+      "id": "executable:boundary-pipe",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "printf EXAMPLE-PUBLIC-690 | 'snmp'get -c EXAMPLE-BOUNDARY-COMMUNITY-664 EXAMPLE-HOST-664\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-664"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "printf EXAMPLE-PUBLIC-690 | 'snmp'get -c <redacted> EXAMPLE-HOST-664\n"
+    },
+    {
+      "id": "executable:boundary-semicolon",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "printf EXAMPLE-PUBLIC-691; snm\\pget -c EXAMPLE-BOUNDARY-COMMUNITY-665 EXAMPLE-HOST-665\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-665"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "printf EXAMPLE-PUBLIC-691; snm\\pget -c <redacted> EXAMPLE-HOST-665\n"
+    },
+    {
+      "id": "executable:boundary-and",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "true && snmp\"\"get -c EXAMPLE-BOUNDARY-COMMUNITY-666 EXAMPLE-HOST-666\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-666"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "true && snmp\"\"get -c <redacted> EXAMPLE-HOST-666\n"
+    },
+    {
+      "id": "executable:boundary-or",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "false || 'snmp'get -c EXAMPLE-BOUNDARY-COMMUNITY-667 EXAMPLE-HOST-667\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-667"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "false || 'snmp'get -c <redacted> EXAMPLE-HOST-667\n"
+    },
+    {
+      "id": "executable:boundary-sudo",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sudo 'snmp'get -c EXAMPLE-BOUNDARY-COMMUNITY-668 EXAMPLE-HOST-668\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-668"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "sudo 'snmp'get -c <redacted> EXAMPLE-HOST-668\n"
+    },
+    {
+      "id": "executable:boundary-env",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "env EXAMPLE_MODE=1 snm\\pget -c EXAMPLE-BOUNDARY-COMMUNITY-669 EXAMPLE-HOST-669\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-669"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "env EXAMPLE_MODE=1 snm\\pget -c <redacted> EXAMPLE-HOST-669\n"
+    },
+    {
+      "id": "executable:boundary-adjacent-pipe",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "printf EXAMPLE-PUBLIC-696|snmp''get -c EXAMPLE-BOUNDARY-COMMUNITY-670 EXAMPLE-HOST-670\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-670"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "printf EXAMPLE-PUBLIC-696|snmp''get -c <redacted> EXAMPLE-HOST-670\n"
+    },
+    {
+      "id": "executable:boundary-leading-space",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "  snm\\pget -c EXAMPLE-BOUNDARY-COMMUNITY-671 EXAMPLE-HOST-671\n",
+      "secrets": [
+        "EXAMPLE-BOUNDARY-COMMUNITY-671"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants.",
+      "expect": "  snm\\pget -c <redacted> EXAMPLE-HOST-671\n"
+    },
+    {
+      "id": "executable:echo-argument",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "echo 'snmp'get -c EXAMPLE-PUBLIC-703 EXAMPLE-HOST-703\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:printf-argument",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "printf '%s' snmp\"\"get -c EXAMPLE-PUBLIC-704 EXAMPLE-HOST-704\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:quoted-literal-backslash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'snm\\pget' -c EXAMPLE-PUBLIC-705 EXAMPLE-HOST-705\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:escaped-literal-operator",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "EXAMPLE-PUBLIC\\|snm\\pget -c EXAMPLE-PUBLIC-706 EXAMPLE-HOST-706\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:quoted-literal-operator",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'EXAMPLE-PUBLIC|snmp'get -c EXAMPLE-PUBLIC-707 EXAMPLE-HOST-707\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:suffix-lookalike",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "snmp\"\"get-helper -c EXAMPLE-PUBLIC-708 EXAMPLE-HOST-708\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:canonical-redacted",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "snmp\"\"get -c <redacted> EXAMPLE-HOST-709\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "executable:public-user-level",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'snmp'get -v 3 -u EXAMPLE-USER-710 -l noAuthNoPriv EXAMPLE-HOST-710\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:punctuation",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = \"[]{};()\" mode=EXAMPLE-PUBLIC-672\n",
+      "secrets": [
+        "[]{};()"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-672\n"
+    },
+    {
+      "id": "scalar:punctuation-single",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = '()[]{};' mode=EXAMPLE-PUBLIC-673\n",
+      "secrets": [
+        "()[]{};"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = '<redacted>' mode=EXAMPLE-PUBLIC-673\n"
+    },
+    {
+      "id": "scalar:encryption",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = 'encryption' mode=EXAMPLE-PUBLIC-674\n",
+      "secrets": [
+        "encryption"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = '<redacted>' mode=EXAMPLE-PUBLIC-674\n"
+    },
+    {
+      "id": "scalar:readonly",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = \"ro\" mode=EXAMPLE-PUBLIC-675\n",
+      "secrets": [
+        "ro"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-675\n"
+    },
+    {
+      "id": "scalar:aes",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = \"AES\" mode=EXAMPLE-PUBLIC-676\n",
+      "secrets": [
+        "AES"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-676\n"
+    },
+    {
+      "id": "scalar:sha",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = 'SHA256' mode=EXAMPLE-PUBLIC-677\n",
+      "secrets": [
+        "SHA256"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = '<redacted>' mode=EXAMPLE-PUBLIC-677\n"
+    },
+    {
+      "id": "scalar:private-example",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = \"EXAMPLE-SCALAR-730\" mode=EXAMPLE-PUBLIC-678\n",
+      "secrets": [
+        "EXAMPLE-SCALAR-730"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-678\n"
+    },
+    {
+      "id": "scalar:bare-allowword",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = rw mode=EXAMPLE-PUBLIC-679\n",
+      "secrets": [
+        "rw"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = <redacted> mode=EXAMPLE-PUBLIC-679\n"
+    },
+    {
+      "id": "scalar:placeholder-residue",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword = \"<redacted>EXAMPLE-SCALAR-TAIL-732\" mode=EXAMPLE-PUBLIC-680\n",
+      "secrets": [
+        "<redacted>EXAMPLE-SCALAR-TAIL-732"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-680\n"
+    },
+    {
+      "id": "scalar:snake-allowword",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "auth_password = \"disabled\" mode=EXAMPLE-PUBLIC-681\n",
+      "secrets": [
+        "disabled"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "auth_password = \"<redacted>\" mode=EXAMPLE-PUBLIC-681\n"
+    },
+    {
+      "id": "scalar:case-private",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "AuthPassword = 'EXAMPLE-SCALAR-734' mode=EXAMPLE-PUBLIC-682\n",
+      "secrets": [
+        "EXAMPLE-SCALAR-734"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "The value is a synthetic grammar collision literal in a required private scalar slot, or an EXAMPLE synthetic credential; metadata must survive.",
+      "expect": "AuthPassword = '<redacted>' mode=EXAMPLE-PUBLIC-682\n"
+    },
+    {
+      "id": "scalar:json-allowword",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "{\"authPassword\": \"ro\", \"mode\": \"EXAMPLE-PUBLIC-JSON-740\"}\n",
+      "secrets": [
+        "ro"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public-vocabulary/punctuation grammar constants are deliberately placed in synthetic required private scalar slots, never sourced credentials.",
+      "expect": "{\"authPassword\": \"<redacted>\", \"mode\": \"EXAMPLE-PUBLIC-JSON-740\"}\n"
+    },
+    {
+      "id": "scalar:yaml-punctuation",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword: '[]{};()'\nmode: EXAMPLE-PUBLIC-YAML-741\n",
+      "secrets": [
+        "[]{};()"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public-vocabulary/punctuation grammar constants are deliberately placed in synthetic required private scalar slots, never sourced credentials.",
+      "expect": "authPassword: '<redacted>'\nmode: EXAMPLE-PUBLIC-YAML-741\n"
+    },
+    {
+      "id": "scalar:two-scalar-fields",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "authPassword='AES' mode=EXAMPLE-PUBLIC-742 privPassword='SHA'\n",
+      "secrets": [
+        "AES",
+        "SHA"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public-vocabulary/punctuation grammar constants are deliberately placed in synthetic required private scalar slots, never sourced credentials.",
+      "expect": "authPassword='<redacted>' mode=EXAMPLE-PUBLIC-742 privPassword='<redacted>'\n"
+    },
+    {
+      "id": "scalar:canonical-single",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "authPassword = '<redacted>' mode=EXAMPLE-PUBLIC-751\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:canonical-double",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "authPassword = \"<redacted>\" mode=EXAMPLE-PUBLIC-752\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:canonical-bare",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "authPassword=<redacted> mode=EXAMPLE-PUBLIC-753\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:empty-quoted",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "authPassword = ''\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "An empty scalar alone is a legacy absence control; it claims no new public metadata restoration after an empty/container field."
+    },
+    {
+      "id": "scalar:empty-container",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "authPassword: {}\nmode: EXAMPLE-PUBLIC-755\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:public-protocol",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "protocol=\"AES\" mode=EXAMPLE-PUBLIC-756\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:public-level",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "level='authPriv' mode=EXAMPLE-PUBLIC-757\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:public-storage",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "storageType=3 mode=EXAMPLE-PUBLIC-758\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "scalar:plain-structural-config",
+      "finding": "P2-6",
+      "mode": "must_keep",
+      "text": "password encryption aes\n! EXAMPLE-PUBLIC-STRUCTURE-759\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input; fixed syntax words are public grammar constants."
+    },
+    {
+      "id": "directive:public-protocol-P",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -P u -c EXAMPLE-COMMUNITY-810 EXAMPLE-HOST-810\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-810"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -P u -c <redacted> EXAMPLE-HOST-810\n"
+    },
+    {
+      "id": "directive:logging-separated-f",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -L f /tmp/EXAMPLE-LOG-810 -c EXAMPLE-COMMUNITY-811 EXAMPLE-HOST-811\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-811"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -L f /tmp/EXAMPLE-LOG-810 -c <redacted> EXAMPLE-HOST-811\n"
+    },
+    {
+      "id": "directive:logging-separated-upper-F",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -L F 0 /tmp/EXAMPLE-LOG-811 -c EXAMPLE-COMMUNITY-812 EXAMPLE-HOST-812\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-812"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -L F 0 /tmp/EXAMPLE-LOG-811 -c <redacted> EXAMPLE-HOST-812\n"
+    },
+    {
+      "id": "directive:logging-priority-zero",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF 0 /tmp/EXAMPLE-LOG-812 -c EXAMPLE-COMMUNITY-813 EXAMPLE-HOST-813\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-813"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -LF 0 /tmp/EXAMPLE-LOG-812 -c <redacted> EXAMPLE-HOST-813\n"
+    },
+    {
+      "id": "directive:logging-attached-zero",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF0 /tmp/EXAMPLE-LOG-813 -c EXAMPLE-COMMUNITY-814 EXAMPLE-HOST-814\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-814"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -LF0 /tmp/EXAMPLE-LOG-813 -c <redacted> EXAMPLE-HOST-814\n"
+    },
+    {
+      "id": "directive:logging-priority-file-word",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs -LF '0 /tmp/EXAMPLE-LOG-814' -c EXAMPLE-COMMUNITY-815 EXAMPLE-HOST-815\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-815"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs -LF '0 /tmp/EXAMPLE-LOG-814' -c <redacted> EXAMPLE-HOST-815\n"
+    },
+    {
+      "id": "directive:logging-whole-option-word",
+      "finding": "P1-3",
+      "mode": "must_redact",
+      "text": "TrApSeSs '-LF 0 /tmp/EXAMPLE-LOG-815' -c EXAMPLE-COMMUNITY-816 EXAMPLE-HOST-816\n",
+      "secrets": [
+        "EXAMPLE-COMMUNITY-816"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only schematic input with source-owned public-option arity; fixed priority/logging syntax is public.",
+      "expect": "TrApSeSs '-LF 0 /tmp/EXAMPLE-LOG-815' -c <redacted> EXAMPLE-HOST-816\n"
+    },
+    {
+      "id": "prefix:adjacent-double-slash",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "//Authorization: Bearer\n//EXAMPLE-AUTH-820\n",
+      "secrets": [
+        "EXAMPLE-AUTH-820"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "//Authorization: Bearer\n//<redacted>\n"
+    },
+    {
+      "id": "prefix:adjacent-bang",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "!Authorization: Bearer\n!EXAMPLE-AUTH-821\n",
+      "secrets": [
+        "EXAMPLE-AUTH-821"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "!Authorization: Bearer\n!<redacted>\n"
+    },
+    {
+      "id": "prefix:quoted-header-name",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// \"Authorization\": Bearer\n// EXAMPLE-AUTH-822\n",
+      "secrets": [
+        "EXAMPLE-AUTH-822"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "// \"Authorization\": Bearer\n// <redacted>\n"
+    },
+    {
+      "id": "prefix:quoted-proxy-header-name",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "! 'Proxy-Authorization': Basic\n! EXAMPLE-AUTH-823\n",
+      "secrets": [
+        "EXAMPLE-AUTH-823"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "! 'Proxy-Authorization': Basic\n! <redacted>\n"
+    },
+    {
+      "id": "prefix:canonical-header-private-continuation",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// Authorization: <redacted>\n// <redacted> EXAMPLE-AUTH-824\n",
+      "secrets": [
+        "EXAMPLE-AUTH-824"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "// Authorization: <redacted>\n// <redacted>\n"
+    },
+    {
+      "id": "prefix:canonical-header-undecorated-private-continuation",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "! Proxy-Authorization: <redacted>\n<redacted> EXAMPLE-AUTH-825\n",
+      "secrets": [
+        "EXAMPLE-AUTH-825"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "! Proxy-Authorization: <redacted>\n<redacted>\n"
+    },
+    {
+      "id": "prefix:known-header-private-after-marker",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// Authorization: Bearer\n// <redacted> EXAMPLE-AUTH-826\n",
+      "secrets": [
+        "EXAMPLE-AUTH-826"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only comment-prefix boundary schematic; validated header provenance must own the actual full continuation credential.",
+      "expect": "// Authorization: Bearer\n// <redacted>\n"
+    },
+    {
+      "id": "prefix:prose-before-header",
+      "finding": "P1-4",
+      "text": "// EXAMPLE-PUBLIC-NOTE about Authorization: Bearer\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only prose header control. It establishes no direct comment-header provenance; existing generic dangling-scheme behavior is outside this negative preservation assertion."
+    },
+    {
+      "id": "prefix:bang-prose-before-proxy-header",
+      "finding": "P1-4",
+      "text": "! EXAMPLE-PUBLIC-NOTE about Proxy-Authorization: Basic\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only prose header control. It establishes no direct comment-header provenance; existing generic dangling-scheme behavior is outside this negative preservation assertion."
+    },
+    {
+      "id": "executable:doublequoted-literal-backslash",
+      "finding": "P2-5",
+      "text": "\"snm\\pget\" -c EXAMPLE-PUBLIC-829 EXAMPLE-HOST-829\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only look-alike control; quotation or comment prose alone must not prove credential/executable ownership."
+    },
+    {
+      "id": "executable:joined-singlequoted-literal-backslash",
+      "finding": "P2-5",
+      "text": "'snm\\p'get -c EXAMPLE-PUBLIC-830 EXAMPLE-HOST-830\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only look-alike control; quotation or comment prose alone must not prove credential/executable ownership."
+    },
+    {
+      "id": "executable:capture-comment",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "# snm\\pget -c EXAMPLE-CAPTURE-COMMUNITY-capture-comment EXAMPLE-HOST-CAPTURE\n",
+      "secrets": [
+        "EXAMPLE-CAPTURE-COMMUNITY-capture-comment"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only source-owned capture decoration at a proven executable statement boundary.",
+      "expect": "# snm\\pget -c <redacted> EXAMPLE-HOST-CAPTURE\n"
+    },
+    {
+      "id": "executable:capture-diff",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "+ snmp\"\"get -c EXAMPLE-CAPTURE-COMMUNITY-capture-diff EXAMPLE-HOST-CAPTURE\n",
+      "secrets": [
+        "EXAMPLE-CAPTURE-COMMUNITY-capture-diff"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only source-owned capture decoration at a proven executable statement boundary.",
+      "expect": "+ snmp\"\"get -c <redacted> EXAMPLE-HOST-CAPTURE\n"
+    },
+    {
+      "id": "executable:capture-quote",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "> 'snmp'get -c EXAMPLE-CAPTURE-COMMUNITY-capture-quote EXAMPLE-HOST-CAPTURE\n",
+      "secrets": [
+        "EXAMPLE-CAPTURE-COMMUNITY-capture-quote"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only source-owned capture decoration at a proven executable statement boundary.",
+      "expect": "> 'snmp'get -c <redacted> EXAMPLE-HOST-CAPTURE\n"
+    },
+    {
+      "id": "executable:capture-grep",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "EXAMPLE-CAPTURE.cfg:23: snmp''get -c EXAMPLE-CAPTURE-COMMUNITY-capture-grep EXAMPLE-HOST-CAPTURE\n",
+      "secrets": [
+        "EXAMPLE-CAPTURE-COMMUNITY-capture-grep"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only source-owned capture decoration at a proven executable statement boundary.",
+      "expect": "EXAMPLE-CAPTURE.cfg:23: snmp''get -c <redacted> EXAMPLE-HOST-CAPTURE\n"
+    },
+    {
+      "id": "executable:capture-cat-n",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "24\tsnm\\pget -c EXAMPLE-CAPTURE-COMMUNITY-capture-cat-n EXAMPLE-HOST-CAPTURE\n",
+      "secrets": [
+        "EXAMPLE-CAPTURE-COMMUNITY-capture-cat-n"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only source-owned capture decoration at a proven executable statement boundary.",
+      "expect": "24\tsnm\\pget -c <redacted> EXAMPLE-HOST-CAPTURE\n"
+    },
+    {
+      "id": "prefix:mismatching-prefix-credential",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "! Authorization: Basic\n// EXAMPLE-AUTH-MISMATCH-841\n",
+      "secrets": [
+        "EXAMPLE-AUTH-MISMATCH-841"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only actual continuation credential; missing/mismatching decoration cannot make the owned field public.",
+      "expect": "! Authorization: Basic\n<redacted>\n"
+    },
+    {
+      "id": "prefix:missing-prefix-credential",
+      "finding": "P1-4",
+      "mode": "must_redact",
+      "text": "// Authorization: Bearer\nEXAMPLE-AUTH-UNPREFIXED-842\n",
+      "secrets": [
+        "EXAMPLE-AUTH-UNPREFIXED-842"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only actual continuation credential; missing/mismatching decoration cannot make the owned field public.",
+      "expect": "// Authorization: Bearer\n<redacted>\n"
+    },
+    {
+      "id": "executable:creator-joined-private",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'net-snmp-create-v3-'user -a EXAMPLE-CREATOR-AUTH-851 -x EXAMPLE-CREATOR-PRIV-851 EXAMPLE-CREATOR-USER-851\n",
+      "secrets": [
+        "EXAMPLE-CREATOR-AUTH-851",
+        "EXAMPLE-CREATOR-PRIV-851"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE creator operand with shell-spelled executable; algorithm/marker look-alike bytes are fixed synthetic grammar collisions and retain round5 raw credential guards.",
+      "expect": "'net-snmp-create-v3-'user -a <redacted> -x <redacted> EXAMPLE-CREATOR-USER-851\n"
+    },
+    {
+      "id": "executable:config-joined-private",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "net-snmp-'config' --create-snmpv3-user -a EXAMPLE-CREATOR-AUTH-852 -x EXAMPLE-CREATOR-PRIV-852 EXAMPLE-CREATOR-USER-852\n",
+      "secrets": [
+        "EXAMPLE-CREATOR-AUTH-852",
+        "EXAMPLE-CREATOR-PRIV-852"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE creator operand with shell-spelled executable; algorithm/marker look-alike bytes are fixed synthetic grammar collisions and retain round5 raw credential guards.",
+      "expect": "net-snmp-'config' --create-snmpv3-user -a <redacted> -x <redacted> EXAMPLE-CREATOR-USER-852\n"
+    },
+    {
+      "id": "executable:creator-literal-algorithm-guard",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'net-snmp-create-v3-'user -a 'M\\D5' EXAMPLE-CREATOR-USER-853\n",
+      "secrets": [
+        "M\\D5"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE creator operand with shell-spelled executable; algorithm/marker look-alike bytes are fixed synthetic grammar collisions and retain round5 raw credential guards.",
+      "expect": "'net-snmp-create-v3-'user -a '<redacted>' EXAMPLE-CREATOR-USER-853\n"
+    },
+    {
+      "id": "executable:creator-literal-marker-guard",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "net-snmp-'config' --create-snmpv3-user -a '<reda\\cted>' EXAMPLE-CREATOR-USER-854\n",
+      "secrets": [
+        "<reda\\cted>"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE creator operand with shell-spelled executable; algorithm/marker look-alike bytes are fixed synthetic grammar collisions and retain round5 raw credential guards.",
+      "expect": "net-snmp-'config' --create-snmpv3-user -a '<redacted>' EXAMPLE-CREATOR-USER-854\n"
+    },
+    {
+      "id": "executable:creator-joined-public-protocol",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'net-snmp-create-v3-'user -a MD5 -x AES EXAMPLE-CREATOR-USER-855\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Bare exact public creator algorithms are grammar constants; resolving the executable must preserve physically canonical metadata exemptions."
+    },
+    {
+      "id": "executable:carrier-sh-joined",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -c 'snmp\"\"get -c EXAMPLE-CARRIER-861 EXAMPLE-HOST-861'\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-861"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "executable:carrier-bash-joined",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bash -c \"snmp''get -c EXAMPLE-CARRIER-862 EXAMPLE-HOST-862\"\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-862"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "bash -c \"<redacted>\"\n"
+    },
+    {
+      "id": "executable:carrier-sh-escaped",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -c 'snm\\pget -c EXAMPLE-CARRIER-863 EXAMPLE-HOST-863'\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-863"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "sh -c '<redacted>'\n"
+    },
+    {
+      "id": "executable:carrier-bash-escaped",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bash -c \"snm\\pget -c EXAMPLE-CARRIER-864 EXAMPLE-HOST-864\"\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-864"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "bash -c \"<redacted>\"\n"
+    },
+    {
+      "id": "executable:carrier-nested-shell",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -c \"bash -c 'snmp\\\"\\\"get -c EXAMPLE-CARRIER-865 EXAMPLE-HOST-865'\"\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-865"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "sh -c \"<redacted>\"\n"
+    },
+    {
+      "id": "executable:carrier-creator-marker-guard",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -c \"'net-snmp-create-v3-'user -a '<reda\\cted>' EXAMPLE-USER-866\"\n",
+      "secrets": [
+        "<reda\\cted>"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "sh -c \"<redacted>\"\n"
+    },
+    {
+      "id": "scalar:nested-public-container-private-field",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "metadata={\"authPassword\":\"ro\"} mode=EXAMPLE-PUBLIC-876\n",
+      "secrets": [
+        "ro"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "metadata={\"authPassword\":\"<redacted>\"} mode=EXAMPLE-PUBLIC-876\n"
+    },
+    {
+      "id": "scalar:nested-public-container-private-example",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "metadata={\"authPassword\":\"EXAMPLE-NESTED-SCALAR-877\"} mode=EXAMPLE-PUBLIC-877\n",
+      "secrets": [
+        "EXAMPLE-NESTED-SCALAR-877"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "metadata={\"authPassword\":\"<redacted>\"} mode=EXAMPLE-PUBLIC-877\n"
+    },
+    {
+      "id": "scalar:nested-private-and-lookalike-fields",
+      "finding": "P2-6",
+      "mode": "must_redact",
+      "text": "metadata={\"mode\":\"authPassword=ro\",\"authPassword\":\"ro\"} mode=EXAMPLE-PUBLIC-878\n",
+      "secrets": [
+        "ro"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input; fixed raw algorithm/marker/public-word bytes are synthetic grammar collision constants.",
+      "expect": "metadata={\"mode\":\"authPassword=ro\",\"authPassword\":\"<redacted>\"} mode=EXAMPLE-PUBLIC-878\n"
+    },
+    {
+      "id": "executable:echo-joined-command-string",
+      "finding": "P2-5",
+      "text": "echo \"snmp''get -c EXAMPLE-PUBLIC-CARRIER-871 EXAMPLE-HOST-871\"\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public literal-data/metadata look-alike: it is not a proven executable boundary or actual nested credential field; fixed syntax is not a supplied credential."
+    },
+    {
+      "id": "executable:echo-other-joined-command-string",
+      "finding": "P2-5",
+      "text": "echo 'snmp\"\"get -c EXAMPLE-PUBLIC-CARRIER-872 EXAMPLE-HOST-872'\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public literal-data/metadata look-alike: it is not a proven executable boundary or actual nested credential field; fixed syntax is not a supplied credential."
+    },
+    {
+      "id": "executable:echo-escaped-argument",
+      "finding": "P2-5",
+      "text": "echo snm\\pget -c EXAMPLE-PUBLIC-CARRIER-873 EXAMPLE-HOST-873\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public literal-data/metadata look-alike: it is not a proven executable boundary or actual nested credential field; fixed syntax is not a supplied credential."
+    },
+    {
+      "id": "scalar:opaque-bare-metadata-lookalike",
+      "finding": "P2-6",
+      "text": "mode=authPassword=ro\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public literal-data/metadata look-alike: it is not a proven executable boundary or actual nested credential field; fixed syntax is not a supplied credential."
+    },
+    {
+      "id": "scalar:opaque-quoted-metadata-lookalike",
+      "finding": "P2-6",
+      "text": "mode=\"authPassword=ro\"\n",
+      "mode": "must_keep",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Public literal-data/metadata look-alike: it is not a proven executable boundary or actual nested credential field; fixed syntax is not a supplied credential."
+    },
+    {
+      "id": "executable:carrier-known-creator-inner-slot-compatibility",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bash -c \"net-snmp-create-v3-user -a EXAMPLE-CREATOR-AUTH-867 EXAMPLE-USER-867\"\n",
+      "secrets": [
+        "EXAMPLE-CREATOR-AUTH-867"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input: raw-known command retains its legacy inner-slot mask; shell-spelled command missing the old witness uses the existing whole outer -c slot.",
+      "expect": "bash -c \"net-snmp-create-v3-user -a <redacted> EXAMPLE-USER-867\"\n"
+    },
+    {
+      "id": "executable:carrier-private-operator",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -c \"snmp''get -c EXAMPLE-CARRIER-879;echo EXAMPLE-PUBLIC-879\"\n",
+      "secrets": [
+        "EXAMPLE-CARRIER-879"
+      ],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Fresh EXAMPLE-only owner-boundary input: raw-known command retains its legacy inner-slot mask; shell-spelled command missing the old witness uses the existing whole outer -c slot.",
+      "expect": "sh -c \"<redacted>\"\n"
+    },
+    {
+      "id": "executable:carrier-known-canonical-community",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -c 'snmpget -c <redacted> EXAMPLE-HOST-868'\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Physically canonical output markers in proven public operand slots must not create a new private carrier witness; actual operator boundaries preserve following public command syntax."
+    },
+    {
+      "id": "executable:carrier-canonical-operator",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -c \"snmp''get -c <redacted>;echo EXAMPLE-PUBLIC-880\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Physically canonical output markers in proven public operand slots must not create a new private carrier witness; actual operator boundaries preserve following public command syntax."
+    },
+    {
+      "id": "executable:carrier-quoted-canonical-operator",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -c \"snmp''get -c '<redacted>';echo EXAMPLE-PUBLIC-881\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Physically canonical output markers in proven public operand slots must not create a new private carrier witness; actual operator boundaries preserve following public command syntax."
+    },
+    {
+      "id": "executable:carrier-attached-quoted-canonical-operator",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -c \"snmp''get '-c<redacted>';echo EXAMPLE-PUBLIC-882\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR656-comment6112757283",
+      "note": "Physically canonical output markers in proven public operand slots must not create a new private carrier witness; actual operator boundaries preserve following public command syntax."
+    },
+    {
+      "id": "r2:review-shell-executable",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -c \"snmp''get -c EXAMPLE-PRIVATE EXAMPLE-HOST\"\n",
+      "secrets": [
+        "EXAMPLE-PRIVATE"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Exact independent reviewer schematic; valid shell executable quote fragments must reach the existing owned outer -c operand.",
+      "expect": "s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:review-shell-option",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -'c' \"snmp''get -'c' EXAMPLE-PRIVATE EXAMPLE-HOST\"\n",
+      "secrets": [
+        "EXAMPLE-PRIVATE"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Exact independent reviewer schematic; the shell and credential option words are quoted, so neither literal -c fast-path witness is present.",
+      "expect": "sh -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-middle-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1001 EXAMPLE-HOST-1001\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1001"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-middle-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1002 EXAMPLE-HOST-1002\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1002"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-middle-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\"h\" -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1003 EXAMPLE-HOST-1003\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1003"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\"h\" -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-middle-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\"h\" -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1004 EXAMPLE-HOST-1004\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1004"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\"h\" -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-escaped-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\\h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1005 EXAMPLE-HOST-1005\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1005"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\\h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-escaped-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "s\\h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1006 EXAMPLE-HOST-1006\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1006"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "s\\h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-prefix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'s'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1007 EXAMPLE-HOST-1007\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1007"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "'s'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-single-prefix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "'s'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1008 EXAMPLE-HOST-1008\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1008"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "'s'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-prefix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "\"s\"h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1009 EXAMPLE-HOST-1009\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1009"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "\"s\"h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-double-prefix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "\"s\"h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1010 EXAMPLE-HOST-1010\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1010"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "\"s\"h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-fragment-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba's'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1011 EXAMPLE-HOST-1011\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1011"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba's'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-fragment-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba's'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1012 EXAMPLE-HOST-1012\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1012"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba's'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-suffix-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bas'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1013 EXAMPLE-HOST-1013\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1013"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "bas'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-suffix-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "bas'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1014 EXAMPLE-HOST-1014\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1014"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "bas'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-escaped-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba\\s\\h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1015 EXAMPLE-HOST-1015\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1015"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba\\s\\h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-bash-escaped-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "ba\\s\\h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1016 EXAMPLE-HOST-1016\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1016"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "ba\\s\\h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-sh-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/bin/s'h' -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1017 EXAMPLE-HOST-1017\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1017"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/bin/s'h' -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-sh-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/bin/s'h' -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1018 EXAMPLE-HOST-1018\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1018"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/bin/s'h' -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-bash-bare",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/usr/bin/ba's'h -c \"snmp''get -c EXAMPLE-R2-PRIVATE-1019 EXAMPLE-HOST-1019\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1019"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/usr/bin/ba's'h -c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-absolute-bash-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "/usr/bin/ba's'h -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1020 EXAMPLE-HOST-1020\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1020"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored valid EXAMPLE-only carrier variant. Executable and option decoding retain existing shell ownership; only the producer's premature literal guard is repaired.",
+      "expect": "/usr/bin/ba's'h -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-sh-option-quoted",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -'c' \"snmp''get -'c' EXAMPLE-R2-PRIVATE-1021 EXAMPLE-HOST-1021\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1021"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored EXAMPLE-only option spelling. Both outer and inner community option lack the contiguous -c bytes, while the decoded words are valid.",
+      "expect": "sh -'c' \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:carrier-sh-option-escaped",
+      "finding": "P2-5",
+      "mode": "must_redact",
+      "text": "sh -\\c \"snmp''get -\\c EXAMPLE-R2-PRIVATE-1022 EXAMPLE-HOST-1022\"\n",
+      "secrets": [
+        "EXAMPLE-R2-PRIVATE-1022"
+      ],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "Independently authored EXAMPLE-only option spelling. Both outer and inner community option lack the contiguous -c bytes, while the decoded words are valid.",
+      "expect": "sh -\\c \"<redacted>\"\n"
+    },
+    {
+      "id": "r2:control-echo-literal",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "echo s'h' -c \"snmp''get -c EXAMPLE-PUBLIC-1031 EXAMPLE-HOST-1031\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-lookalike-executable",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h'-helper -c \"snmp''get -c EXAMPLE-PUBLIC-1032 EXAMPLE-HOST-1032\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-singlequote-literal-backslash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "'s\\h' -c \"snmp''get -c EXAMPLE-PUBLIC-1033 EXAMPLE-HOST-1033\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-doublequote-literal-backslash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "\"s\\h\" -c \"snmp''get -c EXAMPLE-PUBLIC-1034 EXAMPLE-HOST-1034\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-executable",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h' -c \"snmp''get -c <redacted> EXAMPLE-HOST-1035\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-option",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "sh -'c' \"snmp''get -'c' <redacted> EXAMPLE-HOST-1036\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-marker-bash-path",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "/usr/bin/ba's'h -\\c \"snmp''get -\\c '<redacted>' EXAMPLE-HOST-1037\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-canonical-attached-marker",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s\\h -c \"snmp''get '-c<redacted>';echo EXAMPLE-PUBLIC-1038\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-public-protocol",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "s'h' -c \"snmp''get -a SHA EXAMPLE-HOST-1039\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    },
+    {
+      "id": "r2:control-public-protocol-bash",
+      "finding": "P2-5",
+      "mode": "must_keep",
+      "text": "/bin/ba's'h -'c' \"snmp''get -x AES EXAMPLE-HOST-1040\"\n",
+      "secrets": [],
+      "structural": [],
+      "review": "PR660-comment6119252180",
+      "note": "EXAMPLE-only public/look-alike control. Literal data, non-shell executable bytes, physically canonical markers and proven protocol metadata must keep their exact bytes."
+    }
+  ],
+  "verifier_only_controls": [
+    {
+      "id": "refusal:prefix-private-after-canonical-marker",
+      "finding": "P1-4",
+      "clean_header": "// Authorization: Bearer\n",
+      "text": "// Authorization: Bearer\n// <redacted> EXAMPLE-UNSCRUBBED-TAIL-760\n",
+      "expect_refusal": true,
+      "secrets": [
+        "EXAMPLE-UNSCRUBBED-TAIL-760"
+      ]
+    },
+    {
+      "id": "refusal:prefix-scrubbed-header-private-tail",
+      "finding": "P1-4",
+      "clean_header": "// Authorization: <redacted>\n",
+      "text": "// Authorization: <redacted>\n<redacted> EXAMPLE-UNSCRUBBED-TAIL-761\n",
+      "expect_refusal": true,
+      "secrets": [
+        "EXAMPLE-UNSCRUBBED-TAIL-761"
+      ]
+    },
+    {
+      "id": "refusal:prefix-mismatch-private",
+      "finding": "P1-4",
+      "clean_header": "! Authorization: Basic\n",
+      "text": "! Authorization: Basic\n// EXAMPLE-UNSCRUBBED-762\n",
+      "expect_refusal": true,
+      "secrets": [
+        "EXAMPLE-UNSCRUBBED-762"
+      ]
+    },
+    {
+      "id": "refusal:quoted-punctuation-scalar",
+      "finding": "P2-6",
+      "clean_header": "authPassword='<redacted>' mode=EXAMPLE-PUBLIC-763\n",
+      "text": "authPassword=';()[]{}' mode=EXAMPLE-PUBLIC-763\n",
+      "expect_refusal": true,
+      "secrets": [
+        ";()[]{}"
+      ]
+    },
+    {
+      "id": "refusal:quoted-publicword-scalar",
+      "finding": "P2-6",
+      "clean_header": "authPassword='<redacted>' mode=EXAMPLE-PUBLIC-764\n",
+      "text": "authPassword='encryption' mode=EXAMPLE-PUBLIC-764\n",
+      "expect_refusal": true,
+      "secrets": [
+        "encryption"
+      ]
+    },
+    {
+      "id": "refusal:logging-compound-target",
+      "finding": "P1-3",
+      "clean_header": "TrApSeSs -LF 3 /tmp/EXAMPLE-LOG-765 -c <redacted> EXAMPLE-HOST-765\n",
+      "text": "TrApSeSs -LF 3 /tmp/EXAMPLE-LOG-765 -c EXAMPLE-UNSCRUBBED-765 EXAMPLE-HOST-765\n",
+      "expect_refusal": true,
+      "secrets": [
+        "EXAMPLE-UNSCRUBBED-765"
+      ]
+    },
+    {
+      "id": "refusal:executable-semicolon",
+      "finding": "P2-5",
+      "clean_header": "true;snmp''get -c <redacted> EXAMPLE-HOST-766\n",
+      "text": "true;snmp''get -c EXAMPLE-UNSCRUBBED-766 EXAMPLE-HOST-766\n",
+      "expect_refusal": true,
+      "secrets": [
+        "EXAMPLE-UNSCRUBBED-766"
+      ]
+    }
+  ],
+  "source_review_probe_inputs": [
+    {
+      "id": "source-review:raw-known-creator-marker-alias",
+      "finding": "Inherited raw-known creator carrier marker intersection",
+      "text": "bash -c \"net-snmp-create-v3-user -a '<reda\\cted>' EXAMPLE-USER-867\"\n",
+      "secrets": [
+        "<reda\\cted>"
+      ],
+      "review": "PR656-comment6112757283",
+      "status": "Hosted receipt38199754172 on d3be2c473df3326c795d89f1dfd4d0414078a396 verified inherited survival and false certification on both pinned baselines and that candidate. Mandatory fresh main/round3 differential and exact-head runtime receipt own the current outcome. Outside P2-5 executable-spelling closure.",
+      "note": "Preserves the original synthetic raw marker-alias input and declared private bytes. Existing raw executable recognition already reaches this carrier; source suggests outer decoding may alias its physical marker bytes. A baseline-proved regression fails the unchanged differential and requires repair or owner stop.",
+      "hosted_observation": {
+        "run_id": 38199754172,
+        "head": "d3be2c473df3326c795d89f1dfd4d0414078a396",
+        "baselines": [
+          "0dc2f5d6f4d122ef74f8098e173e2be0bc2c902f",
+          "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
+        ],
+        "input_private_occurrences": 1,
+        "private_occurrences_remaining": 1,
+        "raw_certified": true,
+        "post_scrub_certified": true,
+        "idempotent": true,
+        "producer_uncovered_count": 0,
+        "verifier_uncovered_count": 0
+      }
+    }
+  ],
+  "scope_requested": [
+    "P1-3",
+    "P1-4",
+    "P2-5",
+    "P2-6"
+  ],
+  "active_scope": [
+    "P1-3",
+    "P1-4",
+    "P2-5"
+  ],
+  "latest_main_ref": "dbcc2c81a6fdf29ec958b610c8f8f3c060c171b3",
+  "round2_review": {
+    "comment_id": 6119252180,
+    "reviewed_head": "0da7628aaa01c26b8f5b7dac35a51a768a52c2e7",
+    "exact_schematic_ids": [
+      "r2:review-shell-executable",
+      "r2:review-shell-option"
+    ],
+    "independently_authored_private_variants": 22,
+    "preservation_controls": 10,
+    "scope": "Producer literal guard only; verifier guard and all earlier assertions stay unchanged. The comment reports22 reviewer diagnostic variants without publishing that full private battery; these22 corpus variants are independently authored, not claimed identical to that battery."
+  }
+}
