@@ -4572,6 +4572,11 @@ _REDACT_ARGV_WS = _REDACT_WS.replace("\udc80-\udcff", "")
 _REDACT_ARGV_WORD_RE = re.compile(
     "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
+# Executable-word boundaries alone: quoted/escaped operators remain part of the word.
+_REDACT_EXEC_WORD_RE = re.compile(
+    "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\;&|()<>]|\\\\[^\r\n]|\\\\\\Z"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+"
+    "|[;&|()<>]")
 #: 'echo user:PASSWORD | chpasswd' and a PostgreSQL .pgpass line 'host:port:database:user:PASSWORD' (exactly
 #: five fields, a host with a letter, a dot or '*': a MAC address or a time is no .pgpass line).
 _REDACT_CHPASSWD_RE = re.compile(_g(
@@ -5924,6 +5929,8 @@ def _redact_argv_runs(line: str):
     its end, or else a net-snmp argument vector found by its shape (`_redact_snmp_shape`) from the line
     start. Each run ends where the next one starts, so a line is read once (linear on any line)."""
     runs = [(_redact_argv_kind(m.group("cmd")), m.end(), False) for m in _REDACT_ARGV_CMD_RE.finditer(line)]
+    ends = {run[1] for run in runs}
+    runs.extend(run for run in _redact_spelled_snmp_runs(line) if run[1] not in ends)
     if "-" in line:
         directive = next((m for m in _redact_line_words(line)
                           if m.group(0).casefold() in _REDACT_SNMP_DIRECTIVES
@@ -5933,6 +5940,69 @@ def _redact_argv_runs(line: str):
         elif _redact_snmp_shape(line):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
+
+
+def _redact_shell_executable(raw: str):
+    """Resolve only an executable word; single-quote backslashes stay literal.
+
+    This does not change Net-SNMP operand/configuration decoding or authenticate values.
+    """
+    text, quote, i = [], "", 0
+    while i < len(raw):
+        char = raw[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                text.append(char)
+        elif char == chr(92) and i + 1 < len(raw):
+            following = raw[i + 1]
+            if quote != "\"" or following in "\\$`\"":
+                text.append(following)
+                i += 1
+            else:
+                text.append(char)
+        elif char in {"\"", "'"} and (not quote or quote == char):
+            quote = "" if quote else char
+        else:
+            text.append(char)
+        i += 1
+    return None if quote else "".join(text)
+
+
+def _redact_spelled_snmp_runs(line: str):
+    """Only closed SNMP executable names spelled with quotes/escapes at command boundaries.
+
+    Existing raw command recognition remains independent. Literal sudo/env and env assignments
+    keep their immediate command position; no other wrapper or shell-string grammar is inferred.
+    """
+    if not any(char in line for char in "\"'\\"):
+        return
+    command, redirection = True, False
+    for word in _REDACT_EXEC_WORD_RE.finditer(line, _redact_capture_value_start(line)):
+        raw = word.group(0)
+        if raw in {"<", ">"}:
+            redirection = True
+            continue
+        if raw in {";", "&", "|", "(", ")"}:
+            command, redirection = raw != ")", False
+            continue
+        if redirection:
+            redirection = False
+            continue
+        if not command:
+            continue
+        if raw in {"sudo", "env"} or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", raw):
+            continue
+        command = False
+        if not any(char in raw for char in "\"'\\"):
+            continue
+        decoded = _redact_shell_executable(raw)
+        found = None if decoded is None else _REDACT_ARGV_CMD_RE.fullmatch(decoded)
+        if found is not None:
+            kind = _redact_argv_kind(found.group("cmd"))
+            if kind in {"snmp", "snmp-create", "encode_keychange"}:
+                yield kind, word.end(), False
 
 
 def _redact_argv_option(text: str, options, shape_only: bool):

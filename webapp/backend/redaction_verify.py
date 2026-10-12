@@ -711,6 +711,9 @@ _SWEEP_ARGV_WS = _CRED_WS.replace("\udc80-\udcff", "")
 _SWEEP_ARGV_WORD_RE = re.compile(
     "(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
+_SWEEP_SHELL_WORD_RE = re.compile(
+    "[;|&()<>]|(?:[^" + _SWEEP_ARGV_WS + "\r\n\"'\\\\;|&()<>]|\\\\[^\r\n]|\\\\\\Z"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'[^'\r\n]*(?:'|\\Z))+")
 _SWEEP_CHPASSWD_RE = re.compile(_v(
     r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
 _SWEEP_PGPASS_RE = re.compile(_v(
@@ -2065,6 +2068,8 @@ def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
     each listed command from its end, an SNMPCMD_ARGS directive that starts a statement, or else a net-snmp
     vector by its shape from the line start. Each run ends where the next one starts."""
     runs = [(_sweep_argv_kind(m.group("cmd")), m.end(), False) for m in _SWEEP_ARGV_CMD_RE.finditer(line)]
+    known_ends = {run[1] for run in runs}
+    runs.extend(run for run in _sweep_spelled_snmp_runs(line) if run[1] not in known_ends)
     if "-" in line:
         directive = next((m for m in _sweep_line_words(line)
                           if m.group(0).casefold() in _SWEEP_SNMP_DIRECTIVES
@@ -2074,6 +2079,70 @@ def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
         elif _sweep_snmp_shape(line):
             runs.append(("snmp", 0, True))
     return sorted(runs, key=lambda run: run[1])
+
+
+def _sweep_shell_executable(raw: str) -> str | None:
+    """Resolve a literal executable word using shell quoting, never config escapes.
+
+    Single-quote backslashes stay literal; in double quotes only the shell's four
+    escapable characters lose their slash. Unfinished quotes cannot prove a name.
+    """
+    result: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char in {"\"", "'"} and (not quote or quote == char):
+            quote = "" if quote else char
+            index += 1
+            continue
+        if char == chr(92) and quote != "'" and index + 1 < len(raw):
+            following = raw[index + 1]
+            if not quote or following in {"$", "`", "\"", chr(92)}:
+                result.append(following)
+                index += 2
+                continue
+        result.append(char)
+        index += 1
+    return None if quote else "".join(result)
+
+
+def _sweep_spelled_snmp_runs(line: str) -> list[tuple[str, int, bool]]:
+    """New quote/escape spellings only at command boundaries, with two literal wrappers.
+
+    The pre-existing raw run path remains separate. Operator characters inside quotes
+    are data, and a redirection's following filename never becomes an executable.
+    """
+    if not any(char in line for char in {"\"", "'", chr(92)}):
+        return []
+    prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+    start = prefix.end() if prefix is not None else 0
+    command, redirect = True, False
+    runs = []
+    for word in _SWEEP_SHELL_WORD_RE.finditer(line, start):
+        raw = word.group(0)
+        if raw in {"<", ">"}:
+            redirect = True
+            continue
+        if raw in {";", "|", "&", "(", ")"}:
+            command, redirect = raw != ")", False
+            continue
+        if redirect:
+            redirect = False
+            continue
+        if command and raw in {"sudo", "env"}:
+            continue
+        if command and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", raw):
+            continue
+        if command and any(char in raw for char in {"\"", "'", chr(92)}):
+            name = _sweep_shell_executable(raw)
+            found = _SWEEP_ARGV_CMD_RE.fullmatch(name) if name is not None else None
+            if found is not None:
+                kind = _sweep_argv_kind(found.group("cmd"))
+                if kind in {"snmp", "snmp-create", "encode_keychange"}:
+                    runs.append((kind, word.end(), False))
+        command = False
+    return runs
 
 
 def _sweep_argv_option(text: str, options: tuple[tuple[str, str], ...],
