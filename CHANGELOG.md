@@ -6,6 +6,55 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Atlas 3.33.0rc6 candidate (2026-10-12)
+
+Changes since rc5 source `0dc2f5d6`, derived from
+`git log --merges 0dc2f5d6..origin/main` at `c39b706d`:
+
+- **Candidate identity:** product `3.33.0rc6`, draft tag `v3.33.0-rc.6` and
+  `Atlas-3.33.0rc6-windows-x64.zip` installation example; schema remains `3.23.0`.
+  RC5 draft/receiver evidence belongs to its own source and assets, not this successor.
+- **Hosted receiver (#659):** adds `portable-receiver.yml` to fetch the exact draft assets
+  without executing candidate code in the write-capable job, then independently verify the
+  portable set, source/material bindings, provenance and CycloneDX attestations on a read-only
+  hosted runner. Receiver integrity does not establish signing or field acceptance.
+- **RC5 closeout (#661):** records its completed draft and hosted receiver integrity receipt
+  on the live board, retaining all 14 owner-held external gates and the `draft_only` boundary.
+- **Client-artifact download census (W65b, #655):** closes reviewed explorer/download discovery
+  gaps for executable HTML attributes, JSX implicit filenames, closed string joins and Python
+  HTML format assemblies. Closed JavaScript literal decoding is shared by discovery and helper
+  inference; exact source chains bind the current endpoint-backed download-name proofs.
+  Unknown/dynamic obligations remain explicit; the census is a bounded static model.
+- **Redaction (W60c, #660):** repairs P1-3 mixed-case directive/option handling, P1-4
+  comment-prefixed authorization provenance and P2-5 shell-spelled executable recognition.
+  The follow-up producer carrier guard aligns quoted/escaped shell recognition with the
+  unchanged verifier decoder. Legacy corpus, strict archive differentials and output-byte
+  custody gates stay intact. The remaining residuals below are not closed by these repairs.
+
+Known limitations for this candidate:
+
+- **W60c P2-6:** complete credential-scalar ownership was forward-reverted because it conflicted
+  with frozen legacy behavior. Structural-looking credential values and public metadata still
+  need a compatible narrower contract; deferred expectations remain retained.
+- **W60c P3-7:** ISAKMP inline ENC key statements can lose a public peer hostname under the
+  immutable fail-safe legacy assertion; compatible proven-operand preservation remains open.
+- **Inherited marker-alias escape:** the plain-known creator command inside a quoted shell
+  string can retain a declared private occurrence while the verifier certifies it. This is
+  an inherited, explicitly unclosed privacy escape retained in mandatory archive replay;
+  passing finite differentials do not prove universal redaction coverage.
+- **Scope A6/#604:** blocked diagnostic remains parked; Scope ships as Preview. Synthetic
+  validation does not establish real-infrastructure qualification or operator acceptance.
+- **Permanent `draft_only` boundary:** all 14 `external_pending` gates from
+  `portable/release_contract.py :: REQUIRED_EXTERNAL_GATES` remain owner-held:
+  production Authenticode/RFC3161; clean managed Windows SmartScreen/Smart App Control;
+  managed AppLocker/App Control; physical USB full/read-only tests; physical unplug during
+  update/database writes; BitLocker To Go recovery custody/restore; a Python-absent and
+  NIC-disconnected host; 100/150 percent display scaling; live AAA rotation; independent human
+  peer review; third-party dataset redistribution legal review; physical-drive Unicode/full
+  workflow pilot; physical database recovery/rollback; and field-operator acceptance.
+  Receipts remain `UNSIGNED_RELEASE_CANDIDATE` / `AUTOMATED_PASS_EXTERNAL_GATES_PENDING`,
+  with `field_qualified=false`; no public promotion lane exists for this v1 set.
+
 ### Atlas 3.33.0rc5 candidate (2026-10-12)
 
 Changes since rc4 preparation `1d786416`, derived from
