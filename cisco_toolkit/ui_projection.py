@@ -4859,6 +4859,11 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
                 if nodes > 65_536 or depth > 32:
                     return None
                 kind = type(node)
+                if kind is str:
+                    characters += len(node)
+                    if characters > 1_000_000:
+                        return None
+                    continue
                 if kind is dict:
                     for key in node:
                         if type(key) is not str:
@@ -4869,11 +4874,6 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
                     child = (iter(node.values()), depth + 1)
                 elif kind is list:
                     child = (iter(node), depth + 1)
-                elif kind is str:
-                    characters += len(node)
-                    if characters > 1_000_000:
-                        return None
-                    continue
                 elif node is None or kind in (bool, int):
                     continue
                 elif kind is float and math.isfinite(node):
