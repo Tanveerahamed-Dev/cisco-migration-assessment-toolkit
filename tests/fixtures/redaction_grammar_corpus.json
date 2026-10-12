@@ -17008,6 +17008,9 @@
    "platform": "net-snmp",
    "line": "net-snmp-create-v3-user -ro -a Ns9cuAaQ -x Ns9cuXxQ -X DES opsuser",
    "expect": "net-snmp-create-v3-user -ro -a <redacted> -x <redacted> -X <redacted> opsuser",
+   "w60_expect": "net-snmp-create-v3-user -ro -a <redacted> -x <redacted> -X <redacted> opsuser",
+   "w60b_expect": "net-snmp-create-v3-user -ro -a <redacted> -x <redacted> -X DES opsuser",
+   "w60b_correction": "The helper classifies DES as a public privacy algorithm. Keep complete public syntax while still removing both original private operands; the historical W60 expectation remains recorded.",
    "secrets": [
     "Ns9cuAaQ",
     "Ns9cuXxQ"
@@ -18954,6 +18957,9 @@
    "platform": "shell",
    "line": "poll -v 2c -t 5 -r 2 -config /etc/collector/poll.conf",
    "expect": "poll -v 2c -t 5 -r 2 -c<redacted> /etc/collector/poll.conf",
+   "w60_expect": "poll -v 2c -t 5 -r 2 -c<redacted> /etc/collector/poll.conf",
+   "w60b_expect": "poll -v 2c -t 5 -r 2 -config /etc/collector/poll.conf",
+   "w60b_correction": "The explicitly recognized wrapper option -config is public. Preserve every byte of the full structural input; the historical W60 over-redaction expectation remains recorded.",
    "note": "over-redaction accepted (fail-safe): '-v 2c' makes the line an SNMP argument vector and '-config' reads as '-c' with an attached community",
    "source": "w60-review-r4b:config-after-2c",
    "main_6390b66c": "poll -v 2c -t 5 -r 2 -config /etc/collector/poll.conf"

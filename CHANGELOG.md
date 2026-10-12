@@ -6,6 +6,57 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Atlas 3.33.0rc5 candidate (2026-10-12)
+
+Changes since rc4 preparation `1d786416`, derived from
+`git log --merges 1d786416..origin/main` at `c543f0a1`:
+
+- **Candidate identity:** product version `3.33.0rc5`, draft tag `v3.33.0-rc.5` and
+  `Atlas-3.33.0rc5-windows-x64.zip` installation example. The snapshot schema remains `3.23.0`.
+  RC4 metadata was prepared and its hosted workflow dispatched, but no rc4 draft was created.
+  This entry prepares an exact-source successor; prior builds do not qualify its bytes.
+- **Fail-safe redaction (W60/W60b, #647/#656):** expands the credential-name/CLI grammar shared
+  with the independent verifier. The narrow W60b repairs restore masking inside quoted shell
+  commands and stop credential-slot metadata exemptions from leaking private values. Historical
+  corpus, archive-differential and output-custody checks remain strict; W60c stays open below.
+- **AssessHub and Scope:** coverage and decision rollups, Findings facets, stored STP root facts,
+  failure-impact caveats and device facts make unavailable or unassessed evidence visible.
+  Scope repairs improve refusal handling, canvas/visibility stability and virtual-table focus.
+  Scope ships with the owner-decided **Preview** label (W62/#633); client-data disposal remains
+  a documented manual operator procedure, with comparison receipts retained.
+- **Master Reference capacity (W63/W64/W64a/W64c, #634/#635/#648/#651):** streams release intake
+  and symbol indexes to reduce memory, packs smaller symbol chunks, and measures resource walls
+  with warning/failure thresholds and a bounded trend. Integrity, complete census, privacy and
+  byte-custody checks remain required; headroom is a measured resource boundary.
+- **Output and download privacy (W65/#651):** extends the client-artifact registry and writer
+  census to engine sidecars, captures, database companions and browser/backend download names.
+  Download suffixes, synthetic fixture digests, repository gates and archive gates reconcile
+  against their owners. The hosted engine-output receipt route also closes the earlier local
+  receiver/custody concerns (W62/#633).
+- **Synthetic 300-device scale gate (W70/#654):** adds a manual/weekly hosted workload covering
+  offline CLI, real AssessHub ingest, six projection views/paging and Scope compilation, with
+  fixed wall-time, memory, output-size and parsed-census limits. Its 300 managed devices,
+  200 VLANs and 1,500 cables are synthetic workload evidence; the owner's real infrastructure
+  and this rc5 portable binary still require their own execution and acceptance.
+- **Dependency and CI train (#592/#605/#609/#653):** coordinates Python, GitHub Actions and npm
+  updates with portable lock/SBOM contracts, native bindings and source receipts. Real-backend
+  browser coverage and portable workflow isolation/cancellation are improved. Strict audits
+  and release gates remain; deferred browser/oxlint adoption is a separate owner decision.
+
+Known limitations for this candidate:
+
+- **W60c P1-3:** mixed-case directives with public options, including the additional compound
+  logging-option operand-arity concern, remain deferred.
+- **W60c P1-4:** comment-prefixed authorization wrappers and their prefix provenance remain open.
+- **W60c P2-5:** joined quotes/escapes can hide shell-spelled SNMP executable names.
+- **W60c P2-6:** explicit credential scalar fields and public metadata need further handling;
+  structural-looking credential values may survive while public metadata can be removed.
+- **W60c P3-7:** ISAKMP key statements can over-redact a proven public peer hostname; this is
+  fail-safe structural loss. W60b's merge does not close any of these deferred findings.
+- Scope A6/#604 remains blocked. Synthetic checks do not establish complete redaction coverage,
+  real-fleet qualification, signing or operator acceptance. The portable v1 contract is
+  `draft_only`; all applicable `external_pending` gates remain accountable closing work.
+
 ### Added
 - **Atlas 3.33.0rc1 Windows x64 portable release lane.** The exact-source Windows workflow now
   builds and executes the real PyInstaller `Atlas.exe`, installs a hash-locked dependency closure,
