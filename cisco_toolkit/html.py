@@ -4572,11 +4572,6 @@ _REDACT_ARGV_WS = _REDACT_WS.replace("\udc80-\udcff", "")
 _REDACT_ARGV_WORD_RE = re.compile(
     "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\]|\\\\[^\r\n]|\\\\\\Z"
     "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*(?:\"|\\Z)|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*(?:'|\\Z))+")
-_REDACT_SCALAR_WORD_RE = re.compile(
-    "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\,;{}\\[\\]]|\\\\[^\r\n]"
-    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*\"|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*')+")
-_REDACT_SCALAR_SEPARATOR_RE = re.compile(_g(r"{h}*(?:[}\],;]{h}*)*"))
-_REDACT_SCALAR_QUOTED_RE = re.compile(r"\"(?:[^\"\\\r\n]|\\[^\r\n])*\"|'(?:[^'\\\r\n]|\\[^\r\n])*'")
 # Executable-word boundaries alone: quoted/escaped operators remain part of the word.
 _REDACT_EXEC_WORD_RE = re.compile(
     "(?:[^" + _REDACT_ARGV_WS + "\r\n\"'\\\\;&|()<>]|\\\\[^\r\n]|\\\\\\Z"
@@ -5128,10 +5123,9 @@ def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
                and _redact_public_argv_operand(kind, line[a:b] if kind in {"create-auth", "create-priv"}
                                                 else _redact_decode_word(line[a:b])[0])]
               if config_slots and "-" in line else [])
-    fields = [(a, b) for a, b, _v, _end in _redact_scalar_fields(line)] if config_slots else []
-    if ids or public or fields:
+    if ids or public:
         parts, position = [], 0
-        for a, b in heapq.merge(ids, public, fields):
+        for a, b in heapq.merge(ids, public):
             a = max(a, position)
             if a >= b:
                 continue
@@ -5140,55 +5134,6 @@ def _redact_sweep_masked(line: str, *, config_slots: bool = True) -> str:
         parts.append(masked[position:])
         masked = "".join(parts)
     return masked
-
-
-def _redact_scalar_fields(line: str):
-    """Proven nonempty credential scalars, as field and value spans.
-
-    A declarative field line owns only a complete scalar, not a config/prose tail,
-    block/container, header scheme, or another assignment quoted inside a value.
-    """
-    if not (":" in line or "=" in line) or not _REDACT_NAME_HINT_RE.search(line.casefold()):
-        return []
-    if _REDACT_SCHEME_OPEN_RE.search(line) or _REDACT_EMPTY_AUTH_HEADER_RE.search(line):
-        return []
-    start = _REDACT_LEAD_RE.match(line).end()
-    while start < len(line) and (line[start] in "{[" or line[start] in _REDACT_WS_CHARS):
-        start += 1
-    if not (_REDACT_SWEEP_QKEY_RE.match(line, start) or _REDACT_SWEEP_UKEY_RE.match(line, start)):
-        start = _redact_capture_value_start(line)
-        if not (_REDACT_SWEEP_QKEY_RE.match(line, start) or _REDACT_SWEEP_UKEY_RE.match(line, start)):
-            return []
-    quoted = iter(_REDACT_SCALAR_QUOTED_RE.finditer(line))
-    quote = next(quoted, None)
-    fields, covered = [], start
-    candidates = heapq.merge(_REDACT_SWEEP_QKEY_RE.finditer(line, start),
-                            _REDACT_SWEEP_UKEY_RE.finditer(line, start), key=lambda match: match.start())
-    for found in candidates:
-        if (found.start() < covered or found.start() > start
-                and line[found.start() - 1] not in _REDACT_WS_CHARS and line[found.start() - 1] not in "{[,;}"):
-            continue
-        while quote is not None and quote.end() <= found.start():
-            quote = next(quoted, None)
-        if quote is not None and quote.start() < found.start() < quote.end():
-            continue
-        quoted_key = found.re is _REDACT_SWEEP_QKEY_RE
-        value = _REDACT_LEAD_RE.match(line, found.end()).end()
-        if value == len(line) or line[value] in "{[":
-            continue
-        word = _REDACT_SCALAR_WORD_RE.match(line, value)
-        if word is None:
-            continue
-        raw = word.group(0)
-        following = _REDACT_SCALAR_SEPARATOR_RE.match(line, word.end()).end()
-        if (following != len(line) and not _REDACT_SWEEP_QKEY_RE.match(line, following)
-                and not _REDACT_SWEEP_UKEY_RE.match(line, following)):
-            continue
-        covered = word.end()
-        if (_redact_credential_name(found.group("k"), quoted_key) and _redact_decode_word(raw)[0]
-                and not re.fullmatch(r"[|>][-+0-9]{0,3}", raw)):
-            fields.append((found.start(), word.end(), value, word.end()))
-    return fields
 
 
 def _redact_word_end(masked: str, end: int) -> int:
@@ -6402,10 +6347,6 @@ def _redact_sweep_line(line: str, *, forced: bool, forti: bool, digest_value: bo
         line = _redact_sweep_url(line)
     if "<" in line:
         line = _redact_sweep_xml(line)
-    scalars = [_redact_operand_span(line, a, b, "value") for _f, _end, a, b in _redact_scalar_fields(line)]
-    scalars = [span for span in scalars if span is not None]
-    if scalars:
-        line = _redact_replace_spans(line, scalars)
     # Explicit argv/positional operands own their bytes. Remove their contents before
     # the generic observer can read a keyword inside a credential (e.g. W60bAuth229)
     # as an anchor and erase the following options and target host.
