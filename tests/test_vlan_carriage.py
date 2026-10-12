@@ -3028,3 +3028,134 @@ def test_singleton_cells_keep_real_token_proof_or_full_join_fallback(monkeypatch
             assert all(entry[3][2] is entry[5]["roles"][entry[3][1]] for entry in observed
                        if entry[4] and entry[3][1] is not None)
     assert outputs[0] == outputs[1]
+
+
+@pytest.mark.parametrize("loop", [False, True])
+@pytest.mark.parametrize("damage", ["none", "new-role", "error", "logical-alias", "source-port", "beside",
+                                     "key-order"])
+def test_native_role_prefix_preserves_real_complete_outputs(monkeypatch, loop, damage):
+    from cisco_toolkit import ui_projection as uip
+
+    snap = _cpu_routing_subject()
+    if damage == "new-role":
+        snap["stp_topology_observations"][B] = _stp({30: [("Po10", "Desg", "FWD")]})
+    elif damage == "error":
+        snap["stp_topology_observations"][B] = produce_stp_topology_observation(
+            "", "", state_capture_state="error", detail_capture_state="error")
+    elif damage == "logical-alias":
+        snap["interfaces"][B]["Po010"] = {**snap["interfaces"][B]["Po10"], "port": "Po010"}
+    elif damage == "source-port":
+        snap["interfaces"][B]["Po10"]["port"] = "Po99"
+    elif damage == "beside":
+        snap["stp_topology_observations"][B] = _stp({10: [("Po10", "Altn", "BLK"), (PORT, "Desg", "FWD")]})
+    elif damage == "key-order":
+        snap["stp_topology_observations"][B] = dict(reversed(tuple(
+            snap["stp_topology_observations"][B].items())))
+    before, outputs = deepcopy(snap), []
+    for enabled in (False, True):
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_LOOP_DISPATCH_ENABLED", loop)
+            outputs.append(_cpu_routing_outputs(snap))
+    assert outputs[0] == outputs[1] and snap == before
+
+
+@pytest.mark.parametrize("fault", [None, RuntimeError])
+def test_native_role_prefix_keeps_spoofed_key_lookup_in_original_helper_frame(monkeypatch, fault):
+    import sys
+    from cisco_toolkit import ui_projection as uip
+
+    binding_owner, admission_owner = uip.carriage_cable_binding, uip.carriage_observation_admission
+    real_type, outcomes, domains = type, [], []
+    for enabled in (False, True):
+        snap, trace, changed, callbacks = _role_cell_subject(), [], [], []
+        end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+
+        class ForeignHost(str):
+            def __hash__(self):
+                return str.__hash__(self)
+
+            def __eq__(self, other):
+                caller = sys._getframe(1).f_code.co_name
+                trace.append((caller, str(self), real_type(other), str(other)))
+                if caller == "empty_identity" and fault is not None:
+                    raise fault("original empty-identity lookup callback")
+                return str.__eq__(self, other)
+
+        def spoof(value):
+            return str if real_type(value) is ForeignHost else real_type(value)
+
+        def binding(*args, **kwargs):
+            result = binding_owner(*args, **kwargs)
+            if not changed:
+                end["host"] = ForeignHost(A)
+                patch.setattr(uip, "type", spoof, raising=False)
+                changed.append(True)
+            return result
+
+        def admitted(record):
+            result = admission_owner(record)
+            host = next(host for host, current in snap["stp_topology_observations"].items() if record is current)
+            callbacks.append(host)
+            if host == A:
+                assert real_type(end["host"]) is ForeignHost
+                end["host"] = A
+                patch.setattr(uip, "type", real_type, raising=False)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_LIMIT", 0)  # Genuinely exercise full six-map proof.
+            patch.setattr(uip, "carriage_cable_binding", binding)
+            patch.setattr(uip, "carriage_observation_admission", admitted)
+            if fault is None:
+                admission, outcome = uip.carriage_admission(snap), None
+            else:
+                with pytest.raises(fault) as raised:
+                    uip.carriage_admission(snap)
+                admission, outcome = None, (real_type(raised.value), raised.value.args)
+        assert changed == [True] and A in callbacks and B in callbacks
+        assert any(caller == "empty_identity" for caller, *_rest in trace)
+        assert real_type(end["host"]) is str
+        domains.append((tuple(trace), tuple(callbacks)))
+        outcomes.append(outcome if admission is None else _cpu_routing_outputs(snap, admission=admission))
+    assert domains[0] == domains[1] and outcomes[0] == outcomes[1]
+
+
+def test_native_role_prefix_exercises_real_consolidation_without_relocating_helpers(monkeypatch):
+    import sys
+    from cisco_toolkit import ui_projection as uip
+
+    outcomes, witnessed = [], []
+    for enabled in (False, True):
+        snap, seen = _role_cell_subject(), {"joined_roles": [], "empty_identity": []}
+        old_profile = sys.getprofile()
+
+        def profile(frame, event, _arg):
+            if event == "return" and frame.f_code.co_filename == uip._carriage_gaps.__code__.co_filename:
+                if frame.f_code.co_name == "joined_roles":
+                    seen["joined_roles"].append(frame.f_locals.get("native_query", False))
+                elif frame.f_code.co_name == "empty_identity":
+                    seen["empty_identity"].append(frame.f_locals.get("host_classified", False))
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", True)
+            try:
+                sys.setprofile(profile)
+                admission = uip.carriage_admission(snap)
+            finally:
+                sys.setprofile(old_profile)
+        assert seen["joined_roles"] and seen["empty_identity"]
+        assert any(seen["joined_roles"]) is enabled and any(seen["empty_identity"]) is enabled
+        witnessed.append({name: len(values) for name, values in seen.items()})
+        outcomes.append(_cpu_routing_outputs(snap, admission=admission))
+    assert witnessed[0] == witnessed[1] and outcomes[0] == outcomes[1]

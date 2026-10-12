@@ -4905,6 +4905,8 @@ _CARRIAGE_ROUTING_TOKEN_ENABLED = True
 _CARRIAGE_ROUTING_TOKEN_LIMIT = 16_384
 _CARRIAGE_LOOP_DISPATCH_ENABLED = False
 _CARRIAGE_ROLE_CELLS_ENABLED = True
+_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED = True
+_CARRIAGE_PREFIX_TYPE_OWNER, _CARRIAGE_PREFIX_STR_OWNER, _CARRIAGE_PREFIX_INT_OWNER = type, str, int
 
 
 class _CarriageRoutingToken(NamedTuple):
@@ -5262,10 +5264,22 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     def empty_identity(host: str, interface: str, vid: int, observation: Any, index: Any,
                        share_empty: bool) -> Optional[int]:
         nonlocal ordinary_host_history
-        if type(host) is not str:
+        host_classified, native_host = False, False
+        if (_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+                and type is _CARRIAGE_PREFIX_TYPE_OWNER and str is _CARRIAGE_PREFIX_STR_OWNER
+                and int is _CARRIAGE_PREFIX_INT_OWNER):
+            native_host, host_classified = type(host) is str, True
+            if not native_host:
+                ordinary_host_history = False
+        elif type(host) is not str:
             ordinary_host_history = False
-        # Optional retention only: saturation/foreign dispatch never refuses a source the owner can read.
-        if (not share_empty or type(host) is not str or type(interface) is not str or type(vid) is not int
+        # Keep THIS original helper frame, every proof lookup and every callback boundary. A share_empty
+        # truth callback may change classifiers, so recheck owners at the original second-host operand.
+        if (not share_empty
+                or (not native_host if (host_classified and type is _CARRIAGE_PREFIX_TYPE_OWNER
+                                        and str is _CARRIAGE_PREFIX_STR_OWNER and int is _CARRIAGE_PREFIX_INT_OWNER)
+                    else type(host) is not str)
+                or type(interface) is not str or type(vid) is not int
                 or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
                 or type(_CARRIAGE_SHARED_EMPTY_LIMIT) is not int
                 or len(shared_empty_positions) >= _CARRIAGE_SHARED_EMPTY_LIMIT):
@@ -5329,11 +5343,22 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any,
                      *, share_empty: bool = False) -> Any:
         nonlocal ordinary_role_history, ordinary_host_history, empty_cell
-        if type(host) is not str:
-            ordinary_host_history = False
-        if type(host) is not str or type(interface) is not str or type(vid) is not int:
-            # Earlier foreign equal keys may expose callbacks even to a later wholly plain query.
-            ordinary_role_history = False
+        native_query = False
+        if (_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+                and type is _CARRIAGE_PREFIX_TYPE_OWNER and str is _CARRIAGE_PREFIX_STR_OWNER
+                and int is _CARRIAGE_PREFIX_INT_OWNER):
+            native_host = type(host) is str
+            if not native_host:
+                ordinary_host_history = False
+            native_query = native_host and type(interface) is str and type(vid) is int
+            if not native_query:
+                ordinary_role_history = False
+        else:
+            # Patched classifiers retain the literal original call/callback/exception sequence.
+            if type(host) is not str:
+                ordinary_host_history = False
+            if type(host) is not str or type(interface) is not str or type(vid) is not int:
+                ordinary_role_history = False
         key = (host, interface, vid)
         one_probe = cpu_routing and share_empty and ordinary_role_history
         if one_probe:
@@ -5346,7 +5371,9 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             if query is not None and query in shared_positions:
                 # Only immutable positions cross hosts; each row object comes from THIS host's current record.
                 if (role_cells and share_empty and ordinary_role_history and ordinary_host_history
-                        and type(host) is str and type(interface) is str and type(vid) is int
+                        and ((native_query and type is _CARRIAGE_PREFIX_TYPE_OWNER
+                              and str is _CARRIAGE_PREFIX_STR_OWNER and int is _CARRIAGE_PREFIX_INT_OWNER)
+                             or (type(host) is str and type(interface) is str and type(vid) is int))
                         and carriage_role_rows is _CARRIAGE_ROLE_ROWS_OWNER
                         and _carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER):
                     positions = shared_positions[query]
