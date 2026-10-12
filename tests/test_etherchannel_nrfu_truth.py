@@ -359,4 +359,4 @@ def test_text_pack_carries_etherchannel_family_state_custody_source_and_banner(t
     assert "evidence_state: review" in body
     assert "projection_custody: embedded_unverified" in body
     assert f"source: {row['source_key']}" in body
-    assert os.path.basename(written[0]) == "sw1.txt"
+    assert os.path.basename(written[0]) == "sw1.nrfu.txt"
