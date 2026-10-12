@@ -4,7 +4,8 @@ Every interface record comes from the real producer: synthetic capture text is w
 and read back by ``build.build_interfaces`` (``parse_show_interface_trunk_table`` and the trunk assignments in
 build.py, the etherchannel and CDP joins), then ``compute_cable_map`` and ``produce_stp_topology_observation``. No
 interface record is hand-built. Deliberate mutations of the producer's stored output are labelled as such; no local
-test run or regenerated golden is implied by this file.
+test run or regenerated golden is implied by this file. The final CPU-dispatch controls use the existing PURE
+in-memory bundle fixture and real STP/carriage owners; they make no additional CLI/parser or capture claim.
 """
 from copy import deepcopy
 from dataclasses import asdict
@@ -1285,3 +1286,398 @@ def test_closed_stored_contract_refuses_inconsistent_or_promoting_mutations(tmp_
     else:
         doc["cables"][0]["hold"] = "edge_uncollected"
     assert validate_vlan_carriage(doc)[0] is False, mutation
+
+
+# PURE dispatch controls follow ALL original owner controls; no capture writer or timed call is introduced.
+def _cpu_routing_subject(*, first_vid=10):
+    from test_ui_projection_vlan_carriage import _round2_bundle
+
+    observations = {
+        A: _stp({first_vid: [("Po10", "Desg", "FWD")], 20: [("Po10", "Altn", "BLK")]}),
+        B: _stp({first_vid: [("Po10", "Altn", "BLK")], 20: [("Po10", "Desg", "FWD")]}),
+    }
+    snap = _round2_bundle(observations)
+    snap["vlan_cutover"] = [{"vlan": vid} for vid in (first_vid, 20, 30)]
+    for records in snap["interfaces"].values():
+        for record in records.values():
+            record["trunk_allowed_vlans"] = f"{first_vid},20,30"
+    snap["vlan_carriage"] = compute_vlan_carriage(
+        snap["cable_map"], snap["interfaces"], observations, snap["vlan_cutover"])
+    assert validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    # DISTINCT valid records are necessary: complete-value sharing must not skip the real peer callback.
+    assert observations[A] != observations[B]
+    return snap
+
+
+def _cpu_routing_outputs(snap, *, admission=None):
+    from cisco_toolkit import ui_projection as uip
+
+    admission = uip.carriage_admission(snap) if admission is None else admission
+    complete = (deepcopy(admission.source), admission.section is snap["vlan_carriage"], admission.failed,
+                tuple(admission.gaps.items()), admission.offsets,
+                tuple((str(host), type(host), record is snap["stp_topology_observations"].get(str(host)),
+                       type(index), None if index is None else tuple(index.items()))
+                      for host, (record, index) in admission.observations.items()))
+    document = uip.project(snap, carriage=admission)
+    pages = [uip.project_vlan_carriage(snap, vi, offset, limit, admission=admission)
+             for vi in range(len(snap["vlan_cutover"])) for offset, limit in ((0, 200), (0, 1), (1, 1))]
+    return complete, document, pages
+
+
+@pytest.mark.parametrize("damage", ["none", "new-role", "error", "logical-alias", "source-port", "beside",
+                                     "key-order"])
+def test_cpu_dispatch_keeps_real_complete_admission_documents_and_pages(monkeypatch, damage):
+    from cisco_toolkit import ui_projection as uip
+
+    snap = _cpu_routing_subject()
+    if damage == "new-role":
+        snap["stp_topology_observations"][B] = _stp({30: [("Po10", "Desg", "FWD")]})
+    elif damage == "error":
+        snap["stp_topology_observations"][B] = produce_stp_topology_observation(
+            "", "", state_capture_state="error", detail_capture_state="error")
+    elif damage == "logical-alias":
+        snap["interfaces"][B]["Po010"] = {**snap["interfaces"][B]["Po10"], "port": "Po010"}
+    elif damage == "source-port":
+        snap["interfaces"][B]["Po10"]["port"] = "Po99"
+    elif damage == "beside":
+        snap["stp_topology_observations"][B] = _stp(
+            {10: [("Po10", "Altn", "BLK"), (PORT, "Desg", "FWD")]})
+    elif damage == "key-order":
+        snap["stp_topology_observations"][B] = dict(reversed(tuple(
+            snap["stp_topology_observations"][B].items())))
+    before, results = deepcopy(snap), []
+    for mode in ("enabled", "old-cpu", "old-token", "unplanned"):
+        with monkeypatch.context() as patch:
+            if mode == "old-cpu":
+                patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", False)
+            elif mode == "old-token":
+                patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", False)
+            elif mode == "unplanned":
+                patch.setattr(uip, "_carriage_routing_plan", lambda: None)
+            results.append(_cpu_routing_outputs(snap))
+    assert all(result == results[0] for result in results) and snap == before
+    if damage not in ("none", "key-order"):
+        assert results[0][1]["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]["state"] == "unverified"
+
+
+@pytest.mark.parametrize("kind", ["host", "interface", "vid"])
+@pytest.mark.parametrize("effect", ["observe", "runtime-error", "type-error"])
+def test_cpu_role_key_history_keeps_foreign_seed_then_plain_lookup_callbacks(monkeypatch, kind, effect):
+    from cisco_toolkit import ui_projection as uip
+
+    owner_index, owner_query, results, traces = uip.carriage_role_index, uip._carriage_role_query, [], []
+    state = {}
+
+    class ForeignText(str):
+        def __hash__(self):
+            state["trace"].append(("hash-text", str(self)))
+            return str.__hash__(self)
+
+        def __eq__(self, other):
+            state["trace"].append(("eq-text", type(other)))
+            if state["armed"] and type(other) is str and effect != "observe":
+                raise (RuntimeError if effect == "runtime-error" else TypeError)("foreign stored role key")
+            return str.__eq__(self, other)
+
+    class ForeignVid(int):
+        def __hash__(self):
+            state["trace"].append(("hash-vid", int(self)))
+            return int.__hash__(self)
+
+        def __eq__(self, other):
+            state["trace"].append(("eq-vid", type(other)))
+            if state["armed"] and type(other) is int and effect != "observe":
+                raise (RuntimeError if effect == "runtime-error" else TypeError)("foreign stored role key")
+            return int.__eq__(self, other)
+
+    for enabled in (False, True):
+        snap = _cpu_routing_subject()
+        end, row = snap["vlan_carriage"]["cables"][0]["members"][0]["a"], snap["vlan_carriage"]["rows"][0]
+        state.update(trace=[], armed=False, changed=False, restored=False)
+
+        def index(record):
+            result = owner_index(record)
+            if not state["changed"]:
+                assert record is snap["stp_topology_observations"][A]
+                if kind == "vid":
+                    row["vlan"] = ForeignVid(10)
+                else:
+                    field = "host" if kind == "host" else "stp_interface"
+                    end[field] = ForeignText(end[field])
+                state["changed"] = True
+            return result
+
+        def query(record, interface, vid, *, index):
+            result = owner_query(record, interface, vid, index=index)
+            if not state["restored"]:
+                if kind == "vid":
+                    assert type(vid) is ForeignVid
+                    row["vlan"] = 10
+                else:
+                    field = "host" if kind == "host" else "stp_interface"
+                    assert type(end[field]) is ForeignText
+                    end[field] = str(end[field])
+                state["restored"], state["armed"] = True, True
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", enabled)
+            patch.setattr(uip, "carriage_role_index", index)
+            patch.setattr(uip, "_carriage_role_query", query)
+            if effect == "runtime-error":
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                result = type(raised.value), raised.value.args
+                admission = None
+            else:
+                admission = uip.carriage_admission(snap)
+                result = None
+        assert state["changed"] and state["restored"]
+        traces.append(tuple(state["trace"]))
+        state["armed"] = False  # Restore the separate, unguarded lazy-render owner domain.
+        results.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
+        if effect == "type-error":
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+    assert traces[0] == traces[1] and results[0] == results[1]
+    assert any(event[0].startswith("eq-") for event in traces[0])
+
+
+@pytest.mark.parametrize("effect", ["observe", "runtime-error", "type-error"])
+def test_cpu_host_proof_history_keeps_unsafe_admission_then_plain_index_callbacks(monkeypatch, effect):
+    from cisco_toolkit import ui_projection as uip
+
+    admission_owner, query_owner, index_owner = (uip.carriage_observation_admission,
+                                                 uip._carriage_role_query, uip.carriage_role_index)
+    state, results, traces = {}, [], []
+
+    class ForeignHost(str):
+        def __hash__(self):
+            state["trace"].append(("hash", str(self)))
+            return str.__hash__(self)
+
+        def __eq__(self, other):
+            state["trace"].append(("eq", type(other)))
+            if state["armed"] and type(other) is str and effect != "observe":
+                raise (RuntimeError if effect == "runtime-error" else TypeError)("foreign stored host proof key")
+            return str.__eq__(self, other)
+
+    for token_enabled in (False, True):
+        snap = _cpu_routing_subject()
+        peer = snap["vlan_carriage"]["cables"][0]["members"][0]["b"]
+        state.update(trace=[], armed=False)
+        callbacks, indexes, queries = [], [], []
+
+        def admitted(record):
+            result = admission_owner(record)
+            if record is snap["stp_topology_observations"][A]:
+                callbacks.append(A)
+                peer["host"] = ForeignHost(B)
+            elif record is snap["stp_topology_observations"][B]:
+                callbacks.append(B)
+                assert type(peer["host"]) is ForeignHost
+                peer["host"] = B
+            return result
+
+        def index(record):
+            assert callbacks == [A, B] and type(peer["host"]) is str and peer["host"] == B
+            indexes.append(record)
+            return index_owner(record)
+
+        def query(record, interface, vid, *, index):
+            assert callbacks == [A, B] and type(peer["host"]) is str
+            queries.append((record, interface, vid))
+            result = query_owner(record, interface, vid, index=index)
+            if record is snap["stp_topology_observations"][B] and interface == "Po10":
+                state["armed"] = True  # The next physical-beside empty join must retain the old proof-key hooks.
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", token_enabled)
+            patch.setattr(uip, "carriage_observation_admission", admitted)
+            patch.setattr(uip, "carriage_role_index", index)
+            patch.setattr(uip, "_carriage_role_query", query)
+            if effect == "runtime-error":
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                result, admission = (type(raised.value), raised.value.args), None
+            else:
+                admission = uip.carriage_admission(snap)
+                result = None
+        assert callbacks == [A, B] and indexes and queries
+        assert any(record is snap["stp_topology_observations"][B] for record, _interface, _vid in queries)
+        traces.append(tuple(state["trace"]))
+        state["armed"] = False
+        results.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
+        if effect == "type-error":
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+    assert traces[0] == traces[1] and results[0] == results[1]
+
+
+@pytest.mark.parametrize("fallback", ["zero", "saturated", "noninteger", "factory", "constructor", "foreign-index",
+                                       "copied-observation"])
+def test_cpu_token_optional_fallbacks_keep_existing_real_owner_outputs(monkeypatch, fallback):
+    from cisco_toolkit import ui_projection as uip
+
+    snap = _cpu_routing_subject()
+    index_owner, admission_owner = uip.carriage_role_index, uip.carriage_observation_admission
+    results, constructor_calls = [], []
+
+    class ForeignIndex(dict):
+        pass
+
+    def foreign_admission(record):
+        state, reason, admitted = admission_owner(record)
+        return state, reason, deepcopy(admitted) if admitted is not None else None
+
+    def constructor(*args):
+        constructor_calls.append(args)
+        return object()  # No token-like return can supply a source or join certificate.
+
+    for enabled in (False, True):
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", enabled)
+            if fallback in ("zero", "saturated", "noninteger"):
+                patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_LIMIT", {"zero": 0, "saturated": 1, "noninteger": True}[fallback])
+            elif fallback == "factory":
+                patch.setattr(uip, "_carriage_routing_token", constructor)
+            elif fallback == "constructor":
+                patch.setattr(uip, "_CarriageRoutingToken", constructor)
+            elif fallback == "foreign-index":
+                patch.setattr(uip, "carriage_role_index", lambda record: ForeignIndex(index_owner(record)))
+            else:
+                patch.setattr(uip, "carriage_observation_admission", foreign_admission)
+            results.append(_cpu_routing_outputs(snap))
+    assert results[0] == results[1] and constructor_calls == []
+
+
+@pytest.mark.parametrize("answer_kind", ["falsey-list", "none", "global-missing"])
+def test_cpu_one_probe_keeps_falsey_and_foreign_owner_returns(monkeypatch, answer_kind):
+    from cisco_toolkit import ui_projection as uip
+
+    owner, results, counts = uip.carriage_role_rows, [], []
+
+    class FalseyRows(list):
+        def __bool__(self):
+            return False
+
+    for enabled in (False, True):
+        snap, calls = _cpu_routing_subject(), []
+
+        def query(record, interface, vid, *, index=None):
+            genuine = owner(record, interface, vid, index=index)
+            calls.append((record, interface, vid))
+            if answer_kind == "none":
+                return None
+            if answer_kind == "global-missing":
+                return uip._MISSING
+            return FalseyRows(genuine)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", enabled)
+            patch.setattr(uip, "carriage_role_rows", query)
+            admission = uip.carriage_admission(snap)
+        counts.append(len(calls))
+        results.append(_cpu_routing_outputs(snap, admission=admission))
+        if answer_kind != "falsey-list":
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+            assert len(calls) == 1
+    assert results[0] == results[1] and counts[0] == counts[1]
+
+
+def test_cpu_bool_query_then_plain_vid_keeps_original_typed_hold(monkeypatch):
+    from cisco_toolkit import ui_projection as uip
+
+    index_owner, query_owner, outputs, domains = uip.carriage_role_index, uip._carriage_role_query, [], []
+    for enabled in (False, True):
+        snap, changed, calls = _cpu_routing_subject(first_vid=1), [], []
+        row = snap["vlan_carriage"]["rows"][0]
+
+        def index(record):
+            result = index_owner(record)
+            if not changed:
+                row["vlan"] = True  # Labelled callback mutation AFTER the genuine producer's strict integer row.
+                changed.append(True)
+            return result
+
+        def query(record, interface, vid, *, index):
+            result = query_owner(record, interface, vid, index=index)
+            calls.append((record is snap["stp_topology_observations"][A], interface, type(vid)))
+            row["vlan"] = 1
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", enabled)
+            patch.setattr(uip, "carriage_role_index", index)
+            patch.setattr(uip, "_carriage_role_query", query)
+            admission = uip.carriage_admission(snap)
+        assert changed == [True] and calls[0][2] is bool and 0 in admission.gaps
+        domains.append(calls)
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and domains[0] == domains[1]
+
+
+def test_cpu_unsafe_host_after_first_token_permanently_stops_later_token_mints(monkeypatch):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, minted, changed = _cpu_routing_subject(), [], []
+    real_new, real_index, real_query = (uip._CarriageRoutingToken.__new__, uip.carriage_role_index,
+                                      uip._carriage_role_query)
+    end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+
+    class ForeignHost(str):
+        pass
+
+    def token_new(cls, host, identity, observation, index):
+        minted.append(host)
+        return real_new(cls, host, identity, observation, index)
+
+    def index(record):
+        result = real_index(record)
+        if not changed:
+            end["host"] = ForeignHost(A)
+            changed.append(True)
+        return result
+
+    def query(record, interface, vid, *, index):
+        result = real_query(record, interface, vid, index=index)
+        end["host"] = A
+        return result
+
+    before = deepcopy(snap)
+    with monkeypatch.context() as patch:
+        patch.setattr(uip._CarriageRoutingToken, "__new__", staticmethod(token_new))
+        patch.setattr(uip, "carriage_role_index", index)
+        patch.setattr(uip, "_carriage_role_query", query)
+        actual = _cpu_routing_outputs(snap)
+    assert changed == [True] and minted == [A] and snap == before
+    with monkeypatch.context() as patch:
+        patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", False)
+        assert _cpu_routing_outputs(snap) == actual
+
+
+@pytest.mark.parametrize("damage", ["identity", "record", "index", "lookalike", "allocation-refusal"])
+def test_cpu_token_constructor_outputs_cannot_bless_wrong_joins(monkeypatch, damage):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, calls = _cpu_routing_subject(), []
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", False)
+        expected = _cpu_routing_outputs(snap)
+    real_new = uip._CarriageRoutingToken.__new__
+
+    def constructor(cls, host, identity, observation, index):
+        calls.append(host)
+        if damage == "allocation-refusal":
+            raise MemoryError("optional token allocation refused")
+        if damage == "lookalike":
+            return (host, identity, observation, index)
+        if damage == "identity":
+            identity += 100
+        elif damage == "record":
+            observation = deepcopy(observation)
+        else:
+            index = dict(index)
+        return real_new(cls, host, identity, observation, index)
+
+    monkeypatch.setattr(uip._CarriageRoutingToken, "__new__", staticmethod(constructor))
+    assert _cpu_routing_outputs(snap) == expected and calls

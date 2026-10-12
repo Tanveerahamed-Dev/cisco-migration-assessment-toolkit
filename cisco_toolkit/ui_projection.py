@@ -133,7 +133,7 @@ import math
 import marshal
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
@@ -4897,6 +4897,25 @@ def _carriage_observation_key(record: Any) -> Optional[bytes]:
 # Ordinary private dispatch coherence, not secret authority or a mutable-snapshot sandbox.
 _CARRIAGE_ROLE_ROWS_OWNER = carriage_role_rows
 _CARRIAGE_SHARED_EMPTY_LIMIT = 16_384
+_CARRIAGE_CPU_ROUTING_ENABLED = True
+_CARRIAGE_ROUTING_TOKEN_ENABLED = True
+_CARRIAGE_ROUTING_TOKEN_LIMIT = 16_384
+
+
+class _CarriageRoutingToken(NamedTuple):
+    """Immutable joins of private append-only maps, never a snapshot or end-verdict certificate."""
+    host: str
+    identity: int
+    observation: Any
+    index: Any
+
+
+def _carriage_routing_token(host: str, identity: int, observation: Any, index: Any) -> _CarriageRoutingToken:
+    return _CarriageRoutingToken(host, identity, observation, index)
+
+
+_CARRIAGE_ROUTING_TOKEN_TYPE = _CarriageRoutingToken
+_CARRIAGE_ROUTING_TOKEN_OWNER = _carriage_routing_token
 
 
 def _carriage_role_query(observation: Any, interface: str, vid: int, *, index: Any) -> Any:
@@ -4952,8 +4971,17 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     observation_ids: Dict[str, int] = {}
     shared_indexes: Dict[int, Mapping[Any, Tuple[int, ...]]] = {}
     shared_hosts: Dict[str, int] = {}
+    routing_tokens: Dict[str, _CarriageRoutingToken] = {}
+    ordinary_host_history = True
+    ordinary_role_history = True
+    missing_roles = object()  # A foreign owner may return global _MISSING, None or a falsey answer.
+    cpu_routing = _CARRIAGE_CPU_ROUTING_ENABLED is True
+    token_routing = cpu_routing and _CARRIAGE_ROUTING_TOKEN_ENABLED is True
 
     def admitted(host: str) -> Any:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
         if host not in observations:
             supplied = ctx.s.get("stp_topology_observations")
             # The owner's absent-section/absent-host case is distinct from a supplied malformed record.
@@ -5079,12 +5107,24 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
 
     def empty_identity(host: str, interface: str, vid: int, observation: Any, index: Any,
                        share_empty: bool) -> Optional[int]:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
         # Optional retention only: saturation/foreign dispatch never refuses a source the owner can read.
         if (not share_empty or type(host) is not str or type(interface) is not str or type(vid) is not int
                 or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
                 or type(_CARRIAGE_SHARED_EMPTY_LIMIT) is not int
                 or len(shared_empty_positions) >= _CARRIAGE_SHARED_EMPTY_LIMIT):
             return None
+        if (token_routing and ordinary_host_history
+                and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+            token = routing_tokens.get(host)
+            if (token is not None and type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and token.host == host
+                    and token.observation is observation and token.index is index):
+                return token.identity
         identity, current = shared_hosts.get(host), observations.get(host)
         if (type(identity) is not int or type(current) is not tuple or len(current) != 3
                 or type(current[0]) is not str or current[0] != _PUB or current[2] is not observation
@@ -5095,20 +5135,33 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
 
     def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any,
                      *, share_empty: bool = False) -> List[Any]:
+        nonlocal ordinary_role_history, ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
+        if type(host) is not str or type(interface) is not str or type(vid) is not int:
+            # Earlier foreign equal keys may expose callbacks even to a later wholly plain query.
+            ordinary_role_history = False
         key = (host, interface, vid)
-        if key not in role_rows:
+        one_probe = cpu_routing and share_empty and ordinary_role_history
+        if one_probe:
+            retained = role_rows.get(key, missing_roles)
+            if retained is not missing_roles:
+                return retained
+        if one_probe or key not in role_rows:
             identity = shared_hosts.get(host)
             query = (identity, interface, vid) if identity is not None else None
             if query is not None and query in shared_positions:
                 # Only immutable positions cross hosts; each row object comes from THIS host's current record.
-                role_rows[key] = [(i, observation["roles"][i]) for i in shared_positions[query]]
+                rows = [(i, observation["roles"][i]) for i in shared_positions[query]]
+                role_rows[key] = rows
             else:
                 empty_id = empty_identity(host, interface, vid, observation, index, share_empty)
                 empty_query = (empty_id, interface, vid) if empty_id is not None else None
                 if empty_query is not None and empty_query in shared_empty_positions:
                     # Genuine immutable absence, applied to THIS host; no end/VLAN verdict or row alias.
-                    role_rows[key] = []
-                    return role_rows[key]
+                    rows = []
+                    role_rows[key] = rows
+                    return rows if one_probe else role_rows[key]
                 rows = _carriage_role_query(observation, interface, vid, index=index)
                 if query is not None and type(rows) is list and rows and all(
                         type(pair) is tuple and len(pair) == 2 and type(pair[0]) is int
@@ -5120,9 +5173,14 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     # Recheck binding/host/index after the actual query: a callback cannot seed stale reuse.
                     shared_empty_positions[empty_query] = ()
                 role_rows[key] = rows
+            if one_probe:
+                return rows if ordinary_role_history else role_rows[key]
         return role_rows[key]
 
-    def role_index(host: str, observation: Any) -> Any:
+    def role_index(host: str, observation: Any, *, tokenize: bool = False) -> Any:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
         if host not in indexes:
             identity = observation_ids.get(host)
             if identity is not None and identity in shared_indexes:
@@ -5142,9 +5200,33 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             indexes[host] = index
             if identity is not None and shared_indexes.get(identity) is index:
                 shared_hosts[host] = identity
+            if (tokenize and token_routing and ordinary_host_history
+                    and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                    and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                    and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                    and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+                current, shared_id = observations.get(host), shared_hosts.get(host)
+                if (type(shared_id) is int and type(current) is tuple and len(current) == 3
+                        and type(current[0]) is str and current[0] == _PUB and current[2] is observation
+                        and observation_ids.get(host) == shared_id and indexes.get(host) is index
+                        and shared_indexes.get(shared_id) is index):
+                    try:
+                        token = _carriage_routing_token(host, shared_id, observation, index)
+                    except Exception:
+                        # Optional immutable allocation only; never catch an actual observation/index/query fault.
+                        token = None
+                    if (_carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                            and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE and token is not None
+                            and type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and type(token.host) is str
+                            and token.host == host and type(token.identity) is int and token.identity == shared_id
+                            and token.observation is observation and token.index is index):
+                        routing_tokens[host] = token
         return indexes[host]
 
     def compatible_role(host: str, position: int, row: Any, observation: Any) -> bool:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
         identity = shared_hosts.get(host)
         if (identity is None or type(position) is not int or not 0 <= position < len(observation["roles"])
                 or row is not observation["roles"][position]):
@@ -5188,7 +5270,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                             and observation is plan.observation):
                         index = plan.index
                     else:
-                        index = role_index(index_host, observation)
+                        index = role_index(index_host, observation, tokenize=plan is not None)
                         if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
                     rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
@@ -5217,7 +5299,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                             and observation is plan.observation):
                         index = plan.index
                     else:
-                        index = role_index(index_host, observation)
+                        index = role_index(index_host, observation, tokenize=plan is not None)
                         if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
                     eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
