@@ -34,6 +34,11 @@ This module closes the class from the producer side, statically (every file is p
 * **Names actually written.** Wherever a site's target resolves to a literal name (assignments in
   the function and module constants are followed), its class must be one the row names, and a
   ``non-client`` row must resolve to none (:func:`resolved_site_classes`).
+  Resolved literals that match no class are retained (:func:`unclassified_site_literals`) and
+  refused for ``client`` rows; keeping the write count unchanged cannot hide a renamed artifact.
+  Partial templates retain their uncertainty separately (:func:`unresolved_site_templates`);
+  an explicit sidecar suffix remains a class obligation. Targets projected from a reviewed
+  ``non-client`` helper retain that helper's provenance, rather than becoming client payloads.
 * **Suffix literals.** :func:`suffix_literals` collects every literal appended to an output stem
   (``+``, f-string tails, ``%`` and ``.format`` templates, ``with_suffix``/``with_name``,
   ``str.join``), and each one must be a registered class or a :data:`NON_CLIENT_SUFFIX_LITERALS`
@@ -41,8 +46,10 @@ This module closes the class from the producer side, statically (every file is p
 
 Bounds, stated rather than implied: a bare file name joined onto a directory for READING is not a
 write; dynamic dispatch (``getattr(module, spec.writer_name)``) is tied by the docmeta registry, not
-here; files written by a subprocess are the subprocess's own rows; ``.ps1`` and JavaScript writers
-are tied by literal checks in ``tests/test_client_artifact_census.py``.
+  here; files written by a subprocess are the subprocess's own rows; ``.ps1`` and browser writers
+are tied by producer-name checks in ``tests/test_client_artifact_census.py``. The browser census
+includes every tracked engine HTML file, direct download-helper calls and download attributes;
+its dispatch/escape boundary is owned by :func:`_js_literal_call`. Unknown filenames require disposition.
 
 :func:`census_problems` and :func:`suffix_literal_problems` are the whole check;
 ``tests/test_client_artifact_census.py`` asserts both are empty, so a new sidecar fails CI until it
@@ -56,13 +63,22 @@ otherwise move with it.
 from __future__ import annotations
 
 import ast
+import codecs
+import hashlib
+import copy
+import itertools
+import operator
 import re
+import string
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable, Mapping
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -293,9 +309,23 @@ def write_primitive(call: ast.Call, qualify=None, resolve=None) -> tuple[str, li
     if name in _TARGET_SECOND:
         target = _argument(call, 1, "dst") or _argument(call, 1, "filename") or _argument(call, 1, "extract_dir")
         return name, [target] if target is not None else list(call.args)
+    if name in {"tempfile.mkstemp", "tempfile.NamedTemporaryFile"}:
+        offset = 0 if name == "tempfile.mkstemp" else 4
+        suffix = _argument(call, offset, "suffix") or ast.Constant("")
+        prefix = _argument(call, offset + 1, "prefix") or ast.Constant("tmp")
+        directory = _argument(call, offset + 2, "dir") or ast.Constant(None)
+        filename = ast.BinOp(left=ast.BinOp(left=prefix, op=ast.Add(), right=ast.Constant("0")),
+                             op=ast.Add(), right=suffix)
+        # Keep directory flow for writer derivation, but classify the composed leaf only.
+        return name, [ast.BinOp(left=directory, op=ast.Div(), right=filename)]
     if name in _TARGET_FIRST:
         targets = [first] if first is not None else []
         targets += [item.value for item in call.keywords if item.arg in {"dir", "prefix", "suffix", "filename", "base_name", "database"}]
+        if name == "sqlite3.connect" and targets and any(
+            k.arg == "uri" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords
+        ):
+            targets = [ast.Call(func=ast.Name(id="__census_sqlite_path", ctx=ast.Load()),
+                                args=[targets[0]], keywords=[])]
         return name, targets
     if name == "logging.basicConfig":
         target = _argument(call, 99, "filename")
@@ -358,6 +388,10 @@ class _File:
 
 
 _UNTAINTED_PARAMETERS = frozenset({"self", "cls", "argv"})
+
+
+class _UnknownValue(ast.AST):
+    """Internal uncertainty is distinct from an actual literal None or zero filename."""
 
 
 class _BodyWalker(ast.NodeVisitor):
@@ -565,13 +599,162 @@ class _Program:
                 continue
             if isinstance(node, ast.Name) and node.id in function.assignments:
                 continue  # a local rebinding of the name, not the writer
-            arguments = [] if call is None else [*call.args, *(k.value for k in call.keywords)]
-            found.append((f"writer:{target.key}", arguments))
+            targets: list[ast.AST] = []
+            if call is not None:
+                callee = self.resolve_function(function, call.func)
+                if callee is target:
+                    targets = self._writer_targets(target, call)
+                elif callee is not None:
+                    targets = self._callback_targets(callee, call, target, node)
+                else:
+                    # Unknown callback dispatch cannot establish a target-parameter mapping.
+                    # Retain its possible literals rather than silently discarding evidence.
+                    targets = [*call.args, *(k.value for k in call.keywords)]
+            found.append((f"writer:{target.key}", targets))
         return found
+
+    def _bindings(self, function: _Function, call: ast.Call) -> dict[str, ast.AST]:
+        args = function.node.args
+        parameters = [*args.posonlyargs, *args.args]
+        bindings = {parameter.arg: value for parameter, value in zip(parameters, call.args)}
+        defaults = dict(zip([p.arg for p in parameters[-len(args.defaults):]], args.defaults)) if args.defaults else {}
+        default_scope = function.enclosing or self.file_of[function.key].top
+        for name, value in defaults.items():
+            bindings.setdefault(name, self._expanded(default_scope, value, {}))
+        if args.vararg:
+            bindings[args.vararg.arg] = ast.Tuple(elts=call.args[len(parameters):], ctx=ast.Load())
+        for keyword in call.keywords:
+            if keyword.arg is not None:
+                bindings[keyword.arg] = keyword.value
+        if args.kwarg:
+            extra = [k for k in call.keywords if k.arg is not None and k.arg not in function.parameters]
+            bindings[args.kwarg.arg] = ast.Dict(
+                keys=[ast.Constant(k.arg) for k in extra], values=[k.value for k in extra])
+        for parameter, default in zip(args.kwonlyargs, args.kw_defaults):
+            if default is not None:
+                bindings.setdefault(parameter.arg, self._expanded(default_scope, default, {}))
+        return bindings
+
+    def _expanded(self, function: _Function, node: ast.AST, bindings: dict[str, ast.AST],
+                  seen: frozenset[str] = frozenset()) -> ast.AST:
+        if isinstance(node, ast.Name):
+            if node.id in bindings:
+                return bindings[node.id]  # this expression belongs to the caller's scope
+            if node.id in seen:
+                return _UnknownValue()
+            values = self.resolver(function)(node)
+            if values:
+                expanded = [self._expanded(function, v, bindings, seen | {node.id}) for v in values]
+                return expanded[0] if len(expanded) == 1 else ast.BoolOp(op=ast.Or(), values=expanded)
+            return _UnknownValue()
+        expanded = copy.copy(node)
+        for name, value in ast.iter_fields(node):
+            if isinstance(node, ast.Call) and name == "func":
+                continue  # preserve Path/str/path constructors; substitute their arguments
+            if isinstance(value, ast.AST):
+                setattr(expanded, name, self._expanded(function, value, bindings, seen))
+            elif isinstance(value, list):
+                setattr(expanded, name, [self._expanded(function, v, bindings, seen)
+                                        if isinstance(v, ast.AST) else v for v in value])
+        if (isinstance(expanded, ast.Subscript) and isinstance(expanded.value, (ast.Tuple, ast.List))
+                and isinstance(expanded.slice, ast.Constant) and isinstance(expanded.slice.value, int)):
+            index = expanded.slice.value
+            if -len(expanded.value.elts) <= index < len(expanded.value.elts):
+                return expanded.value.elts[index]
+        return expanded
+
+    def _expanded_call(self, function: _Function, call: ast.Call,
+                       bindings: dict[str, ast.AST]) -> ast.Call:
+        args: list[ast.AST] = []
+        keywords: list[ast.keyword] = []
+        for argument in call.args:
+            value = self._expanded(function, argument.value if isinstance(argument, ast.Starred) else argument, bindings)
+            if isinstance(argument, ast.Starred) and isinstance(value, (ast.Tuple, ast.List)):
+                args.extend(value.elts)
+            else:
+                args.append(value)
+        for keyword in call.keywords:
+            value = self._expanded(function, keyword.value, bindings)
+            if keyword.arg is None and isinstance(value, ast.Dict):
+                keywords.extend(ast.keyword(arg=k.value, value=v) for k, v in zip(value.keys, value.values)
+                                if isinstance(k, ast.Constant) and isinstance(k.value, str))
+            else:
+                keywords.append(ast.keyword(arg=keyword.arg, value=value))
+        return ast.Call(func=call.func, args=args, keywords=keywords)
+
+    def _writer_targets(self, function: _Function, call: ast.Call,
+                        seen: frozenset[str] = frozenset()) -> list[ast.AST]:
+        if function.key in seen:
+            return []
+        bindings = self._bindings(function, call)
+        targets: list[ast.AST] = []
+        file = self.file_of[function.key]
+        for inner in function.calls:
+            primitive = write_primitive(inner, file.imports.qualify, self.resolver(function))
+            if primitive:
+                for target in primitive[1]:
+                    expanded = self._expanded(function, target, bindings)
+                    row = WRITE_SITE_CENSUS.get(function.key)
+                    if row is not None and row[1] == NON_CLIENT:
+                        expanded = copy.copy(expanded)
+                        expanded.census_non_client_origin = function.key
+                    targets.append(expanded)
+            else:
+                callee = self.resolve_function(function, inner.func)
+                if callee is not None and callee.key in self.writers:
+                    targets.extend(self._writer_targets(callee, self._expanded_call(function, inner, bindings),
+                                                        seen | {function.key}))
+        return targets
+
+    def _callback_targets(self, wrapper: _Function, call: ast.Call, target: _Function,
+                          reference: ast.AST, seen: frozenset[str] = frozenset()) -> list[ast.AST]:
+        if wrapper.key in seen:
+            return []
+        bindings = self._bindings(wrapper, call)
+        targets: list[ast.AST] = []
+        identity = ast.dump(reference, include_attributes=False)
+        for inner in wrapper.calls:
+            expanded = self._expanded_call(wrapper, inner, bindings)
+            if isinstance(inner.func, ast.Name) and inner.func.id in bindings:
+                if ast.dump(bindings[inner.func.id], include_attributes=False) == identity:
+                    targets.extend(self._writer_targets(target, expanded))
+            else:
+                callee = self.resolve_function(wrapper, inner.func)
+                if callee is not None and any(ast.dump(n, include_attributes=False) == identity
+                                              for a in [*expanded.args, *(k.value for k in expanded.keywords)]
+                                              for n in ast.walk(a)):
+                    targets.extend(self._callback_targets(callee, expanded, target, reference,
+                                                          seen | {wrapper.key}))
+        return targets
 
 
 def _references(node: ast.AST, names: set[str]) -> bool:
     return any(isinstance(leaf, ast.Name) and leaf.id in names for leaf in ast.walk(node))
+
+
+def _identifying_suffix(node: ast.AST, resolve, seen: frozenset[str] = frozenset()) -> bool:
+    """Only a terminal sidecar suffix is an obligation, never literals inside an input stem."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return bool(_SUFFIX_LITERAL.match(node.value))
+    if isinstance(node, ast.Name) and node.id not in seen:
+        return any(_identifying_suffix(value, resolve, seen | {node.id}) for value in resolve(node))
+    if isinstance(node, ast.JoinedStr) and node.values:
+        return _identifying_suffix(node.values[-1], resolve, seen)
+    if isinstance(node, ast.FormattedValue):
+        return _identifying_suffix(node.value, resolve, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+        return _identifying_suffix(node.right, resolve, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return bool(_SUFFIX_LITERAL.match(_tail(_constant_text(node.left) or "")))
+    if isinstance(node, ast.Call) and node.args:
+        if isinstance(node.func, ast.Name) and node.func.id in {"Path", "PurePath", "PurePosixPath", "str"}:
+            return _identifying_suffix(node.args[-1], resolve, seen)
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"join", "with_suffix", "with_name"}:
+                return _identifying_suffix(node.args[-1], resolve, seen)
+            if node.func.attr == "format":
+                return bool(_SUFFIX_LITERAL.match(_tail(_constant_text(node.func.value) or "")))
+    return False
 
 
 def scan(root: Path = ROOT) -> tuple[dict[str, int], set[str]]:
@@ -586,45 +769,479 @@ def write_sites(root: Path = ROOT) -> dict[str, int]:
 
 # --------------------------------------------------------------------------- resolved names
 
-_FILE_NAME = re.compile(r"[^/\\]*\.[A-Za-z0-9][A-Za-z0-9-]*$")
+class _NameTemplate(str):
+    """Keep literal certainty separate from the placeholder text used for name-class matching."""
+
+    complete: bool
+    identifying: bool
+
+    def __new__(cls, text: str, complete: bool = True):
+        value = str.__new__(cls, text)
+        value.complete = complete
+        value.identifying = False
+        return value
 
 
-def _templates(node: ast.AST, resolve, depth: int = 0) -> list[str]:
-    """Literal name templates an expression can produce; an unknown part is ``0``."""
-    if depth > 4:
-        return ["0"]
+def _combine_names(left: str | None, right: str | None) -> _NameTemplate | None:
+    if left is None and right is None:
+        return None
+    result = _NameTemplate((left if left is not None else "0") + (right if right is not None else "0"),
+                           left is not None and right is not None
+                           and getattr(left, "complete", True) and getattr(right, "complete", True))
+    result.identifying = getattr(right, "identifying", False)
+    return result
+
+
+_NOT_CLOSED = object()
+_UNKNOWN_STAR = object()
+
+
+def _closed_values(node: ast.AST, resolve, depth: int, seen: frozenset[str] = frozenset()) -> list[object] | None:
+    _name_depth(depth)
+    if isinstance(node, ast.Name):
+        if node.id in seen:
+            return [_NOT_CLOSED]
+        values = resolve(node)
+        if not values:
+            return None
+        out: list[object] = []
+        for value in values:
+            closed = _closed_values(value, resolve, depth + 1, seen | {node.id})
+            out.extend([_NOT_CLOSED] if closed is None else closed)
+        return _bounded_names(out)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Dict)):
+        if isinstance(node, ast.Dict):
+            if any(k is None for k in node.keys):
+                return None
+            children = [*node.keys, *node.values]
+        else:
+            children = node.elts
+        values = [_closed_values(child, resolve, depth + 1, seen) or [_NOT_CLOSED] for child in children]
+        combinations = _name_product(*values)
+        if isinstance(node, ast.Dict):
+            size = len(node.keys)
+            return [dict(zip(parts[:size], parts[size:])) for parts in combinations]
+        return [tuple(parts) if isinstance(node, ast.Tuple) else list(parts) for parts in combinations]
+    if isinstance(node, ast.JoinedStr):
+        return [v if v is not None and getattr(v, "complete", True) else _NOT_CLOSED
+                for v in _templates(node, resolve, depth + 1, seen)]
+    if isinstance(node, ast.Slice):
+        bounds = [([None] if value is None else _closed_values(value, resolve, depth + 1, seen) or [_NOT_CLOSED])
+                  for value in (node.lower, node.upper, node.step)]
+        return [_NOT_CLOSED if any(v is _NOT_CLOSED for v in parts) else slice(*parts)
+                for parts in _name_product(*bounds)]
+    if isinstance(node, ast.Subscript):
+        containers = _closed_values(node.value, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        selectors = _closed_values(node.slice, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        out = []
+        for container, selector in _name_product(containers, selectors):
+            if container is _NOT_CLOSED or selector is _NOT_CLOSED:
+                out.append(_NOT_CLOSED)
+                continue
+            try:
+                out.append(container[selector])
+            except (TypeError, KeyError, IndexError, ValueError):
+                raise NameModelLimit("closed filename subscript cannot be evaluated") from None
+        return _bounded_names(out)
+    if isinstance(node, ast.BinOp) and not isinstance(node.op, ast.Mod):
+        left = _closed_values(node.left, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        right = _closed_values(node.right, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        operations = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul}
+        out = []
+        for a, b in _name_product(left, right):
+            if a is _NOT_CLOSED or b is _NOT_CLOSED:
+                out.append(_NOT_CLOSED)
+                continue
+            if type(node.op) not in operations:
+                raise NameModelLimit("closed filename arithmetic is outside the bounded model")
+            if isinstance(node.op, ast.Mult):
+                for sequence, count in ((a, b), (b, a)):
+                    if isinstance(sequence, (str, bytes, tuple, list)) and isinstance(count, int):
+                        if len(sequence) * max(0, count) > _NAME_BYTES:
+                            raise NameModelLimit("closed filename repetition exceeds the bounded model")
+            try:
+                out.append(operations[type(node.op)](a, b))
+            except (TypeError, ValueError):
+                raise NameModelLimit("closed filename arithmetic cannot be evaluated") from None
+        return _bounded_names(out)
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+            or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format"):
+        values = _closed_format(node, resolve, depth, seen)
+        return None if values is None else [v if v is not None and getattr(v, "complete", True)
+                                           else _NOT_CLOSED for v in values]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        bases = _closed_values(node.func.value, resolve, depth + 1, seen)
+        if bases is None:
+            return None
+        values = [_closed_values(a, resolve, depth + 1, seen) or [_NOT_CLOSED] for a in node.args]
+        methods = {"lower", "upper", "casefold", "strip", "lstrip", "rstrip", "replace", "join"}
+        out = []
+        for base, *args in _name_product(bases, *values):
+            if base is _NOT_CLOSED or any(_has_unknown(a) for a in args):
+                out.append(_NOT_CLOSED)
+                continue
+            if not isinstance(base, str) or node.func.attr not in methods or node.keywords:
+                raise NameModelLimit("closed filename method is outside the bounded model")
+            if node.func.attr == "replace" and len(args) >= 2 and isinstance(args[1], str):
+                if (len(base) + 1) * (len(args[1]) + 1) > _NAME_BYTES:
+                    raise NameModelLimit("closed filename replacement exceeds the bounded model")
+            if node.func.attr == "join" and len(args) == 1:
+                pieces = args[0]
+                if not isinstance(pieces, (str, list, tuple)) or any(not isinstance(p, str) for p in pieces):
+                    raise NameModelLimit("closed string join has non-string filename pieces")
+                if sum(map(len, pieces)) + len(base) * max(0, len(pieces) - 1) > _NAME_BYTES:
+                    raise NameModelLimit("closed string join exceeds the bounded name model")
+            try:
+                out.append(getattr(str, node.func.attr)(base, *args))
+            except (ValueError, TypeError):
+                raise NameModelLimit("closed filename method cannot be evaluated") from None
+        return _bounded_names(out)
+    try:
+        return [ast.literal_eval(node)]
+    except (ValueError, TypeError, SyntaxError):
+        return None
+
+
+_NAME_ALTERNATIVES = 256
+_NAME_DEPTH = 32
+_NAME_BYTES = 16_384
+
+
+class NameModelLimit(ValueError):
+    """An incomplete census is a refusal, never a truncated successful census."""
+
+
+def _name_depth(depth: int) -> None:
+    if depth > _NAME_DEPTH:
+        raise NameModelLimit("filename model depth exceeded; review the unresolved target")
+
+
+def _bounded_names(values: list, *, text_limit: bool = True):
+    # Equal alternatives add no possible target. Keep certainty/provenance distinct when
+    # deduplicating templates; never collapse a real literal into its uncertain placeholder.
+    unique = []
+    seen = set()
+    for value in values:
+        identity = (type(value), repr(value), getattr(value, "complete", None),
+                    getattr(value, "identifying", None))
+        if identity not in seen:
+            unique.append(value)
+            seen.add(identity)
+    values = unique
+    if len(values) > _NAME_ALTERNATIVES:
+        raise NameModelLimit("filename model alternatives exceeded; no target was discarded")
+    if text_limit and any(isinstance(value, str) and len(value) > _NAME_BYTES for value in values):
+        raise NameModelLimit("filename model output length exceeded")
+    return values
+
+
+def _name_product(*values: list) -> list[tuple]:
+    values = tuple(_bounded_names(value, text_limit=False) for value in values)
+    size = 1
+    for value in values:
+        size *= len(value)
+        if size > _NAME_ALTERNATIVES:
+            raise NameModelLimit("filename model alternatives exceeded; no target was discarded")
+    return list(itertools.product(*values))
+
+
+def _format_bound(spec: str) -> None:
+    if len(spec) > 64 or any(int(n) > 4096 for n in re.findall(r"\d+", spec)):
+        raise NameModelLimit("formatted filename specification exceeds the bounded name model")
+
+
+def _has_unknown(value: object) -> bool:
+    if value is _NOT_CLOSED or value is _UNKNOWN_STAR:
+        return True
+    if isinstance(value, dict):
+        return any(_has_unknown(k) or _has_unknown(v) for k, v in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_unknown(v) for v in value)
+    return False
+
+
+def _percent_fields(pattern: str) -> list[tuple[int, int, str | None, int]]:
+    """Read printf fields once; escaped %% is literal text, never a dependency or width."""
+    fields = []
+    cursor = 0
+    while cursor < len(pattern):
+        if pattern[cursor] != "%":
+            cursor += 1
+            continue
+        start = cursor
+        cursor += 1
+        if cursor < len(pattern) and pattern[cursor] == "%":
+            cursor += 1
+            continue
+        key = None
+        if cursor < len(pattern) and pattern[cursor] == "(":
+            begin = cursor + 1
+            depth = 1
+            cursor += 1
+            while cursor < len(pattern) and depth:
+                if pattern[cursor] == "(":
+                    depth += 1
+                elif pattern[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                raise NameModelLimit("unterminated percent filename mapping field")
+            key = pattern[begin:cursor - 1]
+        while cursor < len(pattern) and pattern[cursor] in "#0- +":
+            cursor += 1
+        stars = 0
+        for precision in (False, True):
+            if precision:
+                if cursor >= len(pattern) or pattern[cursor] != ".":
+                    break
+                cursor += 1
+            if cursor < len(pattern) and pattern[cursor] == "*":
+                stars += 1
+                cursor += 1
+            else:
+                while cursor < len(pattern) and pattern[cursor].isdigit():
+                    cursor += 1
+        if cursor < len(pattern) and pattern[cursor] in "hlL":
+            cursor += 1
+        if cursor >= len(pattern) or pattern[cursor] not in "diouxXeEfFgGcrsa":
+            raise NameModelLimit("unsupported percent filename conversion")
+        cursor += 1
+        fields.append((start, cursor, key, stars))
+    return fields
+
+
+def _partial_format(pattern: str, *, percent: bool = False) -> _NameTemplate:
+    if percent:
+        fields = _percent_fields(pattern)
+        pieces = []
+        previous = 0
+        for start, end, _key, _stars in fields:
+            pieces.append(pattern[previous:start].replace("%%", "%") + "0")
+            previous = end
+        tail = pattern[previous:].replace("%%", "%")
+        text = "".join(pieces) + tail
+        complete = not fields
+    else:
+        pieces = list(string.Formatter().parse(pattern))
+        text = "".join(literal + ("0" if field is not None else "") for literal, field, _s, _c in pieces)
+        tail = pieces[-1][0] if pieces and pieces[-1][1] is None else ""
+        complete = all(field is None for _literal, field, _s, _c in pieces)
+    result = _NameTemplate(text, complete)
+    result.identifying = bool(_SUFFIX_LITERAL.match(tail))
+    return result
+
+
+def _closed_format(node: ast.AST, resolve, depth: int, seen: frozenset[str]) -> list[str | None] | None:
+    """Evaluate only closed builtin format operands, never execute source functions."""
+    if isinstance(node, ast.BinOp):
+        patterns = _closed_values(node.left, resolve, depth + 1, seen)
+        operands = _closed_values(node.right, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        if patterns is None:
+            return None
+        out = []
+        for pattern, operand in _name_product(patterns, operands):
+            if pattern is _NOT_CLOSED:
+                out.append(None)
+                continue
+            if not isinstance(pattern, str):
+                raise NameModelLimit("percent filename pattern is not a string")
+            if operand is _NOT_CLOSED:
+                out.append(_partial_format(pattern, percent=True))
+                continue
+            fields = _percent_fields(pattern)
+            keys = [key for _start, _end, key, _stars in fields if key is not None]
+            used = operand
+            if not fields:
+                used = []
+            elif isinstance(operand, dict) and len(keys) == len(fields):
+                used = [operand.get(k, _NOT_CLOSED) for k in keys]
+            if _has_unknown(used):
+                out.append(_partial_format(pattern, percent=True))
+                continue
+            position = 0
+            for start, end, _key, stars in fields:
+                _format_bound(pattern[start:end])
+                if stars:
+                    if not isinstance(operand, tuple):
+                        raise NameModelLimit("closed percent star operands require a tuple")
+                    for _star in range(stars):
+                        if position >= len(operand) or not isinstance(operand[position], int) or abs(operand[position]) > 4096:
+                            raise NameModelLimit("percent filename width exceeds the bounded model")
+                        position += 1
+                position += 1
+            try:
+                out.append(_NameTemplate(pattern % operand))
+            except (TypeError, ValueError, KeyError):
+                raise NameModelLimit("closed percent filename cannot be evaluated") from None
+        return _bounded_names(out)
+    assert isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    patterns = _closed_values(node.func.value, resolve, depth + 1, seen)
+    if patterns is None:
+        return None
+    positional = [()]
+    for argument in node.args:
+        expanded = isinstance(argument, ast.Starred)
+        values = _closed_values(argument.value if expanded else argument, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        choices = []
+        for value in values:
+            if expanded and value is not _NOT_CLOSED:
+                if not isinstance(value, (str, tuple, list)):
+                    raise NameModelLimit("closed format star operand is not a deterministic sequence")
+                choices.append(tuple(value))
+            else:
+                choices.append((_UNKNOWN_STAR if expanded and value is _NOT_CLOSED else value,))
+        positional = _bounded_names([a + b for a, b in _name_product(positional, choices)])
+    keywords = [{}]
+    for keyword in node.keywords:
+        values = _closed_values(keyword.value, resolve, depth + 1, seen) or [_NOT_CLOSED]
+        choices = []
+        for value in values:
+            if keyword.arg is not None:
+                choices.append({keyword.arg: value})
+            elif value is _NOT_CLOSED:
+                choices.append({"__census_unknown_keywords__": _NOT_CLOSED})
+            elif isinstance(value, dict) and all(isinstance(k, str) for k in value):
+                choices.append(value)
+            else:
+                raise NameModelLimit("closed format keyword expansion is not a string-keyed mapping")
+        keywords = _bounded_names([dict(a, **b) for a, b in _name_product(keywords, choices)])
+
+    class UnknownOperand(Exception):
+        pass
+
+    class FilenameFormatter(string.Formatter):
+        def get_value(self, key, args, kwargs):
+            if isinstance(key, int) and any(v is _UNKNOWN_STAR for v in args[:key + 1]):
+                raise UnknownOperand
+            if isinstance(key, str) and key not in kwargs and "__census_unknown_keywords__" in kwargs:
+                raise UnknownOperand
+            value = super().get_value(key, args, kwargs)
+            if value is _NOT_CLOSED:
+                raise UnknownOperand
+            return value
+
+        def format_field(self, value, format_spec):
+            if _has_unknown(value):
+                raise UnknownOperand
+            _format_bound(format_spec)
+            rendered = super().format_field(value, format_spec)
+            _bounded_names([rendered])
+            return rendered
+
+        def convert_field(self, value, conversion):
+            if _has_unknown(value):
+                raise UnknownOperand
+            return super().convert_field(value, conversion)
+
+    out = []
+    formatter = FilenameFormatter()
+    for pattern, args, kwargs in _name_product(patterns, positional, keywords):
+        if pattern is _NOT_CLOSED:
+            out.append(None)
+            continue
+        if not isinstance(pattern, str):
+            raise NameModelLimit("format filename pattern is not a string")
+        try:
+            out.append(_NameTemplate(formatter.vformat(pattern, args, kwargs)))
+        except UnknownOperand:
+            out.append(_partial_format(pattern))
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+            raise NameModelLimit("closed format filename cannot be evaluated") from None
+    return _bounded_names(out)
+
+
+def _formatted_names(part: ast.FormattedValue, resolve, depth: int, seen: frozenset[str]) -> list[str | None]:
+    values = _closed_values(part.value, resolve, depth, seen)
+    if values is None:
+        return [None]
+    specs = ([_NameTemplate("")] if part.format_spec is None
+             else _templates(part.format_spec, resolve, depth + 1, seen))
+    out: list[str | None] = []
+    for value in values:
+        if value is _NOT_CLOSED:
+            out.append(None)
+            continue
+        if part.conversion == ord("r"):
+            value = repr(value)
+        elif part.conversion == ord("s"):
+            value = str(value)
+        elif part.conversion == ord("a"):
+            value = ascii(value)
+        for spec in specs:
+            if spec is None or not getattr(spec, "complete", True):
+                out.append(None)
+                continue
+            _format_bound(spec)
+            try:
+                out.append(_NameTemplate(format(value, spec)))
+            except (ValueError, TypeError):
+                out.append(None)
+    return _bounded_names(out)
+
+
+def _templates(node: ast.AST, resolve, depth: int = 0, seen: frozenset[str] = frozenset()) -> list[str | None]:
+    """Literal templates; None is wholly unknown, while a partial unknown is spelled ``0``."""
+    _name_depth(depth)
     text = _constant_text(node)
     if text is not None:
-        return [text]
+        return [_NameTemplate(text)]
     if isinstance(node, ast.JoinedStr):
-        parts = [p.value if isinstance(p, ast.Constant) else "0" for p in node.values]
-        return ["".join(str(p) for p in parts)]
+        out: list[str | None] = [_NameTemplate("")]
+        for part in node.values:
+            pieces = (_formatted_names(part, resolve, depth + 1, seen) if isinstance(part, ast.FormattedValue)
+                      else _templates(part, resolve, depth + 1, seen))
+            out = _bounded_names([_combine_names(a, b) for a, b in _name_product(out, pieces)])
+        return out
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return [a + b for a in _templates(node.left, resolve, depth + 1)
-                for b in _templates(node.right, resolve, depth + 1)][:16]
+        return _bounded_names([_combine_names(a, b) for a, b in _name_product(
+            _templates(node.left, resolve, depth + 1, seen), _templates(node.right, resolve, depth + 1, seen))])
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return _templates(node.right, resolve, depth + 1)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and _constant_text(node.left):
-        return [re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left))]
+        return _templates(node.right, resolve, depth + 1, seen)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        closed = _closed_format(node, resolve, depth, seen)
+        if closed is not None:
+            return closed
+        if _constant_text(node.left):
+            return [_NameTemplate(re.sub(r"%[-#0 +]*\d*(?:\.\d+)?[sdifrx]", "0", _constant_text(node.left)), False)]
     if isinstance(node, ast.Name):
+        if node.id in seen:
+            return [None]  # cyclic branch is unknown; other concrete alternatives still survive
         values = resolve(node)
-        out = [t for value in values for t in _templates(value, resolve, depth + 1)]
-        return out[:16] or ["0"]
+        out = [t for value in values for t in _templates(value, resolve, depth + 1, seen | {node.id})]
+        return _bounded_names(out) or [None]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return _bounded_names([t for value in node.elts for t in _templates(value, resolve, depth + 1, seen)])
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr == "join" and node.args:
-            return _templates(node.args[-1], resolve, depth + 1)
+            separators = _closed_values(func.value, resolve, depth + 1, seen)
+            if separators is not None and any(isinstance(s, str) for s in separators):
+                # str.join concatenates its sequence; its members are not alternative paths.
+                # A partially unknown sequence stays unknown, never invented fragment outputs.
+                joined = _closed_values(node, resolve, depth + 1, seen)
+                return _bounded_names([_NameTemplate(s) if isinstance(s, str) else None for s in joined or []]) or [None]
+            # Path joins select the terminal name, unlike a closed string separator.
+            return _templates(node.args[-1], resolve, depth + 1, seen)
         if isinstance(func, ast.Attribute) and func.attr in {"with_suffix", "with_name"} and node.args:
-            return ["0" + t if func.attr == "with_suffix" else t for t in _templates(node.args[0], resolve, depth + 1)]
-        if isinstance(func, ast.Attribute) and func.attr == "format" and _constant_text(func.value):
-            return [re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value))]
+            return [_NameTemplate("0" + t, False) if func.attr == "with_suffix" and t is not None else t
+                    for t in _templates(node.args[0], resolve, depth + 1, seen)]
+        if isinstance(func, ast.Attribute) and func.attr == "format":
+            closed = _closed_format(node, resolve, depth, seen)
+            if closed is not None:
+                return closed
+            if _constant_text(func.value):
+                return [_NameTemplate(re.sub(r"\{[^{}]*\}", "0", _constant_text(func.value)), False)]
+        if isinstance(func, ast.Name) and func.id == "__census_sqlite_path" and node.args:
+            return [_NameTemplate(unquote(t.removeprefix("file:").split("?", 1)[0]),
+                                  getattr(t, "complete", True)) if t is not None else None
+                    for t in _templates(node.args[0], resolve, depth + 1, seen)]
         if isinstance(func, ast.Name) and func.id in {"Path", "PurePath", "PurePosixPath", "str"} and node.args:
-            return _templates(node.args[-1], resolve, depth + 1)
+            return _templates(node.args[-1], resolve, depth + 1, seen)
     if isinstance(node, ast.IfExp):
-        return _templates(node.body, resolve, depth + 1) + _templates(node.orelse, resolve, depth + 1)
+        return _bounded_names(_templates(node.body, resolve, depth + 1, seen) + _templates(node.orelse, resolve, depth + 1, seen))
     if isinstance(node, ast.BoolOp):
-        return [t for value in node.values for t in _templates(value, resolve, depth + 1)]
-    return ["0"]
+        return _bounded_names([t for value in node.values for t in _templates(value, resolve, depth + 1, seen)])
+    return [None]
 
 
 def resolved_site_classes(root: Path = ROOT) -> dict[str, set[str]]:
@@ -736,17 +1353,11 @@ def gitignore_block_in(text: str) -> str | None:
 
 # --------------------------------------------------------------------------- download names
 
-#: Where browser downloads are named: AssessHub's SPA and Atlas Scope (non-test sources).
-DOWNLOAD_SOURCE_ROOTS = ("webapp/frontend/src", "atlas-scope/src")
-_DOWNLOAD_PATTERNS = (
-    re.compile(r"\bdownload=\{\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[^}]+?)\s*\}"),
-    re.compile(r"\bdownload=(\"[^\"]*\")"),
-    re.compile(r"\.download\s*=\s*([^;\n]+?)\s*;"),
-    re.compile(r"\bexportFilename=\{\s*(`[^`]*`|\"[^\"]*\"|[^}]+?)\s*\}"),
-    re.compile(r"\bexportFilename\s*=\s*(`[^`]*`|\"[^\"]*\"|[A-Za-z_$][\w$]*)\s*,"),
-    re.compile(r"\bdownloadJsonDocument\(\s*(?:[^;]*?),\s*(`[^`]*`|\"[^\"]*\"|'[^']*'|[A-Za-z_$][\w$.]*(?:\([^()]*\))?)\s*\)",
-               re.S),
-)
+# Browser source discovery is independent of product roots. Build/vendor outputs are
+# derivatives, not authored sources; their source files remain in this scan.
+_BROWSER_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".html", ".py"})
+_BROWSER_DERIVATIVES = frozenset({"dist", "dist-hub", "node_modules", "vendor", "__pycache__"})
+
 #: Download-name expressions that are not literals, each with why its name still classifies.
 DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
     ("webapp/frontend/src/receiptExport.ts", "filename"):
@@ -755,7 +1366,78 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
         "safeFilename appends COMPARISON_RECEIPT_SUFFIX to any caller name (unit-tested)",
     ("webapp/frontend/src/components/ComparisonDecision.tsx", "DEFAULT_COMPARISON_EXPORT"):
         "atlas-receipt + COMPARISON_RECEIPT_SUFFIX",
+    ("cisco_toolkit/blast_radius_explorer.html", "filename"):
+        "downloadBlob's own parameter; every direct caller's filename is scanned",
 }
+
+
+# These implicit downloads have finite response-name owners. Bind the full inspected chain:
+# caller imports/scopes/arguments; useAsync -> meta catalogue keys; factory URL; GET route;
+# successful returns/caller headers; _send_file's sanitized stem/header; SPECS and docmeta.
+# Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
+# This evidence table never filters discovery or exempts an unknown name from either gate.
+ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
+    "webapp/frontend/src/api.ts": "7438cd4403be6ed14eaa03a74fcbb295259d0a1e",
+    "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
+    "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
+    "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
+    "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
+    "webapp/backend/app.py": "f3ee6dbca5e74fb7e3daa39fe0b26d25a115741a",
+    "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
+    "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
+}
+ENDPOINT_DOWNLOAD_BINDINGS = {
+    ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
+    ("webapp/frontend/src/pages/Execution.tsx", "api.executionReportUrl(eid)"): "pir",
+    ("webapp/frontend/src/pages/Snapshot.tsx", "api.deliverableUrl(snapId, d.key)"): "<snapshot catalogue>",
+}
+
+
+def endpoint_download_templates(relative: str, href: str, source_bound: bool) -> list[str]:
+    """Resolve a retained implicit obligation only through its unchanged response owner."""
+    key = ENDPOINT_DOWNLOAD_BINDINGS.get((relative, href))
+    if key is None or not source_bound:
+        return []
+    from cisco_toolkit import docmeta
+    specs = (docmeta.ASSESSHUB_DOWNLOAD_SPECS if key == "<snapshot catalogue>"
+             else (docmeta.artifact_spec(key),))
+    if not specs or any(not re.fullmatch(r"[a-z][a-z0-9_-]*", spec.key) for spec in specs):
+        raise ValueError("endpoint catalogue has no finite single-segment artifact-key proof")
+    return sorted({"0" + spec.download_suffix for spec in specs})
+
+
+def endpoint_download_sources_bound(root: Path) -> bool:
+    """Check Git-canonical source read by discovery; mismatch is uncertainty, never pass."""
+    for relative, expected in ENDPOINT_DOWNLOAD_SOURCE_BLOBS.items():
+        try:
+            source = (root / relative).read_text(encoding="utf-8").encode("utf-8")
+        except (FileNotFoundError, UnicodeError):
+            return False
+        blob = b"blob " + str(len(source)).encode("ascii") + b"\0" + source
+        if hashlib.sha1(blob, usedforsecurity=False).hexdigest() != expected:
+            return False
+    return True
+
+
+def _jsx_href(text: str, tokens: list[_JsToken], download: int) -> str:
+    """Read href from this exact opening tag, rather than any neighbouring link."""
+    start = download
+    while start >= 0 and not (tokens[start].in_tag and tokens[start].value == "<"):
+        start -= 1
+    if start < 0:
+        return ""
+    index = start + 1
+    hrefs = []
+    while index < len(tokens) and not (tokens[index].in_tag and tokens[index].value == ">"):
+        if (tokens[index].in_tag and tokens[index].value == "href" and index + 1 < len(tokens)
+                and tokens[index + 1].value == "="):
+            expression, end = _js_expression(text, tokens, index + 2, attribute=True)
+            hrefs.append(expression[1:-1].strip() if expression.startswith("{") and expression.endswith("}")
+                         else expression)
+            index = end
+        else:
+            index += 1
+    return hrefs[0] if len(hrefs) == 1 else ""
 
 
 def _is_frontend_test(relative: str) -> bool:
@@ -763,32 +1445,1111 @@ def _is_frontend_test(relative: str) -> bool:
     return bool(re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", name)) or "/e2e" in relative or "/__tests__/" in relative
 
 
-def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
-    """Every browser download name: ``(file:line, expression, literal template or None)``."""
-    found: list[tuple[str, str, str | None]] = []
-    for base in DOWNLOAD_SOURCE_ROOTS:
-        directory = root / base
-        if not directory.is_dir():
+def download_sources(root: Path = ROOT) -> list[str]:
+    """Every tracked authored browser language and Python HTML/JS generator, in every root."""
+    if (root / ".git").exists():
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True,
+                                capture_output=True).stdout.decode("utf-8").split("\0")
+    else:
+        listed = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+    return sorted(p for p in listed if Path(p).suffix in _BROWSER_SUFFIXES
+                  and not (set(Path(p).parts) & (_BROWSER_DERIVATIVES | _SKIPPED_DIRECTORIES))
+                  and not is_test_path(p) and not _is_frontend_test(p))
+
+
+def _js_parts(text: str, start: int, stop: str, separator: str) -> list[str]:
+    """Split a direct JS argument/concatenation expression without splitting nested values.
+
+    This is a bounded lexical reader, not execution or general JS data-flow inference. Unknown
+    expressions remain unknown and require an explicit pass-through declaration.
+    """
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    begin = start
+    index = start
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif text[index:index + 2] == "//":
+            end = text.find("\n", index + 2)
+            index = len(text) if end < 0 else end
             continue
-        for path in sorted(directory.rglob("*")):
-            if path.suffix not in {".ts", ".tsx"} or "node_modules" in path.parts:
+        elif text[index:index + 2] == "/*":
+            end = text.find("*/", index + 2)
+            index = len(text) if end < 0 else end + 2
+            continue
+        elif char == stop and depth == 0:
+            parts.append(text[begin:index].strip())
+            return parts
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == separator and depth == 0:
+            parts.append(text[begin:index].strip())
+            begin = index + 1
+        index += 1
+    if not stop:
+        parts.append(text[begin:].strip())
+    return parts
+
+
+class _HtmlDownloads(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.names: list[tuple[int, str, str | None]] = []
+        self.scripts: list[tuple[int, str, tuple[int, ...] | None]] = []
+        self.in_script = False
+
+    def parse_html_declaration(self, index: int) -> int:
+        try:
+            return super().parse_html_declaration(index)
+        except AssertionError:
+            # HTML treats unknown <! declarations as bogus comments. Python's marked-section
+            # assertion must not abort discovery of a real exit following that declaration.
+            return self.parse_bogus_comment(index)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        downloads = [value for attribute, value in attrs if attribute.casefold() == "download"]
+        if len(downloads) > 1:
+            # Browsers retain the first duplicate; selecting either value could hide a name.
+            raise ValueError("duplicate HTML download attributes")
+        if tag == "script":
+            self.in_script = True
+        if downloads:
+            name = downloads[0]
+            expression = repr(name) if name else "<implicit browser filename>"
+            self.names.append((self.getpos()[0], expression, name or None))
+        raw = self.get_starttag_text() or ""
+        offsets = _html_attribute_offsets(raw)
+        for (attribute, value), (raw_attribute, offset, end) in zip(attrs, offsets):
+            if attribute != raw_attribute:
+                raise ValueError("HTML attribute source positions are unresolved")
+            if value is None:
                 continue
-            relative = path.relative_to(root).as_posix()
-            if _is_frontend_test(relative):
+            first_line = self.getpos()[0] + raw[:offset].count("\n")
+            decoded, source_lines = _html_value_lines(raw[offset:end], first_line)
+            if decoded != value:
+                raise ValueError("HTML attribute decoding/source positions disagree")
+            if attribute.startswith("on"):
+                self.scripts.append((first_line, value, source_lines))
+            else:
+                start, stop = 0, len(value)
+                while start < stop and ord(value[start]) <= 0x20:
+                    start += 1
+                while stop > start and ord(value[stop - 1]) <= 0x20:
+                    stop -= 1
+                characters = [(value[n], source_lines[n]) for n in range(start, stop) if value[n] not in "\t\r\n"]
+                url = "".join(char for char, _line in characters)
+                scheme, colon, script = url.partition(":")
+                if colon and scheme.casefold() == "javascript":
+                    lines = tuple(line for _char, line in characters[len(scheme) + 1:])
+                    script, lines = _javascript_url_lines(script, lines)
+                    self.scripts.append((lines[0] if lines else first_line, script, lines))
+        if len(offsets) != len(attrs):
+            raise ValueError("HTML attribute source positions are incomplete")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self.in_script = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_script:
+            self.scripts.append((self.getpos()[0], data, None))
+
+
+def _html_attribute_offsets(raw: str) -> list[tuple[str, int, int]]:
+    """Tokenize start-tag attributes for line offsets; HTMLParser owns decoded values."""
+    index = 1
+    while index < len(raw) and not raw[index].isspace() and raw[index] not in "/>":
+        index += 1
+    offsets = []
+    while index < len(raw):
+        while index < len(raw) and (raw[index].isspace() or raw[index] == "/"):
+            index += 1
+        if index >= len(raw) or raw[index] == ">":
+            break
+        start = index
+        while index < len(raw) and not raw[index].isspace() and raw[index] not in "=/>":
+            index += 1
+        if index == start:
+            raise ValueError("unresolved HTML attribute token")
+        name = raw[start:index].lower()
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        offset = start
+        end = start
+        if index < len(raw) and raw[index] == "=":
+            index += 1
+            while index < len(raw) and raw[index].isspace():
+                index += 1
+            if index < len(raw) and raw[index] in "\"'":
+                quote = raw[index]
+                index += 1
+                offset = index
+                while index < len(raw) and raw[index] != quote:
+                    index += 1
+                end = index
+                index += 1
+            else:
+                offset = index
+                while index < len(raw) and not raw[index].isspace() and raw[index] != ">":
+                    index += 1
+                end = index
+        offsets.append((name, offset, end))
+    return offsets
+
+
+def _html_value_lines(raw: str, first_line: int) -> tuple[str, tuple[int, ...]]:
+    """Decode attribute references while keeping a physical line for each decoded character."""
+    pieces, lines = [], []
+    index, line = 0, first_line
+    reference = re.compile(r"&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z0-9]+;?)")
+    while index < len(raw):
+        entity = reference.match(raw, index) if raw[index] == "&" else None
+        piece = entity.group() if entity else raw[index]
+        decoded = unescape(piece) if entity else piece
+        pieces.append(decoded)
+        lines.extend([line] * len(decoded))
+        line += piece.count("\n")
+        index += len(piece)
+    return "".join(pieces), tuple(lines)
+
+
+def _javascript_url_lines(script: str, source_lines: tuple[int, ...]) -> tuple[str, tuple[int, ...]]:
+    """Percent-decode then UTF-8-decode executable URL bytes, retaining physical lines."""
+    octets, byte_lines = bytearray(), []
+    index = 0
+    while index < len(script):
+        if script[index] == "%" and re.fullmatch(r"[0-9a-fA-F]{2}", script[index + 1:index + 3]):
+            encoded = bytes([int(script[index + 1:index + 3], 16)])
+            step = 3
+        else:
+            encoded = script[index].encode("utf-8", errors="replace")
+            step = 1
+        octets.extend(encoded)
+        byte_lines.extend([source_lines[index]] * len(encoded))
+        index += step
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pieces, lines = [], []
+    pending_line = 0
+    for octet, line in zip(octets, byte_lines):
+        buffered = bool(decoder.getstate()[0])
+        origin = pending_line if buffered else line
+        text = decoder.decode(bytes([octet]))
+        pieces.append(text)
+        if text:
+            # An invalid buffered prefix can emit a replacement plus this byte's character.
+            lines.extend([origin] + [line] * (len(text) - 1))
+        if decoder.getstate()[0] and (not buffered or text):
+            pending_line = line
+    tail = decoder.decode(b"", final=True)
+    pieces.append(tail)
+    lines.extend([pending_line] * len(tail))
+    return "".join(pieces), tuple(lines)
+
+
+@dataclass(frozen=True)
+class _JsToken:
+    value: str
+    start: int
+    end: int
+    line: int
+    in_tag: bool = False
+
+
+def _js_closed_literal(source: str) -> str | None:
+    """Canonical cooked value of one closed JS string/no-substitution template literal.
+
+    Implements ECMA-262 StringLiteral/TV escapes (including identity escapes), canonicalizing
+    equivalent UTF-16 surrogate pairs to Python scalars while preserving lone code units.
+    Malformed escapes and all legacy decimal/octal forms refuse, independent of strict mode.
+    A substitution template or a non-literal expression is unresolved, never a decoded name.
+    HTML/JSX attribute text is not a JavaScript StringLiteral and uses HTML character references.
+    """
+    if not source or source[0] not in {"'", '"', "`"}:
+        return None
+    quote = source[0]
+    if len(source) < 2 or source[-1] != quote:
+        raise ValueError("unclosed JavaScript string literal")
+    pieces = []
+    cursor, end = 1, len(source) - 1
+    escapes = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+               "'": "'", '"': '"', "\\": "\\"}
+    while cursor < end:
+        char = source[cursor]
+        if char == quote:
+            return None  # this is more than one literal token, not a closed selector
+        if quote == "`" and source[cursor:cursor + 2] == "${":
+            return None
+        if char != "\\":
+            if char in "\r\n":
+                if quote != "`":
+                    raise ValueError("unescaped line break in JavaScript string literal")
+                if char == "\r" and cursor + 1 < end and source[cursor + 1] == "\n":
+                    cursor += 1
+                pieces.append("\n")  # template raw CR/CRLF cook to LF
+            else:
+                pieces.append(char)
+            cursor += 1
+            continue
+        cursor += 1
+        if cursor >= end:
+            raise ValueError("truncated JavaScript string escape")
+        escape = source[cursor]
+        cursor += 1
+        if escape in "\n\r\u2028\u2029":
+            if escape == "\r" and cursor < end and source[cursor] == "\n":
+                cursor += 1
+            continue  # every LineContinuation contributes the empty string
+        if escape in escapes:
+            pieces.append(escapes[escape])
+        elif escape == "0":
+            if cursor < end and source[cursor] in "0123456789":
+                raise ValueError("legacy decimal/octal JavaScript string escape refused")
+            pieces.append("\0")
+        elif escape in "123456789":
+            raise ValueError("legacy decimal/octal JavaScript string escape refused")
+        elif escape in {"x", "u"}:
+            if escape == "u" and cursor < end and source[cursor] == "{":
+                stop = source.find("}", cursor + 1, end)
+                digits = source[cursor + 1:stop] if stop >= 0 else ""
+                if not digits or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                    raise ValueError("malformed JavaScript Unicode escape")
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF:
+                    raise ValueError("JavaScript Unicode escape exceeds the code-point range")
+                cursor = stop + 1
+            else:
+                width = 2 if escape == "x" else 4
+                digits = source[cursor:cursor + width]
+                if cursor + width > end or not re.fullmatch(r"[0-9a-fA-F]{" + str(width) + r"}", digits):
+                    raise ValueError("malformed JavaScript hexadecimal/Unicode escape")
+                codepoint = int(digits, 16)
+                cursor += width
+            pieces.append(chr(codepoint))
+        else:
+            pieces.append(escape)  # NonEscapeCharacter is an identity escape, not Python's escape table
+    return _js_string_value("".join(pieces))
+
+
+def _js_string_value(value: str) -> str:
+    """Canonical Python representation of JS UTF-16 units, including concatenation seams."""
+    return value.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="surrogatepass")
+
+
+def _js_token_name(token: _JsToken) -> str | None:
+    """A name view, separate from raw grammar tokens so quoted delimiters stay inert."""
+    if token.value[:1] in {"'", '"', "`"}:
+        if token.in_tag:
+            return None  # JSX quoted attribute values are HTML text, not API/property identifiers
+        return _js_closed_literal(token.value)
+    return token.value
+
+
+def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
+    """Lex strings/templates/comments as units; formatting and ASI do not hide exits."""
+    tokens = []
+    index = 0
+    line = 1
+    jsx_levels = 0
+    tag_mode = False
+    tag_closing = False
+    tag_start = -1
+    tag_angles = 0
+    expression_frames: list[list[int]] = []
+
+    def regex_end(start: int) -> int:
+        cursor = start + 1
+        in_class = False
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
                 continue
-            text = path.read_text(encoding="utf-8")
-            for pattern in _DOWNLOAD_PATTERNS:
-                for match in pattern.finditer(text):
-                    expression = match.group(1).strip()
-                    line = text.count("\n", 0, match.start()) + 1
-                    found.append((f"{relative}:{line}", expression, _download_template(expression)))
+            if text[cursor] == "[":
+                in_class = True
+            elif text[cursor] == "]":
+                in_class = False
+            elif text[cursor] == "/" and not in_class:
+                cursor += 1
+                while cursor < len(text) and text[cursor].isalpha():
+                    cursor += 1
+                return cursor
+            elif text[cursor] == "\n":
+                break
+            cursor += 1
+        raise ValueError("unterminated browser regex literal")
+
+    def quoted_end(start: int, depth: int = 0) -> int:
+        if depth > 128:
+            raise ValueError("browser token nesting bound exceeded")
+        quote = text[start]
+        cursor = start + 1
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+            elif text[cursor] == quote:
+                return cursor + 1
+            elif quote == "`" and text[cursor:cursor + 2] == "${":
+                cursor += 2
+                braces = 1
+                while cursor < len(text) and braces:
+                    if text[cursor:cursor + 2] == "//":
+                        end = text.find("\n", cursor + 2)
+                        cursor = len(text) if end < 0 else end
+                        continue
+                    if text[cursor:cursor + 2] == "/*":
+                        end = text.find("*/", cursor + 2)
+                        if end < 0:
+                            raise ValueError("unterminated browser template comment")
+                        cursor = end + 2
+                        continue
+                    if text[cursor] == "/" and text[:cursor].rstrip().endswith((
+                        "(", "=", ":", ",", "[", "!", "?", "return", "=>", "&&", "||", "??"
+                    )):
+                        cursor = regex_end(cursor)
+                        continue
+                    if text[cursor] in "\"'`":
+                        cursor = quoted_end(cursor, depth + 1)
+                        continue
+                    if text[cursor] == "{":
+                        braces += 1
+                    elif text[cursor] == "}":
+                        braces -= 1
+                    cursor += 1
+                if braces:
+                    raise ValueError("unterminated browser template expression")
+            else:
+                cursor += 1
+        raise ValueError("unterminated browser string")
+    while index < len(text):
+        begin, first_line = index, line
+        char = text[index]
+        child_text = jsx_levels > (expression_frames[-1][1] if expression_frames else 0) and not tag_mode
+        if jsx and child_text and char not in {"<", "{"}:
+            line += char == "\n"
+            index += 1
+            continue  # JSX prose is not a quoted JS expression, even when it contains apostrophes
+        if jsx and char == "<" and index + 1 < len(text) and (
+            text[index + 1].isalpha() or text[index + 1] in {"/", ">"}
+        ) and (child_text or not tokens or tokens[-1].value in {
+            "(", "=", "return", "=>", "?", ":", "&&", "||", "??", ",", "[", "{"
+        }) and not re.match(r"<[A-Za-z_$][\w$]*(?:\s*[,=]|\s+extends\b|\s*>\s*\()", text[index:]):
+            tag_mode = True
+            tag_closing = text[index + 1] == "/"
+            tag_start = index
+            tag_angles = 0
+        in_tag = tag_mode
+        if jsx and char == "<" and tag_mode and index != tag_start:
+            tag_angles += 1  # JSX component type parameters: <Component<Payload> download=...>
+        if jsx and char == "{" and (child_text or tag_mode):
+            expression_frames.append([0, jsx_levels, int(tag_mode), int(tag_closing), tag_angles])
+            tag_mode = False
+        if jsx and expression_frames and not tag_mode:
+            if char == "{":
+                expression_frames[-1][0] += 1
+            elif char == "}":
+                expression_frames[-1][0] -= 1
+                if expression_frames[-1][0] == 0:
+                    closed = expression_frames.pop()
+                    tag_mode, tag_closing = bool(closed[2]), bool(closed[3])
+                    tag_angles = closed[4]
+        if jsx and char == ">" and tag_mode:
+            if tag_angles:
+                tag_angles -= 1
+            else:
+                if tag_closing:
+                    jsx_levels -= 1
+                elif not tokens or tokens[-1].value != "/":
+                    jsx_levels += 1
+                tag_mode = False
+        if char.isspace():
+            line += char == "\n"
+            index += 1
+            continue
+        if text[index:index + 2] in {"//", "/*"}:
+            if text[index:index + 2] == "//":
+                end = text.find("\n", index + 2)
+                index = len(text) if end < 0 else end
+            else:
+                end = text.find("*/", index + 2)
+                if end < 0:
+                    raise ValueError("unterminated browser comment")
+                index = end + 2
+            line += text[begin:index].count("\n")
+            continue
+        if char in "\"'`":
+            index = quoted_end(index)
+            if not in_tag:
+                _js_closed_literal(text[begin:index])  # validate every closed JS token, including tag arguments
+            line += text[begin:index].count("\n")
+        elif char == "/" and (not tokens or tokens[-1].value in {
+            "(", "=", ":", ",", "[", "!", "?", "return", "=>", "&&", "||", "??"
+        }):
+            # Regex literals can contain quotes, comment-looking slashes and delimiters.
+            # Keep the complete regex as one token; never read its contents as JS exits.
+            index = regex_end(index)
+        elif char.isalnum() or char in "_$":
+            index += 1
+            while index < len(text) and (text[index].isalnum() or text[index] in "_$"):
+                index += 1
+        elif text[index:index + 2] in {"?.", "=>", "==", "!=", "+=", "&&", "||", "??"}:
+            index += 2
+        else:
+            index += 1
+        tokens.append(_JsToken(text[begin:index], begin, index, first_line, in_tag))
+    if jsx and (jsx_levels != 0 or tag_mode or expression_frames):
+        raise ValueError("unclosed or ambiguous JSX; browser exit census is incomplete")
+    return tokens
+
+
+def _js_expression(text: str, tokens: list[_JsToken], start: int, *, attribute: bool = False) -> tuple[str, int]:
+    if start >= len(tokens):
+        return "<unresolved filename>", start
+    stack = []
+    index = start
+    continuation = {"+", "-", "*", "/", "%", ".", "?.", "?", ":", "&&", "||", "??", "=", ","}
+    while index < len(tokens):
+        token = tokens[index]
+        if (index == start + 1 and tokens[start].value[:1] in {"\"", "'", "`"}
+                and (attribute or token.value not in continuation)):
+            break
+        if not stack:
+            if token.value in {";", ",", ")", "]", "}", ">"}:
+                break
+            if (index > start and token.line > tokens[index - 1].line
+                    and token.value not in continuation
+                    and tokens[index - 1].value not in continuation):
+                break  # automatic semicolon insertion, not a required literal semicolon
+        if token.value in {"(", "[", "{"}:
+            stack.append(token.value)
+        elif token.value in {")", "]", "}"}:
+            if not stack:
+                break
+            stack.pop()
+            if not stack and (attribute or index + 1 < len(tokens) and tokens[index + 1].value not in continuation):
+                index += 1
+                break
+        index += 1
+    expression = text[tokens[start].start:tokens[index - 1].end].strip() if index > start else "<unresolved filename>"
+    return expression, index
+
+
+def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
+    """Split calls on token boundaries, so regex/template delimiters are never call syntax."""
+    arguments = []
+    stack = ["("]
+    begin = opening + 1
+    for index in range(begin, len(tokens)):
+        value = tokens[index].value
+        if value in {"(", "[", "{"}:
+            stack.append(value)
+        elif value in {")", "]", "}"}:
+            expected = {")": "(", "]": "[", "}": "{"}[value]
+            if not stack or stack.pop() != expected:
+                raise ValueError("unbalanced browser call arguments")
+            if not stack:
+                if index > begin:
+                    arguments.append(text[tokens[begin].start:tokens[index - 1].end].strip())
+                return arguments
+        elif value == "," and len(stack) == 1:
+            arguments.append(text[tokens[begin].start:tokens[index - 1].end].strip())
+            begin = index + 1
+    raise ValueError("unterminated browser call arguments")
+
+
+def _js_literal_call(text: str, tokens: list[_JsToken], index: int) -> tuple[str, int, str | None] | None:
+    """Proven dispatch model: identifiers and closed literal bracket keys, with optional calls.
+
+    Closed quoted tokens always use _js_closed_literal; JS property case is never folded.
+    Parentheses and concatenated closed strings are admitted. Dynamic/substitution-template keys,
+    unquoted escaped identifiers, runtime aliases/prototype rewrites and JSX prop spreads are
+    outside the proven dispatch model; no name passthrough or privacy-class exception proves them.
+    Raw grammar tokens remain raw: a quoted ')', '(', '[' or ',' is never a delimiter.
+    This is the single owner of the browser dispatch boundary for discovery and helper roles.
+    """
+    token = tokens[index]
+    receiver = None
+    if token.value == "[":
+        expression, closing = _js_expression(text, tokens, index + 1)
+        if closing >= len(tokens) or tokens[closing].value != "]":
+            return None
+        name = _js_closed_string(expression)
+        if name is None:
+            return None
+        opening = closing + 1
+        owner = index - 2 if index and tokens[index - 1].value == "?." else index - 1
+        if owner >= 0:
+            receiver = _js_token_name(tokens[owner])
+    else:
+        if token.value[:1] in {"'", '"', "`"}:
+            return None  # bracket keys are read once from their entire bracket expression
+        name = _js_token_name(token)
+        opening = index + 1
+        if index >= 2 and tokens[index - 1].value in {".", "?."}:
+            receiver = _js_token_name(tokens[index - 2])
+    if opening < len(tokens) and tokens[opening].value == "?.":
+        opening += 1
+    if name is None or opening >= len(tokens) or tokens[opening].value != "(":
+        return None
+    return name, opening, receiver
+
+
+def _js_parenthesized_literal(expression: str) -> str:
+    """Remove only complete enclosing parentheses, using raw token boundaries."""
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        tokens = _js_tokens(expression)
+        depth = 0
+        closing = -1
+        for index, token in enumerate(tokens):
+            if token.value == "(":
+                depth += 1
+            elif token.value == ")":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        if closing != len(tokens) - 1:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _js_closed_string(expression: str, depth: int = 0) -> str | None:
+    """A proven string selector, without filename-template uncertainty substitutions."""
+    _name_depth(depth)
+    expression = _js_parenthesized_literal(expression)
+    parts = _js_parts(expression, 0, "", "+")
+    if len(parts) > 1:
+        values = [_js_closed_string(part, depth + 1) for part in parts]
+        if any(value is None for value in values):
+            return None
+        return _js_string_value("".join(value for value in values if value is not None))
+    return _js_closed_literal(expression)
+
+
+class _JsxAttributeText(str):
+    """Provenance for a JSX quoted value, whose backslashes are literal HTML text."""
+
+
+def _jsx_filename_expression(text: str, tokens: list[_JsToken], start: int) -> str:
+    expression, _end = _js_expression(text, tokens, start, attribute=True)
+    if expression.startswith("{") and expression.endswith("}"):
+        return expression[1:-1].strip()
+    if start < len(tokens) and tokens[start].in_tag and tokens[start].value[:1] in {"'", '"'}:
+        return _JsxAttributeText(expression)
+    return expression
+
+
+def _ascii_lower(value: str) -> str:
+    """HTML attribute-name folding changes ASCII capitals only, never JS property names."""
+    return value.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _html_attribute_filename(method: str, arguments: list[str]) -> str | None:
+    """A literal download attribute setter's value; toggles retain an implicit obligation."""
+    if method not in {"setAttribute", "setAttributeNS", "toggleAttribute"}:
+        return None
+    name_index = 1 if method == "setAttributeNS" else 0
+    if len(arguments) <= name_index:
+        return None
+    attribute = _js_closed_string(arguments[name_index])
+    if attribute is None or _ascii_lower(attribute) != "download":
+        return None
+    value_index = name_index + 1
+    if method == "toggleAttribute" or len(arguments) <= value_index:
+        return "<implicit browser filename>"
+    return arguments[value_index]
+
+
+def _jsx_download_attributes(text: str, tokens: list[_JsToken]) -> list[tuple[bool, list[int]]]:
+    """Read literal opening-tag attributes, excluding values, spreads and component members.
+
+    Case aliases belong only to intrinsic string tags. Component props and ordinary JS
+    properties retain their original case; exact lowercase component download props remain
+    obligations as before. Each element's indices stay grouped for duplicate refusal.
+    """
+    groups = []
+    for start, token in enumerate(tokens):
+        if not token.in_tag or token.value != "<" or start + 1 >= len(tokens):
+            continue
+        if start and tokens[start - 1].in_tag and tokens[start - 1].value not in {">", "{", "}"}:
+            continue  # a component's nested type argument is not another JSX element
+        cursor = start + 1
+        if tokens[cursor].value in {"/", ">"}:
+            continue
+        name_start = cursor
+        cursor += 1
+        while cursor < len(tokens) and tokens[cursor].value in {".", "-", ":"}:
+            cursor += 2  # member/custom-element/namespace name, not an attribute
+        if cursor > len(tokens):
+            raise ValueError("unresolved JSX tag name")
+        tag = text[tokens[name_start].start:tokens[cursor - 1].end]
+        intrinsic = bool(re.fullmatch(r"[a-z][A-Za-z0-9_-]*", tag))
+        if cursor < len(tokens) and tokens[cursor].value == "<":
+            depth = 1  # component type arguments are not opening-tag attributes
+            cursor += 1
+            while cursor < len(tokens) and depth:
+                depth += (tokens[cursor].value == "<") - (tokens[cursor].value == ">")
+                cursor += 1
+            if depth:
+                raise ValueError("unresolved JSX component type arguments")
+        attributes = []
+        while cursor < len(tokens) and tokens[cursor].value not in {">", "/"}:
+            if tokens[cursor].value == "{":
+                _spread, cursor = _js_expression(text, tokens, cursor, attribute=True)
+                continue
+            attribute_index = cursor
+            cursor += 1
+            while cursor < len(tokens) and tokens[cursor].value in {"-", ":"}:
+                cursor += 2
+            if cursor > len(tokens):
+                raise ValueError("unresolved JSX attribute name")
+            attribute = text[tokens[attribute_index].start:tokens[cursor - 1].end]
+            if attribute == "download" or intrinsic and _ascii_lower(attribute) == "download":
+                attributes.append(attribute_index)
+            if cursor < len(tokens) and tokens[cursor].value == "=":
+                cursor += 1
+                if cursor >= len(tokens):
+                    raise ValueError("unresolved JSX attribute value")
+                if tokens[cursor].value[:1] in {"\"", "'", "`"}:
+                    cursor += 1
+                elif tokens[cursor].value == "{":
+                    _value, cursor = _js_expression(text, tokens, cursor, attribute=True)
+                else:
+                    raise ValueError("unresolved JSX attribute value")
+        groups.append((intrinsic, attributes))
+    return groups
+
+
+def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> tuple[set[str], dict[str, int]]:
+    """Derive local declarations and direct filename-parameter forwarders, without name lists.
+
+    A wrapper constructing its filename inside its body does not make its ID/payload arguments
+    filename exits. Its emitted expression remains scanned. Native parameter forwarders retain
+    every direct caller as an obligation, even when the helper has no 'download' name prefix.
+    """
+    constructed = set()
+    forwarders = {}
+    roles = {}
+    _classes, classify = _registry()
+    jsx_downloads = {index for _intrinsic, indices in _jsx_download_attributes(text, tokens) for index in indices}
+
+    def closing(start: int) -> int:
+        stack = []
+        for index in range(start, len(tokens)):
+            value = tokens[index].value
+            if value in {"(", "[", "{"}:
+                stack.append(value)
+            elif value in {")", "]", "}"}:
+                if not stack or stack.pop() != {")": "(", "]": "[", "}": "{"}[value]:
+                    raise ValueError("unbalanced browser function declaration")
+                if not stack:
+                    return index
+        raise ValueError("unterminated browser function declaration")
+
+    for index, token in enumerate(tokens):
+        if token.value != "function":
+            continue
+        name_index = index + 1
+        if name_index < len(tokens) and tokens[name_index].value == "*":
+            name_index += 1
+        if name_index + 1 >= len(tokens) or tokens[name_index + 1].value != "(":
+            continue  # anonymous or unsupported declaration; its body exits are still scanned
+        name = tokens[name_index].value
+        parameters = _js_arguments(text, tokens, name_index + 1)
+        parameter_names = [re.match(r"[A-Za-z_$][\w$]*", p) for p in parameters]
+        after = closing(name_index + 1) + 1
+        while after < len(tokens) and tokens[after].value not in {"{", ";"}:
+            after += 1
+        if after >= len(tokens) or tokens[after].value != "{":
+            continue
+        end = closing(after)
+        expressions = []
+        for position in range(after + 1, end):
+            value = _js_token_name(tokens[position])
+            following = position + 1
+            if position in jsx_downloads and following < end and tokens[following].value == "=":
+                expressions.append(_jsx_filename_expression(text, tokens, following + 1))
+            if following < end and tokens[following].value == "]":
+                following += 1
+            if (value == "download" and following < end and tokens[following].value in {"=", ":"}
+                    and position > 0 and tokens[position - 1].value in {".", "?.", "[", "{", ","}):
+                expression, _stop = _js_expression(text, tokens, following + 1)
+                expressions.append(expression)
+            if tokens[position].value == "[":
+                key, stop = _js_expression(text, tokens, position + 1)
+                if (_download_template(key) == "download" and stop + 1 < end
+                        and tokens[stop].value == "]" and tokens[stop + 1].value in {"=", ":"}):
+                    expression, _stop = _js_expression(text, tokens, stop + 2)
+                    expressions.append(expression)
+            call = _js_literal_call(text, tokens, position)
+            if call is None or call[1] >= end:
+                continue
+            value, opening, receiver = call
+            args = _js_arguments(text, tokens, opening)
+            attribute_filename = _html_attribute_filename(value, args)
+            if attribute_filename is not None:
+                expressions.append(attribute_filename)
+            elif (value == "set" and receiver == "Reflect"
+                  and len(args) > 1 and _download_template(args[1]) == "download"):
+                expressions.append(args[2] if len(args) > 2 else "<implicit browser filename>")
+            elif value.startswith("download") and value != name and len(args) > 1:
+                expressions.append(args[1])
+        indexes = set()
+        for expression in expressions:
+            for argument, match in enumerate(parameter_names):
+                if match and expression == match.group(0):
+                    indexes.add(argument)
+        if len(indexes) > 1:
+            raise ValueError("browser helper has conflicting filename parameter roles")
+        role = next(iter(indexes)) if indexes else None
+        proof = bool(expressions) and all(
+            (template is not None and classify("Downloads/" + template) is not None)
+            or ((relative, expression) in DOWNLOAD_NAME_PASSTHROUGH and expression not in {
+                match.group(0) for match in parameter_names if match
+            }) for expression in expressions for template in [_download_template(expression)]
+        )
+        if name in roles and roles[name] != (role, proof) and (
+            role is not None or roles[name][0] is not None or name.startswith("download")
+        ):
+            raise ValueError("same-name browser helper roles conflict; lexical ownership requires review")
+        roles[name] = (role, proof)
+        if role is not None:
+            forwarders[name] = role
+        elif proof:
+            constructed.add(name)
+    return constructed, forwarders
+
+
+def _browser_documents(relative: str, source: str) -> list[tuple[int, str]]:
+    if not relative.endswith(".py"):
+        return [(1, source)]
+    tree = ast.parse(source, filename=relative)
+    documents = []
+    docstrings = {
+        id(n.body[0].value) for n in ast.walk(tree)
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and n.body and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant) and isinstance(n.body[0].value.value, str)
+    }
+
+    def local_bindings(node: ast.AST) -> dict[str, list[ast.AST]]:
+        function = _Function(relative, relative, "<browser-source>", node, frozenset(), None)
+        walker = _BodyWalker(function)
+        for statement in node.body:
+            walker.visit(statement)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            parameters = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+            parameters += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+            for parameter in parameters:
+                function.assignments.setdefault(parameter.arg, [_UnknownValue()])
+        return function.assignments
+
+    scopes = [local_bindings(tree)]
+    class_scopes: set[int] = set()
+
+    def bindings(name: str, active: tuple[dict, ...]) -> tuple[list[ast.AST], tuple[dict, ...]]:
+        for index in range(len(active) - 1, -1, -1):
+            if name in active[index]:
+                return active[index][name], active[:index + 1]
+        return [], active
+
+    html_cache: dict[tuple[int, tuple[int, ...]], bool] = {}
+
+    def contains_html(node: ast.AST) -> bool:
+        active = tuple(scopes)
+        root_key = (id(node), tuple(map(id, active)))
+        if root_key in html_cache:
+            return html_cache[root_key]
+        pending = [(node, active)]
+        visited = set()
+        while pending:
+            current, context = pending.pop()
+            identity = (id(current), tuple(map(id, context)))
+            if identity in visited:
+                continue
+            visited.add(identity)
+            if isinstance(current, ast.Constant) and isinstance(current.value, str):
+                # Regex lookbehinds and arithmetic '<' text are not HTML boundaries.
+                if (re.search(r"<(?:/?[A-Za-z][\w:-]*(?=[\s/>]|$)|/?\{|!DOCTYPE\b|!--)", current.value, re.I)
+                        or current.value.endswith("<")):
+                    html_cache[root_key] = True
+                    return True
+            if isinstance(current, ast.Name):
+                values, owner = bindings(current.id, context)
+                pending.extend((value, owner) for value in values)
+            pending.extend((child, context) for child in ast.iter_child_nodes(current))
+        html_cache[root_key] = False
+        return False
+
+    def expand(node: ast.AST, seen: frozenset[tuple[str, int]] = frozenset(), depth: int = 0,
+               active: tuple[dict, ...] | None = None) -> list[str]:
+        _name_depth(depth)
+        active = tuple(scopes) if active is None else active
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.Name):
+            values, owner = bindings(node.id, active)
+            identity = (node.id, id(owner[-1]))
+            if values and identity not in seen:
+                return _bounded_names([s for value in values
+                                       for s in expand(value, seen | {identity}, depth + 1, owner)],
+                                      text_limit=False)
+            return ["0"]
+        if isinstance(node, ast.FormattedValue):
+            return expand(node.value, seen, depth + 1, active)
+        if isinstance(node, ast.JoinedStr):
+            values = [""]
+            for part in node.values:
+                values = _bounded_names([a + b for a, b in _name_product(values, expand(part, seen, depth + 1, active))],
+                                        text_limit=False)
+            return values
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _bounded_names([a + b for a, b in _name_product(
+                expand(node.left, seen, depth + 1, active), expand(node.right, seen, depth + 1, active))], text_limit=False)
+        if isinstance(node, ast.IfExp):
+            return _bounded_names(expand(node.body, seen, depth + 1, active) + expand(node.orelse, seen, depth + 1, active),
+                                  text_limit=False)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            # Resolve each operand in its defining lexical scope, including module bindings
+            # reached from a function that shadows the same name.
+            owners = {id(child): active for child in ast.walk(node)}
+
+            def resolve(name: ast.Name) -> list[ast.AST]:
+                values, owner = bindings(name.id, owners.get(id(name), active))
+                for value in values:
+                    owners.update((id(child), owner) for child in ast.walk(value))
+                return values
+
+            values = _closed_format(node, resolve, depth + 1, frozenset()) or [None]
+            if any(value is None or not getattr(value, "complete", True) for value in values):
+                if contains_html(node) or any(isinstance(child, ast.Constant) and isinstance(child.value, str)
+                                              and re.search(r"</?\{", child.value) for child in ast.walk(node)) or any(
+                    value is not None and re.search(r"</?[A-Za-z0-9][\w:-]*(?=[\s/>]|$)", value) for value in values
+                ):
+                    raise ValueError("unresolved Python HTML format language boundary")
+            return _bounded_names([value for value in values if value is not None and getattr(value, "complete", True)],
+                                  text_limit=False) or ["0"]
+        return ["0"]
+
+    def visit(node: ast.AST) -> None:
+        if id(node) in docstrings:
+            return  # Python documentation is not a generated browser-language value
+        scope = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        saved_scopes = list(scopes)
+        if scope:
+            if not isinstance(node, ast.ClassDef):
+                # Python methods do not inherit the class body's locals as lexical bindings.
+                scopes[:] = [binding for binding in scopes if id(binding) not in class_scopes]
+            local = local_bindings(node)
+            scopes.append(local)
+            if isinstance(node, ast.ClassDef):
+                class_scopes.add(id(local))
+        format_assembly = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                           and node.func.attr == "format" and contains_html(node))
+        if (isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)) and contains_html(node)) or format_assembly:
+            # Language boundary, not a product/file/API subset. Every script-bearing generated
+            # HTML string is read, including f-strings without executing the generator.
+            for text in expand(node):
+                if "<" in text:
+                    documents.append((getattr(node, "lineno", 1), text))
+            if format_assembly:
+                return  # Read the composed document; format operands are not separate scripts.
+            # These literal pieces are one assembled language document, not independent scripts.
+            # In particular '<script>const x="' is not a complete JS string by itself.
+            # Still visit embedded expressions, which may contain separate literal documents.
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if isinstance(part, ast.FormattedValue):
+                        visit(part.value)
+                return
+            if isinstance(node, ast.BinOp):
+                for child in (node.left, node.right):
+                    if not isinstance(child, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+                        visit(child)
+                return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+        if scope:
+            if isinstance(node, ast.ClassDef):
+                class_scopes.remove(id(local))
+            scopes[:] = saved_scopes
+    visit(tree)
+    return documents
+
+
+def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
+    """Structural direct browser exits. Unknown names remain review obligations.
+
+    Native download assignments/attributes, object download properties (including Object.assign),
+    direct download helpers/saveAs and browser-open exits are read from tokens. Dispatch and
+    escape boundaries are documented in :func:`_js_literal_call`.
+    """
+    found = []
+    endpoint_sources = None
+    for relative in download_sources(root):
+        source = (root / relative).read_text(encoding="utf-8")
+        try:
+            documents = _browser_documents(relative, source)
+        except ValueError as error:
+            raise ValueError(f"browser document census refuses {relative}: {error}") from error
+        scripts = []
+        for first_line, text in documents:
+            # HTMLParser owns native HTML attributes. JS/JSX syntax belongs to tokens.
+            parser = _HtmlDownloads()
+            if relative.endswith((".html", ".py")):
+                try:
+                    parser.feed(text)
+                    parser.close()
+                except ValueError as error:
+                    line = first_line + parser.getpos()[0] - 1
+                    raise ValueError(f"browser census refuses {relative}:{line}: {error}") from error
+                found.extend((f"{relative}:{first_line + line - 1}", expression, template)
+                             for line, expression, template in parser.names)
+                scripts.extend((first_line + line - 1, script,
+                                None if lines is None else tuple(first_line + n - 1 for n in lines))
+                               for line, script, lines in parser.scripts)
+            else:
+                scripts.append((first_line, text, None))
+        for first_line, text, source_lines in scripts:
+            try:
+                tokens = _js_tokens(text, jsx=relative.endswith((".tsx", ".jsx", ".js")))
+                jsx_groups = _jsx_download_attributes(text, tokens)
+            except ValueError as error:
+                raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
+
+            def location(token: _JsToken) -> str:
+                line = source_lines[token.start] if source_lines is not None else first_line + token.line - 1
+                return f"{relative}:{line}"
+
+            jsx_downloads = set()
+            for intrinsic, indices in jsx_groups:
+                if intrinsic and len(indices) > 1:
+                    raise ValueError(f"browser census refuses {location(tokens[indices[1]])}: "
+                                     "duplicate JSX HTML download attributes")
+                jsx_downloads.update(indices)
+            try:
+                declarations, forwarders = _js_helper_parameters(text, tokens, relative)
+            except ValueError as error:
+                raise ValueError(f"browser census refuses {relative}:{first_line}: {error}") from error
+
+            for index, token in enumerate(tokens):
+                if token.value == "[":
+                    property_expression, closing = _js_expression(text, tokens, index + 1)
+                    if (_download_template(property_expression) == "download"
+                            and closing + 1 < len(tokens) and tokens[closing].value == "]"
+                            and tokens[closing + 1].value in {"=", ":"}):
+                        expression, _end = _js_expression(text, tokens, closing + 2)
+                        found.append((location(token), expression,
+                                      _download_template(expression)))
+                value = _js_token_name(token)
+                if index in jsx_downloads:
+                    value = "download"
+                after = index + 1
+                if (index in jsx_downloads and after < len(tokens)
+                        and tokens[after].value not in {"=", ":"}
+                        and (index == 0 or tokens[index - 1].value not in {"=", "<", "/", ":"})):
+                    href = _jsx_href(text, tokens, index)
+                    if endpoint_sources is None and (relative, href) in ENDPOINT_DOWNLOAD_BINDINGS:
+                        endpoint_sources = endpoint_download_sources_bound(root)
+                    templates = endpoint_download_templates(relative, href, bool(endpoint_sources))
+                    found.extend((location(token), "<implicit browser filename>", template)
+                                 for template in templates or [None])
+                if after < len(tokens) and tokens[after].value == "]":
+                    after += 1  # a["download"] = ...
+                if value in {"download", "exportFilename"} and after < len(tokens) and tokens[after].value in {"=", ":"}:
+                    receiver_property = index > 0 and tokens[index - 1].value in {".", "?.", "["}
+                    object_property = tokens[after].value == ":" and index > 0 and tokens[index - 1].value in {"{", ","}
+                    if value == "download" and not (receiver_property or object_property or index in jsx_downloads):
+                        continue  # local download callback/variable is not a browser filename
+                    # Native HTML quoted/unquoted attributes were already read by HTMLParser.
+                    if relative.endswith((".html", ".py")) and tokens[after].value == "=" and (
+                        index == 0 or tokens[index - 1].value not in {".", "?.", "["}
+                    ):
+                        continue
+                    if token.in_tag:
+                        expression = _jsx_filename_expression(text, tokens, after + 1)
+                    else:
+                        expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)
+                    found.append((location(token), expression,
+                                  _download_template(expression)))
+                # Direct native/helper calls. Match the download family structurally rather
+                # than selecting two helper names; browser open always requires disposition.
+                call = _js_literal_call(text, tokens, index)
+                if call is None:
+                    continue
+                value, call_start, receiver = call
+                if index and tokens[index - 1].value == "function":
+                    continue
+                if value.startswith("download") or value == "saveAs" or value in forwarders:
+                    if value in declarations and value not in forwarders:
+                        continue  # local wrapper owns its constructed filename in the scanned body
+                    arguments = _js_arguments(text, tokens, call_start)
+                    argument = forwarders.get(value, 1)
+                    if len(arguments) <= argument:
+                        if value in forwarders or value in {"saveAs", "downloadBlob", "downloadJsonDocument"}:
+                            found.append((location(token),
+                                          "<implicit browser filename>", None))
+                        continue  # event handlers with no filename parameter
+                    expression = arguments[argument]
+                elif value in {"setAttribute", "setAttributeNS", "toggleAttribute"}:
+                    arguments = _js_arguments(text, tokens, call_start)
+                    expression = _html_attribute_filename(value, arguments)
+                    if expression is None:
+                        continue
+                elif value == "set" and receiver == "Reflect":
+                    arguments = _js_arguments(text, tokens, call_start)
+                    if len(arguments) < 2 or _download_template(arguments[1]) != "download":
+                        continue
+                    expression = arguments[2] if len(arguments) >= 3 else "<implicit browser filename>"
+                elif value == "open" and receiver in {"window", "globalThis"}:
+                    arguments = _js_arguments(text, tokens, call_start)
+                    expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
+                else:
+                    continue
+                found.append((location(token), expression,
+                              _download_template(expression)))
     return sorted(set(found))
 
 
 def _download_template(expression: str) -> str | None:
-    if expression[:1] in {"`", '"', "'"} and expression[-1:] == expression[:1]:
-        return re.sub(r"\$\{[^{}]*\}", "0", expression[1:-1])
-    return None
+    if isinstance(expression, _JsxAttributeText):
+        return unescape(expression[1:-1])
+    expression = _js_parenthesized_literal(expression)
+    parts = _js_parts(expression, 0, "", "+")
+    templates = []
+    literal = False
+    for part in parts:
+        if part != expression and part.startswith("(") and part.endswith(")"):
+            grouped = _download_template(part)
+            if grouped is not None:
+                literal = True
+                templates.append(grouped)
+                continue
+        if part[:1] in {"`", '"', "'"} and part[-1:] == part[:1]:
+            literal = True
+            decoded = _js_closed_literal(part)
+            if decoded is None and part.startswith("`"):
+                # Interpolation is an uncertainty placeholder, never proof of a closed selector.
+                substituted = re.sub(r"(?<!\\)\$\{[^{}]*\}", "0", part)
+                decoded = _js_closed_literal(substituted)
+            if decoded is None:
+                return None
+            templates.append(decoded)
+        else:
+            templates.append("0")
+    return _js_string_value("".join(templates)) if literal else None
 
 
 def response_filenames(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
@@ -830,6 +2591,91 @@ def response_filenames(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
 
 
 # --------------------------------------------------------------------------- the census
+
+def bundle_artifact_name_shapes(source: str) -> list[tuple[str, str]]:
+    """Derive portable's finite name selectors; refuse unfamiliar positive predicate forms.
+
+    Negative full-path/container exceptions constrain shapes rather than adding name classes.
+    """
+    tree = ast.parse(source)
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                    and n.name == "_forbidden_client_artifact")
+    shapes: set[tuple[str, str]] = set()
+
+    def literals(node: ast.AST) -> list[str]:
+        value = ast.literal_eval(node)
+        values = [value] if isinstance(value, str) else list(value)
+        if not values or any(not isinstance(v, str) for v in values):
+            raise ValueError("bundle name selector is not a nonempty literal string collection")
+        return values
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                visit(value)
+            return
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right, op = node.left, node.comparators[0], node.ops[0]
+            if isinstance(left, ast.Name) and left.id in {"suffix", "leaf"} and isinstance(op, ast.In):
+                kind = "suffix" if left.id == "suffix" else "leaf"
+                shapes.update((kind, value) for value in literals(right))
+                return
+            if (isinstance(left, ast.Constant) and isinstance(left.value, str)
+                    and isinstance(right, ast.Name) and right.id == "leaf" and isinstance(op, ast.In)):
+                shapes.add(("contains", left.value))
+                return
+            if (isinstance(left, ast.Name) and left.id == "folded"
+                    and isinstance(op, (ast.NotIn, ast.NotEq))
+                    and isinstance(right, ast.Name) and right.id in {"allowed_snapshot", "allowed_container"}):
+                return
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id in {"leaf", "relative"}
+                and node.func.attr in {"startswith", "endswith"} and len(node.args) == 1):
+            if node.func.value.id == "relative" and node.func.attr == "startswith":
+                raise ValueError("unrecognised bundle client-name selector: path prefix is contextual")
+            kind = "leaf-prefix" if node.func.attr == "startswith" else "suffix"
+            shapes.update((kind, value) for value in literals(node.args[0]))
+            return
+        raise ValueError(f"unrecognised bundle client-name selector: {ast.unparse(node)}")
+
+    # Validate the whole permitted function. Each early positive return contributes its
+    # condition; unfamiliar control flow is refused rather than excluded from the corpus.
+    bindings = {
+        "folded": "relative.casefold()", "leaf": "PurePosixPath(folded).name",
+        "suffix": "PurePosixPath(folded).suffix",
+    }
+    assigned = set()
+    for statement in function.body:
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue  # docstring
+        if isinstance(statement, ast.Assign):
+            if len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+                raise ValueError("unrecognised bundle client-name selector: new local binding")
+            name = statement.targets[0].id
+            if name in assigned:
+                raise ValueError("unrecognised bundle client-name selector: reassigned selector binding")
+            assigned.add(name)
+            if name in bindings:
+                expected = ast.parse(bindings[name], mode="eval").body
+                if ast.dump(statement.value) != ast.dump(expected):
+                    raise ValueError("unrecognised bundle client-name selector: changed selector binding")
+            elif name in {"allowed_snapshot", "allowed_container"}:
+                literals(statement.value)
+            else:
+                raise ValueError("unrecognised bundle client-name selector: new local binding")
+            continue
+        if isinstance(statement, ast.Return):
+            visit(statement.value)
+            continue
+        if (isinstance(statement, ast.If) and not statement.orelse and len(statement.body) == 1
+                and isinstance(statement.body[0], ast.Return)
+                and isinstance(statement.body[0].value, ast.Constant)
+                and statement.body[0].value.value is True):
+            visit(statement.test)
+            continue
+        raise ValueError(f"unrecognised bundle client-name selector: {ast.unparse(statement)}")
+    return sorted(shapes)
+
 
 _CAPTURES = (
     "capture-show", "capture-get-system", "capture-aws", "capture-moquery", "capture-api",
@@ -903,11 +2749,11 @@ _SYNTHETIC = (
 WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     # ---- engine CLI (COLLECT_PARSE_V3_23_0.py) --------------------------------------------------
     "COLLECT_PARSE_V3_23_0.py::collect": (
-        4, CLIENT, _CAPTURES + _COLLECTION_SIDECARS,
+        4, CLIENT, (_CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging',),
         "live collector: one <command>.txt capture per command under <collection>/<host>/, plus "
         "device_info.json, command_index.json and _capture_meta.json through write_json_file"),
     "COLLECT_PARSE_V3_23_0.py::main.collect_one": (
-        1, CLIENT, _CAPTURES + _COLLECTION_SIDECARS, "runs collect() for one device"),
+        1, CLIENT, (_CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging',), "runs collect() for one device"),
     "COLLECT_PARSE_V3_23_0.py::setup_logging": (
         1, CLIENT, ("engine-log",),
         "engine audit log cisco_migration_autofill_v<version>.log (cisco_toolkit.engine_log_path); "
@@ -923,28 +2769,28 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, DELEGATED, (), "generic os.replace with retries; the caller names source and destination"),
     "COLLECT_PARSE_V3_23_0.py::main": (
         20, CLIENT,
-        ("pre-change-certificate", "comparison-receipt", "trend-comparisons", "explorer",
+        (("pre-change-certificate", "comparison-receipt", "trend-comparisons", "explorer",
          "topology-mermaid", "topology-graphviz", "engagement-gate-state")
-        + _OFFICE + _CAPTURES + _COLLECTION_SIDECARS,
+        + _OFFICE + _CAPTURES + _COLLECTION_SIDECARS) + ('atomic-staging', 'incomplete-marker', 'protocol-assurance-export', 'receipt-authority-probe', 'run-manifest'),
         "--compare writes <diff>.xlsx, <diff>.precert.json and <diff>.comparison.json; --trend writes "
         "<trend>.xlsx and <trend>.trend-comparisons.json; the assessment run collects, then writes "
         "topology.mmd/.dot, <output>_explorer.html and the DOCX/PPTX family, consulting the gate "
         "ledger, before _stage_finalize"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize": (
         14, CLIENT,
-        ("protocol-assurance-export", "explorer", "phase-timings", "run-manifest", "snapshot",
+        (("protocol-assurance-export", "explorer", "phase-timings", "run-manifest", "snapshot",
          "incomplete-marker", "word-document", "workbook", "redaction-staging")
-        + _RAW_CAPTURE_SHAPES,
+        + _RAW_CAPTURE_SHAPES) + ('atomic-staging', 'receipt-authority-probe'),
         "<output>.protocol-assurance.json, the BOUND explorer/runbook/MOP/workbook refresh, "
         "<output>.phase_timings.json, <output>.run_manifest.json and <output>.incomplete.json, plus "
         "the --redact-collection in-place scrub"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize._publish_snapshot": (
-        1, CLIENT, ("snapshot",), "<output>.snapshot.json, the parsed estate"),
+        1, CLIENT, (("snapshot",)) + ('atomic-staging',), "<output>.snapshot.json, the parsed estate"),
     "COLLECT_PARSE_V3_23_0.py::_stage_finalize._save_workbook": (
         1, CLIENT, ("workbook",),
         "the assessment workbook <output>.xlsx (staged as .<stem>.receipt-<nonce>.tmp.xlsx)"),
     "COLLECT_PARSE_V3_23_0.py::_write_incomplete_marker": (
-        1, CLIENT, ("incomplete-marker",),
+        1, CLIENT, (("incomplete-marker",)) + ('atomic-staging',),
         "<output>.incomplete.json: the run's custody and failure record, written before the seal"),
     "COLLECT_PARSE_V3_23_0.py::_atomic_receipt_refresh": (
         6, CLIENT,
@@ -991,9 +2837,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, ("topology-mermaid", "topology-graphviz"),
         "topology.mmd and topology.dot beside the workbook"),
     "cisco_toolkit/nrfu_export.py::write_nrfu_pack": (
-        1, DELEGATED, (),
-        "per-device NRFU command files <out_dir>/<wave>/<host>.txt in a caller-owned directory; no "
-        "caller exists today, so the first one becomes its own census row"),
+        1, CLIENT, ("nrfu-command-pack",),
+        "direct library export <out_dir>/<wave>/<host>.nrfu.txt: host, commands, baselines and citations"),
     "cisco_toolkit/precert.py::main": (
         1, CLIENT, ("readiness-certificate",),
         "<snapshot>.precert-readiness.json (or the operator's --out path)"),
@@ -1021,17 +2866,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, ("engagement-gate-state", "atomic-staging"),
         "locked read-modify-write of the engagement gate ledger"),
     "cisco_toolkit/gate_state.py::_append_audit": (
-        1, CLIENT, ("engagement-gate-state",), "appends an audit line to the gate ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "appends an audit line to the gate ledger"),
     "cisco_toolkit/gate_state.py::_record_refusal": (
-        1, CLIENT, ("engagement-gate-state",), "records a refused gate in the ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records a refused gate in the ledger"),
     "cisco_toolkit/gate_state.py::record_decision": (
-        1, CLIENT, ("engagement-gate-state",), "records an approval or revocation in the ledger"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records an approval or revocation in the ledger"),
     "cisco_toolkit/gate_state.py::bind_engagement": (
-        1, CLIENT, ("engagement-gate-state",), "binds the ledger to an engagement identifier"),
+        1, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "binds the ledger to an engagement identifier"),
     "cisco_toolkit/gate_state.py::enforce": (
-        3, CLIENT, ("engagement-gate-state",), "records an override or refusal in the ledger"),
+        3, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "records an override or refusal in the ledger"),
     "cisco_toolkit/gate_state.py::main": (
-        2, CLIENT, ("engagement-gate-state",), "the gate-ledger CLI (bind, approve, revoke)"),
+        2, CLIENT, (("engagement-gate-state",)) + ('atomic-staging',), "the gate-ledger CLI (bind, approve, revoke)"),
     "cisco_toolkit/recall.py::log_query": (
         1, CLIENT, ("query-log",),
         "docs/quality/query_log.jsonl: real retrieval queries, which can name client tokens"),
@@ -1077,16 +2922,16 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "cisco_toolkit/registry_integrity.py::_write_temp_bytes": (
         1, NON_CLIENT, ("atomic-staging",), "staging for " + _REFERENCE_PACKS),
     "cisco_toolkit/registry_integrity.py::publish_pack_and_manifest": (
-        7, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/registry_integrity.py::update_manifest": (2, NON_CLIENT, (), _REFERENCE_PACKS),
+        7, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/registry_integrity.py::update_manifest": (2, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
     "cisco_toolkit/registry_integrity.py::_restore_snapshot": (
-        2, NON_CLIENT, (), "rollback of " + _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::write_registry": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::build_authoritative": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::_legacy_main": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/gen_oui_registry.py::main": (2, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/data/gen_port_registry.py::build": (1, NON_CLIENT, (), _REFERENCE_PACKS),
-    "cisco_toolkit/data/gen_port_registry.py::main": (1, NON_CLIENT, (), _REFERENCE_PACKS),
+        2, NON_CLIENT, (()) + ('atomic-staging',), "rollback of " + _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::write_registry": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::build_authoritative": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::_legacy_main": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/gen_oui_registry.py::main": (2, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/data/gen_port_registry.py::build": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
+    "cisco_toolkit/data/gen_port_registry.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), _REFERENCE_PACKS),
     "cisco_toolkit/transition_legacy.py::_run_pinned_release1_driver": (
         1, NON_CLIENT, (), "materialises the verified release-1 driver source bundle; " + _TRANSITION),
     "cisco_toolkit/transition_legacy.py::_validate_release1_comparison": (1, NON_CLIENT, (), _TRANSITION),
@@ -1140,10 +2985,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         "the AssessHub database assesshub.db (snapshots, executions, evidence) and its SQLite "
         "companions"),
     "webapp/backend/storage.py::Store._boot_hardening": (
-        3, CLIENT, ("database", "database-backup-partial", "database-wal", "database-shm"),
+        3, CLIENT, ("database", "database-backup-partial", "database-wal", "database-shm", "database-journal"),
         "backups/assesshub-<stamp>.db, staged as assesshub-<stamp>-<pid>-<hex>.db.partial"),
     "webapp/backend/storage.py::_backup_campaign_evidence": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens an existing database backup read-only and immutable to classify it"),
     "webapp/backend/ingest.py::_safe_extract": (
         1, PRIVATE_TEMP, (), "an uploaded collection ZIP extracted " + _WORKDIR),
@@ -1179,17 +3024,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/ingest.py::run_redaction_folder": (
         2, CLIENT, _REDACTION_RUN, "takes the output lock and runs the field redaction"),
     "webapp/backend/ingest.py::_output_dir_lock": (
-        1, NON_CLIENT, (), ".atlas-redaction.lock is an empty lock token; it never holds data"),
+        1, NON_CLIENT, (), ".atlas-redaction.lock holds only a fixed NUL marker, never client data"),
     "webapp/backend/serve.py::_writable_failure": (
-        1, NON_CLIENT, (), "an empty write probe, unlinked immediately"),
+        1, NON_CLIENT, (), "a fixed 'ok' write probe, unlinked immediately; no client data"),
     "webapp/backend/serve.py::run_selftest": (2, NON_CLIENT, (), "write probes of the data folders"),
     "webapp/backend/serve.py::run_redaction": (
         1, CLIENT, _REDACTION_RUN, "Atlas.exe --redact-folder runs the field redaction"),
     "webapp/backend/serve.py::run_database_preflight": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "Atlas.exe database preflight over a copy of the operator's database"),
     "webapp/backend/serve.py::_main_scoped": (
-        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm"),
+        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
         "the Atlas.exe entry: self-test probes, database preflight and field redaction"),
     "webapp/backend/export_ui_projection_openapi.py::main": (
         1, NON_CLIENT, (), "the UI projection OpenAPI document generated from code"),
@@ -1217,25 +3062,25 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
     "portable/database_preflight.py::_open_readonly": (
-        1, CLIENT, ("database", "database-wal", "database-shm"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
     "portable/database_preflight.py::census": (
-        1, CLIENT, ("database", "database-wal", "database-shm"), "counts rows of that copy"),
+        1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "counts rows of that copy"),
     "portable/database_preflight.py::verify_migrated_copy": (
-        2, CLIENT, ("database", "database-wal", "database-shm"), "compares that copy after migration"),
+        2, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "compares that copy after migration"),
     "portable/database_preflight.py::migrate_and_compare": (
-        2, CLIENT, ("database", "database-wal", "database-shm"), "migrates and compares that copy"),
+        2, CLIENT, ("database", "database-wal", "database-shm", "database-journal"), "migrates and compares that copy"),
     "portable/build_atlas.py::build": (1, NON_CLIENT, (), _RELEASE),
     "portable/build_atlas.py::smoke": (
         2, NON_CLIENT, (), _RELEASE + "; the smoke copy's data directory comes from a synthetic run"),
     "portable/build_atlas.py::_detach_runtime_data": (
         1, NON_CLIENT, (),
         "moves the SMOKE copy's data directory, created by the synthetic field-layout smoke run"),
-    "portable/build_release.py::build_release": (2, NON_CLIENT, (), _RELEASE),
-    "portable/build_release.py::main": (2, NON_CLIENT, (), _RELEASE),
+    "portable/build_release.py::build_release": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/build_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
     "portable/package_signed_release.py::_independent_authenticode": (1, NON_CLIENT, (), _RELEASE),
-    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (), _RELEASE),
-    "portable/package_signed_release.py::main": (2, NON_CLIENT, (), _RELEASE),
+    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/package_signed_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
     "portable/prepare_signing.py::prepare": (3, NON_CLIENT, (), _RELEASE),
     "portable/prepare_signing.py::main": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::_record_build_modules": (1, NON_CLIENT, (), _RELEASE),
@@ -1245,7 +3090,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/release_contract.py::_write_deterministic_zip": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::build_portable_release": (9, NON_CLIENT, (), _RELEASE),
     "portable/qualify_atlas.py::qualify": (3, NON_CLIENT, ("database", "capture-show", "config-file-cfg"), _RELEASE + "; " + _SYNTHETIC),
-    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (), "the qualification receipt"),
+    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), "the qualification receipt"),
     "portable/qualify_atlas.py::_redaction": (
         5, NON_CLIENT, ("capture-show", "config-file-cfg"),
         "redaction canaries (SYNTHETIC-CORE1, TEST-ONLY) in a qualification collection; " + _SYNTHETIC),
@@ -1270,10 +3115,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/frontend_artifact_receive.py::GitHub.archive": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::bridge": (
         3, NON_CLIENT, ("engine-log",), _CI_EVIDENCE + "; <step>.stderr.log is a bridge's stderr"),
-    ".github/scripts/frontend_artifact_receive.py::select_registry": (3, NON_CLIENT, (), _CI_EVIDENCE),
-    ".github/scripts/frontend_artifact_receive.py::candidate": (1, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::select_registry": (3, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::candidate": (1, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::patch": (3, NON_CLIENT, (), _CI_EVIDENCE),
-    ".github/scripts/frontend_artifact_receive.py::main": (11, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/frontend_artifact_receive.py::main": (11, NON_CLIENT, (()) + ('engine-log',), _CI_EVIDENCE),
     ".github/scripts/frontend_build_handoff.py::main": (3, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_candidate_materials.py::write_new": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_candidate_materials.py::emit": (1, NON_CLIENT, (), _CI_EVIDENCE),
@@ -1287,13 +3132,13 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/refresh_visual_baseline_pins.py::_write_atomic": (
         2, NON_CLIENT, ("atomic-staging",), "rewrites the synthetic visual-baseline pins in place"),
     ".github/scripts/refresh_visual_baseline_pins.py::main": (
-        1, NON_CLIENT, (), "rewrites the synthetic visual-baseline pins in place"),
+        1, NON_CLIENT, (()) + ('atomic-staging',), "rewrites the synthetic visual-baseline pins in place"),
     ".github/scripts/scope_compile_handoff.py::_write": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/scope_compile_handoff.py::main": (2, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/qualify_scale.py::write_json": (
         1, DELEGATED, (), "path-parameter JSON writer; filenames belong to classified callers"),
     ".github/scripts/qualify_scale.py::stage": (
-        10, NON_CLIENT, ("snapshot", "workbook"),
+        10, NON_CLIENT, ("snapshot", "workbook", "devices-inventory"),
         "the hosted scale workflow's fixed generated corpus, API and compiler evidence; " + _SYNTHETIC),
     ".github/scripts/qualify_scale.py::stage.request": (
         1, NON_CLIENT, (),
@@ -1302,7 +3147,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, ("engine-log",),
         "stdout/stderr of fixed synthetic hosted scale stages; " + _SYNTHETIC),
     ".github/scripts/qualify_scale.py::main": (
-        6, NON_CLIENT, (),
+        6, NON_CLIENT, ("devices-inventory", "engine-log", "snapshot", "workbook"),
         "hosted scale budgets, source metadata and measurements of the fixed generated corpus; " + _SYNTHETIC),
     "atlas-scope/tools/fixtures/engine-sparse-interfaces.py::<module>": (
         1, NON_CLIENT, (), "the Atlas Scope sparse-interfaces fixture; " + _SYNTHETIC),
@@ -1336,12 +3181,12 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "research_lane/producer.py::run": (
         2, NON_CLIENT, ("atomic-staging",),
         "the public-advisory intel feed docs/intel/feed-<date>.jsonl, staged as .intel-feed-*.tmp"),
-    "research_lane/producer.py::main": (1, NON_CLIENT, (), "the intel feed CLI"),
+    "research_lane/producer.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), "the intel feed CLI"),
     "research_lane/vault_digest.py::run": (
         2, NON_CLIENT, ("atomic-staging",),
         "the Rule-3-sanitised vault digest docs/vault-digest/digest-<date>.jsonl (git-ignored, "
         "ADR 0001 Amendment 1), staged as .vault-digest-*.tmp; sanitisation strips client identifiers"),
-    "research_lane/vault_digest.py::main": (1, NON_CLIENT, (), "the vault digest CLI"),
+    "research_lane/vault_digest.py::main": (1, NON_CLIENT, (()) + ('atomic-staging',), "the vault digest CLI"),
     "tools/build_atlas_r2_authority_candidate.py::_exact_blob_archive": (1, NON_CLIENT, (), _TRANSITION),
     "tools/build_atlas_r2_authority_candidate.py::build_package": (1, NON_CLIENT, (), _TRANSITION),
     "tools/build_atlas_r2_authority_candidate.py::main": (1, NON_CLIENT, (), _TRANSITION),
@@ -1381,7 +3226,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "tools/generate_prior_database_fixture.py::build_fixture": (
         3, NON_CLIENT, ("database",), "the prior-release database fixture; " + _SYNTHETIC),
     "tools/generate_prior_database_fixture.py::main": (
-        1, NON_CLIENT, (), "the prior-release database fixture; " + _SYNTHETIC),
+        1, NON_CLIENT, (()) + ('database',), "the prior-release database fixture; " + _SYNTHETIC),
     "tools/graphify_guarded.py::_producer_lock": (
         1, NON_CLIENT, (), "the guarded Graphify producer's empty lock token"),
     "tools/graphify_guarded.py::_write_refresh_receipt": (
@@ -1393,9 +3238,9 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "tools/graphify_guarded.py::_maybe_tree_equivalent_rebind": (
         1, NON_CLIENT, (), "the repository's AST code graph and report"),
     "tools/graphify_guarded.py::_handle_refresh_receipt": (
-        1, NON_CLIENT, (), "the guarded Graphify refresh receipt (digests only)"),
+        1, NON_CLIENT, (()) + ('atomic-staging',), "the guarded Graphify refresh receipt (digests only)"),
     "tools/graphify_guarded.py::main": (
-        4, NON_CLIENT, (), "the guarded Graphify producer over the repository's own source"),
+        4, NON_CLIENT, (()) + ('atomic-staging',), "the guarded Graphify producer over the repository's own source"),
     "tools/measure_transition_dsl_prototype.py::main": (1, NON_CLIENT, (), _TRANSITION),
     "tools/smoke_installed_transition_runtime.py::main": (2, NON_CLIENT, (), _TRANSITION),
 }
@@ -1472,6 +3317,11 @@ def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:
 # --------------------------------------------------------------------------- the check
 
 _ANALYSES: dict[str, tuple[dict[str, int], set[str], dict[str, set[str]]]] = {}
+_UNCLASSIFIED_LITERALS: dict[str, dict[str, set[str]]] = {}
+_UNRESOLVED_NAME_TEMPLATES: dict[str, dict[str, set[str]]] = {}
+_NON_CLIENT_LITERAL_ORIGINS: dict[str, dict[tuple[str, str], str]] = {}
+_CLIENT_LITERAL_OBLIGATIONS: dict[str, dict[str, set[str]]] = {}
+_NAME_MODEL_PROBLEMS: dict[str, list[str]] = {}
 
 
 def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set[str]]]:
@@ -1481,6 +3331,11 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
         program = _Program(Path(root))
         counts: Counter[str] = Counter()
         resolved: dict[str, set[str]] = {}
+        unclassified: dict[str, set[str]] = {}
+        unresolved: dict[str, set[str]] = {}
+        non_client: dict[tuple[str, str], str] = {}
+        client_literals: dict[str, set[str]] = {}
+        model_problems: list[str] = []
         _classes, classify = _registry()
         for file in program.files:
             for function in [file.top, *file.functions]:
@@ -1491,14 +3346,48 @@ def analysis(root: Path = ROOT) -> tuple[dict[str, int], set[str], dict[str, set
                 resolve = program.resolver(function)
                 for _kind, targets in sites:
                     for target in targets:
-                        for template in _templates(target, resolve):
+                        try:
+                            templates = _templates(target, resolve)
+                        except NameModelLimit as error:
+                            model_problems.append(f"filename model refusal at {function.key}: {error}")
+                            continue
+                        for template in templates:
+                            if template is None:
+                                continue
                             leaf = re.split(r"[/\\]", template)[-1]
-                            if leaf and leaf != "0" and _FILE_NAME.search(leaf):
+                            if leaf:
                                 class_key = classify(f"customer-output/{leaf}")
                                 if class_key:
                                     resolved.setdefault(function.key, set()).add(class_key)
+                                elif (not getattr(template, "complete", True) and not getattr(template, "identifying", False)
+                                      and not _identifying_suffix(target, resolve)):
+                                    unresolved.setdefault(function.key, set()).add(leaf)
+                                else:
+                                    unclassified.setdefault(function.key, set()).add(leaf)
+                                    origin = getattr(target, "census_non_client_origin", None)
+                                    if origin is not None:
+                                        non_client[(function.key, leaf)] = origin
+                                    else:
+                                        client_literals.setdefault(function.key, set()).add(leaf)
         _ANALYSES[key] = (dict(sorted(counts.items())), set(program.writers), resolved)
+        _UNCLASSIFIED_LITERALS[key] = unclassified
+        _UNRESOLVED_NAME_TEMPLATES[key] = unresolved
+        _NON_CLIENT_LITERAL_ORIGINS[key] = non_client
+        _CLIENT_LITERAL_OBLIGATIONS[key] = client_literals
+        _NAME_MODEL_PROBLEMS[key] = sorted(set(model_problems))
     return _ANALYSES[key]
+
+
+def unclassified_site_literals(root: Path = ROOT) -> dict[str, set[str]]:
+    """Keep resolved names that match no class, including extension-less fixed names."""
+    analysis(root)
+    return _UNCLASSIFIED_LITERALS[str(Path(root).resolve())]
+
+
+def unresolved_site_templates(root: Path = ROOT) -> dict[str, set[str]]:
+    """Partially known, unclassified names stay uncertainty evidence rather than invented literals."""
+    analysis(root)
+    return _UNRESOLVED_NAME_TEMPLATES[str(Path(root).resolve())]
 
 
 def census_problems(
@@ -1512,7 +3401,7 @@ def census_problems(
         registry_keys = [row[0] for row in _registry()[0]]
     known = frozenset(registry_keys)
     observed, writers, resolved = analysis(root)
-    problems: list[str] = []
+    problems: list[str] = list(_NAME_MODEL_PROBLEMS[str(Path(root).resolve())])
     for key in sorted(set(observed) - set(census)):
         problems.append(f"unclassified write site: {key} ({observed[key]} write(s))")
     for key in sorted(set(census) - set(observed)):
@@ -1527,6 +3416,9 @@ def census_problems(
             problems.append(f"census row gives no reason: {key}")
         if disposition == CLIENT and not keys:
             problems.append(f"client write site names no registry class: {key}")
+        if disposition == CLIENT:
+            for leaf in sorted(_CLIENT_LITERAL_OBLIGATIONS[str(Path(root).resolve())].get(key, set())):
+                problems.append(f"client write site resolves to unclassified name {leaf!r}: {key}")
         for class_key in keys:
             if class_key not in known:
                 problems.append(f"write site names an unregistered class {class_key!r}: {key}")

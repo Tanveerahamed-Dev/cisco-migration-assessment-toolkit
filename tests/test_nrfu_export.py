@@ -408,8 +408,8 @@ def test_pack_writer_file_layout_and_content(tmp_path):
     snap = _snap()
     written = write_nrfu_pack(snap, str(tmp_path))
     rel = sorted(os.path.relpath(p, str(tmp_path)).replace(os.sep, "/") for p in written)
-    assert rel == ["Group_1/dist1.txt", "Group_1/dist2.txt", "unscheduled/acc1.txt"]
-    body = open(os.path.join(str(tmp_path), "Group_1", "dist1.txt"), encoding="utf-8").read()
+    assert rel == ["Group_1/dist1.nrfu.txt", "Group_1/dist2.nrfu.txt", "unscheduled/acc1.nrfu.txt"]
+    body = open(os.path.join(str(tmp_path), "Group_1", "dist1.nrfu.txt"), encoding="utf-8").read()
     assert "NRFU-W1-P1-001" in body and "show version" in body
     assert "expect:" in body and "source:" in body
     # every executable (non-comment, non-blank) line is read-only — the pack is paste-safe
@@ -465,7 +465,7 @@ def test_hostile_newline_values_cannot_inject_executable_lines(tmp_path):
                               "command": "configure terminal", "expected": "x", "source_key": "y"}]}]}]}
     write_nrfu_pack(snap, str(tmp_path / "tampered"))
     _assert_pack_executable_lines_readonly(str(tmp_path / "tampered"))
-    body = open(os.path.join(str(tmp_path), "tampered", "Group_1", "dist1.txt"),
+    body = open(os.path.join(str(tmp_path), "tampered", "Group_1", "dist1.nrfu.txt"),
                 encoding="utf-8").read()
     assert "[REFUSED — not a read-only command] configure terminal" in body
 
