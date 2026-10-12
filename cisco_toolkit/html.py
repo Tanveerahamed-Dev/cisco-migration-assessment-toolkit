@@ -4691,6 +4691,10 @@ _REDACT_SCHEME_OPEN_RE = re.compile(_g(
     + "|".join(sorted(_REDACT_SWEEP_SCHEMES)) + r"))?){h}*\Z"), re.IGNORECASE)
 _REDACT_EMPTY_AUTH_HEADER_RE = re.compile(_g(
     r"(?<![A-Za-z0-9_-])(?:proxy-)?authorization[\"']?{h}*:{h}*\Z"), re.IGNORECASE)
+_REDACT_AUTH_PARAM_RE = re.compile(_g(
+    r"[A-Za-z][A-Za-z0-9_*-]{0,63}{h}*={h}*"
+    r"(?:\"(?:\\[^\r\n]|[^\"\\\r\n])*\"|'(?:\\[^\r\n]|[^'\\\r\n])*'"
+    r"|[^" + _REDACT_WS + r"\r\n,\"']+)"))
 _REDACT_AUTH_COMMENT_RE = re.compile(_g(r"^{h}*(?P<c>//|!){h}*"))
 _REDACT_COMMENT_MARKER_AUTH_RE = re.compile(_g(
     r"[\"']?(?:proxy-)?authorization[\"']?{h}*:{h}*(?:<redacted>|\"<redacted>\"|'<redacted>'){h}*\Z"),
@@ -5344,7 +5348,14 @@ def _redact_dangle(line: str, carry=None):
                     return kind, ["comment:" + comment.group("c")], False
                 prefix_end = _redact_capture_value_start(line)
                 decoration = prefix_end > _REDACT_LEAD_RE.match(line).end() and prefix_end <= found.start()
-                return kind, ["capture"] if decoration else [], False
+                tail = ["capture"] if decoration else []
+                if kind == "scheme":
+                    quote = _redact_curl_header_quote(line, found.start())
+                    if quote is not None:
+                        tail.append("curl-header-" + quote)
+                    if found.group(0).rpartition(":")[2].strip(_REDACT_WS_CHARS + "\"'").casefold() == "digest":
+                        tail.append("auth-params")
+                return kind, tail, False
     if carry is not None or "-" in line or "net" in line.casefold():
         pending = _redact_argv_walk(line, carry)[1]
         if pending is not None:
@@ -5465,6 +5476,13 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
             return _redact_operand_span(line, words[0].start(), words[-1].end(), "value")
         if "capture" in tail:
             start = max(start, _redact_capture_value_start(line))
+        quote = next((part[-1] for part in tail if part in {"curl-header-'", 'curl-header-"'}), None)
+        if kind == "scheme" and quote is not None and _redact_curl_closed_header_value(line, start, quote):
+            return None
+        if kind == "scheme" and "auth-params" in tail:
+            params = _redact_auth_param_span(line, start)
+            if params is not None:
+                return params
         if kind == "header-value":
             words = list(_REDACT_ARGV_WORD_RE.finditer(line, start))
             if not words:
@@ -5478,6 +5496,19 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
         for m in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(line, start):
             if not m.group(0).strip(_REDACT_SWEEP_EDGE):
                 continue                                     # punctuation alone ('"')
+            word = _REDACT_ARGV_WORD_RE.match(line, m.start())
+            if word is not None and any(char in word.group(0) for char in "\"'\\"):
+                raw = word.group(0)
+                if _redact_shell_executable(raw) is not None:
+                    return _redact_operand_span(line, word.start(), word.end(), "value")
+                if line[m.end():].strip(_REDACT_WS_CHARS):
+                    # A closing header quote with an unproven suffix is still an ambiguous
+                    # continued field. Only actual curl provenance authenticates a URL tail.
+                    safe = (_redact_curl_closed_header_value(
+                        line[:m.start()] + _REDACT_PLACEHOLDER + line[m.end() - 1:], start, quote)
+                            if quote is not None and m.group(0)[-1:] == quote else False)
+                    if not safe:
+                        return word.span()
             if _REDACT_PLACEHOLDER in m.group(0) and _redact_sweep_token_ok(m.group(0)):
                 return None
             return _redact_core_span(line, m.start(), m.end())
@@ -5513,6 +5544,48 @@ def _redact_clause_continuation(line: str, kind: str, tail, start: int = 0, key_
             return None
         return _redact_core_span(masked, m.start(), m.end())
     return None
+
+
+def _redact_curl_header_quote(line: str, header_start: int):
+    """The carried opening quote belongs to an explicit curl -H/--header operand."""
+    previous = None
+    for word in _REDACT_ARGV_WORD_RE.finditer(line):
+        if word.start() <= header_start < word.end():
+            raw = word.group(0)
+            if (word.end() != len(line) or raw[:1] not in {"\"", "'"} or previous is None
+                    or _redact_decode_word(previous.group(0))[0] not in {"-H", "--header"}):
+                return None
+            return raw[0] if any(match.group("cmd").casefold() == "curl"
+                                 for match in _REDACT_ARGV_CMD_RE.finditer(line, 0, previous.start())) else None
+        previous = word
+    return None
+
+
+def _redact_curl_closed_header_value(line: str, start: int, quote: str) -> bool:
+    """Exactly PH plus its carried quote and one public HTTP(S) URL, without extra text."""
+    value = line[start:].strip(_REDACT_WS_CHARS)
+    prefix = _REDACT_PLACEHOLDER + quote
+    if not value.startswith(prefix) or value[len(prefix):len(prefix) + 1] not in _REDACT_WS_CHARS:
+        return False
+    url = value[len(prefix):].strip(_REDACT_WS_CHARS)
+    return (bool(_REDACT_SWEEP_URL_RE.fullmatch(url)) and url.partition(":")[0].casefold() in {"http", "https"}
+            and not any(char in url for char in "\"'\\|`;&<>$") and _redact_sweep_url(url) == url)
+
+
+def _redact_auth_param_span(line: str, start: int):
+    """A complete comma-delimited Digest credential fragment, not a configuration or public suffix."""
+    first = position = _REDACT_LEAD_RE.match(line, start).end()
+    while True:
+        field = _REDACT_AUTH_PARAM_RE.match(line, position)
+        if field is None:
+            return None
+        end = field.end()
+        position = _REDACT_LEAD_RE.match(line, end).end()
+        if position == len(line):
+            return first, end
+        if line[position] != ",":
+            return None
+        position = _REDACT_LEAD_RE.match(line, position + 1).end()
 
 
 def _redact_snmp_host_split(prev: str, line: str):
