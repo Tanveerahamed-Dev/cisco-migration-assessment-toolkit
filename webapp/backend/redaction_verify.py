@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import bisect
+import heapq
 import hashlib
 import io
 import itertools
@@ -652,6 +653,10 @@ _SWEEP_RAW_UNQUOTED_EXACT = frozenset({"pass", "pw", "pin"})
 _SWEEP_NAME_STRIP_RE = re.compile(r"[\s_.\-]")
 _SWEEP_QKEY_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P<c>(?P=q)){h}*:"""))
 _SWEEP_UKEY_RE = re.compile(_v(r"(?<![\w.:/@$-])(?P<k>[A-Za-z_][\w.-]{0,127}){h}*(?:=(?![=>])|:(?![:/]))"))
+_SWEEP_SCALAR_WORD_RE = re.compile(
+    "(?:[^" + _CRED_WS + "\r\n\"'\\\\,;{}\\[\\]]|\\\\[^\r\n]"
+    "|\"(?:[^\"\\\\\r\n]|\\\\[^\r\n])*\"|'(?:[^'\\\\\r\n]|\\\\[^\r\n])*')+")
+_SWEEP_SCALAR_QUOTE_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"' + r"|'(?:\\.|[^'\\\r\n])*'")
 _SWEEP_NAME_HINT_RE = re.compile(r"pass|pwd|secret|communit|psk|token|credential|api|priv|key|auth|pin|pw")
 _SWEEP_PROSE_KW_RE = re.compile(_v(
     r"(?<![A-Za-z0-9])(?P<kw>pw|pwd|pass|creds?|account"
@@ -1219,8 +1224,9 @@ def _sweep_masked(line: str, *, config_slots: bool = True) -> str:
     if junos is not None:
         start, end = junos.span("id")
         masked = masked[:start] + " " * (end - start) + masked[end:]
-    public = [(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
-              if chr(92) in line[start:end] and _sweep_public_operand(line[start:end], kind)]
+    public = ([(start, end) for start, end, kind in _sweep_argv_walk(line)[0]
+               if chr(92) in line[start:end] and _sweep_public_operand(line[start:end], kind)]
+              + [(start, end) for start, end, _a, _b in _sweep_explicit_scalars(line)])
     if not public:
         return masked
     pieces: list[str] = []
@@ -1247,6 +1253,64 @@ def _sweep_credential_name(name: str, quoted: bool) -> bool:
     if not quoted:
         return folded in _SWEEP_RAW_UNQUOTED_EXACT
     return folded in _SWEEP_RAW_QUOTED_EXACT or folded.endswith("key")
+
+
+def _sweep_explicit_scalars(line: str) -> list[tuple[int, int, int, int]]:
+    """Complete syntactic credential scalars, separate from prose/config clauses.
+
+    The line must begin as a field record. Every scalar then ends at that record's
+    closing punctuation or next field; quoted content owns its punctuation. A quoted
+    metadata value cannot introduce a synthetic field within its own data.
+    """
+    if not (":" in line or "=" in line) or not _SWEEP_NAME_HINT_RE.search(line.casefold()):
+        return []
+    if _SWEEP_SCHEME_OPEN_RE.search(line) or _SWEEP_EMPTY_AUTH_HEADER_RE.search(line):
+        return []                                      # the existing header wrap owner has priority
+    position = _SWEEP_LEAD_RE.match(line).end()
+    if (position < len(line) and line[position] not in "[{"
+            and not (_SWEEP_QKEY_RE.match(line, position) or _SWEEP_UKEY_RE.match(line, position))):
+        prefix = _SWEEP_CAPTURE_PREFIX_RE.match(line)
+        position = prefix.end() if prefix is not None else position
+    while position < len(line) and line[position] in "[{":
+        position = _SWEEP_LEAD_RE.match(line, position + 1).end()
+    if not (_SWEEP_QKEY_RE.match(line, position) or _SWEEP_UKEY_RE.match(line, position)):
+        return []
+    quotes = [match.span() for match in _SWEEP_SCALAR_QUOTE_RE.finditer(line, position)]
+    quote_index, covered = 0, position
+    fields = []
+    candidates = heapq.merge(_SWEEP_QKEY_RE.finditer(line, position),
+                            _SWEEP_UKEY_RE.finditer(line, position), key=lambda match: match.start())
+    for key in candidates:
+        if key.start() < covered:
+            continue
+        while quote_index < len(quotes) and quotes[quote_index][1] <= key.start():
+            quote_index += 1
+        if quote_index < len(quotes) and quotes[quote_index][0] < key.start() < quotes[quote_index][1]:
+            continue
+        if key.start() > position and line[key.start() - 1] not in _CRED_WS_CHARS + "{[,;}":
+            continue
+        quoted_key = key.group(0)[:1] in {"\"", "'"}
+        value_start = _SWEEP_LEAD_RE.match(line, key.end()).end()
+        if value_start == len(line) or line[value_start] in "[{":
+            continue                                    # container parents retain their old observer
+        value = _SWEEP_SCALAR_WORD_RE.match(line, value_start)
+        if value is None or _CRED_BLOCK_INDICATOR_RE.fullmatch(value.group(0)):
+            continue
+        value_end = value.end()
+        following = _SWEEP_LEAD_RE.match(line, value_end).end()
+        while following < len(line) and line[following] in "}],;":
+            following = _SWEEP_LEAD_RE.match(line, following + 1).end()
+        if following < len(line):
+            if (following == value_end or not (_SWEEP_QKEY_RE.match(line, following)
+                                              or _SWEEP_UKEY_RE.match(line, following))):
+                continue
+        covered = value_end                             # metadata contents never introduce new fields
+        start, end = value_start, value_end
+        if line[start:start + 1] in {"\"", "'"} and line[end - 1:end] == line[start:start + 1]:
+            start, end = start + 1, end - 1
+        if start < end and _sweep_credential_name(key.group("k"), quoted_key):
+            fields.append((key.start(), value_end, start, end))
+    return fields
 
 
 def _sweep_word_end(masked: str, end: int) -> int:
@@ -2869,6 +2933,9 @@ def _independent_credential_findings(text: str, lines: list[str]) -> list[str]:
     for line in lines:
         if not ("=" in line or ":" in line) or not _SWEEP_NAME_HINT_RE.search(line.casefold()):
             continue
+        for _field_start, _field_end, start, end in _sweep_explicit_scalars(line):
+            if line[start:end] != _PLACEHOLDER:
+                kinds.append("credential value (explicit credential scalar)")
         masked = _sweep_masked(line)
         for regex, quoted in ((_SWEEP_QKEY_RE, True), (_SWEEP_UKEY_RE, False)):
             for match in regex.finditer(masked):
