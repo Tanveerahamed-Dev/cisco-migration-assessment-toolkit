@@ -11,7 +11,9 @@ from dataclasses import asdict
 import gc
 import hashlib
 import json
+import math
 import os
+import re
 import sys
 import time
 
@@ -40,6 +42,155 @@ def _timed_leg():
 BUDGET = {"section_bytes": 6_000_000, "section_growth_v100_v200": 600_000, "summary_bytes": 4_096,
           "inventory_growth_bytes": 1_000_000, "compute_ms": 3_000, "validate_ms": 1_500,
           "document_growth_ms": 2_000, "page_ms": 300, "page_bytes": 3_000_000}
+
+
+def _profile_need(condition, label):
+    if not condition:
+        raise AssertionError("Admission diagnostic: " + label)  # Never render a payload or a source identity.
+
+
+def _profile_same(left, right):
+    from types import MappingProxyType
+
+    if type(left) is not type(right):
+        return False
+    kind = type(left)
+    if kind in (dict, MappingProxyType):
+        return _profile_same(tuple(left.items()), tuple(right.items()))
+    if kind in (tuple, list):
+        return len(left) == len(right) and all(_profile_same(a, b) for a, b in zip(left, right))
+    if kind is float:
+        return math.isfinite(left) and math.isfinite(right) and left.hex() == right.hex()
+    return kind in (type(None), str, int, bool) and left == right
+
+
+def _profile_admission_equal(snapshot, baseline, result):
+    slots = ("source", "section", "failed", "gaps", "offsets", "observations")
+    _profile_need(uip._CarriageAdmission.__slots__ == slots, "slot census")
+    _profile_need(type(baseline) is type(result) is uip._CarriageAdmission and result is not baseline, "owner class")
+    _profile_need(_profile_same(result.source, baseline.source), "complete source metadata")
+    _profile_need(result.section is baseline.section, "section alias")
+    if baseline.section is not None:
+        _profile_need(baseline.section is snapshot.get("vlan_carriage"), "current section alias")
+    _profile_need(_profile_same(result.failed, baseline.failed), "failure tuple")
+    _profile_need(_profile_same(result.gaps, baseline.gaps), "ordered gaps")
+    _profile_need(_profile_same(result.offsets, baseline.offsets), "offsets")
+    _profile_need(type(result.observations) is type(baseline.observations), "observation mapping type")
+    _profile_need(_profile_same(tuple(result.observations), tuple(baseline.observations)), "ordered host census")
+    supplied = snapshot.get("stp_topology_observations")
+    for host, pair in result.observations.items():
+        original = baseline.observations[host]
+        _profile_need(type(pair) is type(original) is tuple and len(pair) == len(original) == 2, "observation pair")
+        record, index = pair
+        _profile_need(record is original[0], "host observation alias")
+        if record is not None:
+            _profile_need(type(supplied) is dict and record is supplied.get(host), "current host record")
+        _profile_need(_profile_same(index, original[1]), "complete ordered index")
+
+
+def _profile_original_admission(snapshot, profiler):
+    failed = False
+    try:
+        profiler.enable()
+        return uip.carriage_admission(snapshot)  # ONE ordinary original call with fresh invocation-local maps.
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            profiler.disable()
+        except BaseException:
+            if not failed:
+                raise  # Cleanup must not mask an original admission error; otherwise it is a real failure.
+
+
+def _safe_profile_rows(stats, repo):
+    _profile_need(type(stats) is dict, "stats mapping")
+    prefix = str(repo).replace("\\", "/").rstrip("/") + "/"
+    rows = []
+    for key, value in stats.items():
+        _profile_need(type(key) is tuple and len(key) == 3 and type(value) is tuple and len(value) == 5,
+                      "stats entry")
+        filename, line, function = key
+        calls, total, own, cumulative, _callers = value
+        _profile_need(type(filename) is type(function) is str and len(filename) <= 4096, "stats labels")
+        _profile_need(type(line) is int and 0 <= line <= 10_000_000
+                      and type(calls) is type(total) is int and 0 <= calls <= total <= 2**53 - 1, "stats integers")
+        _profile_need(type(own) in (int, float) and type(cumulative) in (int, float)
+                      and math.isfinite(own) and math.isfinite(cumulative)
+                      and 0 <= own <= cumulative <= 1_000_000, "stats times")
+        path = filename.replace("\\", "/")
+        components = path.split("/")
+        safe = (path not in ("~", "") and not any(p in (".", "..") for p in components)
+                and not any(ord(c) < 32 or ord(c) == 127 for c in path))
+        label = path[len(prefix):] if safe and path.startswith(prefix) else path.rsplit("/", 1)[-1]
+        if not safe or not label or len(label) > 200 or not re.fullmatch(r"[A-Za-z0-9_./-]+", label):
+            label = "<external>"
+        if len(function) > 160 or not re.fullmatch(r"[A-Za-z_<>][A-Za-z0-9_.<>]*", function):
+            builtin = re.fullmatch(r"<built-in method ([A-Za-z_][A-Za-z0-9_.]*)>", function)
+            method = re.fullmatch(r"<method '([A-Za-z_][A-Za-z0-9_]*)' of '([A-Za-z_][A-Za-z0-9_]*)' objects>", function)
+            function = builtin[1] if builtin else (method[2] + "." + method[1] if method else "<function>")
+        rows.append({"file": label, "line": line, "function": function, "primitive_calls": calls,
+                     "total_calls": total, "self_ms": round(1000 * own, 3),
+                     "cumulative_ms": round(1000 * cumulative, 3)})
+    return sorted(rows, key=lambda row: (-row["self_ms"], row["file"], row["line"], row["function"]))[:40]
+
+
+def _profile_factory():
+    import cProfile
+    return cProfile.Profile()
+
+
+def _render_profile_rows(profiler, repo):
+    import pstats
+    return _safe_profile_rows(pstats.Stats(profiler).stats, repo)
+
+
+def _post_timer_admission_profile(cache, raw, binding, version, repo, phase):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not _timed_leg():
+        return None
+    _profile_need(phase is None, "measured phase still active")
+    _profile_need(type(raw) is bytes and type(binding) is dict, "raw subject type")
+    key = (*version, binding["sha256"])
+    entry = cache.entries.get(key)
+    _profile_need(entry is not None and entry.snapshot is not None and entry.carriage is not None, "cached subject")
+    pinned_snapshot, pinned_admission = entry.snapshot, entry.carriage
+    documents = entry.documents
+    document_items = tuple(documents.items())
+    snapshot, baseline = cache.carriage_source(raw, binding["sha256"])
+    _profile_need(snapshot is pinned_snapshot and baseline is pinned_admission
+                  and cache.entries.get(key) is entry
+                  and entry.snapshot is pinned_snapshot and entry.carriage is pinned_admission,
+                  "cache lookup regenerated subject")
+    _profile_need(entry.documents is documents
+                  and _profile_same(tuple(documents), tuple(host for host, _doc in document_items))
+                  and all(documents[host] is doc for host, doc in document_items), "lookup documents replaced")
+    before = uip.bound_snapshot_source(snapshot)
+    _profile_need(before.get("source_bound") is True and type(before.get("sha256")) is str
+                  and type(binding.get("sha256")) is str
+                  and type(before.get("bytes")) is int and type(binding.get("bytes")) is int
+                  and before["sha256"] == binding["sha256"]
+                  and before["bytes"] == binding["bytes"] == len(raw), "complete source/raw binding")
+    profiler = _profile_factory()
+    result = _profile_original_admission(snapshot, profiler)
+    _profile_admission_equal(snapshot, baseline, result)
+    after = uip.bound_snapshot_source(snapshot)
+    _profile_need(after.get("source_bound") is True and _profile_same(after, before), "complete source purity")
+    _profile_need(cache.entries.get(key) is entry
+                  and entry.snapshot is pinned_snapshot and entry.carriage is pinned_admission,
+                  "cache subject replaced")
+    _profile_need(entry.documents is documents
+                  and _profile_same(tuple(documents), tuple(host for host, _doc in document_items))
+                  and all(documents[host] is doc for host, doc in document_items), "cache documents replaced")
+    output = {"status": "DIAGNOSTIC_ONLY_AFTER_TIMERS", "complete_equivalence": True, "source_purity": True,
+              "not_acceptance_latency": True, "inclusive_not_additive": True, "instrumented_profile": True}
+    try:  # ONLY rendering: no admission, source, cache, alias or equivalence refusal is hidden here.
+        output["rows"] = _render_profile_rows(profiler, repo)
+    except Exception as error:
+        name = type(error).__name__
+        output.update(render_status="UNAVAILABLE", rows=[],
+                      error_class=name if len(name) <= 160 and re.fullmatch(r"[A-Za-z_]\w*", name) else "Error")
+    return output
 
 
 def _natural_gc_counters():
@@ -464,6 +615,10 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
                                  for name, value in sorted(stage.items())}
                            for key, stage in stages.items()},
             }, sort_keys=True))
+        profile = _post_timer_admission_profile(cache, raw1, binding1, api._PROJECTION_VERSION,
+                                                Path(__file__).resolve().parents[1], phase)
+        with capsys.disabled():
+            print("VLAN-CARRIAGE-ADMISSION-PROFILE " + json.dumps(profile, sort_keys=True))
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
@@ -662,3 +817,242 @@ def test_round2_byte_accounting_refuses_non_finite_context_instead_of_emitting_n
     monkeypatch.setattr(uip, "_engine", lambda _ctx: {"synthetic_non_finite": float("nan")})
     with pytest.raises(ValueError, match="Out of range float"):
         uip.project_vlan_carriage(round2_scale, 0, 0, 200)
+
+
+def _profile_control_subject(monkeypatch):
+    from types import SimpleNamespace
+    from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+    from test_ui_projection_vlan_carriage import _round2_bundle
+    from test_vlan_carriage import _stp
+
+    observations = {host: _stp({10: [("Po10", "Desg", "FWD")],
+                               20: [("Po10", "Desg", "FWD")]}) for host in ("switch-a", "switch-b")}
+    value = _round2_bundle(observations)  # PURE interface/cable dictionary; no capture or filesystem producer.
+    value["vlan_cutover"] = [{"vlan": 10}, {"vlan": 20}]
+    for records in value["interfaces"].values():
+        for record in records.values():
+            record["trunk_allowed_vlans"] = "10,20"
+    value["vlan_carriage"] = compute_vlan_carriage(value["cable_map"], value["interfaces"], observations,
+                                                  value["vlan_cutover"])
+    value["stp_topology_observations"]["switch-b"]["state_capture_state"] = "error"  # Held gap-order control.
+    raw = json.dumps(value).encode("utf-8")
+    subject = bind_snapshot_json_bytes(raw)
+    baseline = uip.carriage_admission(subject)
+    binding = {key: uip.bound_snapshot_source(subject)[key] for key in ("sha256", "bytes")}
+    entry = SimpleNamespace(snapshot=subject, carriage=baseline, documents={None: {"declared": "owned document"}})
+    version = ("declared-profile-control",)
+
+    class Cache:
+        entries = {(*version, binding["sha256"]): entry}
+
+        def carriage_source(self, _raw, _digest):
+            return entry.snapshot, entry.carriage
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(sys.modules[__name__], "_timed_leg", lambda: True)
+    return Cache(), raw, binding, version, subject, baseline
+
+
+def test_post_timer_profile_uses_one_real_admission_complete_source_and_safe_stats(monkeypatch):
+    cache, raw, binding, version, subject, baseline = _profile_control_subject(monkeypatch)
+    original, calls = uip.carriage_admission, []
+
+    def observed(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(uip, "carriage_admission", observed)
+    output = _post_timer_admission_profile(cache, raw, binding, version, "declared-repository", None)
+    assert calls == [subject] and cache.entries[(*version, binding["sha256"])].carriage is baseline
+    assert output["complete_equivalence"] is output["source_purity"] is True
+    assert output["not_acceptance_latency"] is True and 0 < len(output["rows"]) <= 40
+    assert all(not row["file"].startswith(("/", "\\")) and ":" not in row["file"] for row in output["rows"])
+
+
+@pytest.mark.parametrize("where", ["nonhosted", "nontimed", "active-phase", "absent-entry"])
+def test_profile_gate_and_existing_subject_refusal_do_not_import_or_call_profiler(monkeypatch, where):
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+
+    def forbidden():
+        pytest.fail("Ineligible diagnostic imported or constructed a profiler")
+
+    monkeypatch.setattr(sys.modules[__name__], "_profile_factory", forbidden)
+    if where == "nonhosted":
+        monkeypatch.delenv("GITHUB_ACTIONS")
+    elif where == "nontimed":
+        monkeypatch.setattr(sys.modules[__name__], "_timed_leg", lambda: False)
+    elif where == "absent-entry":
+        cache.entries.clear()
+    if where in ("active-phase", "absent-entry"):
+        with pytest.raises(AssertionError, match="Admission diagnostic"):
+            _post_timer_admission_profile(cache, raw, binding, version, "repo", "page" if where == "active-phase" else None)
+    else:
+        assert _post_timer_admission_profile(cache, raw, binding, version, "repo", None) is None
+
+
+@pytest.mark.parametrize("replace", ["source-and-admission", "document-map", "document-object"])
+def test_profile_lookup_cannot_replace_cached_objects_then_return_their_new_aliases(monkeypatch, replace):
+    from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+    entry = cache.entries[(*version, binding["sha256"])]
+
+    def regenerated(_raw, _digest):
+        if replace == "source-and-admission":
+            entry.snapshot = bind_snapshot_json_bytes(raw)  # Real new equal-content source/admission, not a stub.
+            entry.carriage = uip.carriage_admission(entry.snapshot)
+        elif replace == "document-map":
+            entry.documents = dict(entry.documents)
+        else:
+            entry.documents[None] = dict(entry.documents[None])
+        return entry.snapshot, entry.carriage
+
+    def forbidden():
+        pytest.fail("Cache replacement reached profiling")
+
+    monkeypatch.setattr(cache, "carriage_source", regenerated)
+    monkeypatch.setattr(sys.modules[__name__], "_profile_factory", forbidden)
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _post_timer_admission_profile(cache, raw, binding, version, "repo", None)
+
+
+@pytest.mark.parametrize("slot", ["source", "source-subclass", "section", "failed", "gaps-order", "gaps-bool",
+                                  "offsets-list", "offsets-subclass", "offsets-bool", "observations-order", "observation-copy", "index-bool",
+                                  "index-list", "index-order"])
+def test_profile_equivalence_refuses_each_owner_slot_type_order_or_foreign_alias(monkeypatch, slot):
+    from types import MappingProxyType
+    _cache, _raw, _binding, _version, subject, baseline = _profile_control_subject(monkeypatch)
+    result = uip.carriage_admission(subject)
+    if slot == "source":
+        result.source["refs"] = list(reversed(result.source["refs"]))
+    elif slot == "source-subclass":
+        class ForeignSource(dict):
+            pass
+        result.source = ForeignSource(result.source)
+    elif slot == "section":
+        result.section = deepcopy(result.section)
+    elif slot == "failed":
+        result.failed = ("unverified", "declared failure")
+    elif slot == "gaps-order":
+        result.gaps = MappingProxyType(dict(reversed(tuple(result.gaps.items()))))
+    elif slot == "gaps-bool":
+        result.gaps = MappingProxyType({False if key == 0 else key: value for key, value in result.gaps.items()})
+    elif slot == "offsets-list":
+        result.offsets = list(result.offsets)
+    elif slot == "offsets-subclass":
+        class ForeignOffsets(tuple):
+            pass
+        result.offsets = ForeignOffsets(result.offsets)
+    elif slot == "offsets-bool":
+        result.offsets = ((False, *result.offsets[0][1:]), *result.offsets[1:])
+    elif slot == "observations-order":
+        result.observations = MappingProxyType(dict(reversed(tuple(result.observations.items()))))
+    else:
+        values = dict(result.observations)
+        host = next(key for key, (_record, index) in values.items() if index)
+        record, index = values[host]
+        if slot == "observation-copy":
+            record = deepcopy(record)
+        else:
+            entries = dict(index)
+            first = next(iter(entries))
+            if slot == "index-bool":
+                entries[first] = (bool(entries[first][0]), *entries[first][1:])
+            elif slot == "index-list":
+                entries[first] = list(entries[first])
+            else:
+                entries = dict(reversed(tuple(entries.items())))
+            index = MappingProxyType(entries)
+        values[host] = (record, index)
+        result.observations = MappingProxyType(values)
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _profile_admission_equal(subject, baseline, result)
+
+
+@pytest.mark.parametrize("when", ["before", "after", "binding-bytes", "raw-bytes", "cache-replaced"])
+def test_profile_current_source_purity_and_cache_identity_refuse_real_mutation(monkeypatch, when):
+    cache, raw, binding, version, subject, baseline = _profile_control_subject(monkeypatch)
+    original = uip.carriage_admission
+    if when == "before":
+        subject["declared mutation"] = True
+    elif when == "binding-bytes":
+        binding["bytes"] += 1
+    elif when == "raw-bytes":
+        raw += b" "
+
+    def changed(value):
+        result = original(value)
+        if when == "after":
+            value["declared mutation"] = True
+        elif when == "cache-replaced":
+            cache.entries[(*version, binding["sha256"])].carriage = result
+        return result
+
+    monkeypatch.setattr(uip, "carriage_admission", changed)
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _post_timer_admission_profile(cache, raw, binding, version, "repo", None)
+    assert baseline.section is subject["vlan_carriage"]
+
+
+@pytest.mark.parametrize("error,cleanup_error", [(RuntimeError, False), (TypeError, False), (RuntimeError, True),
+                                              (None, True)])
+def test_profile_one_original_call_and_cleanup_preserve_exact_errors(monkeypatch, error, cleanup_error):
+    _cache, _raw, _binding, _version, subject, _baseline = _profile_control_subject(monkeypatch)
+    original, events = uip.carriage_admission, []
+
+    class Profiler:
+        def enable(self):
+            events.append("enable")
+
+        def disable(self):
+            events.append("disable")
+            if cleanup_error:
+                raise OSError("declared cleanup failure")
+
+    def refused(value):
+        events.append("original")
+        result = original(value)
+        if error:
+            raise error("declared admission failure")
+        return result
+
+    monkeypatch.setattr(uip, "carriage_admission", refused)
+    expected, message = (error, "declared admission failure") if error else (OSError, "declared cleanup failure")
+    with pytest.raises(expected) as caught:
+        _profile_original_admission(subject, Profiler())
+    assert type(caught.value) is expected and caught.value.args == (message,)
+    assert events == ["enable", "original", "disable"]
+
+
+def test_profile_rows_are_bounded_path_safe_and_formatting_never_hides_budget_failure(monkeypatch):
+    stats = {(f"/home/hidden-person/private/function-{i}.py", i, "safe_name"): (1, 1, 0.01, 0.02, {})
+             for i in range(45)}
+    stats[("C:\\Users\\hidden-person\\private.py", 1, "<method 'get' of 'dict' objects>")] = (1, 1, 0.02, 0.03, {})
+    rows = _safe_profile_rows(stats, "/known/repository")
+    assert len(rows) == 40 and "hidden-person" not in json.dumps(rows)
+    assert rows[0]["file"] == "private.py" and rows[0]["function"] == "dict.get"
+    owned = _safe_profile_rows({("/known/repository/cisco_toolkit/ui_projection.py", 1, "_carriage_gaps"):
+                               (1, 1, 0.1, 0.2, {})}, "/known/repository")
+    assert owned[0]["file"] == "cisco_toolkit/ui_projection.py"
+    unsafe = _safe_profile_rows({("/private/../sensitive.py", 1, "unsafe\nfunction"):
+                                (1, 1, 0.1, 0.2, {})}, "/known/repository")
+    assert unsafe[0]["file"] == "<external>" and unsafe[0]["function"] == "<function>"
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _safe_profile_rows({("file.py", False, "function"): (1, 1, 0.1, 0.2, {})}, "repo")
+
+    class Hidden:
+        def __repr__(self):
+            pytest.fail("Diagnostic rendered a foreign payload")
+
+    with pytest.raises(AssertionError, match="Admission diagnostic"):
+        _safe_profile_rows({("file.py", 1, Hidden()): (1, 1, 0.1, 0.2, {})}, "repo")
+    cache, raw, binding, version, _subject, _baseline = _profile_control_subject(monkeypatch)
+
+    def refused(*_args):
+        raise ValueError("/home/hidden-person/private/payload")
+
+    monkeypatch.setattr(sys.modules[__name__], "_render_profile_rows", refused)
+    output = _post_timer_admission_profile(cache, raw, binding, version, "repo", None)
+    assert output["render_status"] == "UNAVAILABLE" and output["error_class"] == "ValueError"
+    assert "hidden-person" not in json.dumps(output) and output["complete_equivalence"] is True
+    with pytest.raises(AssertionError):
+        assert BUDGET["document_growth_ms"] + 1 <= BUDGET["document_growth_ms"]  # Original decision still fails.
