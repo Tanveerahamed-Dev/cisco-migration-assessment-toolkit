@@ -449,8 +449,9 @@ def _legacy_attribution_cases():
     cases = []
     for group in ("must_redact", "must_keep", "over_redacted", "qualifier_shaped"):
         for index, row in enumerate(old[group]):
+            expected = row["line"] if group == "must_keep" else row.get("w60b_expect", row["expect"])
             cases.append({"id": f"w60:{group}:{index}", "suite": "w60", "kind": group,
-                          "text": row["line"], "expect": row.get("w60b_expect", row["expect"]),
+                          "text": row["line"], "expect": expected,
                           "secrets": row.get("secrets", []), "flags": row.get("flags", [])})
     for row in w60b.GATED_ROWS:
         case = {"id": "w60b:" + row["id"], "suite": "w60b", "kind": row["mode"],

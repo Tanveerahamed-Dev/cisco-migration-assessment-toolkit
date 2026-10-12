@@ -50,3 +50,9 @@ Legacy quoted JSON/REST, multiword/triple-quoted/PEM and WLAN/OAuth structural f
 ## Review limits
 
 Finite synthetic corpus and existing hosted integration coverage only. No live device or customer captures, actual shell/Net-SNMP daemon/creator-script execution, exhaustive grammar or universal privacy/complexity proof, device/vault writes, signing, release or merge. The inherited certified escape and deferred findings are material limits. Stop after the exact-head summary for a fresh independent refuter.
+
+## Narrowed hosted evidence and attribution schema correction
+
+At `583518b1d62a86258ad482707f2d33427b25828e`, focused run 38204291921 / job 114664234926 ended **one failed, 4688 passed, two unchanged historical skips**, 244.09 seconds. Every original legacy test passed. W60b custody and every historical, eight cumulative-source and final golden/sample view oracle passed with exact required hashes. Both 3428-input differentials passed: main checked 3161 removed slots / 3413 prior certifications; round 3 checked 2347 removed slots / 3428 certifications, each with zero regressions. All 36 deferred P2-6 compatibility cases passed. The inherited creator alias still survives and falsely certifies on both baselines and candidate, explicitly unclosed.
+
+The only failure occurred before the new isolated attribution replay could run: all 181 original `must_keep` records omit `expect`, because their owner test uses the original line as the byte oracle. The new helper incorrectly required `expect` on those structural records. It now uses `line` for that group, exactly matching the unchanged original owner assertion; every other group's exact byte oracle, every input and every required check remain. No product code changes. Attribution and all protected contexts still require terminal success on the next published head; the failed overall result is preserved, not treated as qualification.
