@@ -42,6 +42,7 @@ import client_artifact_census as census  # tests/ is on sys.path (root conftest.
 from cisco_toolkit import distribution_verify as dv
 from cisco_toolkit import docmeta, gate_state, recall
 from cisco_toolkit import engine_log_path
+from portable.release_contract import _forbidden_client_artifact as bundle_client_name
 
 ROOT = Path(__file__).resolve().parents[1]
 CLASSES = tuple((key, match, pattern) for key, match, pattern, _producer in dv.CLIENT_ARTIFACT_NAME_CLASSES)
@@ -188,7 +189,9 @@ def test_a_new_caller_of_a_derived_writer_fails_the_census(tmp_path):
     literal_problems = census.suffix_literal_problems(root, non_client={})
     assert len(literal_problems) == 1 and "'.new.json'" in literal_problems[0]
     classified = {**_BASE_ROW, "COLLECT_PARSE_V3_23_0.py::emit": (1, census.CLIENT, ("snapshot",), "x")}
-    assert census.census_problems(root, census=classified, registry_keys=["snapshot"]) == []
+    assert census.census_problems(root, census=classified, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name '0.new.json': COLLECT_PARSE_V3_23_0.py::emit"
+    ]
 
 
 def test_a_writer_that_only_forwards_its_path_is_derived_too(tmp_path):
@@ -230,6 +233,157 @@ def test_a_row_must_name_every_class_its_sites_resolve_to(tmp_path):
     rows["COLLECT_PARSE_V3_23_0.py::emit"] = (1, census.NON_CLIENT, (), "x")
     assert any("comparison-receipt" in line for line in census.census_problems(
         root, census=rows, registry_keys=["comparison-receipt"]))
+
+
+@pytest.mark.parametrize("name,problem", [
+    ("delivery.snapshot.json", False), ("delivery.json", True), ("delivery", True), ("0", True),
+])
+def test_same_count_client_filename_replacement_is_rejected(tmp_path, name, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           f"from pathlib import Path\n\ndef emit():\n    Path({name!r}).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert census.suffix_literals(tmp_path) == [], "bare filenames have no suffix-appending node"
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"])
+    assert problems == ([f"client write site resolves to unclassified name {name!r}: "
+                         "cisco_toolkit/writer.py::emit"] if problem else [])
+    assert census.unclassified_site_literals(tmp_path) == (
+        {"cisco_toolkit/writer.py::emit": {name}} if problem else {})
+
+
+def test_partial_names_remain_uncertainty_and_known_formatted_literals_are_checked(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def dynamic(stem):\n    Path(stem + '.txt').write_text('x')\n\n"
+           "def fixed():\n    name = 'delivery.json'\n    Path(f'{name}').write_text('x')\n")
+    rows = {"cisco_toolkit/writer.py::dynamic": (1, census.CLIENT, ("capture-show",), "collector-shaped input"),
+            "cisco_toolkit/writer.py::fixed": (1, census.CLIENT, ("snapshot",), "client bytes")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["capture-show", "snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::fixed"]
+    assert census.unresolved_site_templates(tmp_path) == {"cisco_toolkit/writer.py::dynamic": {"0.txt"}}
+
+
+def test_receipt_partial_extension_is_not_an_input_stem_suffix_obligation(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit(extension):\n"
+           "    original = Path('delivery.snapshot.json')\n"
+           "    staged = f'.{original.stem}.receipt-0.previous{extension}'\n"
+           "    Path(staged).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("receipt-previous-html",), "receipt staging")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["receipt-previous-html"]) == []
+    assert census.unresolved_site_templates(tmp_path) == {
+        "cisco_toolkit/writer.py::emit": {".0.receipt-0.previous0"}}
+
+
+@pytest.mark.parametrize("marker_name", ["probe.marker", "delivery.json"])
+@pytest.mark.parametrize("marker_first", [True, False])
+def test_non_client_helper_provenance_does_not_erase_client_literal_refusal(tmp_path, monkeypatch,
+                                                                        marker_name, marker_first):
+    statements = [f"    marker({marker_name!r})\n", "    Path('delivery.json').write_text('payload')\n"]
+    if not marker_first:
+        statements.reverse()
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def marker(path):\n    Path(path).write_bytes(b'ok')\n\n"
+           "def main():\n" + "".join(statements))
+    rows = {"cisco_toolkit/writer.py::marker": (1, census.NON_CLIENT, (), "fixed marker bytes only"),
+            "cisco_toolkit/writer.py::main": (2, census.CLIENT, ("snapshot",), "client payload plus probe")}
+    monkeypatch.setattr(census, "WRITE_SITE_CENSUS", rows)
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
+    assert census.unclassified_site_literals(tmp_path)["cisco_toolkit/writer.py::main"] == {
+        "delivery.json", marker_name}
+
+
+@pytest.mark.parametrize("expression,filename", [
+    ("f'{name!r}'", "'delivery.snapshot.json'"), ("f'{7}.json'", "7.json"),
+    ("f'{7:04d}.json'", "0007.json"),
+])
+def test_closed_formatted_literals_use_actual_conversion_and_format_spec(tmp_path, expression, filename):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit():\n    name = 'delivery.snapshot.json'\n"
+           f"    Path({expression}).write_text('payload')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        f"client write site resolves to unclassified name {filename!r}: cisco_toolkit/writer.py::emit"]
+
+
+@pytest.mark.parametrize("filename,problem", [("client.db", False), ("client.json", True)])
+def test_sqlite_uri_is_a_database_path_not_a_query_shaped_filename(tmp_path, filename, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           f"import sqlite3\n\ndef emit():\n    sqlite3.connect('file:{filename}?mode=ro', uri=True)\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("database",), "may create client companions")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["database"]) == (
+        [f"client write site resolves to unclassified name {filename!r}: cisco_toolkit/writer.py::emit"]
+        if problem else [])
+
+
+@pytest.mark.parametrize("disposition", [census.NON_CLIENT, census.OPERATOR_PATH, census.DELEGATED])
+def test_unclassified_operator_and_non_client_names_stay_explicit(tmp_path, disposition):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\ndef emit(path):\n    Path(path or 'operator.json').write_text('x')\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, disposition, (), "caller/operator/non-client name")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=[]) == []
+    assert census.unclassified_site_literals(tmp_path) == {"cisco_toolkit/writer.py::emit": {"operator.json"}}
+
+
+@pytest.mark.parametrize("filename,problem", [("delivery.snapshot.json", False), ("delivery.json", True)])
+@pytest.mark.parametrize("forward", ["phase(label, fn, *args, **kwargs)",
+                                    "phase(label=label, fn=fn, target=args[0], payload=args[1])"])
+def test_callback_projection_checks_targets_not_phase_or_payload_literals(tmp_path, filename, problem, forward):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def write(target, payload):\n    Path(target).write_text(payload)\n\n"
+           "def phase(label, fn, target, payload):\n    fn(target, payload)\n\n"
+           f"def emit(label, kind, fn, *args, **kwargs):\n    {forward}\n\n"
+           f"def main():\n    emit('HTML Explorer', 'html', write, {filename!r}, 'literal payload')\n")
+    rows = {
+        "cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "path writer"),
+        "cisco_toolkit/writer.py::main": (1, census.CLIENT, ("snapshot",), "client data"),
+    }
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"])
+    assert problems == ([f"client write site resolves to unclassified name {filename!r}: "
+                         "cisco_toolkit/writer.py::main"] if problem else [])
+    assert census.unclassified_site_literals(tmp_path) == (
+        {"cisco_toolkit/writer.py::main": {filename}} if problem else {})
+
+
+def test_default_target_literal_is_resolved_in_its_defining_module(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\nDEFAULT_PATH = 'delivery.json'\n\n"
+           "def write(path=DEFAULT_PATH):\n    Path(path).write_text('payload')\n")
+    _write(tmp_path, "cisco_toolkit/caller.py",
+           "from cisco_toolkit.writer import write\nDEFAULT_PATH = 'safe.snapshot.json'\n\n"
+           "def emit():\n    write()\n")
+    rows = {"cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "writer"),
+            "cisco_toolkit/caller.py::emit": (1, census.CLIENT, ("snapshot",), "client data")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/caller.py::emit"]
+
+
+def test_guarded_out_of_range_variadic_target_does_not_hide_alternative(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "from pathlib import Path\n\n"
+           "def write(path):\n    Path(path).write_text('payload')\n\n"
+           "def emit(fn, *args):\n"
+           "    if args:\n        fn(args[0])\n"
+           "    else:\n        fn('delivery.json')\n\n"
+           "def main():\n    emit(write)\n")
+    rows = {"cisco_toolkit/writer.py::write": (1, census.DELEGATED, (), "writer"),
+            "cisco_toolkit/writer.py::main": (1, census.CLIENT, ("snapshot",), "client data")}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        "client write site resolves to unclassified name 'delivery.json': cisco_toolkit/writer.py::main"]
+
+
+@pytest.mark.parametrize("suffix,problem", [(".tmp", False), (".json", True)])
+def test_temporary_names_compose_prefix_and_suffix_without_classifying_directory(tmp_path, suffix, problem):
+    _write(tmp_path, "cisco_toolkit/writer.py",
+           "import tempfile\n\ndef emit(directory):\n"
+           f"    tempfile.mkstemp(dir=directory or '.', prefix='delivery.', suffix={suffix!r})\n")
+    rows = {"cisco_toolkit/writer.py::emit": (1, census.CLIENT, ("atomic-staging",), "client staging")}
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["atomic-staging"])
+    assert problems == (["client write site resolves to unclassified name 'delivery.0.json': "
+                         "cisco_toolkit/writer.py::emit"] if problem else [])
+    assert "cisco_toolkit/writer.py::emit" in census.scan(tmp_path)[1], "directory flow must be retained"
 
 
 def test_a_second_write_in_a_classified_function_and_a_vanished_row_fail_the_census(tmp_path):
@@ -450,37 +604,75 @@ def test_the_csv_exceptions_are_exactly_the_retained_official_sources():
 # ---------------------------------------------------------------- the raw-capture owner
 
 
-#: Capture-shaped names the owner of record treats as captures inside a collection folder.
-_OWNER_CAPTURE_CORPUS = (
-    "show_version.txt", "show_running-config.txt", "backup-config.cfg", "router.conf",
-    "switch.config", "show_tech-support.log", "core1.out", "CORE-1-running-config",
-    "startup-config", "router-confg", "capture.pcap", "capture.pcapng", "trace.cap", "boot.etl",
-    "get_system_ha_status.txt", "moquery_-c_fvTenant.txt", "api_fmc_config_v1_devices.txt",
-    "ers_config_node.txt", "dataservice_device.txt", "aws_ec2_describe-instances.txt",
-)
-#: Owner captures that stay context-only: ordinary repository files share these shapes.
+#: The raw owner's open class also includes ordinary text and extension-less repository names.
 _CONTEXT_ONLY = ("notes.txt", "README", "Makefile", "output")
+#: Known difference: portable excludes ZIPs by container context; the global registry cannot.
+_BUNDLE_CONTEXT_ONLY = {".zip": "generic ZIPs also contain public product/distribution material"}
+
+
+def _bundle_owner_corpus(source: str, owner=bundle_client_name) -> set[str]:
+    shapes = census.bundle_artifact_name_shapes(source)
+    names = {_probe(match, pattern).rsplit("/", 1)[-1] for match, pattern in shapes}
+    suffixes = {pattern for match, pattern in shapes if match == "suffix"}
+    stems = {"probe"} | {pattern + "probe" for match, pattern in shapes if match == "leaf-prefix"}
+    stems |= {"CORE-1" + pattern for match, pattern in shapes if match == "contains"}
+    names |= {stem + suffix for stem in stems for suffix in suffixes}
+    accepted = {name for name in names if owner(f"site/{name}")}
+    for match, pattern in shapes:
+        witnesses = {name for name in accepted if (
+            name.endswith(pattern) if match == "suffix" else
+            name == pattern if match == "leaf" else
+            name.startswith(pattern) if match == "leaf-prefix" else pattern in name
+        )}
+        assert witnesses, f"bundle shape {match}:{pattern} has no owner-accepted witness"
+    return accepted
 
 
 def test_the_registry_reconciles_with_the_raw_capture_owner_both_ways():
     owner = _raw_capture_owner()
-    shape_kinds = {key for key, match, _p in CLASSES if match in {"capture", "contains"}}
-    shape_kinds |= {"config-file-cfg", "config-file-conf", "config-file-config", "command-output",
-                    "engine-log", "packet-capture-pcap", "packet-capture-pcapng",
-                    "packet-capture-cap", "event-trace-etl"}
-    # Owner -> registry: every name-identifiable capture shape is a registered class.
-    for name in _OWNER_CAPTURE_CORPUS:
-        assert owner(name) == "", f"the owner no longer calls {name} a capture"
-        assert dv.client_artifact_class(f"site/CORE-1/{name}") in shape_kinds, name
-    # Registry -> owner: no capture-shape class claims a name the owner calls structured.
+    gate = _repository_gate()
+    source = (ROOT / "portable/release_contract.py").read_text(encoding="utf-8")
+    names = _bundle_owner_corpus(source)
+    assert names, "bundle owner supplied no positive name shape"
+    seen_context = set()
+    for name in names:
+        if Path(name).suffix in _BUNDLE_CONTEXT_ONLY:
+            seen_context.add(Path(name).suffix)
+            continue
+        expected = dv.client_artifact_class(f"site/{name}")
+        assert expected is not None, f"bundle owner name {name} has no registry class"
+        assert gate._client_artifact_class(f"site/{name}") == expected
+        # The live raw owner decides capture vs structured artifact; derive its excluded
+        # suffixes from that same owner instead of restating selected class keys.
+        assert bool(owner(name)) == (Path(name).suffix.casefold() in {
+            *owner.__globals__["_STRUCTURED_CAPTURE_SUFFIXES"], owner.__globals__["_SCRUB_TEMP_SUFFIX"]
+        })
+    assert seen_context == set(_BUNDLE_CONTEXT_ONLY), "a documented bundle-only shape disappeared"
+    # Registry -> raw owner for actual capture/configuration selectors, including shapes the
+    # bundle does not yet own (.out and -confg). No finite corpus stands in for the open class.
     for key, match, pattern in CLASSES:
-        if key in shape_kinds:
+        if match in {"capture", "contains"}:
             leaf = _probe(match, pattern).rsplit("/", 1)[-1]
             assert owner(leaf) == "", f"{key} claims {leaf}, which the owner does not call a capture"
+    for suffix in {*owner.__globals__["_STRUCTURED_CAPTURE_SUFFIXES"], owner.__globals__["_SCRUB_TEMP_SUFFIX"]}:
+        assert owner(f"capture{suffix}"), f"raw owner exclusion {suffix} became a capture"
     # Context-only owner captures: named here, and deliberately not name classes.
     for name in _CONTEXT_ONLY:
         assert owner(name) == ""
         assert dv.client_artifact_class(f"site/{name}") is None
+
+
+def test_bundle_owner_shape_additions_are_derived_and_unregistered_shapes_refused():
+    source = (ROOT / "portable/release_contract.py").read_text(encoding="utf-8")
+    changed = source.replace('".db", ".sqlite",', '".new-capture", ".db", ".sqlite",', 1)
+    assert changed != source
+    shapes = census.bundle_artifact_name_shapes(changed)
+    assert ("suffix", ".new-capture") in shapes
+    assert dv.client_artifact_class("site/probe.new-capture") is None
+    assert _repository_gate()._client_artifact_class("site/probe.new-capture") is None
+    with pytest.raises(ValueError, match="unrecognised bundle client-name selector"):
+        census.bundle_artifact_name_shapes(
+            "def _forbidden_client_artifact(relative):\n    return custom_selector(relative)\n")
 
 
 def test_every_collector_capture_filename_is_a_registered_capture_class():
@@ -571,23 +763,377 @@ def test_named_producer_constants_are_registered_classes():
 
 
 def test_every_browser_download_name_classifies():
-    """P2: AssessHub and Atlas Scope downloads are client files the browser writes to disk."""
+    """SPA, Scope and engine explorer downloads must classify in both matchers."""
     names = census.download_names(ROOT)
-    assert len(names) >= 9, names
+    assert len(names) >= 15, names
+    gate = _repository_gate()
     problems = []
     for location, expression, template in names:
         relative = location.rsplit(":", 1)[0]
         if template is None:
             if (relative, expression) not in census.DOWNLOAD_NAME_PASSTHROUGH:
                 problems.append(f"undeclared non-literal download name {expression!r} at {location}")
-        elif dv.client_artifact_class(f"Downloads/{template}") is None:
-            problems.append(f"download name {template!r} at {location} matches no class")
+        else:
+            artifact_class = dv.client_artifact_class(f"Downloads/{template}")
+            if artifact_class is None:
+                problems.append(f"download name {template!r} at {location} matches no class")
+            assert gate._client_artifact_class(f"Downloads/{template}") == artifact_class
     assert problems == []
     used = {(location.rsplit(":", 1)[0], expression) for location, expression, _t in names}
     assert set(census.DOWNLOAD_NAME_PASSTHROUGH) <= used, "a declared pass-through no longer exists"
     classes = {dv.client_artifact_class(f"Downloads/{t}") for _l, _e, t in names if t}
     assert {"protocol-assurance-export", "comparison-receipt", "trend-comparisons",
             "scope-record-export"} <= classes
+    assert {path for path in _tracked() if path.startswith("cisco_toolkit/") and path.endswith(".html")} <= set(
+        census.download_sources(ROOT))
+
+
+def test_engine_html_download_discovery_includes_nested_calls_and_unknown_names(tmp_path):
+    _write(tmp_path, "cisco_toolkit/new-explorer.html",
+           '<a download="flow-frames.txt">export</a>\n'
+           '<script>\n'
+           'downloadBlob(new Blob([payload], {type: "text/plain"}), "flow-path.svg");\n'
+           'downloadBlob(blob, "ipv6-routing-blockers-" + scope + ".json");\n'
+           'downloadBlob(blob, "unregistered.json");\n'
+           'a.download = unknown;\n'
+           '</script>\n')
+    names = census.download_names(tmp_path)
+    assert {template for _location, _expression, template in names} == {
+        "flow-frames.txt", "flow-path.svg", "ipv6-routing-blockers-0.json", "unregistered.json", None}
+    for template in ("flow-frames.txt", "flow-path.svg", "ipv6-routing-blockers-0.json"):
+        assert dv.client_artifact_class(f"Downloads/{template}") is not None
+        assert _repository_gate()._client_artifact_class(f"Downloads/{template}") is not None
+    assert dv.client_artifact_class("Downloads/unregistered.json") is None
+    assert ("cisco_toolkit/new-explorer.html", "unknown") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_engine_html_attribute_forms_and_implicit_names_are_not_silently_skipped(tmp_path):
+    _write(tmp_path, "cisco_toolkit/explorer.html",
+           '<a download=topology.svg></a>\n<a href="data.json" download></a>\n'
+           '<script>a.setAttribute("download", "flow-frames.txt");</script>\n')
+    names = census.download_names(tmp_path)
+    assert {template for _location, _expression, template in names} == {
+        "topology.svg", "flow-frames.txt", None}
+    assert any(expression == "<implicit browser filename>" for _location, expression, _template in names)
+
+
+@pytest.mark.parametrize("attributes", [
+    'download="private.json" download="topology.svg"',
+    'download="topology.svg" download="private.json"',
+    'DOWNLOAD="private.json" download="topology.svg"',
+    'download="topology.svg" DoWnLoAd="private.json"',
+    'download="topology.svg" download="flow-path.svg"',
+    'download download="topology.svg"',
+])
+@pytest.mark.parametrize("element", ["a", "button"])
+@pytest.mark.parametrize("relative", ["new-root/export.html", "new-root/generated.py"])
+def test_duplicate_native_download_attributes_refuse_with_an_explicit_census_problem(
+    tmp_path, attributes, element, relative,
+):
+    html = f'<main>\n<{element} {attributes} href="blob:x">Save</{element}>\n</main>'
+    source = "HTML = " + repr(html) if relative.endswith(".py") else html
+    _write(tmp_path, relative, source)
+    with pytest.raises(ValueError, match=re.escape(
+        f"browser census refuses {relative}:2: duplicate HTML download attributes"
+    )):
+        census.download_names(tmp_path)
+    assert (relative, "'private.json'") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_single_native_download_attribute_and_separate_elements_keep_their_names(tmp_path):
+    _write(tmp_path, "new-root/export.html",
+           '<a DOWNLOAD="topology.svg" href="blob:x">Save</a>\n'
+           '<button download="flow-path.svg" href="blob:y">Save</button>')
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == ["topology.svg", "flow-path.svg"]
+    for _location, _expression, template in names:
+        assert dv.client_artifact_class("Downloads/" + template) is not None
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) is not None
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("method,arguments", [
+    ("setAttribute", '"{attribute}", "{filename}"'),
+    ("setAttributeNS", 'null, "{attribute}", "{filename}"'),
+])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+@pytest.mark.parametrize("access", ["dot", "bracket", "optional"])
+def test_html_attribute_setters_retain_ascii_case_alias_names(tmp_path, attribute, method, arguments, filename, access):
+    receiver = f'a["{method}"]' if access == "bracket" else f"a.{method}"
+    opening = "?.(" if access == "optional" else "("
+    _write(tmp_path, "new-root/export.js", receiver + opening
+           + arguments.format(attribute=attribute, filename=filename) + ");")
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == [filename]
+    artifact_class = dv.client_artifact_class("Downloads/" + filename)
+    assert _repository_gate()._client_artifact_class("Downloads/" + filename) == artifact_class
+    assert (artifact_class is None) == (filename == "private.json")
+    assert ("new-root/export.js", names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("force", ["", ", true", ", false", ", enabled"])
+def test_download_attribute_toggles_keep_implicit_names_and_never_use_force_as_a_filename(tmp_path, attribute, force):
+    _write(tmp_path, "new-root/export.js", f'a.toggleAttribute("{attribute}"{force});')
+    assert census.download_names(tmp_path) == [("new-root/export.js:1", "<implicit browser filename>", None)]
+    assert ("new-root/export.js", "<implicit browser filename>") not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("method,arguments", [
+    ("setAttribute", "'{attribute}', 'private.json'"),
+    ("setAttributeNS", "null, '{attribute}', 'private.json'"),
+])
+@pytest.mark.parametrize("handler", ["onclick", "href"])
+def test_inline_html_handlers_keep_case_alias_setter_obligations(tmp_path, attribute, method, arguments, handler):
+    prefix = "javascript:" if handler == "href" else ""
+    markup = f'<a {handler}="{prefix}a.{method}({arguments.format(attribute=attribute)})">Save</a>'
+    _write(tmp_path, "new-root/inline.html", markup)
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"private.json"}
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("setter", ['a.setAttribute("{attribute}", filename)',
+                                   'a.setAttributeNS(null, "{attribute}", filename)',
+                                   'a["setAttribute"]("{attribute}", filename)',
+                                   'return <a {attribute}={{filename}} />'])
+def test_case_alias_setter_and_intrinsic_jsx_helpers_keep_the_filename_parameter_role(tmp_path, attribute, setter):
+    _write(tmp_path, "new-root/export.tsx", "function saveEvidence(payload, filename) { "
+           + setter.format(attribute=attribute) + '; }\nsaveEvidence(blob, "private.json");')
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+@pytest.mark.parametrize("relative", ["new-root/view.tsx", "new-root/view.jsx", "new-root/view.js"])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+def test_intrinsic_jsx_ascii_case_aliases_keep_single_filename_obligations(tmp_path, attribute, relative, filename):
+    _write(tmp_path, relative, f'const View = () => <a {attribute}="{filename}" href={{blobUrl}} />;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [filename]
+
+
+@pytest.mark.parametrize("attribute", ["download", "DOWNLOAD", "DoWnLoAd"])
+def test_intrinsic_jsx_bare_case_aliases_keep_implicit_filename_obligations(tmp_path, attribute):
+    _write(tmp_path, "new-root/view.tsx", f"const View = () => <a href={{blobUrl}} {attribute} />;")
+    assert census.download_names(tmp_path) == [("new-root/view.tsx:1", "<implicit browser filename>", None)]
+
+
+@pytest.mark.parametrize("attribute", ["DOWNLOAD", "DoWnLoAd", "download"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("tag", ["a", "button", "my-link"])
+def test_intrinsic_jsx_case_colliding_download_props_refuse_both_orders(tmp_path, attribute, reverse, tag):
+    props = ['download="topology.svg"', f'{attribute}="private.json"']
+    if reverse:
+        props.reverse()
+    _write(tmp_path, "new-root/view.tsx", f'const View = () => <{tag}\n'
+           + props[0] + '\n' + props[1] + ' href={blobUrl} />;')
+    with pytest.raises(ValueError, match=re.escape(
+        "browser census refuses new-root/view.tsx:3: duplicate JSX HTML download attributes"
+    )):
+        census.download_names(tmp_path)
+
+
+def test_case_alias_recognition_keeps_js_properties_and_component_props_case_sensitive(tmp_path):
+    _write(tmp_path, "new-root/view.tsx",
+           'a.DOWNLOAD = "private.json"; a["DoWnLoAd"] = "private.json";\n'
+           'Reflect.set(a, "DOWNLOAD", "private.json"); Object.assign(a, {DOWNLOAD: "private.json"});\n'
+           'const View = () => <Component DOWNLOAD="private.json" DoWnLoAd="private.json" />;\n'
+           'const Member = () => <ui.Anchor DOWNLOAD="private.json" />;\n'
+           'a.setAttribute("data-download", "private.json"); a.toggleAttribute("hidden", true);\n'
+           'a.setAttributeNS(null, "ns:DOWNLOAD", "private.json");\n'
+           'a.SETATTRIBUTE("DOWNLOAD", "private.json");\n'
+           'a.download = "topology.svg";\nconst Lowercase = () => <Component download="flow-path.svg" />;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [
+        "topology.svg", "flow-path.svg"]
+
+
+def test_jsx_alias_reader_keeps_nested_elements_values_and_type_arguments_separate(tmp_path):
+    _write(tmp_path, "new-root/view.tsx",
+           'const View = () => <Component<Map<string, Payload>> label="DOWNLOAD"\n'
+           ' body={<a DOWNLOAD="private.json" title="download" />}>\n'
+           ' <a DoWnLoAd="topology.svg" data-download="private.json" />\n</Component>;')
+    assert [template for _location, _expression, template in census.download_names(tmp_path)] == [
+        "private.json", "topology.svg"]
+
+
+def test_case_alias_helper_roles_keep_constructed_names_and_toggle_force_separate():
+    source = 'function downloadReceipt(payload, id) { a.setAttribute("DOWNLOAD", "topology.svg"); }\n'
+    source += 'function saveFlag(force) { a.toggleAttribute("DoWnLoAd", force); }'
+    declarations, forwarders = census._js_helper_parameters(source, census._js_tokens(source), "new-root/export.js")
+    assert declarations == {"downloadReceipt"}
+    assert forwarders == {}
+
+
+def _js_quoted_spelling(value, spelling):
+    if spelling == "unicode4":
+        value = "".join("\\u" + format(ord(char), "04x") for char in value)
+    elif spelling == "unicode_braced":
+        value = "".join("\\u{" + format(ord(char), "x") + "}" for char in value)
+    elif spelling == "hex2":
+        value = "".join("\\x" + format(ord(char), "02x") for char in value)
+    elif spelling == "identity":
+        index = next(index for index, char in enumerate(value) if char not in "bfnrtvxu0123456789")
+        value = value[:index] + "\\" + value[index:]
+    elif spelling == "continuation":
+        index = len(value) // 2
+        value = value[:index] + "\\\n" + value[index:]
+    return '"' + value + '"'
+
+
+@pytest.mark.parametrize("literal,expected", [
+    (r'"set\u0041ttribute"', "setAttribute"),
+    (r'"setAttri\x62ute"', "setAttribute"),
+    (r'"set\u{41}ttributeNS"', "setAttributeNS"),
+    (r'"\b\f\n\r\t\v\0\q\a\e\s\U"', "\b\f\n\r\t\v\0qaesU"),
+    (r'''"\'\"\\"''', "'\"\\"),
+    ('"down\\\nload"', "download"),
+    ('"down\\\r\nload"', "download"),
+    ('"down\\\rload"', "download"),
+    ('"down\\\u2028load"', "download"),
+    ('"down\\\u2029load"', "download"),
+    ('"a\u2028b\u2029c"', "a\u2028b\u2029c"),
+    (r'"\u{1f600}"', "\U0001f600"),
+    (r'"\ud83d\ude00"', "\U0001f600"),
+    (r'"\ud800"', "\ud800"),
+    ('`a\r\nb\rc\nd`', "a\nb\nc\nd"),
+    (r'`\u{61}\x62\u0063`', "abc"),
+    (r'`\${literal}`', "${literal}"),
+])
+def test_one_javascript_closed_literal_decoder_matches_string_semantics(literal, expected):
+    assert census._js_closed_literal(literal) == expected
+
+
+@pytest.mark.parametrize("literal", [r'"\u00"', r'"\uZZZZ"', r'"\u{}"', r'"\u{z}"',
+                                     r'"\u{110000}"', r'"\u{41"', r'"\x0"', r'"\xGG"',
+                                     r'"\01"', r'"\123"', r'"\08"', r'"\8"', r'"\9"',
+                                     '"a\nb"', '"a\rb"', '"truncated\\"'])
+def test_malformed_and_legacy_javascript_literals_refuse_instead_of_disappearing(literal):
+    with pytest.raises(ValueError):
+        census._js_closed_literal(literal)
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("method,arguments", [("setAttribute", '"DOWNLOAD", "private.json"'),
+                                            ("setAttributeNS", 'null, "DoWnLoAd", "private.json"'),
+                                            ("toggleAttribute", '"DOWNLOAD", true')])
+@pytest.mark.parametrize("optional", [False, True])
+def test_closed_api_names_use_the_decoder_for_bracket_and_optional_calls(tmp_path, spelling, method, arguments, optional):
+    call = "a[" + _js_quoted_spelling(method, spelling) + "]" + ("?." if optional else "")
+    _write(tmp_path, "new-root/export.js", call + "(" + arguments + ");")
+    templates = {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert templates == ({None} if method == "toggleAttribute" else {"private.json"})
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("family", ["downloadBlob", "saveAs", "Reflect.set", "window.open", "property", "object"])
+def test_each_closed_name_family_has_paired_plain_and_escaped_controls(tmp_path, spelling, family):
+    key = _js_quoted_spelling("download", spelling)
+    filename = _js_quoted_spelling("private.json", spelling)
+    if family in {"downloadBlob", "saveAs"}:
+        source = "globalThis[" + _js_quoted_spelling(family, spelling) + "](blob, " + filename + ");"
+    elif family == "Reflect.set":
+        source = "Reflect[" + _js_quoted_spelling("set", spelling) + "](a, " + key + ", " + filename + ");"
+    elif family == "window.open":
+        source = "window[" + _js_quoted_spelling("open", spelling) + "](" + filename + ");"
+    elif family == "property":
+        source = "a[" + key + "] = " + filename + ";"
+    else:
+        source = "Object.assign(a, {" + key + ": " + filename + "});"
+    _write(tmp_path, "new-root/export.js", source)
+    names = census.download_names(tmp_path)
+    if family == "window.open":
+        assert len(names) == 1 and names[0][1].startswith("<browser-open:") and names[0][2] is None
+    else:
+        assert {template for _location, _expression, template in names} == {"private.json"}
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+def test_tag_attribute_and_filename_literals_share_the_canonical_decoder(tmp_path, spelling, filename):
+    tag = _js_quoted_spelling("a", spelling)
+    attribute = _js_quoted_spelling("DoWnLoAd", spelling)
+    name = _js_quoted_spelling(filename, spelling)
+    source = "const a = document.createElement(" + tag + "); a.setAttribute(" + attribute + ", " + name + ");"
+    tokens = census._js_tokens(source)
+    assert "a" in [census._js_token_name(token) for token in tokens if token.value.startswith('"')]
+    _write(tmp_path, "new-root/export.js", source)
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {filename}
+    artifact_class = dv.client_artifact_class("Downloads/" + filename)
+    assert _repository_gate()._client_artifact_class("Downloads/" + filename) == artifact_class
+    assert (artifact_class is None) == (filename == "private.json")
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("method,prefix", [("setAttribute", ""), ("setAttributeNS", "null, "), ("set", "a, ")])
+def test_escaped_api_names_keep_helper_forwarding_and_never_gain_a_passthrough(tmp_path, spelling, method, prefix):
+    receiver = "Reflect" if method == "set" else "a"
+    key = _js_quoted_spelling(method, spelling)
+    source = "function saveEvidence(payload, filename) { " + receiver + "[" + key + "]?.("
+    source += prefix + '"download", filename); }\nsaveEvidence(blob, "private.json");'
+    _write(tmp_path, "new-root/export.js", source)
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert ("new-root/export.js", '"private.json"') not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_closed_parentheses_and_string_concatenation_are_resolved_without_computed_dispatch_proofs(tmp_path):
+    _write(tmp_path, "new-root/export.js",
+           r'a[("set\u{41}" + "ttribute")]?.("DOWNLOAD", "private.json");')
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert census._js_closed_string('"set" + suffix') is None
+    assert census._js_closed_literal('`set${suffix}`') is None
+    assert census._js_closed_string(r'"\ud83d" + "\ude00"') == "\U0001f600"
+    assert census._download_template(r'"\ud83d" + "\ude00" + ".snapshot.json"') == "\U0001f600.snapshot.json"
+
+
+def test_decoded_js_property_names_stay_case_sensitive_and_quoted_delimiters_stay_inert(tmp_path):
+    _write(tmp_path, "new-root/export.js",
+           r'a["DOWN\u004cOAD"] = "private.json"; Reflect["s\u{65}t"](a, "DOWNLOAD", "private.json");'
+           '\n' + r'a["down\u{6c}oad"] = "topology.svg";')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"topology.svg"}
+    source = 'function saveEvidence(filename) { a["down\\u006coad"] = filename; } saveEvidence("[");'
+    declarations, forwarders = census._js_helper_parameters(source, census._js_tokens(source), "new-root/export.js")
+    assert forwarders == {"saveEvidence": 0} and declarations == set()
+    assert census._js_arguments('f(")", "[", ",")', census._js_tokens('f(")", "[", ",")'), 1) == [
+        '\")\"', '\"[\"', '\",\"']
+
+
+@pytest.mark.parametrize("literal", [r'"set\u{}Attribute"', r'"set\xGGAttribute"', r'"set\101ttribute"'])
+def test_a_malformed_closed_api_name_is_an_explicit_census_refusal(tmp_path, literal):
+    _write(tmp_path, "new-root/export.js", "a[" + literal + ']("DOWNLOAD", "private.json");')
+    with pytest.raises(ValueError, match="JavaScript"):
+        census.download_names(tmp_path)
+
+
+def test_jsx_and_html_quoted_text_do_not_receive_javascript_escape_semantics(tmp_path):
+    _write(tmp_path, "new-root/view.tsx", r'const V = () => <a download="topology\x2esvg" />;')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {r"topology\x2esvg"}
+    _write(tmp_path, "new-root/view.tsx", r'const V = () => <a download={"topology\x2esvg"} />;')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"topology.svg"}
+    _write(tmp_path, "new-root/native.html", r'<a download="topology\x2esvg">Save</a>')
+    assert r"topology\x2esvg" in {template for _location, _expression, template in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("attribute", ["download", "exportFilename"])
+@pytest.mark.parametrize("prefix,suffix", [("receipt", ".comparison.json"), ("private", ".json")])
+def test_every_jsx_filename_exit_unwraps_expressions_without_a_name_exemption(tmp_path, attribute, prefix, suffix):
+    _write(tmp_path, "new-root/view.tsx",
+           f'const View = () => <Widget {attribute}={{`{prefix}-${{id}}{suffix}`}} />;')
+    names = census.download_names(tmp_path)
+    assert [template for _location, _expression, template in names] == [prefix + "-0" + suffix]
+    artifact_class = dv.client_artifact_class("Downloads/" + prefix + "-0" + suffix)
+    assert _repository_gate()._client_artifact_class("Downloads/" + prefix + "-0" + suffix) == artifact_class
+    assert (artifact_class is None) == (prefix == "private")
+    assert ("new-root/view.tsx", names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
+    _write(tmp_path, "cisco_toolkit/explorer.html",
+           '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'
+           'downloadBlob?.(blob, "unknown.json");\n'
+           'a["download"] = "unknown.json";</script>\n')
+    names = census.download_names(tmp_path)
+    assert len(names) == 3
+    assert all(template == "unknown.json" for _location, _expression, template in names)
+    assert dv.client_artifact_class("Downloads/unknown.json") is None
 
 
 def test_the_comparison_download_suffix_is_the_registered_class():
@@ -710,3 +1256,597 @@ def test_the_fixture_manifest_parser_fails_closed():
                 f"{digest}  tests/fixtures/a.txt\n{digest}  tests/fixtures/a.txt"):
         with pytest.raises(ValueError):
             parse(bad.encode())
+
+
+# ----------------------------------------------------------- W65b round-2 adversarial controls
+
+@pytest.mark.parametrize("database", ["assesshub.db", "assesshub.sqlite", "assesshub.sqlite3",
+                                      "operator-chosen", "custom.evidence", ".backup.db.partial"])
+@pytest.mark.parametrize("companion,key", [("-wal", "database-wal"), ("-shm", "database-shm"),
+                                          ("-journal", "database-journal")])
+def test_sqlite_companions_cover_every_opened_database_name(database, companion, key, monkeypatch):
+    name = "site/" + database + companion
+    gate = _repository_gate()
+    assert dv.client_artifact_class(name) == gate._client_artifact_class(name) == key
+    assert dv._privacy_violations({name}) == [name]
+    # Negative control: restoring the extension-bound selector loses alternate/staging names.
+    narrowed = tuple((k, m, ".db" + companion if k == key else p)
+                     for k, m, p in dv._CLIENT_ARTIFACT_FOLDED)
+    monkeypatch.setattr(dv, "_CLIENT_ARTIFACT_FOLDED", narrowed)
+    if not database.endswith(".db"):
+        assert dv.client_artifact_class(name) is None
+
+
+def test_storage_companion_owner_is_delete_and_has_no_attached_database_family():
+    tree = ast.parse((ROOT / "webapp/backend/storage.py").read_text(encoding="utf-8"))
+    sql = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    assert "PRAGMA journal_mode = DELETE" in sql
+    # SQLite super-journals need ATTACH/multiple databases. The storage owner never attaches;
+    # its main/backup (including arbitrary names and .partial) connections are tied above.
+    assert not any(re.match(r"\s*ATTACH\b", statement, re.I) for statement in sql)
+    mutated = sql + ["ATTACH DATABASE 'alternate' AS other"]
+    assert any(re.match(r"\s*ATTACH\b", statement, re.I) for statement in mutated)
+
+
+@pytest.mark.parametrize("expression,leaf", [
+    ('"delivery.json".format()', "delivery.json"),
+    ('"{}".format("delivery.json")', "delivery.json"),
+    ('"{leaf}".format(leaf="delivery.json")', "delivery.json"),
+    ('"%s" % "delivery.json"', "delivery.json"),
+    ('"%(leaf)s" % {"leaf": "delivery.json"}', "delivery.json"),
+    ('"{:04d}.json".format(7)', "0007.json"),
+    ('"%04d.json" % 7', "0007.json"),
+    ('"{!r}.json".format("client")', "'client'.json"),
+    ('"{}".format("private" + ".json")', "private.json"),
+    ('"{}".format(*("private.json",))', "private.json"),
+    ('"{leaf}".format(**{"leaf": "private.json"})', "private.json"),
+    ('"%s" % ("private" + ".json")', "private.json"),
+    ('"%*s" % (3, "private.json")', "private.json"),
+    ('"%.*s" % (7, "private.json")', "private"),
+    ('"{}".format("%s" % "private.json")', "private.json"),
+    ('"{0}".format("private.json", dynamic())', "private.json"),
+    ('"{1}".format(dynamic(), "private.json")', "private.json"),
+    ('"{}".format("PRIVATE.JSON".lower())', "private.json"),
+    ('"{}".format(f"private.json")', "private.json"),
+    ('"%s" % f"private.json"', "private.json"),
+    ('"{}".format({"leaf": "private.json"}["leaf"])', "private.json"),
+    ('"{0[0]}".format(("private.json", dynamic()))', "private.json"),
+    ('"{0[leaf]}".format({"leaf": "private.json", "unused": dynamic()})', "private.json"),
+    ('"%(leaf)s" % {"leaf": "private.json", "unused": dynamic()}', "private.json"),
+    ('"private%%(leaf)s.json" % {"unused": dynamic()}', "private%(leaf)s.json"),
+    ('"{}".format("private.json"[:7])', "private"),
+    ('"%s" % "private.json"[:7]', "private"),
+])
+def test_closed_format_and_percent_targets_cannot_escape_client_refusal(tmp_path, expression, leaf):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           + f"    Path({expression}).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert census.unclassified_site_literals(tmp_path)[key] == {leaf}
+    assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+        f"client write site resolves to unclassified name {leaf!r}: {key}"]
+
+
+def test_seventeenth_and_literal_loop_names_are_not_discarded(tmp_path):
+    assignments = "".join(f"    name = 'safe{i}.snapshot.json'\n" for i in range(16))
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           + assignments + "    name = 'private.json'\n    Path(name).write_text('payload')\n"
+           + "\ndef loop():\n    for name in ['safe.snapshot.json', 'private-loop.json']:\n"
+           + "        Path(name).write_text('payload')\n")
+    rows = {f"cisco_toolkit/writer.py::{fn}": (1, census.CLIENT, ("snapshot",), "client payload")
+            for fn in ("emit", "loop")}
+    problems = census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"])
+    assert any("'private.json'" in p for p in problems)
+    assert any("'private-loop.json'" in p for p in problems)
+
+
+@pytest.mark.parametrize("kind", ["alternatives", "depth"])
+def test_filename_model_bound_is_a_refusal_not_success(kind):
+    if kind == "alternatives":
+        node = ast.Name(id="target")
+        values = [ast.Constant(value=f"safe{i}.snapshot.json") for i in range(census._NAME_ALTERNATIVES)]
+        values.append(ast.Constant(value="private.json"))
+        def resolver(_name):
+            return values
+    else:
+        def resolver(_name):
+            index = int(_name.id.removeprefix("target"))
+            return [ast.Name(id=f"target{index + 1}")]
+        node = ast.Name(id="target0")
+    with pytest.raises(census.NameModelLimit, match="filename model"):
+        census._templates(node, resolver)
+
+
+@pytest.mark.parametrize("expression", ["f'{name}'", "'{}'.format(name)", "'%s' % name"])
+def test_unknown_format_alternative_keeps_the_concrete_bad_name(tmp_path, expression):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           "    name = dynamic()\n    name = 'private.json'\n"
+           + f"    Path({expression}).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    assert "private.json" in census.unclassified_site_literals(tmp_path)[key]
+    assert any("'private.json'" in p for p in census.census_problems(tmp_path, rows, ["snapshot"]))
+
+
+def test_cyclic_path_rebinding_keeps_other_names_without_a_budget_refusal(tmp_path):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit(path):\n"
+           "    path = Path(path)\n    path = 'private.json'\n    Path(path).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    problems = census.census_problems(tmp_path, rows, ["snapshot"])
+    assert problems == [f"client write site resolves to unclassified name 'private.json': {key}"]
+
+
+@pytest.mark.parametrize("assignment", [
+    'a.download = `private-${id}.json`\na.click()',
+    'a\n  .download\n  =\n  `private-${id}.json`\na.click()',
+    'a["download"] = (`private-${id}.json`)\na.click()',
+    'a.download = "private-"\n + id + ".json"\na.click()',
+    'Object.assign(a, {download: `private-${id}.json`, href: blobUrl})',
+    'a["down" + "load"] = `private-${id}.json`',
+    'a[("down") + ("load")] = `private-${id}.json`',
+    'Reflect.set(a, "down" + "load", `private-${id}.json`)',
+    'saveAs(blob, `private-${id}.json`)',
+    'const clean = raw.replace(/"/g, ""); a.download = `private-${id}.json`',
+    r'saveAs(/\)/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
+    r'downloadBlob(/[,)]/.test(name) ? blob : fallbackBlob, `private-${id}.json`)',
+    r"""const prose = `${JSON.stringify(paths).replace(/'/g, "''")}`; a.download = `private-${id}.json`""",
+])
+def test_download_tokenizer_keeps_asi_multiline_object_and_save_exits(tmp_path, assignment):
+    _write(tmp_path, "new-surface/export.mjs", assignment)
+    names = census.download_names(tmp_path)
+    assert names, "a direct exit disappeared"
+    assert any(t == "private-0.json" for _l, _e, t in names), names
+    assert all(dv.client_artifact_class("Downloads/" + t) is None for _l, _e, t in names if t)
+
+
+def test_browser_source_scan_is_structural_and_generated_exits_stay_obligations(tmp_path):
+    sources = {"new-root/export.js": 'a.download = "private.json"',
+               "new-root/export.cjs": 'saveAs(blob, "private.json")',
+               "new-root/export.html": '<a download="private.json">save</a>',
+               "new-root/export.py": "HTML = " + repr('<script>a.download = "private.json"</script>'),
+               "new-root/composed.py": "SCRIPT = " + repr('a.download = "private.json"')
+                   + '\nHTML = f"<script>{SCRIPT}</script>"',
+               "new-root/open.mjs": 'window.open(blobUrl)'}
+    for path, source in sources.items():
+        _write(tmp_path, path, source)
+    assert set(census.download_sources(tmp_path)) == set(sources)
+    names = census.download_names(tmp_path)
+    assert {location.split(":")[0] for location, _e, _t in names} == set(sources)
+    assert any(e == "<browser-open:blobUrl>" and t is None for _l, e, t in names)
+    assert all((l.split(":")[0], e) not in census.DOWNLOAD_NAME_PASSTHROUGH for l, e, _t in names)
+
+
+def test_browser_local_callbacks_and_comments_are_not_filename_assignments(tmp_path):
+    _write(tmp_path, "new-root/callback.tsx", 'const download = useCallback(() => {});\n'
+           '// a.download = "private.json"\n'
+           'const text = "a.download = unknown";\n'
+           'const View = () => <a download="flow-frames.txt">Don\'t read "prose" as JS</a>;\n'
+           'const after = () => <div>{rows.map(x => <span>{x}</span>)}</div>;\n')
+    assert [t for _l, _e, t in census.download_names(tmp_path)] == ["flow-frames.txt"]
+
+
+def test_portable_early_positive_branch_cannot_hide_from_reconciliation():
+    source = (ROOT / "portable/release_contract.py").read_text(encoding="utf-8")
+    changed = source.replace("    folded = relative.casefold()", "    if relative.endswith('.private-capture'):\n"
+                             "        return True\n    folded = relative.casefold()", 1)
+    assert ("suffix", ".private-capture") in census.bundle_artifact_name_shapes(changed)
+    function = next(n for n in ast.parse(changed).body if isinstance(n, ast.FunctionDef)
+                    and n.name == "_forbidden_client_artifact")
+    namespace = {"PurePosixPath": PurePosixPath}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<synthetic-owner>", "exec"), namespace)
+    assert "probe.private-capture" in _bundle_owner_corpus(changed, namespace[function.name])
+    assert dv.client_artifact_class("site/probe.private-capture") is None
+    assert _repository_gate()._client_artifact_class("site/probe.private-capture") is None
+    unsupported = changed.replace("relative.endswith('.private-capture')", "custom_selector(relative)")
+    with pytest.raises(ValueError, match="unrecognised bundle"):
+        census.bundle_artifact_name_shapes(unsupported)
+    changed_binding = source.replace('suffix = PurePosixPath(folded).suffix',
+                                    "suffix = '.db' if relative.endswith('.private-capture') "
+                                    "else PurePosixPath(folded).suffix", 1)
+    assert changed_binding != source
+    with pytest.raises(ValueError, match="changed selector binding"):
+        census.bundle_artifact_name_shapes(changed_binding)
+
+
+def test_nrfu_library_export_has_a_class_and_old_spelling_does_not():
+    from cisco_toolkit import nrfu_export
+    tree = ast.parse((ROOT / "cisco_toolkit/nrfu_export.py").read_text(encoding="utf-8"))
+    writer = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "write_nrfu_pack")
+    assert any(isinstance(n, ast.JoinedStr) and isinstance(n.values[-1], ast.Constant)
+               and n.values[-1].value == ".nrfu.txt" for n in ast.walk(writer))
+    name = f"site/wave/{nrfu_export._safe_name('CORE-1')}.nrfu.txt"
+    assert dv.client_artifact_class(name) == _repository_gate()._client_artifact_class(name) == "nrfu-command-pack"
+    assert dv.client_artifact_class("site/wave/CORE-1.txt") is None
+    assert census.WRITE_SITE_CENSUS["cisco_toolkit/nrfu_export.py::write_nrfu_pack"][1:3] == (
+        census.CLIENT, ("nrfu-command-pack",))
+
+
+@pytest.mark.parametrize("journal_mode", ["DELETE", "WAL"])
+@pytest.mark.parametrize("database", ["alternate.sqlite", "alternate.sqlite3", "custom.evidence", ".backup.db.partial"])
+def test_real_sqlite_companions_are_refused_on_hosted_runners(tmp_path, journal_mode, database):
+    import sqlite3
+    path = tmp_path / database
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(f"PRAGMA journal_mode = {journal_mode}")
+        connection.execute("CREATE TABLE evidence (host TEXT)")
+        connection.commit()
+        connection.execute("INSERT INTO evidence VALUES ('CORE-1')")
+        companions = [p.name for p in tmp_path.iterdir() if p != path]
+        assert companions, "the transaction produced no companion witness"
+        for name in companions:
+            assert dv.client_artifact_class("site/" + name) == _repository_gate()._client_artifact_class("site/" + name)
+            assert dv.client_artifact_class("site/" + name) in {"database-wal", "database-shm", "database-journal"}
+    finally:
+        connection.rollback()
+        connection.close()
+
+
+def test_every_database_writer_row_retains_the_complete_companion_family():
+    family = {"database-wal", "database-shm", "database-journal"}
+    for key, (_count, _disposition, classes, _why) in census.WRITE_SITE_CENSUS.items():
+        if set(classes) & family:
+            assert family <= set(classes), key
+
+
+@pytest.mark.parametrize("header", ["const helper = <T,>(value: T) => value;",
+                                   "const helper = <T extends object>(value: T) => value;",
+                                   "const helper = <T = string>(value: T) => value;",
+                                   "const helper = <T extends object = object, U = string>(v: T) => v;",
+                                   'const View = () => <Component<Payload> download="private.json" />;',
+                                   "const View = () => <a title={x => x > 0}>Don't parse prose</a>;"])
+def test_jsx_and_typescript_syntax_does_not_hide_later_downloads(tmp_path, header):
+    _write(tmp_path, "new-root/view.tsx", header + '\na.download = "private.json";\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("view", ['<a download="private.json" />',
+                                 '<a download={`private-${id}.json`} />',
+                                 '<Component<Payload> download="private.json" />'])
+def test_self_closing_jsx_attributes_retain_their_filename(tmp_path, view):
+    _write(tmp_path, "new-root/view.tsx", f"const View = () => {view};")
+    names = census.download_names(tmp_path)
+    assert len(names) == 1
+    assert names[0][2] in {"private.json", "private-0.json"}
+
+
+def test_browser_python_bindings_keep_their_lexical_scope(tmp_path):
+    _write(tmp_path, "new-root/generated.py",
+           "def first():\n    script = 'a.download = \\\"private.json\\\"'\n"
+           "    return f'<script>{script}</script>'\n"
+           "\ndef other():\n    script = 'a.download = \\\"flow-frames.txt\\\"'\n"
+           "    return f'<script>{script}</script>'\n")
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json", "flow-frames.txt"}
+    assert len(names) == 2
+
+
+def test_duplicate_alternatives_do_not_erase_a_distinct_bad_filename():
+    node = ast.Name(id="target")
+    def resolver(_name):
+        return [ast.Constant(value="safe.snapshot.json")] * 300 + [ast.Constant(value="private.json")]
+    assert "private.json" in census._templates(node, resolver)
+
+
+def test_browser_python_method_uses_module_binding_not_class_local(tmp_path):
+    _write(tmp_path, "new-root/generated.py",
+           "SCRIPT = 'a.download = \\\"private.json\\\"'\n"
+           "class Surface:\n    SCRIPT = 'a.download = \\\"flow-frames.txt\\\"'\n"
+           "    def render(self):\n        return f'<script>{SCRIPT}</script>'\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_python_regex_lookbehind_is_not_a_browser_document(tmp_path):
+    _write(tmp_path, "new-root/regex.py", "def pattern(name):\n"
+           "    return rf'(?<![\\w.-]){name}(?![\\w-])'\n")
+    assert census.download_names(tmp_path) == []
+
+
+def test_python_generated_script_string_pieces_are_assembled_before_lexing(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def html(value):\n"
+           + "    return f\"<script>const text='{value}'; a.download='private.json';</script>\"\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_python_module_expression_keeps_its_defining_scope(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "NAME = 'private.json'\n"
+           + "SCRIPT = f\"a.download = '{NAME}'\"\n"
+           + "def html():\n    NAME = 'flow-frames.txt'\n    return f'<script>{SCRIPT}</script>'\n")
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_non_html_binding_graph_does_not_expand_paths(tmp_path):
+    source = "value0 = 'plain'\n"
+    source += "".join(f"value{i} = value{i-1} + value{i-1}\n" for i in range(1, 25))
+    source += 'result = f"{value24}"\n'
+    source += "HTML = " + repr('<script>a.download = "private.json"</script>') + "\n"
+    _write(tmp_path, "new-root/generated.py", source)
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_opaque_grouped_property_calls_do_not_recurse_or_hide_the_next_exit(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'a[(first)(second)] = value;\na.download = "private.json";')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+def test_bogus_markup_and_regex_sections_do_not_hide_a_later_download(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "REGEX = " + repr('(?P<name>a)(?<![A-Za-z0-9])') + '\n')
+    _write(tmp_path, "new-root/export.html", '<![A-Za-z0-9]><a download="private.json">save</a>')
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_browser_python_docstrings_are_documentation_not_script_producers(tmp_path):
+    documentation = "<script> Don't parse this explanation as JavaScript; <a download='documentation.json'>"
+    source = repr(documentation) + "\n"
+    source += "def html():\n    " + repr(documentation) + "\n"
+    source += "    return " + repr('<script>a.download = "private.json"</script>') + "\n"
+    _write(tmp_path, "new-root/generated.py", source)
+    assert {t for _l, _e, t in census.download_names(tmp_path)} == {"private.json"}
+
+
+def test_local_browser_wrapper_inputs_are_not_filenames_and_body_exits_stay_guarded(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'function downloadReceipt(value, id) {\n'
+           ' downloadJsonDocument(value, `safe-${id}.snapshot.json`);\n}\n'
+           'downloadReceipt(payload, identifier);\n')
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"safe-0.snapshot.json"}
+    _write(tmp_path, "new-root/export.mjs", 'function downloadReceipt(value, id) {\n'
+           ' downloadJsonDocument(value, "private.json");\n}\n'
+           'downloadReceipt(payload, identifier);\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+def test_filename_forwarder_discovery_does_not_depend_on_helper_name_prefix(tmp_path):
+    _write(tmp_path, "new-root/export.mjs", 'function saveEvidence(blob, target) { a.download = target; }\n'
+           'saveEvidence(payload, "private.json");\n')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+@pytest.mark.parametrize("setter", ['a["download"] = filename', 'a.setAttribute("download", filename)',
+                                   'Reflect.set(a, "download", filename)',
+                                   'Object.assign(a, {download: filename})'])
+def test_browser_forwarder_roles_cover_every_supported_setter(tmp_path, setter):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>function downloadBlob(blob, filename) {'
+           + setter + ';} downloadBlob(blob, "private.json");</script>')
+    assert "private.json" in {t for _l, _e, t in census.download_names(tmp_path)}
+
+
+def test_conflicting_nested_browser_helper_roles_refuse_instead_of_selecting_wrong_argument(tmp_path):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>'
+           'function downloadBlob(blob, filename) { a.download = filename; }'
+           'function outer() { function downloadBlob(filename, blob) { a.download = filename; } }'
+           'downloadBlob("safe.snapshot.json", "private.json");</script>')
+    with pytest.raises(ValueError, match="same-name browser helper roles conflict"):
+        census.download_names(tmp_path)
+
+
+def test_no_prefix_forwarder_missing_filename_retains_an_implicit_obligation(tmp_path):
+    _write(tmp_path, "cisco_toolkit/blast_radius_explorer.html", '<script>'
+           'function saveEvidence(blob, filename="private.json") { a.download = filename; }'
+           'saveEvidence(blob);</script>')
+    assert any(e == "<implicit browser filename>" and t is None for _l, e, t in census.download_names(tmp_path))
+
+
+# Round 3: retain executable attributes, boolean JSX exits and composed Python values.
+@pytest.mark.parametrize("markup", [
+    '<script>downloadBlob(blob, "private.json")</script>',  # existing script-element control
+    '<button onclick="downloadBlob(blob, \'private.json\')">Save</button>',
+    '<button ONCLICK="downloadBlob(blob, &quot;private.json&quot;)">Save</button>',
+    '<a href="javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href=" JaVaScRiPt:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="java&#9;script:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="&#1;javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="\x08javascript:downloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:down&#10;loadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:%64ownloadBlob(blob, \'private.json\')">Save</a>',
+    '<a href="javascript:a%2Edownload=\'private.json\';a.click()">Save</a>',
+    '<a href="javascript://comment%0AdownloadBlob(blob, \'private.json\')">Save</a>',
+    '<svg><use href="javascript:downloadBlob(blob, \'private.json\')" /></svg>',
+])
+@pytest.mark.parametrize("relative", ["new-root/inline.html", "new-root/inline.py"])
+def test_inline_executable_html_values_retain_the_old_bad_name_obligation(tmp_path, markup, relative):
+    source = markup if relative.endswith(".html") else "HTML = " + repr(markup)
+    _write(tmp_path, relative, source)
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json"}
+    for _location, _expression, template in names:
+        assert dv.client_artifact_class("Downloads/" + template) is None
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) is None
+
+
+@pytest.mark.parametrize("attribute", ["onclick", "href"])
+def test_entity_created_newlines_do_not_invent_physical_source_lines(tmp_path, attribute):
+    prefix = "javascript:" if attribute == "href" else ""
+    _write(tmp_path, "new-root/inline.html", f'<a {attribute}="{prefix}&#10;downloadBlob(blob, '
+           + '&quot;private.json&quot;)">Save</a>')
+    assert census.download_names(tmp_path) == [("new-root/inline.html:1", '"private.json"', "private.json")]
+
+
+def test_javascript_url_utf8_decoding_preserves_physical_lines_and_replaces_bad_bytes():
+    script = "downloadBlob(blob, '%E2%82%AC-private.json')\n//%FF"
+    source_lines = tuple(4 if n < script.index("\n") else 5 for n in range(len(script)))
+    decoded, lines = census._javascript_url_lines(script, source_lines)
+    assert decoded == "downloadBlob(blob, '\u20ac-private.json')\n//\ufffd"
+    assert lines[decoded.index("\u20ac")] == 4 and lines[-1] == 5
+
+
+@pytest.mark.parametrize("attribute", ["onclick", "href"])
+@pytest.mark.parametrize("filename", ["'flow-frames.txt'", "unknown"])
+def test_inline_executable_values_keep_source_lines_and_unknown_names(tmp_path, attribute, filename):
+    prefix = "javascript:" if attribute == "href" else ""
+    _write(tmp_path, "new-root/inline.html", '<main>\n<button\n'
+           + f' {attribute}="{prefix}\n downloadBlob(blob, {filename})">Save</button>\n</main>')
+    names = census.download_names(tmp_path)
+    assert len(names) == 1
+    location, expression, template = names[0]
+    assert location == "new-root/inline.html:4"
+    if filename == "unknown":
+        assert template is None and expression == "unknown"
+        assert ("new-root/inline.html", expression) not in census.DOWNLOAD_NAME_PASSTHROUGH
+    else:
+        assert dv.client_artifact_class("Downloads/" + template) == "explorer-flow-frames"
+        assert _repository_gate()._client_artifact_class("Downloads/" + template) == "explorer-flow-frames"
+
+
+@pytest.mark.parametrize("url", ['"private.json"', '"data:application/json;base64,e30="', "blobUrl"])
+@pytest.mark.parametrize("relative", ["new-root/view.tsx", "new-root/view.jsx", "new-root/view.js"])
+def test_bare_jsx_download_retains_implicit_filename_for_url_data_and_blob(tmp_path, url, relative):
+    _write(tmp_path, relative, f"export const View = () => <a href={{{url}}}\n download />;")
+    names = census.download_names(tmp_path)
+    assert names == [(relative + ":2", "<implicit browser filename>", None)]
+    assert (relative, names[0][1]) not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_bare_jsx_detection_does_not_invent_attributes_from_tag_names_or_values(tmp_path):
+    _write(tmp_path, "new-root/view.tsx", 'const View = () => <download data-name="download" id={download} />;\n'
+           'const Explicit = () => <a download="flow-frames.txt" />;')
+    assert [t for _l, _e, t in census.download_names(tmp_path)] == ["flow-frames.txt"]
+
+
+@pytest.mark.parametrize("parts,leaf", [("['safe.snapshot', '.json']", "safe.snapshot.json"),
+                                       ("('private', '.json')", "private.json")])
+@pytest.mark.parametrize("expression", ["''.join({parts})", "separator.join({parts})", "''.join(pieces)"])
+def test_closed_string_joins_keep_the_composed_target_without_fragment_exemptions(tmp_path, parts, leaf, expression):
+    _write(tmp_path, "cisco_toolkit/writer.py", "from pathlib import Path\n\ndef emit():\n"
+           + f"    separator = ''\n    pieces = {parts}\n"
+           + f"    Path({expression.format(parts=parts)}).write_text('payload')\n")
+    key = "cisco_toolkit/writer.py::emit"
+    rows = {key: (1, census.CLIENT, ("snapshot",), "client payload")}
+    if leaf == "safe.snapshot.json":
+        assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == []
+        assert census.unclassified_site_literals(tmp_path) == {}
+        assert census.resolved_site_classes(tmp_path)[key] == {"snapshot"}
+    else:
+        assert census.unclassified_site_literals(tmp_path) == {key: {leaf}}
+        assert census.census_problems(tmp_path, census=rows, registry_keys=["snapshot"]) == [
+            f"client write site resolves to unclassified name {leaf!r}: {key}"]
+    assert census._templates(ast.parse("os.path.join('directory', 'safe.snapshot.json')", mode="eval").body,
+                             lambda _n: []) == ["safe.snapshot.json"]
+
+
+def test_partial_string_join_does_not_promote_its_fragments_to_literal_filenames():
+    expression = ast.parse("''.join([stem, '.json'])", mode="eval").body
+    assert census._templates(expression, lambda _n: []) == [None]
+    with pytest.raises(census.NameModelLimit, match="non-string filename pieces"):
+        census._templates(ast.parse("''.join(['private.json', 1])", mode="eval").body, lambda _n: [])
+
+
+@pytest.mark.parametrize("assembly", [
+    '"<{}>downloadBlob(blob, \'private.json\');</{}>".format("script", "script")',
+    '"<{tag}>downloadBlob(blob, \'private.json\');</{tag}>".format(tag="script")',
+    '"{0}".format("<script>downloadBlob(blob, \'private.json\');</script>")',
+])
+def test_closed_python_html_format_assemblies_keep_bad_download_obligations(tmp_path, assembly):
+    _write(tmp_path, "new-root/generated.py", "HTML = " + assembly)
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json"}
+    assert dv.client_artifact_class("Downloads/private.json") is None
+    assert _repository_gate()._client_artifact_class("Downloads/private.json") is None
+
+
+def test_python_html_format_uses_defining_scope_and_keeps_registered_control(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "TAG = 'script'\n"
+           + 'HTML = "<{tag}>downloadBlob(blob, \'private.json\');</{tag}>".format(tag=TAG)\n'
+           + "def render():\n    TAG = 'div'\n    return f'{HTML}'\n"
+           + 'SAFE = "<{}>downloadBlob(blob, \'flow-frames.txt\');</{}>".format("script", "script")\n')
+    names = census.download_names(tmp_path)
+    assert {t for _l, _e, t in names} == {"private.json", "flow-frames.txt"}
+
+
+def test_unresolved_python_html_format_boundary_refuses_instead_of_losing_bad_name(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def render(tag):\n"
+           + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(tag, "script")\n')
+    with pytest.raises(ValueError, match="unresolved Python HTML format language boundary"):
+        census.download_names(tmp_path)
+
+
+def test_unresolved_bound_html_format_pattern_cannot_disappear(tmp_path):
+    _write(tmp_path, "new-root/generated.py", 'PATTERN = "<{}>downloadBlob(blob, \'private.json\');</{}>"\n'
+           + 'def render(tag):\n    return PATTERN.format(tag, "script")\n')
+    with pytest.raises(ValueError, match="unresolved Python HTML format language boundary"):
+        census.download_names(tmp_path)
+
+
+def test_non_html_format_alignment_does_not_invent_a_producer_boundary(tmp_path):
+    _write(tmp_path, "new-root/alignment.py", "def render(value):\n    return '{:<20}'.format(value)\n")
+    assert census.download_names(tmp_path) == []
+
+
+def test_non_html_format_operands_do_not_invoke_the_filename_model(tmp_path):
+    _write(tmp_path, "new-root/messages.py", "def render():\n    fields = {}\n"
+           + "    return 'status: {}'.format(fields['runtime-field'])\n")
+    assert census.download_names(tmp_path) == []
+
+
+def test_html_format_boundary_keeps_closed_operand_refusals(tmp_path):
+    _write(tmp_path, "new-root/generated.py", "def render():\n    fields = {}\n"
+           + '    return "<{}>downloadBlob(blob, \'private.json\');</{}>".format(fields["runtime-field"], "script")\n')
+    with pytest.raises(ValueError, match="closed filename subscript cannot be evaluated"):
+        census.download_names(tmp_path)
+
+
+def test_existing_implicit_endpoint_downloads_bind_their_full_response_name_owners():
+    assert census.endpoint_download_sources_bound(ROOT), "endpoint source chain changed; reconcile it before classifying"
+    for (relative, href), owner in census.ENDPOINT_DOWNLOAD_BINDINGS.items():
+        names = census.endpoint_download_templates(relative, href, True)
+        expected = (docmeta.ASSESSHUB_DOWNLOAD_SPECS if owner == "<snapshot catalogue>"
+                    else (docmeta.artifact_spec(owner),))
+        assert set(names) == {"0" + spec.download_suffix for spec in expected}
+        assert names
+        for name in names:
+            assert dv.client_artifact_class("Downloads/" + name) is not None
+            assert _repository_gate()._client_artifact_class("Downloads/" + name) == dv.client_artifact_class("Downloads/" + name)
+        assert census.endpoint_download_templates(relative, href, False) == []
+    # Exact source custody is a response-owner proof, not a non-literal name exemption.
+    assert all((relative, "<implicit browser filename>") not in census.DOWNLOAD_NAME_PASSTHROUGH
+               for relative, _href in census.ENDPOINT_DOWNLOAD_BINDINGS)
+
+
+@pytest.mark.parametrize("relative,old,new", [
+    ("webapp/frontend/src/pages/Execution.tsx", 'from "../api"', 'from "../unowned-api"'),
+    ("webapp/frontend/src/components/CutoverPlanner.tsx", '"cutover")}', '"../raw")}'),
+    ("webapp/frontend/src/api.ts", '/deliverable/${kind}', '/raw?kind=${kind}'),
+    ("webapp/frontend/src/components/ui.tsx", 'export function useAsync', 'export function differentLoader'),
+    ("webapp/backend/app.py", '@app.get("/api/executions/{execution_id}/report")',
+     '@app.get("/api/executions/{execution_id}/unowned")'),
+    ("webapp/backend/app.py", 'out["content-disposition"]', 'out["missing-disposition"]'),
+    ("webapp/backend/app.py", 'headers = {"X-Gate-Status":', 'headers = {"Content-Disposition":'),
+    ("webapp/backend/app.py", 'spec.download_suffix,', '".private.json",'),
+    ("webapp/backend/deliverables.py", 'for spec in ASSESSHUB_DOWNLOAD_SPECS}', 'for spec in ()}'),
+    ("cisco_toolkit/docmeta.py", 'return self.assesshub_suffix', 'return ".private.json"'),
+])
+def test_endpoint_source_changes_keep_implicit_names_instead_of_granting_a_proof(tmp_path, relative, old, new):
+    for path in census.ENDPOINT_DOWNLOAD_SOURCE_BLOBS:
+        source = (ROOT / path).read_text(encoding="utf-8")
+        if path == relative:
+            assert old in source
+            source = source.replace(old, new, 1)
+        _write(tmp_path, path, source)
+    assert not census.endpoint_download_sources_bound(tmp_path)
+    for (caller, href) in census.ENDPOINT_DOWNLOAD_BINDINGS:
+        assert census.endpoint_download_templates(caller, href, False) == []
+
+
+@pytest.mark.parametrize("href", ['api.deliverableUrl(snapId, "../raw")',
+                                 'api.deliverableUrl(snapId, "?x")',
+                                 'api.deliverableUrl(snapId, "#x")',
+                                 'api.deliverableUrl(snapId, operatorKind)',
+                                 'evil.executionReportUrl(eid)'])
+def test_endpoint_factory_spelling_alone_cannot_prove_unsafe_or_unknown_arguments(tmp_path, href):
+    relative = "webapp/frontend/src/components/CutoverPlanner.tsx"
+    assert census.endpoint_download_templates(relative, href, True) == []
+    _write(tmp_path, relative, f"const View = () => <a href={{{href}}} download />;")
+    assert census.download_names(tmp_path) == [(relative + ":1", "<implicit browser filename>", None)]
+
+
+def test_a_new_endpoint_caller_is_discovered_without_inheriting_an_existing_owner_binding(tmp_path):
+    _write(tmp_path, "new-root/download.tsx", 'const View = () => <a href={api.executionReportUrl(eid)} download />;')
+    assert census.download_names(tmp_path) == [("new-root/download.tsx:1", "<implicit browser filename>", None)]
+
+
+def test_href_of_a_neighbouring_jsx_tag_cannot_classify_an_implicit_download():
+    source = '<div><a href={api.executionReportUrl(eid)} /><a href={blobUrl} download /></div>'
+    tokens = census._js_tokens(source, jsx=True)
+    position = next(i for i, token in enumerate(tokens) if token.value == "download")
+    assert census._jsx_href(source, tokens, position) == "blobUrl"

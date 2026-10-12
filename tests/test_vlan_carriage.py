@@ -12,6 +12,7 @@ from dataclasses import asdict
 import json
 import math
 import marshal
+import sys
 
 import pytest
 
@@ -2076,12 +2077,12 @@ def test_withdrawn_default_selects_literal_bf33_once_and_keeps_candidate_control
     snap, calls = _cpu_routing_subject(), []
     original = uip._carriage_bf33_rows
 
-    def literal(*args):
+    def literal(*args, **kwargs):
         positions, allowance_helper = args[2], args[-1]
         assert all(type(position) is tuple and len(position) == 7 for position in positions)
         assert allowance_helper.__code__.co_argcount == 3
         calls.append(True)
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(uip, "_carriage_bf33_rows", literal)
     monkeypatch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
@@ -2284,3 +2285,695 @@ def test_complete_key_literal_oracle_keeps_genuine_source_current_full_outputs(m
     assert outputs == [current]
     if damage in ("later-host-state", "extra-field"):
         assert current != first
+
+
+# PURE role-answer representation controls follow all earlier cases; no writer/controller or alternate fact owner.
+def _role_cell_subject(*, distinct_ports=False):
+    snap = _cpu_routing_subject()
+    for current, original, peer in (("switch-c", A, "switch-d"), ("switch-d", B, "switch-c")):
+        records = deepcopy(snap["interfaces"][original])
+        if distinct_ports:
+            for old, new in ((PORT, "Gi1/0/3"), ("Gi1/0/2", "Gi1/0/4")):
+                record = records.pop(old)
+                record.update(port=new, neighbor_port=new)
+                records[new] = record
+        for record in records.values():
+            if record["cdp_neighbor"]:
+                record["cdp_neighbor"] = peer
+        snap["interfaces"][current] = records
+        snap["stp_topology_observations"][current] = deepcopy(snap["stp_topology_observations"][original])
+    cable = deepcopy(snap["cable_map"]["cables"][0])
+    cable.update(a="switch-c", b="switch-d")
+    if distinct_ports:
+        cable.update(a_port="Gi1/0/3", b_port="Gi1/0/3")
+        for member, port in zip(cable["members"], ("Gi1/0/3", "Gi1/0/4")):
+            member.update(a_port=port, b_port=port)
+    snap["cable_map"]["cables"].append(cable)
+    snap["vlan_carriage"] = compute_vlan_carriage(
+        snap["cable_map"], snap["interfaces"], snap["stp_topology_observations"], snap["vlan_cutover"])
+    assert validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    assert snap["stp_topology_observations"][A] == snap["stp_topology_observations"]["switch-c"]
+    assert snap["stp_topology_observations"][A] != snap["stp_topology_observations"][B]
+    return snap
+
+
+def _observe_role_cell_kernel(monkeypatch, uip, observed, after=None, before=None):
+    owner = uip._carriage_bf33_rows
+
+    def kernel(*args, **kwargs):
+        tag, join = kwargs["role_cell_tag"], args[8]
+
+        def joined(*current, **options):
+            if before is not None:
+                before(current, join)
+            answer = join(*current, **options)
+            cell = type(answer) is tuple and len(answer) == 3 and answer[0] is tag
+            observed.append((current[0], current[1], current[2], answer, cell, current[3], current[4]))
+            if after is not None:
+                after(current, answer, cell, join)
+            return answer
+
+        replaced = list(args)
+        replaced[8] = joined
+        return owner(*replaced, **kwargs)
+
+    monkeypatch.setattr(uip, "_carriage_bf33_rows", kernel)
+
+
+@pytest.mark.parametrize("loop", [False, True])
+def test_role_cells_keep_genuine_seed_alias_current_host_and_complete_original_outputs(monkeypatch, loop):
+    from cisco_toolkit import ui_projection as uip
+
+    snap, outputs, observed, seeds = _role_cell_subject(), [], [], []
+    before, query_owner = deepcopy(snap), uip._carriage_role_query
+
+    def query(record, interface, vid, *, index):
+        answer = query_owner(record, interface, vid, index=index)
+        seeds.append((record, interface, vid, answer))
+        return answer
+
+    for enabled in (False, True):
+        observed.clear()
+        seeds.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_LOOP_DISPATCH_ENABLED", loop)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", True)
+            patch.setattr(uip, "_carriage_role_query", query)
+            if not loop:
+                _observe_role_cell_kernel(patch, uip, observed)
+            outputs.append(_cpu_routing_outputs(snap))
+        if not loop:
+            for record, interface, vid, answer in seeds:
+                assert any(retained is answer and current is record and logical == interface and current_vid == vid
+                           for _host, logical, current_vid, retained, _cell, current, _index in observed)
+            cells = [entry for entry in observed if entry[4]]
+            assert bool(cells) is enabled
+            if enabled:
+                assert any(cell[1] is None and cell[2] is None for *_prefix, cell, _flag, _record, _index in cells)
+                empties = [entry[3] for entry in cells if entry[3][1] is None]
+                assert len(empties) > 1 and all(cell is empties[0] for cell in empties)
+                singletons = [entry for entry in cells if entry[3][1] is not None]
+                assert singletons
+                for host, _interface, _vid, cell, _flag, current, _index in singletons:
+                    assert host in ("switch-c", "switch-d")
+                    assert current is snap["stp_topology_observations"][host]
+                    assert cell[2] is current["roles"][cell[1]]
+                    assert not any(cell[2] is role for old in (A, B)
+                                   for role in snap["stp_topology_observations"][old]["roles"])
+        json.dumps(outputs[-1][1:])  # A private tag/cell cannot escape into any public inventory/page DTO.
+    assert outputs[0] == outputs[1] and snap == before
+
+
+@pytest.mark.parametrize("shape", ["multiple", "falsey-list", "none", "global-missing", "foreign-index",
+                                    "owner-drift", "factory-drift", "empty-cap-zero", "empty-cap-one"])
+def test_role_cells_keep_raw_foreign_multiple_resource_and_binding_fallbacks(monkeypatch, shape):
+    from cisco_toolkit import ui_projection as uip
+
+    query_owner, index_owner, outputs, traces = uip._carriage_role_query, uip.carriage_role_index, [], []
+
+    class FalseyRows(list):
+        def __bool__(self):
+            trace.append("falsey")
+            return False
+
+    class ForeignIndex(dict):
+        pass
+
+    for enabled in (False, True):
+        snap, trace, observed = _role_cell_subject(), [], []
+
+        def query(record, interface, vid, *, index):
+            genuine = query_owner(record, interface, vid, index=index)
+            trace.append(("real", next(host for host, current in snap["stp_topology_observations"].items()
+                                        if record is current), interface, vid))
+            if shape == "none":
+                return None
+            if shape == "global-missing":
+                return uip._MISSING
+            if shape == "falsey-list":
+                return FalseyRows(genuine)
+            return genuine + genuine if shape == "multiple" else genuine
+
+        def forbidden(*_args):
+            raise AssertionError("drifted cell factory was invoked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_LOOP_DISPATCH_ENABLED", False)
+            patch.setattr(uip, "_carriage_role_query", query)
+            _observe_role_cell_kernel(patch, uip, observed)
+            if shape == "foreign-index":
+                patch.setattr(uip, "carriage_role_index", lambda record: ForeignIndex(index_owner(record)))
+            elif shape == "owner-drift":
+                real_owner = uip.carriage_role_rows
+                patch.setattr(uip, "carriage_role_rows", lambda *args, **kwargs: real_owner(*args, **kwargs))
+            elif shape == "factory-drift":
+                patch.setattr(uip, "_carriage_role_cell", forbidden)
+            elif shape.startswith("empty-cap"):
+                patch.setattr(uip, "_CARRIAGE_SHARED_EMPTY_LIMIT", 0 if shape.endswith("zero") else 1)
+            admission = uip.carriage_admission(snap)
+        traces.append(tuple(trace))
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+        cells = [entry for entry in observed if entry[4]]
+        if shape in ("none", "global-missing", "falsey-list", "foreign-index", "owner-drift", "factory-drift"):
+            assert cells == []
+        if shape in ("none", "global-missing"):
+            assert admission.source["state"] == "unverified" and len(trace) == 2
+            assert trace == [("real", A, "Po10", 10), ("real", A, PORT, 10)]
+        if shape == "multiple":
+            assert any(host == "switch-c" and interface == "Po10" and type(answer) is list and len(answer) == 2
+                       for host, interface, _vid, answer, _cell, _record, _index in observed)
+            assert not any(entry[4] and entry[1] == "Po10" and entry[3][1] is not None for entry in observed)
+        if shape.startswith("empty-cap"):
+            assert not any(entry[4] and entry[3][1] is None for entry in observed)
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("fault", ["allocation", "audit-oserror", "wrong-tag", "bool-position", "wrong-row", "list"])
+def test_role_cell_optional_constructor_refusal_or_bad_fields_keep_original_capture(monkeypatch, fault):
+    from cisco_toolkit import ui_projection as uip
+
+    # Keep the canonical FUNCTION identity; its declared test-only body fault must not bless a changed field.
+    def allocation(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        raise MemoryError("optional role representation refused")
+
+    def audit_oserror(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        raise OSError("optional role representation refused")
+
+    def wrong_tag(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        return object(), position, row
+
+    def bool_position(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        return tag, True, row
+
+    def wrong_row(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        return tag, position, dict(row) if row is not None else object()
+
+    def foreign_list(tag, position, row):
+        globals()["_role_cell_test_calls"].append(position)
+        return [tag, position, row]
+
+    snap = _role_cell_subject()
+    with monkeypatch.context() as original:
+        original.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", False)
+        expected = _cpu_routing_outputs(snap)
+    faults = {"allocation": allocation, "audit-oserror": audit_oserror, "wrong-tag": wrong_tag,
+              "bool-position": bool_position, "wrong-row": wrong_row, "list": foreign_list}
+    observed, calls = [], []
+    with monkeypatch.context() as patch:
+        patch.setattr(uip, "_role_cell_test_calls", calls, raising=False)
+        patch.setattr(uip._carriage_role_cell, "__code__", faults[fault].__code__)
+        _observe_role_cell_kernel(patch, uip, observed)
+        actual = _cpu_routing_outputs(snap)
+    assert actual == expected and calls and not any(entry[4] for entry in observed)
+    assert sum(position is None for position in calls) > 1  # Failed empty construction is NEVER cached.
+
+
+@pytest.mark.parametrize("effect", ["replace-row", "mutate-state", "runtime-error", "type-error"])
+def test_role_cells_capture_current_logical_row_before_the_real_physical_callback(monkeypatch, effect):
+    from cisco_toolkit import ui_projection as uip
+
+    query_owner, compatibility_owner, outputs, traces = uip._carriage_role_query, uip.carriage_role_compatible, [], []
+    for enabled in (False, True):
+        snap, trace, observed, changed, captured = _role_cell_subject(distinct_ports=True), [], [], [], []
+        current = snap["stp_topology_observations"]["switch-c"]
+        initial_roles = list(current["roles"])
+
+        def query(record, interface, vid, *, index):
+            genuine = query_owner(record, interface, vid, index=index)
+            if record is current and interface == "Gi1/0/3" and vid == 10 and not changed:
+                changed.append(True)
+                trace.append(("physical", interface, vid))
+                captured.append(initial_roles[0])
+                if effect == "replace-row":
+                    current["roles"][0] = {**initial_roles[0], "state": "blocked", "role": "alternate"}
+                elif effect == "mutate-state":
+                    initial_roles[0].update(state="blocked", role="alternate")
+                else:
+                    raise (RuntimeError if effect == "runtime-error" else TypeError)("real physical callback refusal")
+            return genuine
+
+        def compatibility(row):
+            if captured and row is captured[0]:
+                trace.append(("captured", row is current["roles"][0], row["state"]))
+            return compatibility_owner(row)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_carriage_role_query", query)
+            patch.setattr(uip, "carriage_role_compatible", compatibility)
+            _observe_role_cell_kernel(patch, uip, observed)
+            if effect == "runtime-error":
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                result, admission = (type(raised.value), raised.value.args), None
+            else:
+                admission, result = uip.carriage_admission(snap), None
+        assert changed == [True]
+        logical = [entry for entry in observed if entry[0] == "switch-c" and entry[1:3] == ("Po10", 10)]
+        assert logical and logical[0][4] is enabled
+        if enabled:
+            assert logical[0][3][2] is captured[0]
+        if effect == "replace-row":
+            assert ("captured", False, "forwarding") in trace
+            current["roles"] = initial_roles
+        if effect == "mutate-state":
+            assert admission.source["state"] == "unverified"
+        if effect == "type-error":
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+        traces.append(tuple(trace))
+        outputs.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("change", ["factory-drift", "foreign-host", "final-none", "lookup-error"])
+def test_existing_role_cells_decode_after_original_final_unsafe_lookup_without_materialization(monkeypatch, change):
+    from cisco_toolkit import ui_projection as uip
+
+    outputs, traces, initial = [], [], []
+    for enabled in (False, True):
+        snap, observed, changed, trace, domains = _role_cell_subject(), [], [], [], []
+        current = snap["stp_topology_observations"]["switch-c"]
+        original_roles = current["roles"]
+        ends = [member["a"] for member in snap["vlan_carriage"]["cables"][1]["members"]]
+        state = {"active": False, "eq": 0, "map": None}
+
+        class ForeignHost(str):
+            def __hash__(self):
+                if state["active"]:
+                    trace.append("hash")
+                return str.__hash__(self)
+
+            def __eq__(self, other):
+                if state["active"]:
+                    trace.append("eq")
+                    state["eq"] += 1
+                    if state["eq"] == 1 and change == "final-none":
+                        state["map"][("switch-c", "Po10", 10)] = None
+                        trace.append("replace-final")
+                    if change == "lookup-error":
+                        raise RuntimeError("original unsafe role-map callback refusal")
+                return str.__eq__(self, other)
+
+        class ReadTrace(list):
+            def __getitem__(self, index):
+                if state["active"]:
+                    raise AssertionError("retained role lookup reread its source row")
+                return list.__getitem__(self, index)
+
+        def forbidden(*_args):
+            raise AssertionError("transition invoked a new cell factory/materialization")
+
+        def before(args, join):
+            if changed and type(args[0]) is ForeignHost and args[1:3] == ("Po10", 10):
+                # Test-only inspection of the REAL flat map; this is not a private-namespace isolation claim.
+                bindings = dict(zip(join.__code__.co_freevars, join.__closure__))
+                state.update(active=True, eq=0, map=bindings["role_rows"].cell_contents)
+
+        def after(args, answer, cell, _join):
+            if state["active"]:
+                domains.append(tuple(trace[-5:]))
+                state["active"] = False
+            if args[0] == "switch-c" and args[1:3] == ("Po10", 10) and not changed:
+                assert cell is enabled
+                initial.append(answer)
+                changed.append(True)
+                current["roles"] = ReadTrace(original_roles)
+                if change == "factory-drift":
+                    patch.setattr(uip, "_carriage_role_cell", forbidden)
+                else:
+                    for end in ends:
+                        end["host"] = ForeignHost("switch-c")
+            elif changed and args[1:3] == ("Po10", 10) and str(args[0]) == "switch-c":
+                if change not in ("final-none", "lookup-error"):
+                    assert answer is initial[-1]  # No allocation/list/pair reconstruction after the transition.
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            _observe_role_cell_kernel(patch, uip, observed, after, before)
+            if change == "lookup-error":
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                admission, result = None, (type(raised.value), raised.value.args)
+            else:
+                admission, result = uip.carriage_admission(snap), None
+        state["active"] = False
+        assert changed == [True]
+        for end in ends:
+            end["host"] = "switch-c"
+        current["roles"] = original_roles
+        if change == "foreign-host":
+            assert trace and len(trace) % 4 == 0
+            assert all(trace[i:i+4] == ["hash", "eq", "hash", "eq"] for i in range(0, len(trace), 4))
+        if change == "final-none":
+            assert trace == ["hash", "eq", "replace-final", "hash", "eq"]
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+        if change == "lookup-error":
+            assert trace == ["hash", "eq"]
+        traces.append(tuple(trace))
+        outputs.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("fault", [RuntimeError, TypeError])
+def test_role_cell_current_source_read_errors_stay_outside_optional_factory_catch(monkeypatch, fault):
+    from cisco_toolkit import ui_projection as uip
+
+    query_owner, outputs, traces = uip._carriage_role_query, [], []
+    for enabled in (False, True):
+        snap, trace, changed = _role_cell_subject(), [], []
+        current = snap["stp_topology_observations"]["switch-c"]
+        original_roles = current["roles"]
+
+        class DeclaredRoles(list):
+            def __getitem__(self, index):
+                trace.append(("original-capture", index))
+                raise fault("original current-row capture refusal")
+
+        def query(record, interface, vid, *, index):
+            genuine = query_owner(record, interface, vid, index=index)
+            if record is snap["stp_topology_observations"][A] and interface == PORT and vid == 10 and not changed:
+                current["roles"] = DeclaredRoles(original_roles)
+                changed.append(True)  # AFTER static source admission, before the real C shared row capture.
+            return genuine
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_carriage_role_query", query)
+            if fault is RuntimeError:
+                with pytest.raises(RuntimeError) as raised:
+                    uip.carriage_admission(snap)
+                admission, result = None, (type(raised.value), raised.value.args)
+            else:
+                admission, result = uip.carriage_admission(snap), None
+        current["roles"] = original_roles
+        assert changed == [True] and trace == [("original-capture", 0)]
+        if fault is TypeError:
+            assert admission.source["state"] == "unverified" and list(admission.gaps) == [0, 1, 2]
+        traces.append(tuple(trace))
+        outputs.append(result if admission is None else _cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("history", ["host", "role"])
+def test_role_cell_new_minting_stays_disabled_after_unsafe_history_becomes_plain(monkeypatch, history):
+    from cisco_toolkit import ui_projection as uip
+
+    binding_owner, admission_owner, query_owner = (uip.carriage_cable_binding,
+                                                  uip.carriage_observation_admission, uip._carriage_role_query)
+    outputs, traces = [], []
+
+    class ForeignString(str):
+        pass
+
+    for enabled in (False, True):
+        snap, trace, observed, changed = _role_cell_subject(), [], [], []
+        end = snap["vlan_carriage"]["cables"][0]["members"][0]["a"]
+
+        def binding(*args, **kwargs):
+            result = binding_owner(*args, **kwargs)
+            if not changed:
+                name = "host" if history == "host" else "stp_interface"
+                end[name] = ForeignString(end[name])
+                changed.append(True)
+            return result
+
+        def admitted(record):
+            result = admission_owner(record)
+            if record is snap["stp_topology_observations"][A] and history == "host":
+                assert type(end["host"]) is ForeignString
+                trace.append("unsafe-admitted")
+                end["host"] = A
+            return result
+
+        def query(record, interface, vid, *, index):
+            genuine = query_owner(record, interface, vid, index=index)
+            if history == "role" and type(interface) is ForeignString:
+                trace.append("unsafe-query")
+                end["stp_interface"] = "Po10"
+            return genuine
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "carriage_cable_binding", binding)
+            patch.setattr(uip, "carriage_observation_admission", admitted)
+            patch.setattr(uip, "_carriage_role_query", query)
+            _observe_role_cell_kernel(patch, uip, observed)
+            admission = uip.carriage_admission(snap)
+        assert changed == [True] and trace == ["unsafe-admitted" if history == "host" else "unsafe-query"]
+        assert type(end["host"]) is str and type(end["stp_interface"]) is str
+        assert not any(entry[4] for entry in observed)
+        traces.append(trace)
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("loop", [False, True])
+@pytest.mark.parametrize("mutate_vid", [False, True])
+def test_role_cells_keep_foreign_compatibility_truth_and_original_late_signal_vid_order(monkeypatch, loop, mutate_vid):
+    from cisco_toolkit import ui_projection as uip
+
+    binding_owner, compatibility_owner, matches_owner = (uip.carriage_cable_binding,
+                                                         uip.carriage_role_compatible, uip.carriage_allowance_matches)
+    outputs, traces = [], []
+    for enabled in (False, True):
+        snap, trace, observed = _role_cell_subject(), [], []
+        saved_vlans = [row["vlan"] for row in snap["vlan_carriage"]["rows"]]
+
+        class CurrentRow(dict):
+            def __getitem__(self, name):
+                value = dict.__getitem__(self, name)
+                if name == "vlan":
+                    trace.append(("vid", value))
+                return value
+
+        class CurrentState(str):
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                trace.append(("state-rhs", str(self), other))
+                return str.__eq__(self, other)
+
+        class FlipTruth:
+            def __init__(self):
+                self.count = 0
+
+            def __bool__(self):
+                self.count += 1
+                value = self.count % 2 == 0
+                trace.append(("bool", self.count, value))
+                if mutate_vid and value:
+                    snap["vlan_carriage"]["rows"][0]["vlan"] = 30
+                return value
+
+        def binding(*args, **kwargs):
+            result = binding_owner(*args, **kwargs)
+            snap["vlan_carriage"]["rows"] = [CurrentRow(row) for row in snap["vlan_carriage"]["rows"]]
+            return result
+
+        def compatibility(row):
+            result = compatibility_owner(row)
+            if any(row is current for current in snap["stp_topology_observations"][B]["roles"]):
+                assert result is True
+                trace.append(("compat", row["state"]))
+                for current in snap["stp_topology_observations"]["switch-d"]["roles"]:
+                    current["state"] = CurrentState(str(current["state"]))
+                return FlipTruth()
+            return result
+
+        def matches(admission, vid, signal):
+            trace.append(("helper", vid, signal))
+            return matches_owner(admission, vid, signal)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_LOOP_DISPATCH_ENABLED", loop)
+            patch.setattr(uip, "carriage_cable_binding", binding)
+            patch.setattr(uip, "carriage_role_compatible", compatibility)
+            patch.setattr(uip, "carriage_allowance_matches", matches)
+            if not loop:
+                _observe_role_cell_kernel(patch, uip, observed)
+            admission = uip.carriage_admission(snap)
+        first = next(i for i, event in enumerate(trace) if event == ("compat", "blocked"))
+        assert trace[first+1:first+3] == [("bool", 1, False), ("bool", 2, True)]
+        helper = next(i for i in range(first+3, len(trace)) if trace[i][0] == "helper")
+        assert trace[helper] == ("helper", 30 if mutate_vid else 10, "blocked")
+        assert any(event == ("vid", 30 if mutate_vid else 10) for event in trace[first+3:helper])
+        assert not any(event[0] == "state-rhs" for event in trace[first:helper])
+        assert ("helper", 10, "forwarding") in trace[:first]
+        if not loop:
+            assert any(entry[4] and entry[3][1] is not None for entry in observed) is enabled
+        traces.append(tuple(trace))
+        for row, vid in zip(snap["vlan_carriage"]["rows"], saved_vlans):
+            row["vlan"] = vid
+        for role in snap["stp_topology_observations"]["switch-d"]["roles"]:
+            role["state"] = str(role["state"])
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and traces[0] == traces[1]
+
+
+@pytest.mark.parametrize("drift", ["factory", "owner", "host-history", "role-history"])
+def test_one_empty_cell_keeps_existing_answer_but_new_keys_require_fresh_mint_gates(monkeypatch, drift):
+    from cisco_toolkit import ui_projection as uip
+
+    outputs, owner_domains = [], []
+    query_owner, role_owner = uip._carriage_role_query, uip.carriage_role_rows
+
+    class ForeignString(str):
+        pass
+
+    for enabled in (False, True):
+        snap, observed, changed, queries = _role_cell_subject(), [], [], []
+        end = snap["vlan_carriage"]["cables"][1]["members"][0]["a"]
+
+        def query(record, interface, vid, *, index):
+            queries.append((next(host for host, current in snap["stp_topology_observations"].items()
+                                 if record is current), interface, vid))
+            return query_owner(record, interface, vid, index=index)
+
+        def forbidden(*_args):
+            raise AssertionError("new empty retention invoked the drifted factory")
+
+        def after(args, answer, cell, join):
+            if args[0] == "switch-c" and args[1:3] == (PORT, 10) and not changed:
+                assert cell is enabled
+                changed.append(True)
+                if drift == "factory":
+                    patch.setattr(uip, "_carriage_role_cell", forbidden)
+                elif drift == "owner":
+                    patch.setattr(uip, "carriage_role_rows", lambda *a, **kw: role_owner(*a, **kw))
+                altered = list(args)
+                if drift == "host-history":
+                    end["host"] = altered[0] = ForeignString("switch-c")
+                elif drift == "role-history":
+                    end["port"] = altered[1] = ForeignString(PORT)
+                # REAL retained query after drift/unsafe history: no constructor/materialization or new owner.
+                assert join(*altered, share_empty=True) is answer
+                end["host"], end["port"] = "switch-c", PORT
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_carriage_role_query", query)
+            _observe_role_cell_kernel(patch, uip, observed, after)
+            admission = uip.carriage_admission(snap)
+        assert changed == [True]
+        later = [entry for entry in observed if entry[0] == "switch-c" and entry[1:3] == ("Gi1/0/2", 10)]
+        assert later and type(later[0][3]) is list and later[0][3] == [] and later[0][4] is False
+        owner_domains.append(queries)
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and owner_domains[0] == owner_domains[1]
+
+
+def test_empty_reuse_keeps_native_index_check_even_when_original_none_index_sharing_is_valid(monkeypatch):
+    from cisco_toolkit import ui_projection as uip
+
+    query_owner, outputs, domains = uip._carriage_role_query, [], []
+    for enabled in (False, True):
+        snap, observed, calls = _role_cell_subject(), [], []
+
+        def query(record, interface, vid, *, index):
+            calls.append((next(host for host, current in snap["stp_topology_observations"].items()
+                               if record is current), interface, vid, index))
+            return query_owner(record, interface, vid, index=index)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "carriage_role_index", lambda _record: None)
+            patch.setattr(uip, "_carriage_role_query", query)
+            _observe_role_cell_kernel(patch, uip, observed)
+            admission = uip.carriage_admission(snap)
+        assert not any(entry[4] for entry in observed)
+        assert all(entry[6] is None for entry in observed)
+        assert any(host == "switch-c" and interface == PORT and vid == 10 and type(answer) is list and answer == []
+                   for host, interface, vid, answer, _cell, _record, _index in observed)
+        assert not any(host == "switch-c" and interface == PORT and vid == 10
+                       for host, interface, vid, _index in calls)  # Genuine old shared absence, no canonical index.
+        domains.append(calls)
+        outputs.append(_cpu_routing_outputs(snap, admission=admission))
+    assert outputs[0] == outputs[1] and domains[0] == domains[1]
+
+
+@pytest.mark.parametrize("token_case", ["native", "zero", "saturated", "noninteger", "disabled", "factory-drift",
+                                        "class-drift", "wrong-identity", "copied-record", "copied-index"])
+def test_singleton_cells_keep_real_token_proof_or_full_join_fallback(monkeypatch, token_case):
+    from cisco_toolkit import ui_projection as uip
+
+    real_new, outputs = uip._CarriageRoutingToken.__new__, []
+
+    def constructor(cls, host, identity, observation, index):
+        if token_case == "wrong-identity":
+            identity += 100
+        elif token_case == "copied-record":
+            observation = deepcopy(observation)
+        else:
+            index = dict(index)
+        return real_new(cls, host, identity, observation, index)
+
+    def forbidden(*_args):
+        raise AssertionError("altered optional token provider was invoked")
+
+    for enabled in (False, True):
+        snap, observed = _role_cell_subject(), []
+        with monkeypatch.context() as patch:
+            patch.setattr(uip, "_CARRIAGE_ROLE_CELLS_ENABLED", enabled)
+            patch.setattr(uip, "_CARRIAGE_CPU_ROUTING_ENABLED", True)
+            patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_ENABLED", token_case != "disabled")
+            if token_case in ("zero", "saturated", "noninteger"):
+                patch.setattr(uip, "_CARRIAGE_ROUTING_TOKEN_LIMIT", {"zero": 0, "saturated": 1,
+                                                                    "noninteger": True}[token_case])
+            elif token_case == "factory-drift":
+                patch.setattr(uip, "_carriage_routing_token", forbidden)
+            elif token_case == "class-drift":
+                patch.setattr(uip, "_CarriageRoutingToken", forbidden)
+            elif token_case in ("wrong-identity", "copied-record", "copied-index"):
+                patch.setattr(uip._CarriageRoutingToken, "__new__", staticmethod(constructor))
+            _observe_role_cell_kernel(patch, uip, observed)
+            code_type = type(uip._carriage_gaps.__code__)
+            owned = [code for code in uip._carriage_gaps.__code__.co_consts
+                     if type(code) is code_type and code.co_name == "new_cell"]
+            assert len(owned) == 1
+            full_maps = ("shared_hosts", "observations", "observation_ids", "indexes", "shared_indexes")
+            active, completed = {}, []
+
+            def proof_reads(frame, event, argument):
+                if frame.f_code is not owned[0]:
+                    return
+                if event == "call":
+                    active[frame] = {name: 0 for name in ("routing_tokens", *full_maps)}
+                elif event == "c_call" and getattr(argument, "__name__", None) == "get":
+                    owner = getattr(argument, "__self__", None)
+                    current = frame.f_locals
+                    for name in ("routing_tokens", *full_maps):
+                        if owner is current[name]:
+                            active[frame][name] += 1
+                elif event == "return":
+                    completed.append(active.pop(frame))
+
+            previous = sys.getprofile()
+            try:
+                sys.setprofile(proof_reads)
+                admission = uip.carriage_admission(snap)
+            finally:
+                sys.setprofile(previous)
+            outputs.append(_cpu_routing_outputs(snap, admission=admission))
+            if not enabled:
+                assert completed == []
+            else:
+                assert completed
+                for reads in completed:
+                    if token_case == "native":
+                        assert reads["routing_tokens"] == 1 and all(reads[name] == 0 for name in full_maps)
+                    else:
+                        assert all(reads[name] == 1 for name in full_maps)
+        assert any(entry[4] and entry[3][1] is not None for entry in observed) is enabled
+        if enabled:
+            assert all(entry[3][2] is entry[5]["roles"][entry[3][1]] for entry in observed
+                       if entry[4] and entry[3][1] is not None)
+    assert outputs[0] == outputs[1]

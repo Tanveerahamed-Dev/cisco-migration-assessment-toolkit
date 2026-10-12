@@ -4904,6 +4904,7 @@ _CARRIAGE_CPU_ROUTING_ENABLED = True
 _CARRIAGE_ROUTING_TOKEN_ENABLED = True
 _CARRIAGE_ROUTING_TOKEN_LIMIT = 16_384
 _CARRIAGE_LOOP_DISPATCH_ENABLED = False
+_CARRIAGE_ROLE_CELLS_ENABLED = True
 
 
 class _CarriageRoutingToken(NamedTuple):
@@ -4920,6 +4921,14 @@ def _carriage_routing_token(host: str, identity: int, observation: Any, index: A
 
 _CARRIAGE_ROUTING_TOKEN_TYPE = _CarriageRoutingToken
 _CARRIAGE_ROUTING_TOKEN_OWNER = _carriage_routing_token
+
+
+def _carriage_role_cell(tag: Any, position: Optional[int], row: Any) -> Tuple[Any, ...]:
+    """Private immutable answer representation; an empty cell has None/None, not an end verdict."""
+    return tag, position, row
+
+
+_CARRIAGE_ROLE_CELL_OWNER = _carriage_role_cell
 
 
 def _carriage_role_query(observation: Any, interface: str, vid: int, *, index: Any) -> Any:
@@ -4954,8 +4963,9 @@ def _carriage_extend_gap_fallback(found: List[Tuple[Any, ...]], gaps: Any) -> No
 
 def _carriage_bf33_rows(ctx: _Ctx, section: Dict[str, Any], positions: Any, typed_chars: Any,
                        configured_chars: Any, signals: Any, admitted: Any, role_index: Any,
-                       joined_roles: Any, compatible_role: Any, allowance_agrees: Any) -> Dict[int, Tuple[Tuple[Any, ...], ...]]:
-    """Literal BF33 row dispatch, selected ONCE; owners, live reads and callback/error domains are shared."""
+                       joined_roles: Any, compatible_role: Any, allowance_agrees: Any, *,
+                       role_cell_tag: Any = None) -> Dict[int, Tuple[Tuple[Any, ...], ...]]:
+    """BF33 read/short-circuit domains, with native private answer decoding and unchanged raw consumers."""
     gaps: Dict[int, Tuple[Tuple[Any, ...], ...]] = {}
     for row in section["rows"]:
         codes = row["codes"]
@@ -4987,8 +4997,15 @@ def _carriage_bf33_rows(ctx: _Ctx, section: Dict[str, Any], positions: Any, type
                     beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
                                            share_empty=plan is not None)
                               if end["stp_interface"] != end["port"] else [])
-                    ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
-                          and rows[0][1]["state"] == signals[char])
+                    cell = (role_cell_tag is not None and type(rows) is tuple and len(rows) == 3
+                            and rows[0] is role_cell_tag)
+                    beside_cell = (role_cell_tag is not None and type(beside) is tuple and len(beside) == 3
+                                   and beside[0] is role_cell_tag)
+                    ok = ((rows[1] is not None if cell else len(rows) == 1)
+                          and (beside[1] is None if beside_cell else not beside)
+                          and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                               else compatible_role(end["host"], *rows[0], observation))
+                          and (rows[2]["state"] if cell else rows[0][1]["state"]) == signals[char])
                     ok = ok and allowance_agrees(key, row["vlan"], signals[char])
                 if not ok:
                     found.append(stp_gap)
@@ -5011,8 +5028,11 @@ def _carriage_bf33_rows(ctx: _Ctx, section: Dict[str, Any], positions: Any, type
                         index = role_index(index_host, observation, tokenize=plan is not None)
                         if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
-                    eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
-                                                observation, index, share_empty=plan is not None)) == 0
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"],
+                                        observation, index, share_empty=plan is not None)
+                    cell = (role_cell_tag is not None and type(rows) is tuple and len(rows) == 3
+                            and rows[0] is role_cell_tag)
+                    eligible = rows[1] is None if cell else len(rows) == 0
                 if not eligible:
                     found.append(stp_gap)
                     current = ("stp_topology_observations", end["host"])
@@ -5065,6 +5085,9 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     cpu_routing = _CARRIAGE_CPU_ROUTING_ENABLED is True
     token_routing = cpu_routing and _CARRIAGE_ROUTING_TOKEN_ENABLED is True
     loop_dispatch = _CARRIAGE_LOOP_DISPATCH_ENABLED is True
+    role_cells = cpu_routing and _CARRIAGE_ROLE_CELLS_ENABLED is True
+    role_cell_tag = object()
+    empty_cell: Optional[Tuple[Any, ...]] = None  # One valid shape, not an empty-query outcome/cache.
 
     def admitted(host: str) -> Any:
         nonlocal ordinary_host_history
@@ -5211,7 +5234,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             and typed_chars.isdisjoint(configured_chars)
             and set(signals) == typed_chars | configured_chars):
         kinds = {char: 1 if char in typed_chars else 2 for char in signals}
-    role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
+    role_rows: Dict[Tuple[str, str, int], Any] = {}
     allowance_matches: Dict[Tuple[int, int, str], bool] = {}
     shared_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
     shared_empty_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
@@ -5264,9 +5287,48 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             return None
         return identity
 
+    def new_cell(host: str, interface: str, vid: int, observation: Any, index: Any,
+                 position: int, captured: Any, query_identity: Any) -> Any:
+        # This checks ONLY unexposed native map joins. Source row reads occur at the original comprehension
+        # point outside the allocation catch; no cell enters a public owner, index, source or admission slot.
+        if (not role_cells or not ordinary_role_history or not ordinary_host_history
+                or type(host) is not str or type(interface) is not str or type(vid) is not int
+                or type(observation) is not dict or type(index) is not MappingProxyType
+                or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
+                or _carriage_role_cell is not _CARRIAGE_ROLE_CELL_OWNER):
+            return None
+        if type(query_identity) is not int or type(position) is not int or type(captured) is not dict:
+            return None
+        joined = False
+        if (token_routing and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+            token = routing_tokens.get(host)
+            joined = (type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and type(token.host) is str
+                      and token.host == host and type(token.identity) is int and token.identity == query_identity
+                      and token.observation is observation and token.index is index)
+        if not joined:
+            # Missing/noncanonical/saturated tokens keep the original complete current six-map proof.
+            identity, current = shared_hosts.get(host), observations.get(host)
+            if (type(identity) is not int or identity != query_identity
+                    or type(current) is not tuple or len(current) != 3
+                    or type(current[0]) is not str or current[0] != _PUB or current[2] is not observation
+                    or observation_ids.get(host) != identity or indexes.get(host) is not index
+                    or shared_indexes.get(identity) is not index):
+                return None
+        try:
+            cell = _carriage_role_cell(role_cell_tag, position, captured)
+        except Exception:
+            return None  # Optional representation allocation, never an actual owner/source-read error.
+        if (_carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER and type(cell) is tuple and len(cell) == 3
+                and cell[0] is role_cell_tag and cell[1] is position and cell[2] is captured):
+            return cell
+        return None
+
     def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any,
-                     *, share_empty: bool = False) -> List[Any]:
-        nonlocal ordinary_role_history, ordinary_host_history
+                     *, share_empty: bool = False) -> Any:
+        nonlocal ordinary_role_history, ordinary_host_history, empty_cell
         if type(host) is not str:
             ordinary_host_history = False
         if type(host) is not str or type(interface) is not str or type(vid) is not int:
@@ -5283,14 +5345,44 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             query = (identity, interface, vid) if identity is not None else None
             if query is not None and query in shared_positions:
                 # Only immutable positions cross hosts; each row object comes from THIS host's current record.
-                rows = [(i, observation["roles"][i]) for i in shared_positions[query]]
+                if (role_cells and share_empty and ordinary_role_history and ordinary_host_history
+                        and type(host) is str and type(interface) is str and type(vid) is int
+                        and carriage_role_rows is _CARRIAGE_ROLE_ROWS_OWNER
+                        and _carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER):
+                    positions = shared_positions[query]
+                    if type(positions) is tuple and len(positions) == 1 and type(positions[0]) is int:
+                        position = positions[0]
+                        captured = observation["roles"][position]  # ORIGINAL read, BEFORE the physical query.
+                        cell = new_cell(host, interface, vid, observation, index, position, captured, identity)
+                        rows = cell if cell is not None else [(position, captured)]
+                    else:
+                        rows = [(i, observation["roles"][i]) for i in positions]
+                else:
+                    rows = [(i, observation["roles"][i]) for i in shared_positions[query]]
                 role_rows[key] = rows
             else:
                 empty_id = empty_identity(host, interface, vid, observation, index, share_empty)
                 empty_query = (empty_id, interface, vid) if empty_id is not None else None
                 if empty_query is not None and empty_query in shared_empty_positions:
                     # Genuine immutable absence, applied to THIS host; no end/VLAN verdict or row alias.
-                    rows = []
+                    # The FRESH original empty_identity call proved joins/types/caps immediately before this
+                    # native-key membership. Keep both extra native checks; reuse no earlier query's proof.
+                    cell = None
+                    if (role_cells and share_empty and ordinary_role_history and ordinary_host_history
+                            and type(empty_id) is int and type(observation) is dict and type(index) is MappingProxyType
+                            and carriage_role_rows is _CARRIAGE_ROLE_ROWS_OWNER
+                            and _carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER):
+                        if empty_cell is None:
+                            try:
+                                candidate = _carriage_role_cell(role_cell_tag, None, None)
+                            except Exception:
+                                candidate = None  # Optional allocation only; failed construction stays uncached.
+                            if (_carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER and type(candidate) is tuple
+                                    and len(candidate) == 3 and candidate[0] is role_cell_tag
+                                    and candidate[1] is None and candidate[2] is None):
+                                empty_cell = candidate
+                        cell = empty_cell
+                    rows = cell if cell is not None else []
                     role_rows[key] = rows
                     return rows if one_probe else role_rows[key]
                 rows = _carriage_role_query(observation, interface, vid, index=index)
@@ -5396,7 +5488,8 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     positions.append(original + (original[-1] is not None, hint))
     if not loop_dispatch:
         gaps = _carriage_bf33_rows(ctx, section, positions, typed_chars, configured_chars, signals,
-                                  admitted, role_index, joined_roles, compatible_role, allowance_agrees)
+                                  admitted, role_index, joined_roles, compatible_role, allowance_agrees,
+                                  role_cell_tag=role_cell_tag)
         admitted_roles = {host: (record if state == _PUB else None, indexes.get(host))
                           for host, (state, _why, record) in observations.items()}
         return gaps, admitted_roles
@@ -5434,14 +5527,22 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
                                            share_empty=present if loop_dispatch else plan is not None)
                               if end["stp_interface"] != end["port"] else [])
+                    cell = type(rows) is tuple and len(rows) == 3 and rows[0] is role_cell_tag
+                    beside_cell = type(beside) is tuple and len(beside) == 3 and beside[0] is role_cell_tag
                     if row_kinds is not None:
-                        ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
-                              and rows[0][1]["state"] == (captured_signal := signals[char]))
+                        ok = ((rows[1] is not None if cell else len(rows) == 1)
+                              and (beside[1] is None if beside_cell else not beside)
+                              and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                                   else compatible_role(end["host"], *rows[0], observation))
+                              and (rows[2]["state"] if cell else rows[0][1]["state"]) == (captured_signal := signals[char]))
                         ok = ok and candidate_allowance_agrees(key, row["vlan"],
                                                    captured_signal if captured_signal is not missing_signal else signals[char], hint)
                     else:
-                        ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
-                              and rows[0][1]["state"] == signals[char])
+                        ok = ((rows[1] is not None if cell else len(rows) == 1)
+                              and (beside[1] is None if beside_cell else not beside)
+                              and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                                   else compatible_role(end["host"], *rows[0], observation))
+                              and (rows[2]["state"] if cell else rows[0][1]["state"]) == signals[char])
                         ok = ok and candidate_allowance_agrees(key, row["vlan"], signals[char], hint)
                 if not ok:
                     found.append(stp_gap)
@@ -5464,8 +5565,10 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         index = role_index(index_host, observation, tokenize=present if loop_dispatch else plan is not None)
                         if (present if loop_dispatch else plan is not None) and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
-                    eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
-                                                observation, index, share_empty=present if loop_dispatch else plan is not None)) == 0
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
+                                        share_empty=present if loop_dispatch else plan is not None)
+                    cell = type(rows) is tuple and len(rows) == 3 and rows[0] is role_cell_tag
+                    eligible = rows[1] is None if cell else len(rows) == 0
                 if not eligible:
                     found.append(stp_gap)
                     current = ("stp_topology_observations", end["host"])
