@@ -6093,7 +6093,8 @@ def _redact_shell_snmp_witness(line: str, depth: int = 0) -> bool:
     Recognition alone feeds the existing shape/outer -c operand path. It does not
     decode credential bytes for an exemption or introduce another masking policy.
     """
-    if depth >= 8 or "-c" not in line or "sh" not in line:
+    # Carrier and option spellings are matched only after shell-word decoding.
+    if depth >= 8 or not any(char in line for char in "\"'\\"):
         return False
     for carrier in _redact_shell_command_words(line):
         name = _redact_shell_executable(carrier.group(0))
