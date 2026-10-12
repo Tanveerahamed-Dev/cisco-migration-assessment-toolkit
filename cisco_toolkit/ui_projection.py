@@ -4900,6 +4900,7 @@ _CARRIAGE_SHARED_EMPTY_LIMIT = 16_384
 _CARRIAGE_CPU_ROUTING_ENABLED = True
 _CARRIAGE_ROUTING_TOKEN_ENABLED = True
 _CARRIAGE_ROUTING_TOKEN_LIMIT = 16_384
+_CARRIAGE_LOOP_DISPATCH_ENABLED = True
 
 
 class _CarriageRoutingToken(NamedTuple):
@@ -4943,6 +4944,11 @@ def _carriage_routing_plan() -> Optional[_CarriageRoutingPlan]:
     return _CarriageRoutingPlan()
 
 
+def _carriage_extend_gap_fallback(found: List[Tuple[Any, ...]], gaps: Any) -> None:
+    """Preserve ordinary extend/iteration/length-hint effects for every nonempty or foreign value."""
+    found.extend(gaps)
+
+
 def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[Tuple[Any, ...], ...]],
                                                                     Dict[str, Tuple[Any, Any]]]:
     """Check each published end claim's declared witnesses once per snapshot, without re-evaluating an allowance or
@@ -4977,6 +4983,7 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     missing_roles = object()  # A foreign owner may return global _MISSING, None or a falsey answer.
     cpu_routing = _CARRIAGE_CPU_ROUTING_ENABLED is True
     token_routing = cpu_routing and _CARRIAGE_ROUTING_TOKEN_ENABLED is True
+    loop_dispatch = _CARRIAGE_LOOP_DISPATCH_ENABLED is True
 
     def admitted(host: str) -> Any:
         nonlocal ordinary_host_history
@@ -5017,6 +5024,15 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
     configured: Dict[Tuple[int, int, str], int] = {}
     allowance_ids: Dict[Optional[Tuple[Any, ...]], int] = {}
     allowances: List[Optional[Tuple[Any, ...]]] = []
+    ordinary_static_history = True
+    missing_hint = object()
+    missing_signal = object()
+
+    def static_key_history(key: Tuple[Any, ...]) -> None:
+        nonlocal ordinary_static_history
+        if (type(key) is not tuple or len(key) != 3 or type(key[0]) is not int
+                or type(key[1]) is not int or type(key[2]) is not str):
+            ordinary_static_history = False
 
     def allowance_id(record: Any) -> int:
         # The owner's admission is an immutable tuple of exact kind/ranges/native/mode values (or None).
@@ -5070,7 +5086,10 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         or (source_values["port"].strip()
                             and carriage_join_interface(source_values["port"]) != end["stp_interface"]))):
                     bad.append(toks + ("allowance_pointer",))
-                configured[(ci, mi, side)] = allowance_id(source)
+                identity = allowance_id(source)  # Preserve the original RHS-owner call BEFORE the key write.
+                configured_key = (ci, mi, side)
+                static_key_history(configured_key)
+                configured[configured_key] = identity
                 for ri, pointer in enumerate(end["refs"]):
                     resolved, value = resolve(pointer)
                     valid = False
@@ -5086,20 +5105,37 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                     state, _why, record = admitted(host)
                     if resolved is None or not isinstance(value, dict) or record is None or state in (_UV, AU):
                         bad.append(toks + ("stp_pointer",))
-                static[(ci, mi, side)] = bad
+                static_key = (ci, mi, side)
+                static_key_history(static_key)
+                static[static_key] = bad
     typed_chars = {carriage_end_char("forwarding"), carriage_end_char("blocked")}
     configured_chars = {carriage_end_char("allowed"), carriage_end_char("excluded")}
     # Owner-derived immutable signals and exact role joins are shared only within this admission of one
     # read-only snapshot. Every end still checks its own static witnesses and configured allowance below.
     signals = {char: decode_carriage_end(char)["signal"] for char in typed_chars | configured_chars}
+    # Inspect only native stored keys BEFORE any extra set/dict probe. Foreign/colliding owner enums keep
+    # the literal old branches; this optional table never calls an owner again or supplies a new signal.
+    kinds = None
+    if (loop_dispatch and all(type(char) is str and len(char) == 1 for char in typed_chars)
+            and all(type(char) is str and len(char) == 1 for char in configured_chars)
+            and all(type(char) is str and len(char) == 1 for char in signals)
+            and all(type(signal) is str for signal in signals.values())
+            and len(typed_chars) == 2 and len(configured_chars) == 2 and len(signals) == 4
+            and typed_chars.isdisjoint(configured_chars)
+            and set(signals) == typed_chars | configured_chars):
+        kinds = {char: 1 if char in typed_chars else 2 for char in signals}
     role_rows: Dict[Tuple[str, str, int], List[Any]] = {}
     allowance_matches: Dict[Tuple[int, int, str], bool] = {}
     shared_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
     shared_empty_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
     shared_compatibility: Dict[Tuple[int, int], bool] = {}
 
-    def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str) -> bool:
-        identity = configured[key]
+    def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str, hint: Any = missing_hint) -> bool:
+        if hint is missing_hint or not ordinary_static_history:
+            static_key_history(key)
+            identity = configured[key]  # Missing/foreign history retains the ORIGINAL LATE lookup/error point.
+        else:
+            identity = hint
         query = (identity, vid, signal)
         if query not in allowance_matches:
             allowance_matches[query] = carriage_allowance_matches(allowances[identity], vid, signal)
@@ -5242,68 +5278,88 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
             base = offset + 1 + 3 * member["index"]
             for side, shift in (("a", 1), ("b", 2)):
                 key = (ci, member["index"], side)
+                static_key_history(key)
                 if key in static:
                     ci, mi, side = key
                     witness = ("vlan_carriage", "cables", ci, "members", mi, side)
-                    positions.append((base + shift, key, member[side], static[key], witness + ("stp_pointer",),
-                                      witness + ("allowance_pointer",), _carriage_routing_plan()))
+                    static_key_history(key)
+                    original = (base + shift, key, member[side], static[key], witness + ("stp_pointer",),
+                                witness + ("allowance_pointer",), _carriage_routing_plan())
+                    # Every original argument/probe/factory above finishes BEFORE optional native hints.
+                    hint = missing_hint
+                    if loop_dispatch and ordinary_static_history:
+                        static_key_history(key)
+                        if ordinary_static_history:
+                            hint = configured.get(key, missing_hint)
+                    if type(hint) is not int:
+                        hint = missing_hint
+                    positions.append(original + (original[-1] is not None, hint))
     gaps: Dict[int, Tuple[Tuple[Any, ...], ...]] = {}
     for row in section["rows"]:
         codes = row["codes"]
         if not codes:
             continue
+        row_kinds = kinds if type(codes) is str else None
         found: List[Tuple[Any, ...]] = []
-        for position, key, end, static_gaps, stp_gap, allowance_gap, plan in positions:
+        for position, key, end, static_gaps, stp_gap, allowance_gap, plan, present, hint in positions:
+            captured_signal = missing_signal  # NEVER reuse a prior end after a foreign short-circuit truth value.
             char = codes[position]
-            if char in typed_chars:
+            kind = row_kinds.get(char, 0) if row_kinds is not None else 0
+            if (kind == 1 if row_kinds is not None else char in typed_chars):
                 # Read at the same points as the original dispatch, including after an owner callback. A
                 # changed/nonplain host falls back; the plan never freezes the logical or physical route.
                 host = end["host"]
-                if plan is not None and type(host) is str and host == plan.host:
+                if (present if loop_dispatch else plan is not None) and type(host) is str and host == plan.host:
                     observation, ok = plan.observation, True
                 else:
                     state, _why, observation = admitted(host)
                     ok = state == _PUB and observation is not None
                 if ok:
                     index_host = end["host"]
-                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                    if ((present if loop_dispatch else plan is not None) and type(index_host) is str and index_host == plan.host
                             and observation is plan.observation):
                         index = plan.index
                     else:
-                        index = role_index(index_host, observation, tokenize=plan is not None)
-                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                        index = role_index(index_host, observation, tokenize=present if loop_dispatch else plan is not None)
+                        if (present if loop_dispatch else plan is not None) and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
                     rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
-                                        share_empty=plan is not None)
+                                        share_empty=present if loop_dispatch else plan is not None)
                     beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
-                                           share_empty=plan is not None)
+                                           share_empty=present if loop_dispatch else plan is not None)
                               if end["stp_interface"] != end["port"] else [])
-                    ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
-                          and rows[0][1]["state"] == signals[char])
-                    ok = ok and allowance_agrees(key, row["vlan"], signals[char])
+                    if row_kinds is not None:
+                        ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
+                              and rows[0][1]["state"] == (captured_signal := signals[char]))
+                        ok = ok and allowance_agrees(key, row["vlan"],
+                                                   captured_signal if captured_signal is not missing_signal else signals[char], hint)
+                    else:
+                        ok = (len(rows) == 1 and not beside and compatible_role(end["host"], *rows[0], observation)
+                              and rows[0][1]["state"] == signals[char])
+                        ok = ok and allowance_agrees(key, row["vlan"], signals[char], hint)
                 if not ok:
                     found.append(stp_gap)
-            elif char in configured_chars:
+            elif (kind == 2 if row_kinds is not None else char in configured_chars):
                 # A configured code is eligible only while the CURRENT owner has no relevant logical PVST
                 # row. A newly supplied row (even an agreeing one), malformed record or error capture makes
                 # this stored basis stale; withhold it instead of computing a replacement relation.
                 host = end["host"]
-                if plan is not None and type(host) is str and host == plan.host:
+                if (present if loop_dispatch else plan is not None) and type(host) is str and host == plan.host:
                     state, observation = _PUB, plan.observation
                 else:
                     state, _why, observation = admitted(host)
                 eligible = state == _NC or (state == _PUB and observation is not None)
                 if eligible and state == _PUB:
                     index_host = end["host"]
-                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                    if ((present if loop_dispatch else plan is not None) and type(index_host) is str and index_host == plan.host
                             and observation is plan.observation):
                         index = plan.index
                     else:
-                        index = role_index(index_host, observation, tokenize=plan is not None)
-                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                        index = role_index(index_host, observation, tokenize=present if loop_dispatch else plan is not None)
+                        if (present if loop_dispatch else plan is not None) and type(host) is str and type(index_host) is str and index_host == host:
                             plan.host, plan.observation, plan.index = host, observation, index
                     eligible = len(joined_roles(end["host"], end["stp_interface"], row["vlan"],
-                                                observation, index, share_empty=plan is not None)) == 0
+                                                observation, index, share_empty=present if loop_dispatch else plan is not None)) == 0
                 if not eligible:
                     found.append(stp_gap)
                     current = ("stp_topology_observations", end["host"])
@@ -5311,11 +5367,14 @@ def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[
                         found.append(current)
                     elif _get(ctx.s, current[:1]) is not _MISSING:
                         found.append(current[:1])
-                if not allowance_agrees(key, row["vlan"], signals[char]):
+                if not allowance_agrees(key, row["vlan"], signals[char], hint):
                     found.append(allowance_gap)
             else:
                 continue
-            found.extend(static_gaps)
+            if not loop_dispatch:
+                found.extend(static_gaps)
+            elif type(static_gaps) is not list or len(static_gaps) != 0:
+                _carriage_extend_gap_fallback(found, static_gaps)
         if found:
             gaps[row["vlan_index"]] = tuple(dict.fromkeys(found))
     admitted_roles = {host: (record if state == _PUB else None, indexes.get(host))
