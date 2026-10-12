@@ -31,8 +31,6 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       DRAFT_TAG: ${{ inputs.draft_tag }}
-      ASSET_DIR: ${{ runner.temp }}/portable-receiver-assets
-      RECEIPT_DIR: ${{ runner.temp }}/portable-receiver-receipt
     steps:
       - name: Admit the exact receiver request
         shell: bash
@@ -41,11 +39,15 @@ jobs:
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA-1' >&2; exit 1; }
           [[ "$DRAFT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'draft_tag must be a portable candidate tag' >&2; exit 1; }
           [ "${#DRAFT_TAG}" -le 96 ] || { echo 'draft tag is too long' >&2; exit 1; }
-          [ ! -e "$ASSET_DIR" ] && [ ! -e "$RECEIPT_DIR" ] || { echo 'receiver directories already exist' >&2; exit 1; }
-          mkdir "$ASSET_DIR" "$RECEIPT_DIR"
+          asset_dir="$RUNNER_TEMP/portable-receiver-assets"
+          receipt_dir="$RUNNER_TEMP/portable-receiver-receipt"
+          [ ! -e "$asset_dir" ] && [ ! -e "$receipt_dir" ] || { echo 'receiver directories already exist' >&2; exit 1; }
+          mkdir "$asset_dir" "$receipt_dir"
+          printf 'ASSET_DIR=%s\nRECEIPT_DIR=%s\n' "$asset_dir" "$receipt_dir" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_commit }}
+          # Start from the reviewed workflow control commit, not caller-selected source code.
+          ref: ${{ github.sha }}
           path: source
           fetch-depth: 0
           persist-credentials: false
@@ -58,11 +60,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [ "$(git rev-parse 'HEAD^{commit}')" = "$SOURCE_COMMIT" ] || { echo 'source checkout differs from request' >&2; exit 1; }
+          [ "$(git rev-parse 'HEAD^{commit}')" = "$GITHUB_SHA" ] || { echo 'control checkout differs from reviewed workflow' >&2; exit 1; }
           git fetch --no-tags origin main
           # The receiver workflow merges after the candidate. Its source must remain a reviewed
           # main ancestor, not necessarily the current main tip.
           git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+          # Only now materialize the admitted candidate; no caller-selected source was executed
+          # while deciding its ancestry or repository identity.
+          git -c core.hooksPath=/dev/null checkout --detach "$SOURCE_COMMIT"
+          [ "$(git rev-parse 'HEAD^{commit}')" = "$SOURCE_COMMIT" ] || { echo 'source checkout differs from request' >&2; exit 1; }
           python -B - "$RECEIPT_DIR/expected-source.json" <<'PY'
           import os, pathlib, re, sys
           from portable.release_contract import canonical_json, source_identity
