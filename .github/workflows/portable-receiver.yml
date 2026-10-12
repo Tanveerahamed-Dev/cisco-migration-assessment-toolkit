@@ -14,18 +14,119 @@ on:
 
 permissions:
   contents: read
-  attestations: read
 
 concurrency:
   group: portable-receiver-${{ inputs.draft_tag }}-${{ inputs.source_commit }}
   cancel-in-progress: false
 
 jobs:
+  fetch:
+    name: Fetch portable draft assets without candidate code
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      # Draft visibility requires push access. This job never checks out/imports candidate code.
+      contents: write
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      DRAFT_TAG: ${{ inputs.draft_tag }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Resolve and download the exact draft using only CLI and stdlib
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA-1' >&2; exit 1; }
+          [[ "$DRAFT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'draft_tag must be a portable candidate tag' >&2; exit 1; }
+          [ "${#DRAFT_TAG}" -le 96 ] || { echo 'draft tag is too long' >&2; exit 1; }
+          handoff="$RUNNER_TEMP/portable-receiver-handoff"
+          [ ! -e "$handoff" ] || { echo 'handoff directory already exists' >&2; exit 1; }
+          mkdir -p "$handoff/assets" "$handoff/metadata"
+          export HANDOFF_DIR="$handoff"
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$handoff/metadata/resolved-before.json"
+          release_id="$(python3 -I -B -c 'import json,os; d=json.load(open(os.environ["HANDOFF_DIR"]+"/metadata/resolved-before.json")); n=d["databaseId"]; assert type(n) is int and n>0; print(n)')"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$handoff/metadata/release-before.json"
+          python3 -I -B - <<'PY'
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ["HANDOFF_DIR"])
+          release = json.loads((root / "metadata/release-before.json").read_text())
+          resolved = json.loads((root / "metadata/resolved-before.json").read_text())
+          if (type(release.get("id")) is not int or release["id"] != resolved.get("databaseId")
+              or release.get("draft") is not True or release.get("prerelease") is not True
+              or release.get("published_at") is not None or release.get("tag_name") != os.environ["DRAFT_TAG"]
+              or release.get("target_commitish") != os.environ["SOURCE_COMMIT"]):
+              raise SystemExit("release is not the exact requested draft prerelease")
+          assets = release.get("assets")
+          if not isinstance(assets, list) or not 1 <= len(assets) <= 64:
+              raise SystemExit("invalid transport asset count")
+          rows, names, ids = [], set(), set()
+          for asset in assets:
+              name, size, digest, asset_id = asset.get("name"), asset.get("size"), asset.get("digest"), asset.get("id")
+              if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", name)
+                  or name in names or type(asset_id) is not int or asset_id <= 0 or asset_id in ids
+                  or asset.get("state") != "uploaded" or type(size) is not int or not 0 <= size <= 512 * 1024 * 1024
+                  or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
+                  raise SystemExit("invalid or unsafe transport asset")
+              names.add(name)
+              ids.add(asset_id)
+              rows.append({"id": asset_id, "name": name, "size": size, "digest": digest})
+          if sum(row["size"] for row in rows) > 768 * 1024 * 1024:
+              raise SystemExit("handoff exceeds the transport byte bound")
+          rows.sort(key=lambda row: row["name"])
+          (root / "metadata/expected-assets.json").write_text(json.dumps(rows, sort_keys=True) + "\n")
+          PY
+          [ -z "$(find "$handoff/assets" -mindepth 1 -print -quit)" ] || { echo 'asset directory is not empty' >&2; exit 1; }
+          gh release download "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --dir "$handoff/assets"
+          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$handoff/metadata/resolved-after.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$handoff/metadata/release-after.json"
+          python3 -I -B - <<'PY'
+          import hashlib, json, os, pathlib, stat
+          root = pathlib.Path(os.environ["HANDOFF_DIR"])
+          before = json.loads((root / "metadata/release-before.json").read_text())
+          after = json.loads((root / "metadata/release-after.json").read_text())
+          resolved = json.loads((root / "metadata/resolved-after.json").read_text())
+          keys = ("id", "draft", "prerelease", "published_at", "tag_name", "target_commitish")
+          if any(before.get(key) != after.get(key) for key in keys) or resolved.get("databaseId") != before["id"]:
+              raise SystemExit("release identity changed during fetch")
+          expected = json.loads((root / "metadata/expected-assets.json").read_text())
+          actual = sorted(({"id": row.get("id"), "name": row.get("name"), "size": row.get("size"), "digest": row.get("digest")}
+                           for row in after.get("assets", [])), key=lambda row: row["name"])
+          if actual != expected or any(row.get("state") != "uploaded" for row in after.get("assets", [])):
+              raise SystemExit("asset identity changed during fetch")
+          files = list((root / "assets").iterdir())
+          if {path.name for path in files} != {row["name"] for row in expected}:
+              raise SystemExit("fetched file denominator differs")
+          for row in expected:
+              path = root / "assets" / row["name"]
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1 or info.st_size != row["size"]:
+                  raise SystemExit("fetched file kind or size differs")
+              with path.open("rb") as stream:
+                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
+              if "sha256:" + digest != row["digest"]:
+                  raise SystemExit("fetched bytes differ from GitHub's asset digest")
+          PY
+      - name: Upload the exact same-run draft handoff
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portable-receiver-fetch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portable-receiver-handoff
+          if-no-files-found: error
+          retention-days: 30
+
+
   receive:
     name: Verify downloaded portable draft
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    needs: fetch
+    permissions:
+      contents: read
+      attestations: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -39,11 +140,16 @@ jobs:
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA-1' >&2; exit 1; }
           [[ "$DRAFT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo 'draft_tag must be a portable candidate tag' >&2; exit 1; }
           [ "${#DRAFT_TAG}" -le 96 ] || { echo 'draft tag is too long' >&2; exit 1; }
-          asset_dir="$RUNNER_TEMP/portable-receiver-assets"
+          handoff_dir="$RUNNER_TEMP/portable-receiver-handoff"
           receipt_dir="$RUNNER_TEMP/portable-receiver-receipt"
-          [ ! -e "$asset_dir" ] && [ ! -e "$receipt_dir" ] || { echo 'receiver directories already exist' >&2; exit 1; }
-          mkdir "$asset_dir" "$receipt_dir"
-          printf 'ASSET_DIR=%s\nRECEIPT_DIR=%s\n' "$asset_dir" "$receipt_dir" >> "$GITHUB_ENV"
+          [ ! -e "$handoff_dir" ] && [ ! -e "$receipt_dir" ] || { echo 'receiver directories already exist' >&2; exit 1; }
+          mkdir "$handoff_dir" "$receipt_dir"
+          printf 'HANDOFF_DIR=%s\nASSET_DIR=%s\nRECEIPT_DIR=%s\n' "$handoff_dir" "$handoff_dir/assets" "$receipt_dir" >> "$GITHUB_ENV"
+      - name: Download the same-run draft handoff into the empty directory
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: portable-receiver-fetch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.HANDOFF_DIR }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Start from the reviewed workflow control commit, not caller-selected source code.
@@ -85,27 +191,40 @@ jobs:
           python -m venv "$venv"
           "$venv/bin/python" -m pip install --only-binary=:all: 'cyclonedx-python-lib[json-validation]==11.12.0' 'jsonschema==4.26.0'
           printf 'python=%s\n' "$venv/bin/python" >> "$GITHUB_OUTPUT"
-      - name: Download the actual draft into the empty directory
+      - name: Bind the fetched draft to the independently admitted source
         id: draft
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          # gh resolves pending draft tags through GraphQL before fetching their release ID.
-          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$RECEIPT_DIR/resolved-before.json"
-          release_id="$(python -B -c 'import json,os; d=json.load(open(os.environ["RECEIPT_DIR"]+"/resolved-before.json")); n=d["databaseId"]; assert type(n) is int and n>0; print(n)')"
-          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RECEIPT_DIR/release-before.json"
           cd source
+          python -B - <<'PY'
+          import json, os, pathlib, shutil, stat
+          receipt = pathlib.Path(os.environ["RECEIPT_DIR"])
+          handoff = pathlib.Path(os.environ["HANDOFF_DIR"])
+          metadata = handoff / "metadata"
+          names = {"resolved-before.json", "resolved-after.json", "release-before.json", "release-after.json", "expected-assets.json"}
+          if {path.name for path in handoff.iterdir()} != {"assets", "metadata"}:
+              raise SystemExit("handoff top-level denominator differs")
+          if metadata.is_symlink() or not metadata.is_dir() or {path.name for path in metadata.iterdir()} != names:
+              raise SystemExit("handoff metadata denominator differs")
+          for name in names:
+              path = metadata / name
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1 or info.st_size > 16 * 1024 * 1024:
+                  raise SystemExit("handoff metadata kind or size differs")
+              shutil.copyfile(path, receipt / name)
+          PY
           python -B - <<'PY'
           import json, os, pathlib, re
           from portable.release_contract import MAX_METADATA_BYTES, MAX_RELEASE_SET_BYTES, MAX_ZIP_FILE_BYTES, PLATFORM_ID, _sidecar_map, canonical_json
           receipt = pathlib.Path(os.environ["RECEIPT_DIR"])
           source = json.loads((receipt / "expected-source.json").read_text())
           release = json.loads((receipt / "release-before.json").read_text())
-          if (type(release.get("id")) is not int or release["id"] <= 0 or release.get("draft") is not True
-              or release.get("prerelease") is not True or release.get("published_at") is not None
-              or release.get("tag_name") != os.environ["DRAFT_TAG"] or release.get("target_commitish") != source["commit"]):
+          resolved = json.loads((receipt / "resolved-before.json").read_text())
+          if (type(release.get("id")) is not int or release["id"] <= 0 or release["id"] != resolved.get("databaseId")
+              or release.get("draft") is not True or release.get("prerelease") is not True
+              or release.get("published_at") is not None or release.get("tag_name") != os.environ["DRAFT_TAG"]
+              or release.get("target_commitish") != source["commit"]):
               raise SystemExit("release is not the exact requested draft prerelease")
           base = f"Atlas-{source['version']}-{PLATFORM_ID}"
           zip_name = base + ".zip"
@@ -113,29 +232,27 @@ jobs:
           assets = release.get("assets")
           if not isinstance(assets, list) or len(assets) != len(names):
               raise SystemExit("draft asset denominator differs from the source contract")
-          rows = []
-          seen = set()
+          rows, seen, ids = [], set(), set()
           for asset in assets:
-              name, size, digest = asset.get("name"), asset.get("size"), asset.get("digest")
+              name, size, digest, asset_id = asset.get("name"), asset.get("size"), asset.get("digest"), asset.get("id")
               limit = MAX_ZIP_FILE_BYTES if name == zip_name else MAX_METADATA_BYTES
-              if (name not in names or name in seen or type(asset.get("id")) is not int or asset["id"] <= 0
+              if (name not in names or name in seen or type(asset_id) is not int or asset_id <= 0 or asset_id in ids
                   or asset.get("state") != "uploaded" or type(size) is not int or not 0 <= size <= limit
                   or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
                   raise SystemExit("draft asset name, identity, state, size or digest is invalid")
               seen.add(name)
-              rows.append({"id": asset["id"], "name": name, "size": size, "digest": digest})
+              ids.add(asset_id)
+              rows.append({"id": asset_id, "name": name, "size": size, "digest": digest})
           if sum(row["size"] for row in rows) > MAX_RELEASE_SET_BYTES:
               raise SystemExit("draft exceeds the receiver byte bound")
           rows.sort(key=lambda row: row["name"])
+          if rows != json.loads((receipt / "expected-assets.json").read_text()):
+              raise SystemExit("handoff GitHub asset rows differ from the admitted source-bound metadata")
           (receipt / "expected-assets.json").write_bytes(canonical_json(rows))
           zip_row = next(row for row in rows if row["name"] == zip_name)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"release_id={release['id']}\nzip={zip_name}\nsha256={zip_row['digest'][7:]}\n")
           PY
-          [ -z "$(find "$ASSET_DIR" -mindepth 1 -print -quit)" ] || { echo 'asset directory is not empty' >&2; exit 1; }
-          gh release download "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --dir "$ASSET_DIR"
-          gh release view "$DRAFT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId > "$RECEIPT_DIR/resolved-after.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RECEIPT_DIR/release-after.json"
       - name: Verify received bytes, member checksums, SBOM and source materials
         env:
           RECEIVER_PYTHON: ${{ steps.source.outputs.python }}

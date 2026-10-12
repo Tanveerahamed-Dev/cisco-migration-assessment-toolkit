@@ -66,6 +66,7 @@ _RUNNER_JOBS = {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
     },
     "portable-receiver.yml": {
+        "fetch": ("Fetch portable draft assets without candidate code", _LINUX_IMAGE),
         "receive": ("Verify downloaded portable draft", _LINUX_IMAGE),
     },
     "portable-release.yml": {
@@ -184,7 +185,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 23
+    assert linux_selectors == 24
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
