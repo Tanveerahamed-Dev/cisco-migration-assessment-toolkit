@@ -15,6 +15,12 @@
       "finding": "P3-7",
       "reason": "Fail-safe ISAKMP hostname over-redaction; no claimed repair unless an independent narrow proven-operand rule exists.",
       "immutable_legacy_row": "isakmp-peer:complete-inline-enc-hostname"
+    },
+    {
+      "finding": "P2-6",
+      "owner_decision": "Owner hard-stop/fallback decision2026-10-12: forward-revert P26 source and defer this finding; ship only clean P13/P14/P25, with every legacy assertion and mandatory gate unchanged.",
+      "reason": "The rejected explicit-scalar implementation broke immutable legacy public metadata and byte oracles. Strict future expectations remain recorded verbatim; every deferred case actively requires exact immutable-main producer bytes and raw/post verifier behavior, and remains in full secret/certification differentials.",
+      "source_revert_ref": "b8c7d215aa0592b32dceecb549492ee16e47c747"
     }
   ],
   "fix_commit_refs": {
@@ -23,7 +29,9 @@
     "P2-5": "8b9cf50566649fac97c954beb26411a450dbb93d",
     "P2-6": "22ac66b347f8946c362320370e6ab7f791eeb2e4",
     "P2-5-carrier": "0242751d2b0763770e80b248a61212a9eae731ec",
-    "P2-5-operand-boundary": "fabd9144f3dbf7d5d90098d4acf6ae2154793371"
+    "P2-5-operand-boundary": "fabd9144f3dbf7d5d90098d4acf6ae2154793371",
+    "P2-6-defer-revert": "b8c7d215aa0592b32dceecb549492ee16e47c747",
+    "P1-4-continuation-closure": "ab24e774167395fccd2e60b6c54ccfcf631e2246"
   },
   "view_sha256": {
     "snapshot.json": "6fb01cc4781e1db9b637722f2a6e1e9dbe6724a3140e007306baffd27f150445",
@@ -1991,8 +1999,34 @@
         "<reda\\cted>"
       ],
       "review": "PR656-comment6112757283",
-      "status": "Source-only concern, runtime unverified; mandatory main/round3 secret-removal and certification differential. Outside P2-5 executable-spelling closure; no candidate-output or certification claim.",
-      "note": "Preserves the original synthetic raw marker-alias input and declared private bytes. Existing raw executable recognition already reaches this carrier; source suggests outer decoding may alias its physical marker bytes. A baseline-proved regression fails the unchanged differential and requires repair or owner stop."
+      "status": "Hosted receipt38199754172 on d3be2c473df3326c795d89f1dfd4d0414078a396 verified inherited survival and false certification on both pinned baselines and that candidate. Mandatory fresh main/round3 differential and exact-head runtime receipt own the current outcome. Outside P2-5 executable-spelling closure.",
+      "note": "Preserves the original synthetic raw marker-alias input and declared private bytes. Existing raw executable recognition already reaches this carrier; source suggests outer decoding may alias its physical marker bytes. A baseline-proved regression fails the unchanged differential and requires repair or owner stop.",
+      "hosted_observation": {
+        "run_id": 38199754172,
+        "head": "d3be2c473df3326c795d89f1dfd4d0414078a396",
+        "baselines": [
+          "0dc2f5d6f4d122ef74f8098e173e2be0bc2c902f",
+          "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
+        ],
+        "input_private_occurrences": 1,
+        "private_occurrences_remaining": 1,
+        "raw_certified": true,
+        "post_scrub_certified": true,
+        "idempotent": true,
+        "producer_uncovered_count": 0,
+        "verifier_uncovered_count": 0
+      }
     }
+  ],
+  "scope_requested": [
+    "P1-3",
+    "P1-4",
+    "P2-5",
+    "P2-6"
+  ],
+  "active_scope": [
+    "P1-3",
+    "P1-4",
+    "P2-5"
   ]
 }
