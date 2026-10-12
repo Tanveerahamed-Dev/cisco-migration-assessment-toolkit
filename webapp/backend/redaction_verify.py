@@ -2246,7 +2246,8 @@ def _sweep_shell_snmp_witness(line: str, *, depth: int = 0) -> bool:
         if spelled:
             commands = _sweep_shell_command_words(script)
             operands = sorted(_sweep_argv_walk(script, shell_witness=False)[0])
-            operand_index = 0
+            actual_words = list(_SWEEP_SHELL_WORD_RE.finditer(script))
+            operand_index, word_index = 0, 0
             for index, inner in enumerate(commands):
                 if inner.end() not in spelled:
                     continue
@@ -2263,7 +2264,12 @@ def _sweep_shell_snmp_witness(line: str, *, depth: int = 0) -> bool:
                             marker_end = start + len(_PLACEHOLDER)
                             if (marker_end >= end or script[marker_end] in _CRED_WS_CHARS + ";&|()<>"):
                                 end = min(end, marker_end)
-                        token = _SWEEP_SHELL_WORD_RE.match(script, start)
+                        while (word_index + 1 < len(actual_words)
+                               and actual_words[word_index + 1].start() <= start):
+                            word_index += 1
+                        token = (actual_words[word_index] if actual_words
+                                 and actual_words[word_index].start() <= start < actual_words[word_index].end()
+                                 else None)
                         if script[start:end] != _PLACEHOLDER:
                             end = min(end, token.end()) if token is not None else end
                         if _sweep_operand_bad(script[start:end], kind):

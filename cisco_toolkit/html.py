@@ -6102,10 +6102,13 @@ def _redact_shell_snmp_witness(line: str, depth: int = 0) -> bool:
                 ranges.append((command.end(), commands[index + 1].start() if index + 1 < len(commands) else len(script)))
         if ranges:
             position = 0
+            actual_words = [word.span() for word in _REDACT_EXEC_WORD_RE.finditer(script)]
+            word_position = 0
             for a, b, kind in _redact_argv_walk(script, shell_witness=False)[0]:
-                word = _REDACT_EXEC_WORD_RE.match(script, a)
-                if word is not None:
-                    b = min(b, word.end())
+                while word_position < len(actual_words) and actual_words[word_position][1] <= a:
+                    word_position += 1
+                if word_position < len(actual_words) and actual_words[word_position][0] <= a:
+                    b = min(b, actual_words[word_position][1])
                 marker_end = a + len(_REDACT_PLACEHOLDER)
                 if (script.startswith(_REDACT_PLACEHOLDER, a)
                         and (marker_end == len(script) or script[marker_end] in _REDACT_WS_CHARS
