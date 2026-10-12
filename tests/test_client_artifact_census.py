@@ -963,6 +963,155 @@ def test_case_alias_helper_roles_keep_constructed_names_and_toggle_force_separat
     assert forwarders == {}
 
 
+def _js_quoted_spelling(value, spelling):
+    if spelling == "unicode4":
+        value = "".join("\\u" + format(ord(char), "04x") for char in value)
+    elif spelling == "unicode_braced":
+        value = "".join("\\u{" + format(ord(char), "x") + "}" for char in value)
+    elif spelling == "hex2":
+        value = "".join("\\x" + format(ord(char), "02x") for char in value)
+    elif spelling == "identity":
+        index = next(index for index, char in enumerate(value) if char not in "bfnrtvxu0123456789")
+        value = value[:index] + "\\" + value[index:]
+    elif spelling == "continuation":
+        index = len(value) // 2
+        value = value[:index] + "\\\n" + value[index:]
+    return '"' + value + '"'
+
+
+@pytest.mark.parametrize("literal,expected", [
+    (r'"set\u0041ttribute"', "setAttribute"),
+    (r'"setAttri\x62ute"', "setAttribute"),
+    (r'"set\u{41}ttributeNS"', "setAttributeNS"),
+    (r'"\b\f\n\r\t\v\0\q\a\e\s\U"', "\b\f\n\r\t\v\0qaesU"),
+    (r'''"\'\"\\"''', "'\"\\"),
+    ('"down\\\nload"', "download"),
+    ('"down\\\r\nload"', "download"),
+    ('"down\\\rload"', "download"),
+    ('"down\\\u2028load"', "download"),
+    ('"down\\\u2029load"', "download"),
+    ('"a\u2028b\u2029c"', "a\u2028b\u2029c"),
+    (r'"\u{1f600}"', "\U0001f600"),
+    (r'"\ud83d\ude00"', "\U0001f600"),
+    (r'"\ud800"', "\ud800"),
+    ('`a\r\nb\rc\nd`', "a\nb\nc\nd"),
+    (r'`\u{61}\x62\u0063`', "abc"),
+    (r'`\${literal}`', "${literal}"),
+])
+def test_one_javascript_closed_literal_decoder_matches_string_semantics(literal, expected):
+    assert census._js_closed_literal(literal) == expected
+
+
+@pytest.mark.parametrize("literal", [r'"\u00"', r'"\uZZZZ"', r'"\u{}"', r'"\u{z}"',
+                                     r'"\u{110000}"', r'"\u{41"', r'"\x0"', r'"\xGG"',
+                                     r'"\01"', r'"\123"', r'"\08"', r'"\8"', r'"\9"',
+                                     '"a\nb"', '"a\rb"', '"truncated\\"'])
+def test_malformed_and_legacy_javascript_literals_refuse_instead_of_disappearing(literal):
+    with pytest.raises(ValueError):
+        census._js_closed_literal(literal)
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("method,arguments", [("setAttribute", '"DOWNLOAD", "private.json"'),
+                                            ("setAttributeNS", 'null, "DoWnLoAd", "private.json"'),
+                                            ("toggleAttribute", '"DOWNLOAD", true')])
+@pytest.mark.parametrize("optional", [False, True])
+def test_closed_api_names_use_the_decoder_for_bracket_and_optional_calls(tmp_path, spelling, method, arguments, optional):
+    call = "a[" + _js_quoted_spelling(method, spelling) + "]" + ("?." if optional else "")
+    _write(tmp_path, "new-root/export.js", call + "(" + arguments + ");")
+    templates = {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert templates == ({None} if method == "toggleAttribute" else {"private.json"})
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("family", ["downloadBlob", "saveAs", "Reflect.set", "window.open", "property", "object"])
+def test_each_closed_name_family_has_paired_plain_and_escaped_controls(tmp_path, spelling, family):
+    key = _js_quoted_spelling("download", spelling)
+    filename = _js_quoted_spelling("private.json", spelling)
+    if family in {"downloadBlob", "saveAs"}:
+        source = "globalThis[" + _js_quoted_spelling(family, spelling) + "](blob, " + filename + ");"
+    elif family == "Reflect.set":
+        source = "Reflect[" + _js_quoted_spelling("set", spelling) + "](a, " + key + ", " + filename + ");"
+    elif family == "window.open":
+        source = "window[" + _js_quoted_spelling("open", spelling) + "](" + filename + ");"
+    elif family == "property":
+        source = "a[" + key + "] = " + filename + ";"
+    else:
+        source = "Object.assign(a, {" + key + ": " + filename + "});"
+    _write(tmp_path, "new-root/export.js", source)
+    names = census.download_names(tmp_path)
+    if family == "window.open":
+        assert len(names) == 1 and names[0][1].startswith("<browser-open:") and names[0][2] is None
+    else:
+        assert {template for _location, _expression, template in names} == {"private.json"}
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("filename", ["private.json", "topology.svg"])
+def test_tag_attribute_and_filename_literals_share_the_canonical_decoder(tmp_path, spelling, filename):
+    tag = _js_quoted_spelling("a", spelling)
+    attribute = _js_quoted_spelling("DoWnLoAd", spelling)
+    name = _js_quoted_spelling(filename, spelling)
+    source = "const a = document.createElement(" + tag + "); a.setAttribute(" + attribute + ", " + name + ");"
+    tokens = census._js_tokens(source)
+    assert "a" in [census._js_token_name(token) for token in tokens if token.value.startswith('"')]
+    _write(tmp_path, "new-root/export.js", source)
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {filename}
+    artifact_class = dv.client_artifact_class("Downloads/" + filename)
+    assert _repository_gate()._client_artifact_class("Downloads/" + filename) == artifact_class
+    assert (artifact_class is None) == (filename == "private.json")
+
+
+@pytest.mark.parametrize("spelling", ["plain", "unicode4", "unicode_braced", "hex2", "identity", "continuation"])
+@pytest.mark.parametrize("method,prefix", [("setAttribute", ""), ("setAttributeNS", "null, "), ("set", "a, ")])
+def test_escaped_api_names_keep_helper_forwarding_and_never_gain_a_passthrough(tmp_path, spelling, method, prefix):
+    receiver = "Reflect" if method == "set" else "a"
+    key = _js_quoted_spelling(method, spelling)
+    source = "function saveEvidence(payload, filename) { " + receiver + "[" + key + "]?.("
+    source += prefix + '"download", filename); }\nsaveEvidence(blob, "private.json");'
+    _write(tmp_path, "new-root/export.js", source)
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert ("new-root/export.js", '"private.json"') not in census.DOWNLOAD_NAME_PASSTHROUGH
+
+
+def test_closed_parentheses_and_string_concatenation_are_resolved_without_computed_dispatch_proofs(tmp_path):
+    _write(tmp_path, "new-root/export.js",
+           r'a[("set\u{41}" + "ttribute")]?.("DOWNLOAD", "private.json");')
+    assert "private.json" in {template for _location, _expression, template in census.download_names(tmp_path)}
+    assert census._js_closed_string('"set" + suffix') is None
+    assert census._js_closed_literal('`set${suffix}`') is None
+    assert census._js_closed_string(r'"\ud83d" + "\ude00"') == "\U0001f600"
+    assert census._download_template(r'"\ud83d" + "\ude00" + ".snapshot.json"') == "\U0001f600.snapshot.json"
+
+
+def test_decoded_js_property_names_stay_case_sensitive_and_quoted_delimiters_stay_inert(tmp_path):
+    _write(tmp_path, "new-root/export.js",
+           r'a["DOWN\u004cOAD"] = "private.json"; Reflect["s\u{65}t"](a, "DOWNLOAD", "private.json");'
+           '\n' + r'a["down\u{6c}oad"] = "topology.svg";')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"topology.svg"}
+    source = 'function saveEvidence(filename) { a["down\\u006coad"] = filename; } saveEvidence("[");'
+    declarations, forwarders = census._js_helper_parameters(source, census._js_tokens(source), "new-root/export.js")
+    assert forwarders == {"saveEvidence": 0} and declarations == set()
+    assert census._js_arguments('f(")", "[", ",")', census._js_tokens('f(")", "[", ",")'), 1) == [
+        '\")\"', '\"[\"', '\",\"']
+
+
+@pytest.mark.parametrize("literal", [r'"set\u{}Attribute"', r'"set\xGGAttribute"', r'"set\101ttribute"'])
+def test_a_malformed_closed_api_name_is_an_explicit_census_refusal(tmp_path, literal):
+    _write(tmp_path, "new-root/export.js", "a[" + literal + ']("DOWNLOAD", "private.json");')
+    with pytest.raises(ValueError, match="JavaScript"):
+        census.download_names(tmp_path)
+
+
+def test_jsx_and_html_quoted_text_do_not_receive_javascript_escape_semantics(tmp_path):
+    _write(tmp_path, "new-root/view.tsx", r'const V = () => <a download="topology\x2esvg" />;')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {r"topology\x2esvg"}
+    _write(tmp_path, "new-root/view.tsx", r'const V = () => <a download={"topology\x2esvg"} />;')
+    assert {template for _location, _expression, template in census.download_names(tmp_path)} == {"topology.svg"}
+    _write(tmp_path, "new-root/native.html", r'<a download="topology\x2esvg">Save</a>')
+    assert r"topology\x2esvg" in {template for _location, _expression, template in census.download_names(tmp_path)}
+
+
 def test_commented_optional_calls_and_bracket_download_properties_are_discovered(tmp_path):
     _write(tmp_path, "cisco_toolkit/explorer.html",
            '<script>downloadBlob /* reason */ (blob, "unknown.json");\n'

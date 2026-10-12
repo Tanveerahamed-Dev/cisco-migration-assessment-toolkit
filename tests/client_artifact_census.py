@@ -49,7 +49,7 @@ write; dynamic dispatch (``getattr(module, spec.writer_name)``) is tied by the d
   here; files written by a subprocess are the subprocess's own rows; ``.ps1`` and browser writers
 are tied by producer-name checks in ``tests/test_client_artifact_census.py``. The browser census
 includes every tracked engine HTML file, direct download-helper calls and download attributes;
-it is not general JavaScript alias/data-flow analysis. Unknown names require explicit disposition.
+its dispatch/escape boundary is owned by :func:`_js_literal_call`. Unknown filenames require disposition.
 
 :func:`census_problems` and :func:`suffix_literal_problems` are the whole check;
 ``tests/test_client_artifact_census.py`` asserts both are empty, so a new sidecar fails CI until it
@@ -1666,6 +1666,95 @@ class _JsToken:
     in_tag: bool = False
 
 
+def _js_closed_literal(source: str) -> str | None:
+    """Canonical cooked value of one closed JS string/no-substitution template literal.
+
+    Implements ECMA-262 StringLiteral/TV escapes (including identity escapes), canonicalizing
+    equivalent UTF-16 surrogate pairs to Python scalars while preserving lone code units.
+    Malformed escapes and all legacy decimal/octal forms refuse, independent of strict mode.
+    A substitution template or a non-literal expression is unresolved, never a decoded name.
+    HTML/JSX attribute text is not a JavaScript StringLiteral and uses HTML character references.
+    """
+    if not source or source[0] not in {"'", '"', "`"}:
+        return None
+    quote = source[0]
+    if len(source) < 2 or source[-1] != quote:
+        raise ValueError("unclosed JavaScript string literal")
+    pieces = []
+    cursor, end = 1, len(source) - 1
+    escapes = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+               "'": "'", '"': '"', "\\": "\\"}
+    while cursor < end:
+        char = source[cursor]
+        if char == quote:
+            return None  # this is more than one literal token, not a closed selector
+        if quote == "`" and source[cursor:cursor + 2] == "${":
+            return None
+        if char != "\\":
+            if char in "\r\n":
+                if quote != "`":
+                    raise ValueError("unescaped line break in JavaScript string literal")
+                if char == "\r" and cursor + 1 < end and source[cursor + 1] == "\n":
+                    cursor += 1
+                pieces.append("\n")  # template raw CR/CRLF cook to LF
+            else:
+                pieces.append(char)
+            cursor += 1
+            continue
+        cursor += 1
+        if cursor >= end:
+            raise ValueError("truncated JavaScript string escape")
+        escape = source[cursor]
+        cursor += 1
+        if escape in "\n\r\u2028\u2029":
+            if escape == "\r" and cursor < end and source[cursor] == "\n":
+                cursor += 1
+            continue  # every LineContinuation contributes the empty string
+        if escape in escapes:
+            pieces.append(escapes[escape])
+        elif escape == "0":
+            if cursor < end and source[cursor] in "0123456789":
+                raise ValueError("legacy decimal/octal JavaScript string escape refused")
+            pieces.append("\0")
+        elif escape in "123456789":
+            raise ValueError("legacy decimal/octal JavaScript string escape refused")
+        elif escape in {"x", "u"}:
+            if escape == "u" and cursor < end and source[cursor] == "{":
+                stop = source.find("}", cursor + 1, end)
+                digits = source[cursor + 1:stop] if stop >= 0 else ""
+                if not digits or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                    raise ValueError("malformed JavaScript Unicode escape")
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF:
+                    raise ValueError("JavaScript Unicode escape exceeds the code-point range")
+                cursor = stop + 1
+            else:
+                width = 2 if escape == "x" else 4
+                digits = source[cursor:cursor + width]
+                if cursor + width > end or not re.fullmatch(r"[0-9a-fA-F]{" + str(width) + r"}", digits):
+                    raise ValueError("malformed JavaScript hexadecimal/Unicode escape")
+                codepoint = int(digits, 16)
+                cursor += width
+            pieces.append(chr(codepoint))
+        else:
+            pieces.append(escape)  # NonEscapeCharacter is an identity escape, not Python's escape table
+    return _js_string_value("".join(pieces))
+
+
+def _js_string_value(value: str) -> str:
+    """Canonical Python representation of JS UTF-16 units, including concatenation seams."""
+    return value.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="surrogatepass")
+
+
+def _js_token_name(token: _JsToken) -> str | None:
+    """A name view, separate from raw grammar tokens so quoted delimiters stay inert."""
+    if token.value[:1] in {"'", '"', "`"}:
+        if token.in_tag:
+            return None  # JSX quoted attribute values are HTML text, not API/property identifiers
+        return _js_closed_literal(token.value)
+    return token.value
+
+
 def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
     """Lex strings/templates/comments as units; formatting and ASI do not hide exits."""
     tokens = []
@@ -1799,6 +1888,8 @@ def _js_tokens(text: str, *, jsx: bool = False) -> list[_JsToken]:
             continue
         if char in "\"'`":
             index = quoted_end(index)
+            if not in_tag:
+                _js_closed_literal(text[begin:index])  # validate every closed JS token, including tag arguments
             line += text[begin:index].count("\n")
         elif char == "/" and (not tokens or tokens[-1].value in {
             "(", "=", ":", ",", "[", "!", "?", "return", "=>", "&&", "||", "??"
@@ -1875,6 +1966,90 @@ def _js_arguments(text: str, tokens: list[_JsToken], opening: int) -> list[str]:
     raise ValueError("unterminated browser call arguments")
 
 
+def _js_literal_call(text: str, tokens: list[_JsToken], index: int) -> tuple[str, int, str | None] | None:
+    """Proven dispatch model: identifiers and closed literal bracket keys, with optional calls.
+
+    Closed quoted tokens always use _js_closed_literal; JS property case is never folded.
+    Parentheses and concatenated closed strings are admitted. Dynamic/substitution-template keys,
+    unquoted escaped identifiers, runtime aliases/prototype rewrites and JSX prop spreads are
+    outside the proven dispatch model; no name passthrough or privacy-class exception proves them.
+    Raw grammar tokens remain raw: a quoted ')', '(', '[' or ',' is never a delimiter.
+    This is the single owner of the browser dispatch boundary for discovery and helper roles.
+    """
+    token = tokens[index]
+    receiver = None
+    if token.value == "[":
+        expression, closing = _js_expression(text, tokens, index + 1)
+        if closing >= len(tokens) or tokens[closing].value != "]":
+            return None
+        name = _js_closed_string(expression)
+        if name is None:
+            return None
+        opening = closing + 1
+        owner = index - 2 if index and tokens[index - 1].value == "?." else index - 1
+        if owner >= 0:
+            receiver = _js_token_name(tokens[owner])
+    else:
+        if token.value[:1] in {"'", '"', "`"}:
+            return None  # bracket keys are read once from their entire bracket expression
+        name = _js_token_name(token)
+        opening = index + 1
+        if index >= 2 and tokens[index - 1].value in {".", "?."}:
+            receiver = _js_token_name(tokens[index - 2])
+    if opening < len(tokens) and tokens[opening].value == "?.":
+        opening += 1
+    if name is None or opening >= len(tokens) or tokens[opening].value != "(":
+        return None
+    return name, opening, receiver
+
+
+def _js_parenthesized_literal(expression: str) -> str:
+    """Remove only complete enclosing parentheses, using raw token boundaries."""
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        tokens = _js_tokens(expression)
+        depth = 0
+        closing = -1
+        for index, token in enumerate(tokens):
+            if token.value == "(":
+                depth += 1
+            elif token.value == ")":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        if closing != len(tokens) - 1:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _js_closed_string(expression: str, depth: int = 0) -> str | None:
+    """A proven string selector, without filename-template uncertainty substitutions."""
+    _name_depth(depth)
+    expression = _js_parenthesized_literal(expression)
+    parts = _js_parts(expression, 0, "", "+")
+    if len(parts) > 1:
+        values = [_js_closed_string(part, depth + 1) for part in parts]
+        if any(value is None for value in values):
+            return None
+        return _js_string_value("".join(value for value in values if value is not None))
+    return _js_closed_literal(expression)
+
+
+class _JsxAttributeText(str):
+    """Provenance for a JSX quoted value, whose backslashes are literal HTML text."""
+
+
+def _jsx_filename_expression(text: str, tokens: list[_JsToken], start: int) -> str:
+    expression, _end = _js_expression(text, tokens, start, attribute=True)
+    if expression.startswith("{") and expression.endswith("}"):
+        return expression[1:-1].strip()
+    if start < len(tokens) and tokens[start].in_tag and tokens[start].value[:1] in {"'", '"'}:
+        return _JsxAttributeText(expression)
+    return expression
+
+
 def _ascii_lower(value: str) -> str:
     """HTML attribute-name folding changes ASCII capitals only, never JS property names."""
     return value.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
@@ -1887,7 +2062,7 @@ def _html_attribute_filename(method: str, arguments: list[str]) -> str | None:
     name_index = 1 if method == "setAttributeNS" else 0
     if len(arguments) <= name_index:
         return None
-    attribute = _download_template(arguments[name_index])
+    attribute = _js_closed_string(arguments[name_index])
     if attribute is None or _ascii_lower(attribute) != "download":
         return None
     value_index = name_index + 1
@@ -2001,37 +2176,31 @@ def _js_helper_parameters(text: str, tokens: list[_JsToken], relative: str) -> t
         end = closing(after)
         expressions = []
         for position in range(after + 1, end):
-            value = tokens[position].value.strip("\"'")
+            value = _js_token_name(tokens[position])
             following = position + 1
             if position in jsx_downloads and following < end and tokens[following].value == "=":
-                expression, _stop = _js_expression(text, tokens, following + 1, attribute=True)
-                expressions.append(expression[1:-1].strip() if expression.startswith("{")
-                                   and expression.endswith("}") else expression)
+                expressions.append(_jsx_filename_expression(text, tokens, following + 1))
             if following < end and tokens[following].value == "]":
                 following += 1
             if (value == "download" and following < end and tokens[following].value in {"=", ":"}
                     and position > 0 and tokens[position - 1].value in {".", "?.", "[", "{", ","}):
                 expression, _stop = _js_expression(text, tokens, following + 1)
                 expressions.append(expression)
-            if value == "[":
+            if tokens[position].value == "[":
                 key, stop = _js_expression(text, tokens, position + 1)
                 if (_download_template(key) == "download" and stop + 1 < end
                         and tokens[stop].value == "]" and tokens[stop + 1].value in {"=", ":"}):
                     expression, _stop = _js_expression(text, tokens, stop + 2)
                     expressions.append(expression)
-            opening = position + 1
-            if (value in {"setAttribute", "setAttributeNS", "toggleAttribute"} and opening < end
-                    and tokens[opening].value == "]" and position > 0 and tokens[position - 1].value == "["):
-                opening += 1
-            if opening < end and tokens[opening].value == "?.":
-                opening += 1
-            if opening >= end or tokens[opening].value != "(":
+            call = _js_literal_call(text, tokens, position)
+            if call is None or call[1] >= end:
                 continue
+            value, opening, receiver = call
             args = _js_arguments(text, tokens, opening)
             attribute_filename = _html_attribute_filename(value, args)
             if attribute_filename is not None:
                 expressions.append(attribute_filename)
-            elif (value == "set" and position >= 2 and tokens[position - 2].value == "Reflect"
+            elif (value == "set" and receiver == "Reflect"
                   and len(args) > 1 and _download_template(args[1]) == "download"):
                 expressions.append(args[2] if len(args) > 2 else "<implicit browser filename>")
             elif value.startswith("download") and value != name and len(args) > 1:
@@ -2224,8 +2393,8 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
     """Structural direct browser exits. Unknown names remain review obligations.
 
     Native download assignments/attributes, object download properties (including Object.assign),
-    direct download helpers/saveAs and browser-open exits are read from tokens. General aliases
-    and interprocedural JS flow remain outside this static model, explicitly, not silently.
+    direct download helpers/saveAs and browser-open exits are read from tokens. Dispatch and
+    escape boundaries are documented in :func:`_js_literal_call`.
     """
     found = []
     endpoint_sources = None
@@ -2284,7 +2453,7 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                         expression, _end = _js_expression(text, tokens, closing + 2)
                         found.append((location(token), expression,
                                       _download_template(expression)))
-                value = token.value.strip("\"'")
+                value = _js_token_name(token)
                 if index in jsx_downloads:
                     value = "download"
                 after = index + 1
@@ -2309,21 +2478,18 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                         index == 0 or tokens[index - 1].value not in {".", "?.", "["}
                     ):
                         continue
-                    expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)
-                    if expression.startswith("{") and expression.endswith("}"):
-                        expression = expression[1:-1].strip()  # JSX attribute
+                    if index in jsx_downloads:
+                        expression = _jsx_filename_expression(text, tokens, after + 1)
+                    else:
+                        expression, _end = _js_expression(text, tokens, after + 1, attribute=token.in_tag)
                     found.append((location(token), expression,
                                   _download_template(expression)))
                 # Direct native/helper calls. Match the download family structurally rather
                 # than selecting two helper names; browser open always requires disposition.
-                call_start = index + 1
-                if (value in {"setAttribute", "setAttributeNS", "toggleAttribute"} and call_start < len(tokens)
-                        and tokens[call_start].value == "]" and index > 0 and tokens[index - 1].value == "["):
-                    call_start += 1
-                if call_start < len(tokens) and tokens[call_start].value == "?.":
-                    call_start += 1
-                if call_start >= len(tokens) or tokens[call_start].value != "(":
+                call = _js_literal_call(text, tokens, index)
+                if call is None:
                     continue
+                value, call_start, receiver = call
                 if index and tokens[index - 1].value == "function":
                     continue
                 if value.startswith("download") or value == "saveAs" or value in forwarders:
@@ -2342,12 +2508,12 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
                     expression = _html_attribute_filename(value, arguments)
                     if expression is None:
                         continue
-                elif value == "set" and index >= 2 and tokens[index - 2].value == "Reflect":
+                elif value == "set" and receiver == "Reflect":
                     arguments = _js_arguments(text, tokens, call_start)
                     if len(arguments) < 2 or _download_template(arguments[1]) != "download":
                         continue
                     expression = arguments[2] if len(arguments) >= 3 else "<implicit browser filename>"
-                elif value == "open" and index >= 2 and tokens[index - 2].value in {"window", "globalThis"}:
+                elif value == "open" and receiver in {"window", "globalThis"}:
                     arguments = _js_arguments(text, tokens, call_start)
                     expression = "<browser-open:" + (arguments[0] if arguments else "unknown") + ">"
                 else:
@@ -2358,22 +2524,9 @@ def download_names(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
 
 
 def _download_template(expression: str) -> str | None:
-    expression = expression.strip()
-    while expression.startswith("(") and expression.endswith(")"):
-        tokens = _js_tokens(expression)
-        depth = 0
-        closing = -1
-        for index, token in enumerate(tokens):
-            if token.value == "(":
-                depth += 1
-            elif token.value == ")":
-                depth -= 1
-                if depth == 0:
-                    closing = index
-                    break
-        if closing != len(tokens) - 1:
-            break  # (a) + (b) has two groups, not one enclosing pair
-        expression = expression[1:-1].strip()
+    if isinstance(expression, _JsxAttributeText):
+        return unescape(expression[1:-1])
+    expression = _js_parenthesized_literal(expression)
     parts = _js_parts(expression, 0, "", "+")
     templates = []
     literal = False
@@ -2386,16 +2539,17 @@ def _download_template(expression: str) -> str | None:
                 continue
         if part[:1] in {"`", '"', "'"} and part[-1:] == part[:1]:
             literal = True
-            if part.startswith("`"):
-                templates.append(re.sub(r"\$\{[^{}]*\}", "0", part[1:-1]))
-            else:
-                try:
-                    templates.append(ast.literal_eval(part))
-                except (ValueError, SyntaxError):
-                    return None
+            decoded = _js_closed_literal(part)
+            if decoded is None and part.startswith("`"):
+                # Interpolation is an uncertainty placeholder, never proof of a closed selector.
+                substituted = re.sub(r"(?<!\\)\$\{[^{}]*\}", "0", part)
+                decoded = _js_closed_literal(substituted)
+            if decoded is None:
+                return None
+            templates.append(decoded)
         else:
             templates.append("0")
-    return "".join(templates) if literal else None
+    return _js_string_value("".join(templates)) if literal else None
 
 
 def response_filenames(root: Path = ROOT) -> list[tuple[str, str, str | None]]:
