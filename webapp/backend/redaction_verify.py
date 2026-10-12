@@ -1946,18 +1946,24 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
         return True
     valued = ("-3m", "-3M", "-3k", "-3K", "-Cn", "-CE", "-v", "-u", "-l", "-a", "-x", "-c",
               "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p")
-    words = iter(_SWEEP_ARGV_WORD_RE.finditer(line, directive.end()))
+    words = list(_SWEEP_ARGV_WORD_RE.finditer(line, directive.end()))
     targets: list[str] = []
-    for word in words:
-        token = _sweep_decode_word(word.group(0))[0]
-        if token == "-Ci" and not targets:
+    index = 0
+    while index < len(words):
+        token = _sweep_decode_word(words[index].group(0))[0]
+        public = _sweep_snmp_public_option(words, index) if not targets else None
+        if public is not None:
+            if public < 0:
+                return False
+            index = public
             continue
+        index += 1
         option = next((name for name in valued if token.startswith(name)), None) if not targets else None
         if option is not None:
             if token == option:
-                operand = next(words, None)
-                if operand is None or not _sweep_decode_word(operand.group(0))[0]:
+                if index == len(words) or not _sweep_decode_word(words[index].group(0))[0]:
                     return False
+                index += 1
             continue
         targets.append(token)
         if len(targets) > 3:
@@ -1967,6 +1973,68 @@ def _sweep_directive_config(line: str, directive: re.Match[str]) -> bool:
     if spelling.casefold() in {"trapsess", "informsess"}:
         return len(targets) == 1 or (len(targets) == 2 and bool(_SWEEP_SNMP_OID_RE.fullmatch(targets[1])))
     return len(targets) in {2, 3} and all(_SWEEP_SNMP_OID_RE.fullmatch(oid) for oid in targets[1:])
+
+
+def _sweep_snmp_public_option(words: list[re.Match[str]], index: int) -> int | None:
+    """The first unconsumed word after an accepted public option, or -1 if incomplete.
+
+    Logging has its own compound arity: priority and file/facility may be in the option
+    word, its next word, or separate words. This independently follows the pinned
+    Net-SNMP snmp_log_options/decode_priority grammar, not the credential allowlist.
+    """
+    token = _sweep_decode_word(words[index].group(0))[0]
+    following = index + 1
+    if token in {"-d", "-h", "-H", "-V", "-Ci"}:
+        return following
+    if token == "-C":
+        if following >= len(words):
+            return -1
+        modifiers = _sweep_decode_word(words[following].group(0))[0]
+        return following + 1 if re.fullmatch(r"i+", modifiers) else None
+    if token.startswith("-C") and re.fullmatch(r"i+", token[2:]):
+        return following
+    valued = ("-D", "-m", "-M", "-O", "-I", "-P", "-T", "-s", "-Z", "-Y", "-r", "-t")
+    option = next((name for name in valued if token.startswith(name)), None)
+    if option is not None:
+        if token != option:
+            return following
+        return following + 1 if following < len(words) and _sweep_decode_word(words[following].group(0))[0] else -1
+    if token == "-L":
+        if following >= len(words):
+            return -1
+        token += _sweep_decode_word(words[following].group(0))[0]
+        following += 1
+    if not token.startswith("-L") or len(token) < 3 or token[2] not in "eonEONfsFS":
+        return None
+    mode = token[2]
+    rest = token[3:]
+    if rest.startswith("="):
+        rest = rest[1:]
+    rest = rest.lstrip(_CRED_WS_CHARS)
+    if mode in "eon":
+        return following
+    if not rest:
+        if following >= len(words):
+            return -1
+        rest = _sweep_decode_word(words[following].group(0))[0]
+        following += 1
+    if mode in "EONFS":
+        priority = re.match(r"[0-7!aAcCeEwWnNiIdD](?:-[0-7!aAcCeEwWnNiIdD])?", rest)
+        if priority is None:
+            return -1
+        rest = rest[priority.end():]
+        if mode in "EON":
+            return following
+        if mode == "F":
+            rest = rest.lstrip(" ")
+        if not rest:
+            if following >= len(words):
+                return -1
+            rest = _sweep_decode_word(words[following].group(0))[0]
+            following += 1
+    if mode in "sS" and rest[:1] not in "dDuU01234567":
+        return -1
+    return following if rest else -1
 
 
 def _sweep_argv_runs(line: str) -> list[tuple[str, int, bool]]:
@@ -2037,7 +2105,8 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
         runs = [(carry[0], 0, False)] + [run for run in runs if run[1] > 0]
     if not runs:
         return [], None
-    words = [m.span() for m in _SWEEP_ARGV_WORD_RE.finditer(line)]
+    word_matches = list(_SWEEP_ARGV_WORD_RE.finditer(line))
+    words = [m.span() for m in word_matches]
     starts = [a for a, _b in words]
     operands: list[tuple[int, int, str]] = []
     pending: tuple[str, str | None] | None = None
@@ -2060,6 +2129,18 @@ def _sweep_argv_walk(line: str, carry: tuple[str, str | None] | None = None
                 if not _sweep_netuse_structural(text):
                     operands.append((a, b, "value"))
                 continue
+            if kind_name == "snmp" and not shape_only and expect is None:
+                public = _sweep_snmp_public_option(word_matches, position - 1)
+                if public is not None and public > 0:
+                    public_end = words[public - 1][1]
+                    position = public
+                    # A public logging/debug operand spelling a command is still that
+                    # operand. It cannot split the statement before a later private flag.
+                    while next_run < len(runs) and a < runs[next_run][1] <= public_end:
+                        consumed_commands.add(next_run)
+                        next_run += 1
+                    stop = runs[next_run][1] if next_run < len(runs) else len(line) + 1
+                    continue
             option = _sweep_argv_option(text, options, shape_only)
             if expect is not None:
                 operands.append((a, b, expect))

@@ -5776,18 +5776,27 @@ def _redact_directive_config(line: str, directive) -> bool:
         return True
     valued = ("-3m", "-3M", "-3k", "-3K", "-Cn", "-CE", "-v", "-u", "-l", "-a", "-x", "-c",
               "-A", "-X", "-e", "-E", "-n", "-r", "-t", "-p")
-    words = iter(_REDACT_ARGV_WORD_RE.finditer(line, directive.end()))
+    words = [_redact_decode_word(word.group(0))[0]
+             for word in _REDACT_ARGV_WORD_RE.finditer(line, directive.end())]
     targets = []
-    for word in words:
-        token = _redact_decode_word(word.group(0))[0]
+    position = 0
+    while position < len(words):
+        token = words[position]
+        public = _redact_snmp_public_option(words, position) if not targets else None
+        if public is not None:
+            if public < 0:
+                return False
+            position += public
+            continue
+        position += 1
         if token == "-Ci" and not targets:
             continue
         option = next((name for name in valued if token.startswith(name)), None) if not targets else None
         if option is not None:
             if token == option:
-                operand = next(words, None)
-                if operand is None or not _redact_decode_word(operand.group(0))[0]:
+                if position == len(words) or not words[position]:
                     return False
+                position += 1
             continue
         targets.append(token)
         if len(targets) > 3:
@@ -5797,6 +5806,65 @@ def _redact_directive_config(line: str, directive) -> bool:
     if spelling.casefold() in {"trapsess", "informsess"}:
         return len(targets) == 1 or len(targets) == 2 and bool(_REDACT_SNMP_OID_RE.fullmatch(targets[1]))
     return len(targets) in {2, 3} and all(_REDACT_SNMP_OID_RE.fullmatch(oid) for oid in targets[1:])
+
+
+def _redact_snmp_public_option(words, position: int):
+    """Public SNMPCMD_ARGS arity: words consumed, None for another option, -1 if incomplete.
+
+    Logging's upper-case forms own both their priority and destination (snmp_logging.c),
+    which may occur in the option word, the priority word, or the next word.
+    """
+    token = words[position]
+    if token in {"-d", "-h", "-H", "-V", "-Ci"}:
+        return 1
+    if token.startswith("-C"):
+        modifiers = token[2:]
+        count = 1
+        if not modifiers and position + 1 < len(words):
+            modifiers, count = words[position + 1], 2
+        if modifiers and all(char == "i" for char in modifiers):
+            return count
+    valued = ("-D", "-O", "-I", "-P", "-m", "-M", "-Y", "-s", "-T", "-Z", "-r", "-t")
+    option = next((name for name in valued if token.startswith(name)), None)
+    if option is not None:
+        if token != option:
+            return 1
+        return 2 if position + 1 < len(words) and words[position + 1] else -1
+    if not token.startswith("-L"):
+        return None
+    count, spec = 1, token[2:]
+    if not spec:
+        if position + count == len(words):
+            return -1
+        spec, count = words[position + count], count + 1
+    if not spec or spec[0] not in "eonEONfsFS":
+        return -1
+    mode, value = spec[0], spec[1:]
+    if value.startswith("="):
+        value = value[1:]
+    value = value.lstrip(_REDACT_WS_CHARS)
+    if mode in "eon":
+        return count
+    if not value:
+        if position + count == len(words):
+            return -1
+        value, count = words[position + count], count + 1
+    if mode in "EONFS":
+        priority = re.match(r"[0-7!aAcCeEwWnNiIdD](?:-[0-7!aAcCeEwWnNiIdD])?", value)
+        if priority is None:
+            return -1
+        value = value[priority.end():]
+        if mode in "EON":
+            return count
+        if mode == "F":
+            value = value.lstrip(" ")
+        if not value:
+            if position + count == len(words):
+                return -1
+            value, count = words[position + count], count + 1
+    if not value or mode in "sS" and value[0] not in "dDuU01234567":
+        return -1
+    return count
 
 
 def _redact_snmp_shape(line: str) -> bool:
@@ -5944,6 +6012,7 @@ def _redact_argv_walk(line: str, carry=None):
     if not runs:
         return [], None
     words = [m.span() for m in _REDACT_ARGV_WORD_RE.finditer(line)]
+    decoded_words = [_redact_decode_word(line[a:b])[0] for a, b in words]
     starts = [a for a, _b in words]
     operands, pending = [], None
     consumed_commands = set()
@@ -5964,6 +6033,16 @@ def _redact_argv_walk(line: str, carry=None):
             if kind_name == "net":
                 if not _redact_netuse_structural(text):
                     operands.append((a, b, "value"))
+                continue
+            public = (_redact_snmp_public_option(decoded_words, position - 1)
+                      if kind_name == "snmp" and not shape_only and expect is None else None)
+            if public is not None and public > 0:
+                position += public - 1
+                end = words[position - 1][1]
+                while next_run < len(runs) and a < runs[next_run][1] <= end:
+                    consumed_commands.add(next_run)
+                    next_run += 1
+                stop = runs[next_run][1] if next_run < len(runs) else len(line) + 1
                 continue
             option = _redact_argv_option(text, options, shape_only)
             if expect is not None:
