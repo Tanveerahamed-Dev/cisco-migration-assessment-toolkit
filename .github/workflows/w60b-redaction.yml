@@ -9,6 +9,7 @@ on:
       - "webapp/backend/redaction_verify.py"
       - "tests/test_redaction_grammar_corpus.py"
       - "tests/test_w60b_redaction.py"
+      - "tests/test_w60c_redaction.py"
       - "tests/fixtures/*redaction*corpus.json"
       - ".github/workflows/w60b-redaction.yml"
   workflow_dispatch:
@@ -38,12 +39,12 @@ jobs:
           cache: pip
       - name: Install canonical locked runtime and test dependencies
         run: python -m pip install -r requirements-dev.txt
-      - name: Both corpus suites, real scrub, verifier, exact main and round3 archives
+      - name: Legacy and W60c corpus suites, real scrub, verifier and exact archive parity
         env:
           W60B_ARCHIVE_DIFFERENTIAL: "1"
         run: >-
           python -m pytest -o addopts="" -v -s
-          tests/test_redaction_grammar_corpus.py tests/test_w60b_redaction.py
+          tests/test_redaction_grammar_corpus.py tests/test_w60b_redaction.py tests/test_w60c_redaction.py
           tests/test_release_supply_chain.py::test_every_action_is_pinned_to_an_immutable_commit
           tests/test_release_supply_chain.py::test_hosted_runner_pins_preserve_jobs_matrix_and_protected_contexts
           tests/test_release_supply_chain.py::test_hosted_runner_contract_rejects_selector_name_and_job_body_drift
