@@ -9,7 +9,6 @@ where the first hosted run is a finding. Every measurement is printed as one ``V
 from copy import deepcopy
 from dataclasses import asdict
 import gc
-import hashlib
 import json
 import math
 import os
@@ -571,18 +570,38 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     app = create_app(db_path=str(tmp_path / "budget.db"), scope_dist_dir=None)
     store = app.state.store
     campaign = store.create_campaign("Synthetic carriage budget")
-    without_id = store.add_snapshot(campaign["id"], "without carriage", dict(fleet), {})["id"]
-    with_id = store.add_snapshot(campaign["id"], "with carriage", {**fleet, "vlan_carriage": section}, {})["id"]
+    without_id, ingest_without_ms = _timed(
+        lambda: store.add_snapshot(campaign["id"], "without carriage", dict(fleet), {})["id"])
+    with_id, ingest_with_ms = _timed(
+        lambda: store.add_snapshot(campaign["id"], "with carriage", {**fleet, "vlan_carriage": section}, {})["id"])
     warm_id = store.add_snapshot(campaign["id"], "warm-up", {"vlan_cutover": []}, {})["id"]
-    cache = api._ProjectionCache()
+    cache = api._ProjectionCache(store)
+    if diagnostics:
+        for name in ("get_carriage_document", "verify_carriage_document", "get_carriage_page_source"):
+            monkeypatch.setattr(store, name, traced(name, getattr(store, name)))
+
+    def no_request_preparation(*_args, **_kwargs):
+        raise AssertionError("A first document or lazy page performed ingestion/full-carriage work")
+
+    # Actual ingestion above must prepare both samples once. The original first-use stub below
+    # is unchanged; no target snapshot/document/page is read or warmed before its real timer.
+    for module, names in (
+        (api.engine, ("bind_ui_projection_snapshot", "ui_projection_carriage_admission", "ui_projection",
+                      "prepare_carriage_projection")),
+        (uip, ("carriage_admission", "_carriage_gaps", "validate_vlan_carriage", "carriage_row_counts")),
+    ):
+        for name in names:
+            monkeypatch.setattr(module, name, no_request_preparation)
     warm_raw, warm_binding = store.get_snapshot_blob(warm_id)
-    cache.document(warm_raw, warm_binding["sha256"], None)  # first-use imports and code paths, outside the timing
+    cache.document(warm_raw, warm_binding["sha256"], None, snapshot_id=warm_id)  # original first-use stub only
     raw0, binding0 = store.get_snapshot_blob(without_id)
     raw1, binding1 = store.get_snapshot_blob(with_id)
     phase = "document_without"
-    _document, without_ms = _timed(lambda: cache.document(raw0, binding0["sha256"], None))
+    _document, without_ms = _timed(lambda: cache.document(raw0, binding0["sha256"], None, snapshot_id=without_id))
     phase = "document_with"
-    document, with_ms = _timed(lambda: cache.document(raw1, binding1["sha256"], None))
+    document, with_ms = _timed(lambda: cache.document(raw1, binding1["sha256"], None, snapshot_id=with_id))
+    assert all(entry.snapshot is None and entry.carriage is None and entry.prepared_document
+               for entry in cache.entries.values())
 
     def warm():
         response = api.carriage_page(cache, raw1, binding1, with_id, 0, 0, api.MAX_PAGE_SIZE)
@@ -599,7 +618,8 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     assert response["payload"]["summary"] == document["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
     measured = {"document_ms_without": without_ms, "document_ms_with": with_ms,
                 "document_growth_ms": round(with_ms - without_ms, 1), "first_page_ms": first_page_ms,
-                "page_ms": page_ms, "page_bytes": _bytes(response), "page_items": len(response["payload"]["page"]["items"])}
+                "page_ms": page_ms, "page_bytes": _bytes(response), "page_items": len(response["payload"]["page"]["items"]),
+                "ingest_ms_without": ingest_without_ms, "ingest_ms_with": ingest_with_ms}
     _report(capsys, "api", measured)
     if diagnostics:
         with capsys.disabled():
@@ -611,19 +631,16 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
                     key[-1]: type(getattr(entry.snapshot, "_bound_content_proof", None))
                     is pa._BoundSnapshotContentProof for key, entry in cache.entries.items()
                 },
+                "prepared_documents": {key[-1]: entry.prepared_document for key, entry in cache.entries.items()},
                 "phases": {key: {name: {"count": value["count"], "ms": round(value["ms"], 1)}
                                  for name, value in sorted(stage.items())}
                            for key, stage in stages.items()},
             }, sort_keys=True))
-        page_pin = _page_profile_pin(api, cache, raw1, binding1, api._PROJECTION_VERSION,
-                                     (with_id, 0, 0, api.MAX_PAGE_SIZE), response, phase)
-        profile = _post_timer_prefix_comparison(cache, raw1, binding1, api._PROJECTION_VERSION,
-                                               Path(__file__).resolve().parents[1], phase, expected_default=False)
-        with capsys.disabled():
-            print("VLAN-CARRIAGE-ADMISSION-PROFILE " + json.dumps(profile, sort_keys=True))
-        page_profile = _post_timer_page_profile(page_pin, warm, Path(__file__).resolve().parents[1], phase)
-        with capsys.disabled():
-            print("VLAN-CARRIAGE-PAGE-PROFILE " + json.dumps(page_profile, sort_keys=True))
+    # The old after-timer full-admission comparison remains covered by its standalone controls.
+    # It is no longer the HTTP path. Current requests above instead fail if they try that work.
+    assert store.get_snapshot_blob(with_id) == (raw1, binding1)
+    assert all(entry.snapshot is None and entry.carriage is None and entry.prepared_document
+               for entry in cache.entries.values())
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
@@ -726,20 +743,24 @@ def test_round2_every_pure_owner_page_is_bounded_complete_and_deterministic(roun
               "vlan_index": vlan_index, "requested_limit": limit, "cables": len(seen), "maximum_owner_bytes": maximum}))
 
 
-def test_round2_eight_member_full_http_envelope_stays_within_the_unchanged_budget(round2_scale, capsys, monkeypatch):
+def test_round2_eight_member_full_http_envelope_stays_within_the_unchanged_budget(
+        round2_scale, capsys, monkeypatch, tmp_path):
     from pathlib import Path
     webapp = str(Path(__file__).resolve().parents[1] / "webapp")
     if webapp not in sys.path:
         sys.path.insert(0, webapp)
     from backend import ui_projection_api as api
+    from backend.storage import Store
 
     snap = round2_scale
-    raw = json.dumps(snap, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    binding = {"sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
-    cache = api._ProjectionCache()
+    store = Store(tmp_path / "round2-pages.db")
+    campaign = store.create_campaign("Synthetic complete carriage pages")
+    snapshot_id = store.add_snapshot(campaign["id"], "prepared", snap, {})["id"]
+    raw, binding = store.get_snapshot_blob(snapshot_id)
+    cache = api._ProjectionCache(store)
     offset, indices, maximum = 0, [], 0
     while True:
-        response = api.carriage_page(cache, raw, binding, 1, 0, offset, 200)
+        response = api.carriage_page(cache, raw, binding, snapshot_id, 0, offset, 200)
         api.UiProjectionCarriageResponse.model_validate(response)
         maximum = max(maximum, _bytes(response))
         assert _bytes(response) <= BUDGET["page_bytes"]
@@ -768,7 +789,7 @@ def test_round2_eight_member_full_http_envelope_stays_within_the_unchanged_budge
         with monkeypatch.context() as changed:
             changed.setattr(api.engine, "ui_projection_carriage", forged)
             with pytest.raises(ValueError, match="changed its source, VLAN row or summary"):
-                api.carriage_page(cache, raw, binding, 1, 0, 0, 200)
+                api.carriage_page(cache, raw, binding, snapshot_id, 0, 0, 200)
     with capsys.disabled():
         print("ROUND2-PURE-CARRIAGE-HTTP " + json.dumps({"cables": len(indices), "maximum_wire_bytes": maximum}))
 

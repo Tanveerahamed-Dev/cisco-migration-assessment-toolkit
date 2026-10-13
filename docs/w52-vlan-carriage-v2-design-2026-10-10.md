@@ -218,3 +218,40 @@ recorded in `w52-v2-validation-2026-10-11.md`.
 8. Update `docs/ssot.md:47` and the W52 record.
 
 Out of scope: legacy native inference in `analyze.py:980-983`.
+
+## Supervisor-directed ingest boundary (2026-10-13)
+
+The first-document budget remains 2,000 ms and lazy pages remain 300 ms / 3,000,000 bytes.
+Repeated request-time admission tuning is superseded by an ingest-owned derivative:
+
+- `Store.add_snapshot` prepares every bindable snapshot once from its final serialized bytes,
+  after route provenance stamping. The original raw snapshot and comparison identity are unchanged.
+- `ui_projection.prepare_carriage_projection` performs the existing complete carriage admission,
+  including current STP eligibility, logical-port identity, aliases and stale-basis holds. It produces
+  the existing whole projection document with bounded carriage summary refs, plus separate compact
+  cable, VLAN-code and role-index fragments. It does not store a rendered VLAN-by-cable Cartesian DTO.
+- The versioned `carriage_projection_preparation/1` database derivative is server-owned. Each fragment
+  binds its snapshot, source-authority limbs, contract version, kind, key, ordinal and bytes through
+  INTEGER digest anchors and immutable-row guards. Client-supplied preparation is never accepted.
+- Fleet document requests read the prepared document only; they never bind/parse the raw snapshot,
+  admit carriage, recount codes, or fetch cable/member/role fragments. Warm cache hits revalidate the
+  stored document's source and fragment authority without decoding it again.
+- Lazy pages read a selected cable window, bounded code chunks/slice and only its indexed role groups.
+  `project_prepared_vlan_carriage` renders those admitted fragments through the original cable decoder,
+  evidence formatter and whole-cable member/byte prefix gate. No partial snapshot inherits a
+  `BoundSnapshot` marker. The returned summary still equals the stored first-document summary.
+- Missing, corrupt, substituted or incompatible preparation refuses. A one-time startup migration
+  prepares pre-existing valid snapshots before service; later missing fragments are never regenerated
+  during GET or silently resealed on restart. Unreadable historical sources remain unavailable.
+
+The original raw-byte authority scan is retained to detect source tampering, including incremental
+SQLite blob writes. It is O(source bytes); the bounded claim concerns carriage record interpretation,
+projection and selected-fragment work, not constant-time file integrity hashing. A page read verifies
+its selected fragments rather than certifying unrequested parts. Preparation version 1 is a behavior
+contract: future changes require an explicit version/migration decision, not just an engine-version label.
+
+The hosted budget uses this same Store-backed route for both with/without samples, reports actual ingest
+time separately, and traps request-time binding, full projection, admission and recounting. Original
+timers, the existing first-use stub, the full 200-item assertion, schemas and thresholds remain. The old
+after-timer full-admission profiler is no longer invoked as a model of HTTP work; its standalone controls
+remain. Ingest-only derivatives require no golden/sample, frontend type, native pin or Scope data rewrite.

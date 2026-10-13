@@ -35,6 +35,25 @@ def seed(client, snapshot=None):
     return store.add_snapshot(campaign["id"], "Fixture", snapshot or {}, {})["id"]
 
 
+def _provide_document(client, monkeypatch, provider):
+    """Inject at the real persisted-document request boundary, retaining its actual source binding.
+
+    The helper never invokes a projection or prepares a snapshot. It leaves every HTTP JSON/schema/source
+    guard in place and intentionally preserves provider aliases so the cache's ownership controls can test them.
+    """
+    store = client.app.state.store
+    original = store.get_carriage_document
+
+    def provided(snapshot_id):
+        result = original(snapshot_id)
+        if result is None:
+            return None
+        document, binding = result
+        return provider(document, snapshot_id), binding
+
+    monkeypatch.setattr(store, "get_carriage_document", provided)
+
+
 def url(sid, view="overview"):
     return f"/api/snapshots/{sid}/ui-projection/{view}"
 
@@ -121,7 +140,8 @@ def test_view_preserves_owner_data_and_exact_store_identity(client, sample, view
     # The owner document is projected from the same exact-byte binding the transport uses; a bare json.loads of
     # the blob would name no file (G41), so its engine block could not equal the served one.
     snapshot = engine.bind_ui_projection_snapshot(blob)
-    document = owner.project_device(snapshot, params["host"]) if view == "device" else owner.project(snapshot)
+    document = (owner.project_device(snapshot, params["host"]) if view == "device"
+                else owner.prepare_carriage_projection(snapshot)["document"])
     assert body["projection_schema"] == document["schema"]
     assert body["engine"] == document["engine"]
     # G41: the engine block names the very bytes the store served, in the owner's exact-parsed-bytes form.
@@ -201,7 +221,7 @@ def test_all_six_states_and_withheld_nonempty_lists_survive(client, sample, monk
     else:
         rows["reason"] = "Explicit synthetic owner state"
     Draft202012Validator(owner.ui_projection_schema()).validate(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     response = client.get(url(sid, "findings") + "/lists", params={"pointer": "/rows", "limit": 1})
     assert response.status_code == 200, response.text[:200]
     part = response.json()["list"]
@@ -214,7 +234,7 @@ def test_source_document_is_validated_before_paging_even_outside_selected_view(c
     sid = seed(client)
     document = owner.project(sample)
     del document["findings"]["rows"]["items"][-1]["severity"]["basis"]
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     with pytest.raises(SchemaValidationError, match="is not valid under any of the given schemas"):
         client.get(url(sid, "overview"), params={"limit": 1})
     with pytest.raises(SchemaValidationError, match="is not valid under any of the given schemas"):
@@ -321,34 +341,44 @@ def test_http_boundary_really_validates_response(client, monkeypatch):
 
 def test_projection_reads_one_bound_source_and_no_legacy_backfill(client, monkeypatch):
     from cisco_toolkit.protocol_assurance import bound_snapshot_source
-    sid = seed(client)
     store = client.app.state.store
     calls = []
     parsed = []
     produced = []
     real = store.get_snapshot_blob
-    bind = engine.bind_ui_projection_snapshot
-    project = engine.ui_projection
+    prepare, prepare_owner = engine.prepare_carriage_projection, owner.prepare_carriage_projection
+
+    def prepared_bytes(raw):
+        parsed.append(raw)
+        return prepare(raw)
+
+    def prepared_owner(snapshot):
+        produced.append(bound_snapshot_source(snapshot))
+        return prepare_owner(snapshot)
+
+    monkeypatch.setattr(engine, "prepare_carriage_projection", prepared_bytes)
+    monkeypatch.setattr(owner, "prepare_carriage_projection", prepared_owner)
+    sid = seed(client)
+
     def bound(snapshot_id):
         result = real(snapshot_id)
         calls.append(result)
         return result
-    def bound_bytes(raw):
-        parsed.append(raw)
-        assert raw is calls[-1][0]
-        return bind(raw)
-    def projection(snapshot, host=None, carriage=None):
-        produced.append(bound_snapshot_source(snapshot))
-        return project(snapshot, host, carriage)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("fleet document rebound or recomputed its raw snapshot during a request")
+
     monkeypatch.setattr(store, "get_snapshot_blob", bound)
-    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", bound_bytes)
-    monkeypatch.setattr(engine, "ui_projection", projection)
+    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", forbidden)
+    monkeypatch.setattr(engine, "ui_projection", forbidden)
+    monkeypatch.setattr(engine, "prepare_carriage_projection", forbidden)
     for name in ("get_bound_snapshot", "get_snapshot", "get_section", "get_snapshot_meta"):
         if hasattr(store, name):
             monkeypatch.setattr(store, name, lambda *args: pytest.fail("projection used a legacy backfill seam"))
     assert client.get(url(sid)).status_code == 200
     assert client.get(url(sid, "trust")).status_code == 200
     assert len(calls) == 2 and len(parsed) == len(produced) == 1
+    assert parsed[0] == calls[0][0] == calls[1][0]  # The one binding is produced at ingest, before either GET.
     assert produced[0]["source_bound"] is True
     assert produced[0]["sha256"] == "sha256:" + hashlib.sha256(parsed[0]).hexdigest() == calls[0][1]["sha256"]
     assert produced[0]["bytes"] == len(parsed[0])
@@ -402,7 +432,7 @@ def test_nonfinite_producer_score_is_rejected_before_any_selection(client, sampl
     # Python's JSON Schema number checks accept NaN. HTTP must still refuse the complete
     # invalid JSON source, including a row not visible on this requested view/page.
     Draft202012Validator(owner.ui_projection_schema()).validate(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     path, params = (url(sid), {"limit": 1}) if selection == "other_view" else (
         url(sid, "inventory") + "/lists",
         {"pointer": "/devices/rows", "limit": 1, "offset": final_index if selection == "selected_page" else 0},
@@ -454,7 +484,7 @@ def test_json_native_boundary_rejects_invalid_python_values(client, sample, monk
     if boundary == "producer":
         document = owner.project(sample)
         corrupt(document["overview"])
-        monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+        _provide_document(client, monkeypatch, lambda *_args: document)
         # The malformed overview must also block a different requested view.
         path = url(sid, "trust")
     else:
@@ -489,7 +519,7 @@ def test_json_native_check_preserves_native_values_and_shared_aliases():
 def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(client, monkeypatch):
     from backend import ui_projection_api as api
     sid = seed(client, {"devices": {"edge": {}, " edge ": {}}})
-    projected, bound, validated = [], [], []
+    projected, bound, validated, prepared_reads = [], [], [], []
     project, bind = engine.ui_projection, engine.bind_ui_projection_snapshot
     def projection(snapshot, host=None, carriage=None):
         projected.append(host)
@@ -497,6 +527,9 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
     def binding(raw):
         bound.append(raw)
         return bind(raw)
+    def prepared(document, snapshot_id):
+        prepared_reads.append(snapshot_id)
+        return document
     class Validator:
         def __init__(self, source, name):
             self.source, self.name = source, name
@@ -505,6 +538,7 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
             self.source.validate(value)
     monkeypatch.setattr(engine, "ui_projection", projection)
     monkeypatch.setattr(engine, "bind_ui_projection_snapshot", binding)
+    _provide_document(client, monkeypatch, prepared)
     monkeypatch.setattr(api, "_DOCUMENT_VALIDATOR", Validator(api._DOCUMENT_VALIDATOR, "document"))
     monkeypatch.setattr(api, "_DEVICE_VALIDATOR", Validator(api._DEVICE_VALIDATOR, "device"))
     for view in ("overview", "trust", "inventory", "findings", "topology", "overview"):
@@ -522,29 +556,30 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
             assert client.get(url(sid, "device") + "/lists", params={
                 "host": host, "pointer": pointer, "offset": 1, "limit": 1,
             }).status_code == 200
-    assert projected == [None, "edge", " edge ", ""]
+    # The fleet document is read once from ingest; only the three exact device selectors invoke a producer.
+    assert prepared_reads == [sid]
+    assert projected == ["edge", " edge ", ""]
     assert len(bound) == 1
     assert validated == ["document", "device", "device", "device"]
 
 
 def test_cache_single_flight_on_concurrent_views(client, monkeypatch):
     sid = seed(client)
-    project = engine.ui_projection
     entered, release = Event(), Event()
     calls = []
-    def slow(snapshot, host=None, carriage=None):
-        calls.append(host)
+    def slow(document, snapshot_id):
+        calls.append(snapshot_id)
         entered.set()
         assert release.wait(10)
-        return project(snapshot, host, carriage)
-    monkeypatch.setattr(engine, "ui_projection", slow)
+        return document
+    _provide_document(client, monkeypatch, slow)
     with ThreadPoolExecutor(max_workers=4) as pool:
         first = pool.submit(client.get, url(sid))
         assert entered.wait(10)
         rest = [pool.submit(client.get, url(sid, view)) for view in ("trust", "inventory", "findings")]
         release.set()
         assert all(result.result().status_code == 200 for result in [first, *rest])
-    assert calls == [None]
+    assert calls == [sid]  # Concurrent views share one persisted-document admission.
 
 
 def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_held(client, monkeypatch):
@@ -582,11 +617,10 @@ def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_
 def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch):
     from backend import ui_projection_api as api
     calls = []
-    project = engine.ui_projection
-    def counted(snapshot, host=None, carriage=None):
-        calls.append(snapshot.get("generated_at"))
-        return project(snapshot, host, carriage)
-    monkeypatch.setattr(engine, "ui_projection", counted)
+    def counted(document, snapshot_id):
+        calls.append(snapshot_id)
+        return document
+    _provide_document(client, monkeypatch, counted)
     snapshots = [seed(client, {"generated_at": str(index)}) for index in range(12)]
     for sid in [*snapshots, *reversed(snapshots)]:
         assert client.get(url(sid)).status_code == 200
@@ -597,12 +631,13 @@ def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch)
 
 
 def test_cache_reuses_equal_bytes_but_identity_and_store_lifetime_are_separate(client, tmp_path, monkeypatch):
+    from backend.storage import Store
     calls = []
-    project = engine.ui_projection
-    def counted(snapshot, host=None, carriage=None):
-        calls.append(host)
-        return project(snapshot, host, carriage)
-    monkeypatch.setattr(engine, "ui_projection", counted)
+    original = Store.get_carriage_document
+    def counted(store, snapshot_id):
+        calls.append((id(store), snapshot_id))
+        return original(store, snapshot_id)
+    monkeypatch.setattr(Store, "get_carriage_document", counted)
     first, duplicate, different = seed(client), seed(client), seed(client, {"devices": {"other": {}}})
     bodies = [client.get(url(sid)).json() for sid in (first, duplicate, different)]
     assert [body["identity"]["snapshot_id"] for body in bodies] == [first, duplicate, different]
@@ -635,29 +670,63 @@ def test_warm_cache_still_checks_live_store_authority(client, failure):
     assert "payload" not in response.json()
 
 
+@pytest.mark.parametrize("damage", ["deleted", "bytes_changed"])
+def test_warm_document_cache_refuses_missing_or_modified_prepared_document(client, damage):
+    sid = seed(client)
+    assert client.get(url(sid)).status_code == 200
+    store = client.app.state.store
+    source_before = store.get_snapshot_blob(sid)
+    with store._lock:
+        row = store._conn.execute(
+            "SELECT rowid,payload FROM carriage_projection_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+        ).fetchone()
+        assert row is not None
+        if damage == "deleted":
+            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_delete")
+            store._conn.execute(
+                "DELETE FROM carriage_projection_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+            )
+        elif hasattr(store._conn, "blobopen"):
+            # SQLite's incremental BLOB API bypasses UPDATE triggers; warm cache authority must still see it.
+            with store._conn.blobopen("carriage_projection_parts", "payload", row["rowid"], readonly=False) as blob:
+                blob.write(b"[")
+        else:
+            # Python 3.10 lacks blobopen. Author the same changed bytes outside the trigger guard and require
+            # the identical digest refusal; the missing API does not skip this adversarial condition.
+            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_update")
+            store._conn.execute(
+                "UPDATE carriage_projection_parts SET payload=? WHERE snapshot_id=? AND kind='document'",
+                (b"[" + bytes(row["payload"])[1:], sid),
+            )
+        store._conn.commit()
+    assert store.get_snapshot_blob(sid) == source_before
+    for path in (url(sid), url(sid, "findings") + "/lists?pointer=/rows"):
+        response = client.get(path)
+        assert response.status_code == 409
+        assert "payload" not in response.json() and "list" not in response.json()
+
+
 def test_failed_cache_admission_is_retried_and_does_not_poison_other_hosts(client, monkeypatch):
     sid = seed(client)
-    project = engine.ui_projection
     calls = []
-    def initially_broken(snapshot, host=None, carriage=None):
-        calls.append(host)
-        result = project(snapshot, host, carriage)
+    def initially_broken(result, snapshot_id):
+        calls.append(snapshot_id)
         if len(calls) == 1:
             result["overview"]["posture_statement"]["state"] = "invented"
         return result
-    monkeypatch.setattr(engine, "ui_projection", initially_broken)
+    _provide_document(client, monkeypatch, initially_broken)
     with pytest.raises(SchemaValidationError):
         client.get(url(sid))
     assert client.get(url(sid)).status_code == 200
     assert client.get(url(sid, "trust")).status_code == 200
-    assert calls == [None, None]
+    assert calls == [sid, sid]
 
 
 def test_cache_owns_producer_values_and_copies_only_selected_rows(client, sample, monkeypatch):
     from backend import ui_projection_api as api
     document = owner.project(sample)
     original = deepcopy(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     sid = seed(client)
     assert client.get(url(sid)).status_code == 200
     document["engine"].clear()
@@ -684,7 +753,7 @@ def test_cache_owns_producer_values_and_copies_only_selected_rows(client, sample
 
 def test_cache_owns_bound_source_when_producer_retains_and_mutates_its_input(client, monkeypatch):
     from backend.ui_projection_api import LIST_CATALOG
-    sid = seed(client, {"devices": {"edge": {}}})
+    sid = seed(client, {"devices": {"edge": {}, "other": {}}})
     snapshot, _binding = client.app.state.store.get_bound_snapshot(sid)
     expected = owner.project_device(snapshot, "edge")
     retained = []
@@ -694,6 +763,8 @@ def test_cache_owns_bound_source_when_producer_retains_and_mutates_its_input(cli
         return project(source, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", retaining)
     assert client.get(url(sid)).status_code == 200
+    assert retained == []  # Fleet documents do not call a request-time producer.
+    assert client.get(url(sid, "device"), params={"host": "other"}).status_code == 200
     retained[0]["devices"].clear()
     response = client.get(url(sid, "device"), params={"host": "edge", "limit": 200})
     assert response.status_code == 200
@@ -1210,7 +1281,7 @@ def test_document_missing_pin_has_no_provider_admission_and_keeps_whole_python(c
     assert api._DOCUMENT_VALIDATOR._NativeTransportValidator__native is not None
     sid = seed(client, sample)
     raw, binding = client.app.state.store.get_snapshot_blob(sid)
-    produced = api._ProjectionCache().document(raw, binding["sha256"], None)
+    produced = api._ProjectionCache(client.app.state.store).document(raw, binding["sha256"], None, snapshot_id=sid)
     api._require_json_native(produced)
     candidate.validate(produced)
     api._stock_validator(api._OWNER).validate(produced)
@@ -1603,35 +1674,62 @@ def test_carriage_page_bounds_and_unknown_rows_are_refused(client, tmp_path, par
 
 
 def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(client, tmp_path, monkeypatch):
-    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}), trunks=2))
-    admit, page = engine.ui_projection_carriage_admission, engine.ui_projection_carriage
-    admissions, sources, gap_checks = [], [], []
+    from cisco_toolkit import protocol_assurance
+    prepare, admit, page = engine.prepare_carriage_projection, owner._carriage_source, engine.ui_projection_carriage
+    preparations, admissions, sources, gap_checks = [], [], [], []
     gaps = owner._carriage_gaps
+
+    def counted_preparation(raw):
+        preparations.append(raw)
+        return prepare(raw)
 
     def counted_gaps(ctx, section):
         gap_checks.append(section)
         return gaps(ctx, section)
 
-    def counted_admission(snapshot):
-        admissions.append(snapshot)
-        return admit(snapshot)
+    def counted_admission(ctx):
+        admissions.append(ctx.s)
+        return admit(ctx)
 
     def checked_page(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
-        before = deepcopy(snapshot)
+        assert type(snapshot) is engine.PreparedCarriagePage and admission is None
+        before = deepcopy(snapshot.pack)
         sources.append(snapshot)
+        assert set(snapshot.pack) == {"schema", "context", "cables", "vlans", "roles"}
+        assert len(snapshot.pack["vlans"]) == len(snapshot.pack["cables"]) == 1
+        assert snapshot.pack["vlans"][0]["vlan_index"] == vlan_index
+        assert snapshot.pack["cables"][0]["ordinal"] == offset
+        assert sum(cable["member_count"] for cable in snapshot.pack["cables"]) <= 400
         result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
-        assert snapshot == before  # The cached bound snapshot is read, never written.
+        assert snapshot.pack == before  # Only the selected server-owned fragments are read, never written.
         return result
 
-    monkeypatch.setattr(engine, "ui_projection_carriage_admission", counted_admission)
+    monkeypatch.setattr(engine, "prepare_carriage_projection", counted_preparation)
+    monkeypatch.setattr(owner, "_carriage_source", counted_admission)
     monkeypatch.setattr(owner, "_carriage_gaps", counted_gaps)
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}), trunks=2))
+    original = client.app.state.store.get_snapshot_blob(sid)
+    assert len(preparations) == len(admissions) == len(gap_checks) == 1
+    assert preparations[0] == original[0]
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("first document or carriage page rebound/recounted/reprojected the full raw snapshot")
+
+    for name in ("bind_ui_projection_snapshot", "prepare_carriage_projection", "ui_projection",
+                 "ui_projection_carriage_admission"):
+        monkeypatch.setattr(engine, name, forbidden)
+    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts", "project"):
+        monkeypatch.setattr(owner, name, forbidden)
+    monkeypatch.setattr(protocol_assurance, "bind_snapshot_json_bytes", forbidden)
     monkeypatch.setattr(engine, "ui_projection_carriage", checked_page)
+    assert client.get(url(sid, "inventory")).status_code == 200  # The first document has no raw-snapshot work.
     for vlan_index, offset in ((0, 0), (0, 1), (1, 0)):
         response = client.get(_carriage_url(sid), params={"vlan_index": vlan_index, "offset": offset, "limit": 1})
         assert response.status_code == 200, response.text[:300]
     assert len(admissions) == 1 and len(sources) == 3
-    assert len(gap_checks) == 1  # Inventory and all lazy pages share the actual full basis join.
-    assert all(source is admissions[0] for source in sources)  # No copy of the snapshot per page.
+    assert len(preparations) == len(gap_checks) == 1  # The full basis join happened only at ingest.
+    assert all(type(source) is engine.PreparedCarriagePage for source in sources)
+    assert client.app.state.store.get_snapshot_blob(sid) == original
 
 
 @pytest.mark.parametrize("forgery", ["summary", "engine", "vlan_index"])
@@ -1713,7 +1811,7 @@ def _whole_native_document(client, snapshot):
     from backend import ui_projection_api as api
     sid = seed(client, snapshot)
     raw, binding = client.app.state.store.get_snapshot_blob(sid)
-    document = api._ProjectionCache().document(raw, binding["sha256"], None)
+    document = api._ProjectionCache(client.app.state.store).document(raw, binding["sha256"], None, snapshot_id=sid)
     api._require_json_native(document)
     return document
 
@@ -3222,7 +3320,7 @@ def test_path_admits_complete_source_before_query_selection(client, monkeypatch)
     sid = seed(client)
     document = owner.project({})
     document["overview"]["facts"]["avg_health"]["fact"]["value"] = float("nan")
-    monkeypatch.setattr(engine, "ui_projection", lambda *_args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     def forbidden(*_args):
         pytest.fail("Path ran before invalid source admission was refused")
     monkeypatch.setattr(engine, "ui_projection_path", forbidden)
@@ -3383,14 +3481,13 @@ def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(cli
     blob, _binding = client.app.state.store.get_snapshot_blob(sid)
     other_bytes = blob + b"\n"                        # valid JSON, equal content, a different byte string
     assert json.loads(other_bytes) == json.loads(blob) and other_bytes != blob
-    project = engine.ui_projection
+    other_document = owner.project(engine.bind_ui_projection_snapshot(other_bytes))
     produced = []
 
-    def forged(snapshot, host=None, carriage=None):
+    def forged(document, _snapshot_id):
         if forgery == "equal_content_other_bytes":
-            document = project(engine.bind_ui_projection_snapshot(other_bytes), host, carriage)
+            document = deepcopy(other_document)
         else:
-            document = project(snapshot, host, carriage)
             if forgery == "digest":
                 document["engine"]["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
             else:
@@ -3399,7 +3496,7 @@ def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(cli
         return document
 
     with monkeypatch.context() as changed:
-        changed.setattr(engine, "ui_projection", forged)
+        _provide_document(client, changed, forged)
         with pytest.raises(ValueError, match="names other source bytes than the store read"):
             client.get(url(sid))
     # The refused document was schema-valid and published; only its source binding was wrong.
@@ -3419,7 +3516,7 @@ def test_transport_serves_a_withheld_engine_identity_exactly_as_the_owner_wrote_
     sid = seed(client)
     document = owner.project(sample)                  # handed over already parsed: the owner names no file
     assert [document["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")] == ["not_collected"] * 2
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     response = client.get(url(sid))
     assert response.status_code == 200, response.text[:200]
     body = response.json()

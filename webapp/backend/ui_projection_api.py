@@ -705,6 +705,7 @@ class _SnapshotProjection:
         self.documents: dict[str | None, dict[str, Any]] = {}
         # G14 v2: the engine's read-only carriage admission (validation, join, basis gaps), built once per digest.
         self.carriage: Any = None
+        self.prepared_document = False
 
 
 class _ProjectionCache:
@@ -715,32 +716,53 @@ class _ProjectionCache:
     with the owning app; nothing is persisted, shared between stores, or served without
     a fresh authoritative store read. A restart discards the cache with the old code.
     """
-    def __init__(self) -> None:
+    def __init__(self, store: Any = None) -> None:
         self.lock = Lock()
         self.entries: dict[tuple[Any, ...], _SnapshotProjection] = {}
+        self.store = store
 
-    def document(self, raw: bytes, digest: str, host: str | None) -> dict[str, Any]:
+    def document(self, raw: bytes, digest: str, host: str | None, *,
+                 snapshot_id: int | None = None) -> dict[str, Any]:
         key = (*_PROJECTION_VERSION, digest)
         with self.lock:
             entry = self.entries.setdefault(key, _SnapshotProjection())
-            if host in entry.documents:
-                return entry.documents[host]
+            cached = entry.documents.get(host)
+        if cached is not None:
+            self._verify_prepared_hit(raw, digest, host, snapshot_id)
+            return cached
         # Never wait for a builder while holding the publication lock: an unrelated
         # cold host must not prevent reads of already validated documents.
         with entry.lock:
             with self.lock:
-                if host in entry.documents:
-                    return entry.documents[host]
-            if entry.snapshot is None:
-                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
-            # A producer may retain its input too. Its later mutation must not
-            # poison the private bound source used by another lazy host document.
-            if host is None:
-                if entry.carriage is None:
-                    entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
-                produced = engine.ui_projection(deepcopy(entry.snapshot), host, entry.carriage)
+                cached = entry.documents.get(host)
+            if cached is not None:
+                self._verify_prepared_hit(raw, digest, host, snapshot_id)
+                return cached
+            prepared = None
+            if self.store is not None and host is None:
+                if snapshot_id is None:
+                    raise ValueError("Stored projection requires its snapshot identity")
+                prepared = self.store.get_carriage_document(snapshot_id)
+                if prepared is None:
+                    raise ValueError("Stored projection preparation is unavailable")
+            if prepared is not None:
+                produced, binding = prepared
+                if binding["sha256"] != digest or binding["bytes"] != len(raw):
+                    raise ValueError("Stored projection names another snapshot source")
+                # The ingest owner already performed every carriage admission/count operation.
+                # Do not decode/bind/copy its full snapshot or load its cable/code/role tables here.
+                entry.prepared_document = True
             else:
-                produced = engine.ui_projection(deepcopy(entry.snapshot), host)
+                if entry.snapshot is None:
+                    entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+                # Standalone pure-owner callers and lazy device views retain their original path.
+                # HTTP fleet documents always supply Store/ID and never regenerate on a request.
+                if host is None:
+                    if entry.carriage is None:
+                        entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
+                    produced = engine.ui_projection(deepcopy(entry.snapshot), host, entry.carriage)
+                else:
+                    produced = engine.ui_projection(deepcopy(entry.snapshot), host)
             # The producer may retain aliases. Cache only an owned complete document
             # after both guards succeed; an exception leaves this host retryable.
             _require_json_native(produced)
@@ -750,6 +772,15 @@ class _ProjectionCache:
             with self.lock:
                 entry.documents[host] = document
             return document
+
+    def _verify_prepared_hit(self, raw: bytes, digest: str, host: str | None,
+                             snapshot_id: int | None) -> None:
+        if self.store is not None and host is None:
+            if snapshot_id is None:
+                raise ValueError("Stored projection requires its snapshot identity")
+            binding = self.store.verify_carriage_document(snapshot_id)
+            if binding is None or binding["sha256"] != digest or binding["bytes"] != len(raw):
+                raise ValueError("Stored projection names another snapshot source")
 
 
     def source_copy(self, raw: bytes, digest: str) -> dict[str, Any]:
@@ -777,6 +808,19 @@ class _ProjectionCache:
                 entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
             return entry.snapshot, entry.carriage
 
+    def carriage_window(self, raw: bytes, digest: str, snapshot_id: int, vlan_index: int,
+                        offset: int, limit: int) -> tuple[Any, Any]:
+        """Read only the Store-verified selected window; no request-time preparation fallback."""
+        if self.store is not None:
+            prepared = self.store.get_carriage_page_source(snapshot_id, vlan_index, offset, limit)
+            if prepared is None:
+                raise ValueError("Stored carriage preparation is unavailable")
+            pack, binding = prepared
+            if binding["sha256"] != digest or binding["bytes"] != len(raw):
+                raise ValueError("Stored carriage window names another snapshot source")
+            return engine.PreparedCarriagePage(pack), None
+        return self.carriage_source(raw, digest)
+
 
 def _common_document(document: dict[str, Any], binding: dict[str, Any], snapshot_id: int, view: str):
     registry = document["device"]["limitations"] if view == "device" else document["trust"]["limitations"]
@@ -797,7 +841,7 @@ def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view
     if bound is None:
         raise HTTPException(404, "Snapshot not found")
     raw, binding = bound
-    document = cache.document(raw, binding["sha256"], host if view == "device" else None)
+    document = cache.document(raw, binding["sha256"], host if view == "device" else None, snapshot_id=snapshot_id)
     return document, _common_document(document, binding, snapshot_id, view)
 
 
@@ -1041,11 +1085,15 @@ def carriage_page(cache: _ProjectionCache, raw: bytes, binding: dict[str, Any], 
     The page summary must equal the summary the admitted inventory document carries for the same VLAN row, and the
     engine block must equal that document's: the client and this server both refuse drift.
     """
-    main = cache.document(raw, binding["sha256"], None)
+    main = (cache.document(raw, binding["sha256"], None, snapshot_id=snapshot_id)
+            if isinstance(cache, _ProjectionCache) and cache.store is not None
+            else cache.document(raw, binding["sha256"], None))
     rows = main["inventory"]["vlans"]["rows"]["items"]
     if not 0 <= vlan_index < len(rows):
         raise HTTPException(404, "VLAN row not found")
-    snapshot, admission = cache.carriage_source(raw, binding["sha256"])
+    snapshot, admission = (cache.carriage_window(raw, binding["sha256"], snapshot_id, vlan_index, offset, limit)
+                           if isinstance(cache, _ProjectionCache) and cache.store is not None
+                           else cache.carriage_source(raw, binding["sha256"]))
     common = _common_document(main, binding, snapshot_id, "carriage")
     def wire_size(value: Any) -> int:
         return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
@@ -1094,7 +1142,9 @@ def _page_view(value: dict[str, Any], view: str, limit: int) -> dict[str, Any]:
 
 def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
-    cache = _ProjectionCache()
+    if engine.carriage_page_limits()[1] != MAX_PAGE_SIZE:
+        raise RuntimeError("Carriage storage and transport page limits disagree")
+    cache = _ProjectionCache(store)
     app.add_middleware(_NativeValidationSmoke)
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/inventory/carriage",
              response_model=UiProjectionCarriageResponse, operation_id="get_ui_projection_carriage")
@@ -1125,7 +1175,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
         raw, binding = bound
         # Admit the complete source document and preserve its global context. Query
         # work uses a separate owned input and never holds a cache lock while tracing.
-        main = cache.document(raw, binding["sha256"], None)
+        main = cache.document(raw, binding["sha256"], None, snapshot_id=snapshot_id)
         source = cache.source_copy(raw, binding["sha256"])
         produced = engine.ui_projection_path(source, src_ip, dst_ip)
         _require_json_native(produced)

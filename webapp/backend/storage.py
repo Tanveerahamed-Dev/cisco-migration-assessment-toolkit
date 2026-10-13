@@ -59,6 +59,69 @@ CREATE TABLE IF NOT EXISTS snapshot_authority (
     digest_2    INTEGER NOT NULL,
     digest_3    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS carriage_projection_parts (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    projection_version INTEGER NOT NULL CHECK (projection_version = 1),
+    kind TEXT NOT NULL,
+    part_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, kind, part_key)
+);
+CREATE INDEX IF NOT EXISTS ix_carriage_projection_window
+    ON carriage_projection_parts(snapshot_id, kind, ordinal);
+CREATE TABLE IF NOT EXISTS carriage_projection_role_presence (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    key_0 INTEGER NOT NULL,
+    key_1 INTEGER NOT NULL,
+    key_2 INTEGER NOT NULL,
+    key_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id,key_0,key_1,key_2,key_3)
+);
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_update
+BEFORE UPDATE ON carriage_projection_role_presence
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_replace
+BEFORE INSERT ON carriage_projection_role_presence
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_role_presence WHERE snapshot_id=NEW.snapshot_id
+      AND key_0=NEW.key_0 AND key_1=NEW.key_1 AND key_2=NEW.key_2 AND key_3=NEW.key_3
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_delete
+BEFORE DELETE ON carriage_projection_role_presence
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_update
+BEFORE UPDATE ON carriage_projection_parts
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_replace
+BEFORE INSERT ON carriage_projection_parts
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_parts
+    WHERE snapshot_id=NEW.snapshot_id AND kind=NEW.kind AND part_key=NEW.part_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_delete
+BEFORE DELETE ON carriage_projection_parts
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
 CREATE TABLE IF NOT EXISTS executions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -639,6 +702,28 @@ _CUTOVER_VERDICT_CODES = {
     "REGRESSED": 6,
 }
 _TRIAL_SOURCE_CODE = 1
+# This version owns the derivative behavior, not just its shape. A future preparer change
+# needs a new version and explicit migration; an engine release string cannot silently
+# re-authorize documents produced under different projection semantics.
+_CARRIAGE_PROJECTION_SCHEMA = "carriage_projection_preparation/1"
+_CARRIAGE_CODES_CHUNK = 400
+
+
+def _carriage_part_limbs(
+        snapshot_id: int, source_limbs: tuple[int, ...], kind: str,
+        part_key: str, ordinal: int, payload: bytes) -> tuple[int, int, int, int]:
+    """Bind every independently loaded part to its source, identity and exact bytes."""
+    return _authority_limbs({
+        "schema": _CARRIAGE_PROJECTION_SCHEMA,
+        "snapshot_id": snapshot_id,
+        "source_authority": list(source_limbs),
+        "kind": kind, "part_key": part_key, "ordinal": ordinal,
+        "payload": _blob_identity(payload),
+    })
+
+
+def _carriage_role_key(host: str, namespace: str, instance: int, interface: str) -> str:
+    return json.dumps([host, namespace, instance, interface], separators=(",", ":"))
 
 
 def _authority_limbs(value: Dict[str, Any]) -> tuple[int, int, int, int]:
@@ -824,6 +909,18 @@ class Store:
                 "execution_l2_failure_trial_authority" not in existing_tables
             )
             self._conn.executescript(_SCHEMA)
+            snapshot_columns = {
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(snapshots)").fetchall()
+            }
+            # The INTEGER column is the durable migration marker. Removing a sidecar table or
+            # row after first upgrade must never turn the next startup into a trust reseal.
+            migrate_carriage_projection = "carriage_projection_required" not in snapshot_columns
+            if migrate_carriage_projection:
+                self._conn.execute(
+                    "ALTER TABLE snapshots ADD COLUMN carriage_projection_required "
+                    "INTEGER NOT NULL DEFAULT 1 CHECK (carriage_projection_required IN (0,1))"
+                )
             # v2/legacy classification is decision-bearing even before the first comparison exists.
             # Keep it in INTEGER columns (sqlite blobopen can incrementally rewrite TEXT/BLOB
             # without firing row triggers) and migrate older stores once from their historical
@@ -1081,6 +1178,35 @@ class Store:
                     self._execution_receipt_authority_locked(
                         int(execution_row["id"]), execution_row, state
                     )
+            if migrate_carriage_projection:
+                from .engine import prepare_carriage_projection
+                for source in self._conn.execute(
+                        "SELECT id, CAST(snapshot_json AS BLOB) AS raw FROM snapshots ORDER BY id"
+                ).fetchall():
+                    raw = bytes(source["raw"])
+                    try:
+                        snapshot = _strict_json_loads(raw)
+                    except (TypeError, ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(snapshot, dict):
+                        continue
+                    sid = int(source["id"])
+                    self._conn.execute(
+                        "UPDATE snapshots SET carriage_projection_required=1 WHERE id=?", (sid,)
+                    )
+                    source_row = self._bound_snapshot_row_locked(sid)
+                    if source_row is None:
+                        raise ExecutionReceiptAuthorityError("carriage migration source is missing")
+                    self._write_carriage_projection_locked(
+                        sid, prepare_carriage_projection(raw), source_row
+                    )
+            self._conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS carriage_projection_requirement_no_update
+                BEFORE UPDATE OF carriage_projection_required ON snapshots
+                BEGIN
+                    SELECT RAISE(ABORT, 'carriage projection requirement is immutable');
+                END
+            """)
             self._conn.commit()
 
     def _boot_hardening(self, dbfile: Path, db_mtime: float | None) -> None:
@@ -1304,7 +1430,13 @@ class Store:
         uploaded_at = _now()
         script_version = str(snapshot.get("script_version", ""))
         summary_json = json.dumps(summary, separators=(",", ":"))
-        snapshot_json = json.dumps(snapshot, separators=(",", ":"))
+        snapshot_json = json.dumps(snapshot, separators=(",", ":"), allow_nan=False)
+        snapshot_raw = snapshot_json.encode("utf-8")
+        # Preparation sees the FINAL bytes: every ingestion route stamps its provenance
+        # before add_snapshot. Missing carriage is prepared as unavailable too, so no
+        # first-document request falls back to source parsing or semantic projection.
+        from .engine import prepare_carriage_projection
+        preparation = prepare_carriage_projection(snapshot_raw)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -1316,10 +1448,11 @@ class Store:
                     raise ValueError("snapshot campaign has no durable engagement identity")
                 cur = self._conn.execute(
                     """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
-                                             n_devices, summary_json, snapshot_json)
-                       VALUES (?,?,?,?,?,?,?)""",
+                                             n_devices, summary_json, snapshot_json,
+                                             carriage_projection_required)
+                       VALUES (?,?,?,?,?,?,?,?)""",
                     (campaign_id, stored_label, uploaded_at, script_version,
-                     _n, summary_json, snapshot_json),
+                     _n, summary_json, snapshot_json, 1),
                 )
                 sid = int(cur.lastrowid or 0)
                 limbs = _snapshot_authority_limbs(
@@ -1329,7 +1462,7 @@ class Store:
                     label=stored_label,
                     uploaded_at=uploaded_at,
                     script_version=script_version,
-                    snapshot_blob=snapshot_json.encode("utf-8"),
+                    snapshot_blob=snapshot_raw,
                 )
                 self._conn.execute(
                     """INSERT INTO snapshot_authority(
@@ -1337,11 +1470,15 @@ class Store:
                        VALUES (?,?,?,?,?,?)""",
                     (sid, 1, *limbs),
                 )
+                source_row = self._bound_snapshot_row_locked(sid)
+                if source_row is None:
+                    raise ExecutionReceiptAuthorityError("carriage source is missing")
+                self._write_carriage_projection_locked(sid, preparation, source_row)
                 if self._snapshot_digest_observers:
                     # BEFORE the commit, so an observer that must react to this digest (the
                     # /scope privacy withdrawal) has reacted before the row is readable; an
                     # observer that raises rolls the insert back (fail closed).
-                    blob_digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+                    blob_digest = hashlib.sha256(snapshot_raw).hexdigest()
                     for observer in tuple(self._snapshot_digest_observers):
                         observer(blob_digest)
                 self._conn.commit()
@@ -1427,9 +1564,14 @@ class Store:
 
     def _bound_snapshot_row(self, snapshot_id: int) -> Optional[sqlite3.Row]:
         with self._lock:
-            row = self._conn.execute(
+            return self._bound_snapshot_row_locked(snapshot_id)
+
+    def _bound_snapshot_row_locked(self, snapshot_id: int) -> Optional[sqlite3.Row]:
+        """Read and verify source inside a caller-owned coherent SQLite transaction."""
+        row = self._conn.execute(
                 """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
                           s.label, s.uploaded_at, s.script_version,
+                          s.carriage_projection_required,
                            CAST(s.snapshot_json AS BLOB) AS snapshot_blob,
                            sa.snapshot_id AS authority_snapshot_id,
                            sa.authority_version AS authority_version,
@@ -1441,12 +1583,275 @@ class Store:
                    JOIN campaign_identities i ON i.campaign_id=s.campaign_id
                    LEFT JOIN snapshot_authority sa ON sa.snapshot_id=s.id
                    WHERE s.id = ?""", (snapshot_id,)
-            ).fetchone()
+        ).fetchone()
         if row is not None and not _snapshot_authority_row_valid(row):
             raise ExecutionReceiptAuthorityError(
                 "snapshot source authority does not reconcile with exact persisted bytes"
             )
         return row
+
+    def _write_carriage_projection_locked(
+            self, snapshot_id: int, preparation: Dict[str, Any], source: sqlite3.Row) -> None:
+        if not isinstance(preparation, dict) or preparation.get("schema") != _CARRIAGE_PROJECTION_SCHEMA:
+            raise ValueError("unsupported carriage projection preparation")
+        source_limbs = tuple(source[f"authority_digest_{i}"] for i in range(4))
+
+        def put(kind: str, key: str, value: Any, ordinal: int = 0) -> None:
+            raw = _canonical_json_bytes(value)
+            limbs = _carriage_part_limbs(snapshot_id, source_limbs, kind, key, ordinal, raw)
+            self._conn.execute(
+                """INSERT INTO carriage_projection_parts
+                   (snapshot_id,projection_version,kind,part_key,ordinal,payload,
+                    digest_0,digest_1,digest_2,digest_3) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (snapshot_id, 1, kind, key, ordinal, sqlite3.Binary(raw), *limbs),
+            )
+
+        put("document", "", preparation["document"])
+        put("context", "", preparation["context"])
+        cables = preparation["cables"]
+        vlans = preparation["vlans"]
+        put("manifest", "", {
+            "schema": _CARRIAGE_PROJECTION_SCHEMA,
+            "cable_count": len(cables),
+            "vlan_count": len(vlans),
+        })
+        code_length = 0
+        for expected_ordinal, row in enumerate(cables):
+            ordinal = row["ordinal"]
+            if (type(ordinal) is not int or ordinal != expected_ordinal
+                    or type(row["member_count"]) is not int or row["member_count"] < 0
+                    or type(row["code_offset"]) is not int or row["code_offset"] != code_length
+                    or len(row["cable"]["members"]) != row["member_count"]):
+                raise ValueError("invalid carriage cable census")
+            code_length += 1 + 3 * row["member_count"]
+            meta = {key: row[key] for key in ("ordinal", "index", "code_offset", "member_count")}
+            put("cable_meta", str(ordinal), meta, ordinal)
+            put("cable", str(ordinal), row, ordinal)
+        for row in vlans:
+            key = str(row["vlan_index"])
+            codes = row["codes"]
+            if not isinstance(codes, str):
+                raise ValueError("carriage codes must be a string")
+            if (row["readable"] and (len(codes) != code_length or row["total"] != len(cables))
+                    or not row["readable"] and (codes or row["total"] != 0)):
+                raise ValueError("invalid carriage code census")
+            meta = {name: value for name, value in row.items() if name != "codes"}
+            meta["code_length"] = len(codes)
+            put("vlan", key, meta)
+            # Independently anchored fixed-size chunks avoid reading/hashing all V*C codes
+            # when the lazy endpoint needs at most one member-bounded cable window.
+            for start in range(0, len(codes), _CARRIAGE_CODES_CHUNK):
+                put("codes", f"{key}:{start // _CARRIAGE_CODES_CHUNK}",
+                    codes[start:start + _CARRIAGE_CODES_CHUNK])
+        for row in preparation["roles"]:
+            key = _carriage_role_key(row["host"], row["namespace"], row["instance"], row["interface"])
+            put("role", key, row)
+            self._conn.execute(
+                """INSERT INTO carriage_projection_role_presence
+                   (snapshot_id,key_0,key_1,key_2,key_3) VALUES (?,?,?,?,?)""",
+                (snapshot_id, *_authority_limbs({"role_key": key})),
+            )
+
+    def _read_carriage_part_locked(
+            self, snapshot_id: int, source: sqlite3.Row, kind: str, key: str,
+            *, optional: bool = False, decode: bool = True) -> Any:
+        row = self._conn.execute(
+            """SELECT projection_version,kind,part_key,ordinal,payload,
+                      digest_0,digest_1,digest_2,digest_3
+               FROM carriage_projection_parts WHERE snapshot_id=? AND kind=? AND part_key=?""",
+            (snapshot_id, kind, key),
+        ).fetchone()
+        if kind == "role":
+            presence = self._conn.execute(
+                """SELECT 1 FROM carriage_projection_role_presence WHERE snapshot_id=?
+                   AND key_0=? AND key_1=? AND key_2=? AND key_3=?""",
+                (snapshot_id, *_authority_limbs({"role_key": key})),
+            ).fetchone()
+            if (presence is None) != (row is None):
+                raise ExecutionReceiptAuthorityError("carriage role presence does not reconcile")
+        if row is None:
+            if optional:
+                return None
+            raise ExecutionReceiptAuthorityError(f"carriage projection {kind} part is missing")
+        if decode:
+            return self._decode_carriage_part(snapshot_id, source, row, kind, key)
+        return self._verified_carriage_part_bytes(snapshot_id, source, row, kind, key)
+
+    def _verified_carriage_part_bytes(
+            self, snapshot_id: int, source: sqlite3.Row, row: sqlite3.Row,
+            kind: str, key: str) -> bytes:
+        try:
+            if (type(row["projection_version"]) is not int or row["projection_version"] != 1
+                    or row["kind"] != kind or row["part_key"] != key
+                    or type(row["ordinal"]) is not int):
+                raise ValueError("projection identity mismatch")
+            raw = _snapshot_blob_bytes(row["payload"])
+            expected = _carriage_part_limbs(
+                snapshot_id, tuple(source[f"authority_digest_{i}"] for i in range(4)),
+                kind, key, row["ordinal"], raw,
+            )
+            if not _authority_row_matches(row, expected, prefix="digest"):
+                raise ValueError("projection content authority mismatch")
+            return raw
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ExecutionReceiptAuthorityError("carriage projection part is invalid") from exc
+
+    def _decode_carriage_part(
+            self, snapshot_id: int, source: sqlite3.Row, row: sqlite3.Row,
+            kind: str, key: str) -> Any:
+        raw = self._verified_carriage_part_bytes(snapshot_id, source, row, kind, key)
+        try:
+            return _strict_json_loads(raw)
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ExecutionReceiptAuthorityError("carriage projection part JSON is invalid") from exc
+
+    def get_carriage_document(
+            self, snapshot_id: int) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Read only the prepared document, retaining exact raw-byte source custody.
+
+        Source bytes are integrity-scanned without decoding. No cable, member, STP, VLAN code
+        stream or page-context part is read, parsed or projected on this first-document path.
+        """
+        return self._carriage_document_read(snapshot_id, decode=True)
+
+    def verify_carriage_document(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
+        """Revalidate a cached document's exact persisted authority without JSON decoding.
+
+        A warm DTO is usable only while the current source AND its document fragment still
+        reconcile. Other projection fragments are outside this independently bounded check.
+        """
+        result = self._carriage_document_read(snapshot_id, decode=False)
+        return result[1] if result is not None else None
+
+    def _carriage_document_read(
+            self, snapshot_id: int, *, decode: bool) -> Optional[tuple[Any, Dict[str, Any]]]:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                source = self._bound_snapshot_row_locked(snapshot_id)
+                if source is None:
+                    self._conn.commit()
+                    return None
+                if source["carriage_projection_required"] != 1:
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                document = self._read_carriage_part_locked(
+                    snapshot_id, source, "document", "", decode=decode
+                )
+                binding = _snapshot_binding_from_row(source)[1]
+                self._conn.commit()
+                return document, binding
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_carriage_page_source(
+            self, snapshot_id: int, vlan_index: int, offset: int = 0,
+            limit: int = 100) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Verify the source and selected parts of one member-bounded lazy window.
+
+        Unrequested fragments are deliberately neither loaded nor certified by this read.
+        """
+        from cisco_toolkit.vlan_carriage import carriage_join_interface
+        from .engine import carriage_page_limits
+
+        member_limit, cable_limit = carriage_page_limits()
+
+        if (type(vlan_index) is not int or vlan_index < 0
+                or type(offset) is not int or offset < 0
+                or type(limit) is not int or not 1 <= limit <= cable_limit):
+            raise ValueError("invalid carriage page window")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                source = self._bound_snapshot_row_locked(snapshot_id)
+                if source is None:
+                    self._conn.commit()
+                    return None
+                if source["carriage_projection_required"] != 1:
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                manifest = self._read_carriage_part_locked(snapshot_id, source, "manifest", "")
+                context = self._read_carriage_part_locked(snapshot_id, source, "context", "")
+                if vlan_index >= manifest["vlan_count"]:
+                    raise ValueError("VLAN is not in the prepared carriage selector")
+                key = str(vlan_index)
+                vlan = self._read_carriage_part_locked(snapshot_id, source, "vlan", key)
+                vlan_id = vlan["vlan"]
+                expected_count = min(limit, max(0, vlan["total"] - offset))
+                rows = self._conn.execute(
+                    """SELECT projection_version,kind,part_key,ordinal,payload,
+                              digest_0,digest_1,digest_2,digest_3
+                       FROM carriage_projection_parts WHERE snapshot_id=? AND kind='cable_meta'
+                         AND ordinal>=? ORDER BY ordinal LIMIT ?""",
+                    (snapshot_id, offset, expected_count),
+                ).fetchall()
+                if len(rows) != expected_count:
+                    raise ExecutionReceiptAuthorityError("carriage cable window is incomplete")
+                cables = []
+                member_count = 0
+                code_start = 0
+                code_end = 0
+                role_keys = set()
+                for position, row in enumerate(rows, offset):
+                    meta = self._decode_carriage_part(snapshot_id, source, row, "cable_meta", str(position))
+                    if (meta["ordinal"] != position or meta["member_count"] < 0
+                            or cables and meta["code_offset"] != code_end):
+                        raise ExecutionReceiptAuthorityError("carriage cable window is invalid")
+                    if member_count + meta["member_count"] > member_limit:
+                        # The renderer sees the boundary census, but never reads/decodes the
+                        # potentially unbounded cable that cannot fit in this whole-cable page.
+                        cables.append(meta)
+                        break
+                    cable = self._read_carriage_part_locked(snapshot_id, source, "cable", str(position))
+                    if any(cable[name] != meta[name] for name in meta):
+                        raise ExecutionReceiptAuthorityError("carriage cable census differs")
+                    cables.append(cable)
+                    if len(cables) == 1:
+                        code_start = meta["code_offset"]
+                    member_count += meta["member_count"]
+                    code_end = meta["code_offset"] + 1 + 3 * meta["member_count"]
+                    if vlan_id is not None:
+                        for member in cable["cable"].get("members", []):
+                            for side in ("a", "b"):
+                                end = member.get(side, {})
+                                interface = carriage_join_interface(end.get("stp_interface"))
+                                if end.get("host") and interface:
+                                    role_keys.add(_carriage_role_key(
+                                        end["host"], "pvst_vlan", vlan_id, interface
+                                    ))
+                code_length = vlan.pop("code_length")
+                chunks = []
+                if code_end > code_start and code_length:
+                    for chunk in range(code_start // _CARRIAGE_CODES_CHUNK,
+                                       (code_end - 1) // _CARRIAGE_CODES_CHUNK + 1):
+                        value = self._read_carriage_part_locked(
+                            snapshot_id, source, "codes", f"{key}:{chunk}"
+                        )
+                        expected_length = min(_CARRIAGE_CODES_CHUNK,
+                                              code_length - chunk * _CARRIAGE_CODES_CHUNK)
+                        if not isinstance(value, str) or len(value) != expected_length:
+                            raise ExecutionReceiptAuthorityError("carriage code chunk is incomplete")
+                        chunks.append(value)
+                joined = "".join(chunks)
+                start_in_chunk = code_start % _CARRIAGE_CODES_CHUNK
+                vlan["codes"] = joined[start_in_chunk:start_in_chunk + code_end - code_start]
+                if len(vlan["codes"]) != code_end - code_start:
+                    raise ExecutionReceiptAuthorityError("carriage code window is incomplete")
+                vlan["code_start"] = code_start
+                roles = []
+                for role_key in sorted(role_keys):
+                    role = self._read_carriage_part_locked(
+                        snapshot_id, source, "role", role_key, optional=True
+                    )
+                    if role is not None:
+                        roles.append(role)
+                pack = {"schema": _CARRIAGE_PROJECTION_SCHEMA, "context": context,
+                        "cables": cables, "vlans": [vlan], "roles": roles}
+                binding = _snapshot_binding_from_row(source)[1]
+                self._conn.commit()
+                return pack, binding
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_snapshot_blob(self, snapshot_id: int) -> Optional[tuple[bytes, Dict[str, Any]]]:
         """The exact persisted snapshot bytes and their binding, unparsed (or None).

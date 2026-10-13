@@ -12,6 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from cisco_toolkit import analyze, stp_topology, ui_projection as uip, vlan_carriage
+from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
 from test_vlan_carriage import A, B, LONG, PORT, _built, _bundle, _cdp, _ios_trunk, _link, _observation, _stored, _stp
 
 PUB, NC, UV, AU, CBE = "published", "not_collected", "unverified", "analysis_unavailable", "collected_but_empty"
@@ -264,6 +265,178 @@ def page(snap, index=0, offset=0, limit=200):
 
 def counts(fact):
     return {name: (fact[name]["state"], fact[name]["value"]) for name in uip.CARRIAGE_SUMMARY_COUNTS}
+
+
+def _prepared_bound(snap):
+    return bind_snapshot_json_bytes(json.dumps(snap, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+
+
+def _prepared_window(prepared, vi, offset, limit):
+    """Independent in-memory stand-in for the storage reader's bounded fragment selection."""
+    vlan = deepcopy(prepared["vlans"][vi])
+    cables = []
+    member_count = 0
+    if vlan["readable"]:
+        for cable in prepared["cables"][offset:offset + limit]:
+            if member_count + cable["member_count"] > 400:
+                cables.append({key: cable[key] for key in ("ordinal", "index", "code_offset", "member_count")})
+                break
+            cables.append(deepcopy(cable))
+            member_count += cable["member_count"]
+    complete = [cable for cable in cables if "cable" in cable]
+    start = complete[0]["code_offset"] if complete else 0
+    end = complete[-1]["code_offset"] + 1 + 3 * complete[-1]["member_count"] if complete else start
+    vlan.update(codes=vlan["codes"][start:end], code_start=start)
+    keys = {(end["host"], "pvst_vlan", vlan["vlan"], end["stp_interface"])
+            for cable in complete for member in cable["cable"]["members"]
+            for end in (member["a"], member["b"])}
+    roles = [deepcopy(group) for group in prepared["roles"]
+             if (group["host"], group["namespace"], group["instance"], group["interface"]) in keys]
+    return deepcopy(prepared["context"]), vlan, cables, roles
+
+
+@pytest.mark.parametrize("case", ["configured", "typed", "blocked", "stale-stp", "channel-identity",
+                                  "logical-alias", "alias-collision", "escaped-host", "invalid-contract",
+                                  "missing-section", "failed-source", "missing-end-basis"])
+def test_ingest_prepared_page_keeps_original_admission_summary_and_every_member_witness(case):
+    observations = ({host: _round2_observation(state="BLK" if case == "blocked" and host == "switch-b" else "FWD")
+                     for host in ("switch-a", "switch-b")} if case in ("typed", "blocked") else {})
+    snap = _round2_bundle(observations)
+    if case == "logical-alias":
+        for records in snap["interfaces"].values():
+            record = records.pop("Po10")
+            record["port"] = "Port-channel010"
+            records["Port-channel010"] = record
+    elif case == "escaped-host":
+        snap["interfaces"]["switch~/a"] = snap["interfaces"].pop("switch-a")
+        for record in snap["interfaces"]["switch-b"].values():
+            if record["cdp_neighbor"] == "switch-a":
+                record["cdp_neighbor"] = "switch~/a"
+        snap["cable_map"]["cables"][0]["a"] = "switch~/a"
+    snap["vlan_carriage"] = _round2_compute(snap)
+    if case == "stale-stp":
+        snap["stp_topology_observations"] = {"switch-a": _round2_observation(),
+                                             "switch-b": _round2_observation(state="BLK")}
+    elif case == "channel-identity":
+        snap["interfaces"]["switch-b"]["Po10"]["port"] = "Po99"
+    elif case == "alias-collision":
+        snap["interfaces"]["switch-b"]["Port-channel010"] = deepcopy(snap["interfaces"]["switch-b"]["Po10"])
+    elif case == "invalid-contract":
+        snap["vlan_carriage"]["rows"][0]["codes"] += "~"
+    elif case == "missing-section":
+        del snap["vlan_carriage"]
+    elif case == "failed-source":
+        snap["assessment_integrity"] = {"failed_phases": ["VLAN cutover matrix"]}
+    elif case == "missing-end-basis":
+        del snap["interfaces"]["switch-b"]["Po10"]
+    bound = _prepared_bound(snap)
+    expected = uip.project_vlan_carriage(bound, 0, 0, 200)
+    prepared = uip.prepare_carriage_projection(bound)
+    actual = uip.project_prepared_vlan_carriage(*_prepared_window(prepared, 0, 0, 200), 0, 200)
+    assert actual == expected
+    assert actual["carriage"]["summary"] == (
+        prepared["document"]["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"])
+    schema = uip.ui_projection_schema()
+    Draft202012Validator({"$ref": "#/$defs/CarriageDocument", "$defs": schema["$defs"]}).validate(actual)
+    assert json.loads(json.dumps(prepared, allow_nan=False)) == prepared
+    assert dict(bound) == snap
+    if case in ("stale-stp", "channel-identity", "alias-collision", "missing-end-basis"):
+        assert actual["carriage"]["summary"]["state"] == UV
+        assert actual["carriage"]["page"]["items"][0]["relation"]["value"] is None
+
+
+def test_prepared_page_never_rebinds_reads_admits_or_recounts_the_raw_snapshot(tmp_path, monkeypatch):
+    bound = _prepared_bound(snapshot(tmp_path, interfaces=trunks(tmp_path, 3),
+                                     vlans=[{"vlan": 10}, {"vlan": 20}]))
+    prepared = uip.prepare_carriage_projection(bound)
+    expected = uip.project_vlan_carriage(bound, 1, 1, 1)
+    fragment = _prepared_window(prepared, 1, 1, 1)
+    assert len(fragment[2]) == 1 and fragment[2][0]["ordinal"] == 1
+    assert len(fragment[1]["codes"]) == 1 + 3 * fragment[2][0]["member_count"]
+    assert not fragment[3]
+    before = deepcopy(fragment)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("request performed snapshot admission instead of reading prepared fragments")
+
+    for name in ("_get", "_carriage_source", "_carriage_gaps", "carriage_row_counts", "_engine",
+                 "bound_snapshot_source", "carriage_observation_admission", "carriage_role_index", "project"):
+        monkeypatch.setattr(uip, name, forbidden)
+    actual = uip.project_prepared_vlan_carriage(*fragment, 1, 1)
+    assert actual == expected and fragment == before
+    actual["engine"].clear()
+    actual["vocab"].clear()
+    actual["carriage"]["summary"].clear()
+    actual["carriage"]["page"]["items"][0]["ends"]["value"].clear()
+    assert fragment == before
+
+
+def test_preparation_rejects_detached_or_changed_binding_and_keeps_gap_refs_bounded(tmp_path):
+    snap = snapshot(tmp_path, interfaces=trunks(tmp_path, 6))
+    for record in snap["interfaces"][A].values():
+        record["trunk_allowed_vlans"] = "20"
+    with pytest.raises(ValueError, match="BoundSnapshot"):
+        uip.prepare_carriage_projection(snap)
+    bound = _prepared_bound(snap)
+    expected = uip.project(bound)
+    prepared = uip.prepare_carriage_projection(bound)
+    old_source = expected["inventory"]["vlans"]["selection_sources"]["carriage"]
+    new_source = prepared["document"]["inventory"]["vlans"]["selection_sources"]["carriage"]
+    assert old_source["state"] == new_source["state"] == UV
+    assert len(old_source["refs"]) > len(new_source["refs"])
+    assert len(new_source["refs"]) <= 8
+    assert all("/members/" not in ref["pointer"] and "/cables/" not in ref["pointer"]
+               for ref in new_source["refs"])
+    assert all(_resolves(bound, ref["pointer"]) for ref in new_source["refs"])
+    old_source["refs"] = new_source["refs"]
+    assert expected == prepared["document"]
+    bound["interfaces"][A][PORT]["trunk_allowed_vlans"] = "30"
+    with pytest.raises(ValueError, match="BoundSnapshot"):
+        uip.prepare_carriage_projection(bound)
+
+
+def test_prepared_lazy_offsets_and_transport_byte_prefix_match_the_original(tmp_path):
+    bound = _prepared_bound(snapshot(tmp_path, interfaces=trunks(tmp_path, 3)))
+    prepared = uip.prepare_carriage_projection(bound)
+    one = uip.project_vlan_carriage(bound, 0, 0, 1)
+    one_bytes = len(json.dumps(one, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    overhead = uip.CARRIAGE_PAGE_BYTE_LIMIT - one_bytes - 100
+    for offset, limit, transport in ((0, 200, overhead), (1, 1, 0), (2, 200, 0), (3, 200, 0)):
+        original = uip.project_vlan_carriage(bound, 0, offset, limit, transport_overhead=transport)
+        actual = uip.project_prepared_vlan_carriage(*_prepared_window(prepared, 0, offset, limit), offset, limit,
+                                                   transport_overhead=transport)
+        assert actual == original
+        assert len(json.dumps(actual, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) + transport <= (
+            uip.CARRIAGE_PAGE_BYTE_LIMIT)
+        if transport:
+            assert actual["carriage"]["page"]["returned"] == 1
+
+
+@pytest.mark.parametrize("member_count", [400, 401])
+def test_prepared_lazy_member_boundary_is_a_whole_cable_and_never_loads_oversized_members(member_count):
+    snap = _round2_bundle({})
+    ports = [f"Gi1/0/{i + 1}" for i in range(member_count)]
+    for host, peer in (("switch-a", "switch-b"), ("switch-b", "switch-a")):
+        snap["interfaces"][host] = {port: _round2_record(port, peer, port, "Po10") for port in ports}
+        snap["interfaces"][host]["Po10"] = _round2_record("Po10")
+    cable = snap["cable_map"]["cables"][0]
+    cable["members"] = [{"a_port": port, "b_port": port} for port in ports]
+    snap["vlan_carriage"] = _round2_compute(snap)
+    bound = _prepared_bound(snap)
+    expected = uip.project_vlan_carriage(bound, 0, 0, 200)
+    prepared = uip.prepare_carriage_projection(bound)
+    fragment = _prepared_window(prepared, 0, 0, 200)
+    actual = uip.project_prepared_vlan_carriage(*fragment, 0, 200)
+    assert actual == expected
+    if member_count == 400:
+        assert actual["carriage"]["page"]["returned"] == 1
+        assert len(actual["carriage"]["page"]["items"][0]["members"]["items"]) == 400
+    else:
+        assert set(fragment[2][0]) == {"ordinal", "index", "code_offset", "member_count"}
+        assert fragment[1]["codes"] == "" and fragment[3] == []
+        assert actual["carriage"]["page"]["state"] == UV
+        assert actual["carriage"]["page"]["returned"] == 0
+        assert actual["carriage"]["page"]["has_more"] is True
 
 
 def _resolves(snap, pointer):

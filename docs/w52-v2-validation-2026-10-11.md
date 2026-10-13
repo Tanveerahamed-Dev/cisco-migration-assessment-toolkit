@@ -659,3 +659,43 @@ Eleven added test variants compare the original copier and cover values/signed z
 No stored model, generated output, schema/native pin, artifact adoption, threshold, warm-up, GC setting, test skip or workflow changes. Hosted measurements and the final full matrix must establish correctness and actual budget recovery. A possible validator-code memo was source-refuted for foreign metadata callbacks and was not implemented. Independent review, fresh publication scans, all 15 protected successes and all applicable workflows precede the single round-2 summary and stop for re-review.
 
 Explicit recursion avoids a function/closure cycle retaining the source and copy memo after return; it does not change GC settings or collection. A permitted small synthetic in-memory probe of the two actual extracted pure functions passed values/aliases/isolation, cycle refusal, foreign-memo parity, process-control and source-release checks on local Python 3.12. This is a bounded pure-function check, not pytest, app/engine execution, timing, full-suite or hosted acceptance evidence. Touched Ruff and whitespace checks pass; the first cleanup spelling was rejected by Ruff and replaced before publication without suppressing a rule.
+
+## Supervisor-directed architectural correction after 02d14897
+
+Run `38367107244`, Linux 3.12 job `115195171692`, records 1 failed / 1,327 passed / one warning in
+832.39 seconds. Document growth 2,231.1 ms fails the unchanged 2,000 ms ceiling. Cold/warm page
+316.0/320.8 ms are observations before their unreached assertions; full default and UTC reproduction
+are skipped. The page-copy correction did not establish budget recovery. Earlier process-survival
+passes and every previous failure remain separate evidence.
+
+The supervisor directs bounded first-document carriage work, with preparation at production/ingest.
+The amended design records the implemented boundary: every valid object is prepared once from final
+snapshot bytes at `Store.add_snapshot`; original raw bytes and receipt identities stay intact. The first
+fleet document reads only a stored whole DTO whose carriage contribution is precomputed summaries and
+bounded source refs. The larger compact cable/code/role fragments are loaded only for selected lazy pages.
+Original full admission, stale-STP, channel-port and alias guards execute at ingest; the renderer shares
+the original whole-cable member/byte gate and consumes explicit prepared data, never a fake BoundSnapshot.
+
+Atomic sidecar persistence, INTEGER content/source anchors, immutable guards, one-time migration,
+version refusal, source/fragment substitution, incremental blob tampering, missing role directory
+entries and warm-cache deletion/tampering have authored controls. The initial review caught incomplete
+code-slice width, an absent-carriage request fallback and missing warm-fragment revalidation. All three
+were corrected before publication. No runtime pass is inferred from source review.
+
+API controls now inject fleet artifacts at the Store reader, preserving real source binding and every
+schema/source/nonce/copy/error assertion. Counts describe one prepared fleet read and three lazy device
+builds; actual ingestion binds once, and first-document/page controls forbid request binding, preparation,
+full admission, projection and code recounting. Original device-input isolation, single-flight, cache
+namespace/lifetime, failed-admission retry and page-forgery controls remain. The real budget keeps the
+same timed operations, first-use stub, 200 returned items, complete validation and 2,000/300 ms / 3 MB
+ceilings; it now discloses actual ingestion time. Two/eight-member HTTP traversal uses the Store path.
+Obsolete after-timer admission-profile executions are retired from that measurement; their independent
+legacy-owner unit controls remain and do not qualify the new HTTP path.
+
+A permitted small pure synthetic owner probe matches complete original/prepared page DTOs for valid
+configured evidence, changed logical port, stale STP error and missing section, with source purity and
+summary parity. No local pytest, Store/app execution, build, engine CLI or timing was run. Touched Ruff,
+syntax and whitespace checks pass. Golden/sample, historical W60 bindings, schemas/native pins,
+generated types, Scope bindings and workflow limits are unchanged. Source-byte integrity hashing
+remains O(bytes), and only selected fragments are certified on a page read. Version 1 requires an explicit
+future behavior-version/migration update. Fresh hosted validation on the final head remains mandatory.

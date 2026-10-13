@@ -1321,7 +1321,8 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # marshal writes fresh same-process complete observation keys after the unchanged JSON eligibility walk;
     # no deserialization, persistent cache, hashing or project producer import is admitted.
     # json encodes complete carriage page bytes for the unchanged transport resource bound; no file I/O.
-    allowed = {"math", "re", "ipaddress", "json", "marshal", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    # deepcopy owns prepared carriage fragments/context; persistence remains solely in the backend Store.
+    allowed = {"math", "re", "ipaddress", "json", "marshal", "copy:deepcopy", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",

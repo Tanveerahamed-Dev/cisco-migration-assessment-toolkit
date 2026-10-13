@@ -127,6 +127,7 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import ipaddress
 import json
 import math
@@ -1406,6 +1407,10 @@ class _Ctx:
                 seen.add(key)
                 out.append({"pointer": key[0], "role": role})
         return out
+
+    def carriage_value(self, tokens: Sequence[Any]) -> Any:
+        """Read an allowance witness from the current snapshot, for the carriage page renderer."""
+        return _get(self.s, tokens)
 
     def classify(self, label: Any) -> str:
         if not isinstance(label, str):
@@ -4780,6 +4785,8 @@ _CARRIAGE_PAGE_MEMBER_LIMIT = 400
 
 def _stored_pointer_tokens(ctx: _Ctx, pointer: str) -> Optional[Tuple[Any, ...]]:
     """Resolve a validated stored pointer without guessing a missing list/dict namespace."""
+    if isinstance(ctx, _PreparedCarriageCtx):
+        return ctx.pointer_tokens(pointer)
     if pointer == "":
         return ()
     if not _is_text(pointer) or not pointer.startswith("/") or re.search(r"~(?![01])", pointer):
@@ -5809,7 +5816,7 @@ def _carriage_page_item(ctx: _Ctx, adm: _CarriageAdmission, vi: int, cable: Dict
                 witness += [(role, toks) for role, toks in _carriage_refs(ctx, [
                     end["allowance_pointer"] + "/" + field for field in (
                         "trunk_allowed_vlans", "trunk_allowed_none", "trunk_native_vlan", "switchport_mode")])
-                    if _is_text(_get(ctx.s, toks)) and _get(ctx.s, toks).strip()]
+                    if _is_text(ctx.carriage_value(toks)) and ctx.carriage_value(toks).strip()]
             elif end["stp_pointer"] is not None:
                 witness += _carriage_refs(ctx, [end["stp_pointer"]])
             signal = failed or ((decoded["state"], decoded["reason"]) if decoded["state"] != _PUB else None)
@@ -5866,6 +5873,29 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
         observation, index = observations[host]
         return carriage_role_rows(observation, stp_interface, vid, index=index) if index is not None else []
 
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]]]:
+        ci, _code_offset, count = adm.offsets[position]
+
+        def item() -> Dict[str, Any]:
+            cable, verdict, members = carriage_row_cables(
+                section, vlan_index, position, position + 1, offsets=adm.offsets)[0]
+            return _carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
+
+        return ci, count, item
+
+    return _carriage_page_document(engine, _vocab(), summary, vlan_index, total, offset, limit, load,
+                                   transport_overhead)
+
+
+def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summary: Dict[str, Any],
+                            vlan_index: int, total: int, offset: int, limit: int,
+                            load: Callable[[int], Tuple[int, int, Callable[[], Dict[str, Any]]]],
+                            transport_overhead: int) -> Dict[str, Any]:
+    """The same whole-cable member/UTF-8 bounds for snapshot and prepared lazy readers.
+
+    ``load`` reads only one cable's metadata; its deferred item renderer runs only if that entire cable fits
+    the member bound. This also admits a metadata-only boundary row without reading any of its members.
+    """
     if (type(transport_overhead) is not int or transport_overhead < 0
             or transport_overhead >= CARRIAGE_PAGE_BYTE_LIMIT):
         raise ValueError("unsupported: carriage transport context exceeds the page byte bound")
@@ -5875,7 +5905,7 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
             "has_more": offset < total, "items": []}
     carriage = {"vlan_index": vlan_index, "pointer": json_pointer("vlan_carriage", "rows", vlan_index),
                 "summary": summary, "page": page}
-    document = {"schema": SCHEMA, "engine": engine, "carriage": carriage, "vocab": _vocab()}
+    document = {"schema": SCHEMA, "engine": engine, "carriage": carriage, "vocab": vocab}
 
     def size(value: Any) -> int:
         return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
@@ -5887,12 +5917,10 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
     item_bytes, member_count = 0, 0
     expected = min(max(total - offset, 0), limit)
     for position in range(offset, offset + expected):
-        ci, _code_offset, count = adm.offsets[position]
+        ci, count, render_item = load(position)
         over_members = member_count + count > _CARRIAGE_PAGE_MEMBER_LIMIT
         if not over_members:
-            cable, verdict, members = carriage_row_cables(
-                section, vlan_index, position, position + 1, offsets=adm.offsets)[0]
-            item = _carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
+            item = render_item()
             length = size(item)
             candidate_count = len(items) + 1
             page.update(limit=limit if candidate_count == expected else candidate_count,
@@ -5918,6 +5946,212 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
         raise ValueError("unsupported: carriage page hold exceeds the page byte bound")
     page["items"] = items
     return document
+
+
+CARRIAGE_PREPARATION_SCHEMA = "carriage_projection_preparation/1"
+
+
+def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
+    """Prepare the server-owned document and compact lazy-page inputs once, at snapshot ingest.
+
+    Admission remains the original full-snapshot owner, including its current-STP, channel identity and alias
+    guards. This derivative is never a snapshot or a source-binding receipt. Its storage owner must bind every
+    persisted fragment to the exact original snapshot and integer anchor before a request can read it. All
+    original per-cable work happens here; the document contains only the already-produced carriage summaries.
+    """
+    ctx = _Ctx(snap)
+    if not isinstance(snap, BoundSnapshot) or ctx.source[0] != _PUB:
+        raise ValueError("carriage preparation requires an unchanged exact-byte BoundSnapshot")
+    adm = _carriage_source(ctx)
+    document = project(snap, carriage=adm)
+    source = dict(document["inventory"]["vlans"]["selection_sources"]["carriage"])
+    # Full gap/issue witnesses remain in the original snapshot and lazy member facts. The first document
+    # points to the stored coverage/issues and their source sections, never a cable-sized witness list.
+    source["refs"] = ctx.refs(
+        [("subject", ("vlan_carriage",)), ("witness", ("vlan_carriage", "coverage")),
+         ("witness", ("vlan_carriage", "issues"))]
+        + [("witness", (section,)) for section in _CARRIAGE_SECTIONS if section != "vlan_carriage"]
+        + [("failure_record", ("assessment_integrity",))]
+        if adm.gaps or (adm.section is not None and adm.section["issues"]) or adm.failed
+        else [("subject", ("vlan_carriage",))])
+    document["inventory"]["vlans"]["selection_sources"]["carriage"] = source
+
+    def pointers(entries: Iterable[Sequence[Any]]) -> List[Dict[str, Any]]:
+        found: Dict[str, List[Any]] = {}
+        for tokens in entries:
+            if _get(ctx.s, tokens) is not _MISSING:
+                found.setdefault(json_pointer(*tokens), list(tokens))
+        return [{"pointer": pointer, "tokens": tokens} for pointer, tokens in found.items()]
+
+    failure_entries = {}
+    unavailable_reasons = {}
+    failure_tokens: List[Sequence[Any]] = []
+    for label, sections in (("carriage", _CARRIAGE_SECTIONS), ("empty", ())):
+        failure_entries[label] = []
+        for unavailable in (False, True):
+            entries = ctx.failure_entries(sections, unavailable)
+            failure_entries[label].append([[role, list(tokens)] for role, tokens in entries])
+            failure_tokens.extend(tokens for _role, tokens in entries)
+        unavailable_reasons[label] = ctx.unavailable_reason(sections)
+    context = {"engine": document["engine"], "vocab": document["vocab"],
+               "failure_entries": failure_entries, "unavailable_reasons": unavailable_reasons,
+               "any_failure": ctx.any_failure, "pointers": pointers(failure_tokens)}
+
+    cables = []
+    hosts = set()
+    for ordinal, (ci, code_offset, member_count) in enumerate(adm.offsets):
+        cable = adm.section["cables"][ci]
+        cable_toks = ("vlan_carriage", "cables", ci)
+        tokens: List[Sequence[Any]] = [cable_toks, cable_toks + ("ends",), cable_toks + ("members",),
+                                       ("cable_map", "cables", ci)]
+        allowance_values: Dict[Tuple[Any, ...], str] = {}
+        for member in cable["members"]:
+            member_toks = cable_toks + ("members", member["index"])
+            tokens.append(member_toks)
+            for side in ("a", "b"):
+                end = member[side]
+                if end["host"] is not None:
+                    hosts.add(end["host"])
+                tokens.extend((member_toks + (side, "host"), member_toks + (side, "port")))
+                tokens.extend(toks for _role, toks in _carriage_refs(ctx, end["refs"]))
+                if end["stp_pointer"] is not None:
+                    tokens.extend(toks for _role, toks in _carriage_refs(ctx, [end["stp_pointer"]]))
+                if end["allowance_pointer"] is not None:
+                    for field in ("trunk_allowed_vlans", "trunk_allowed_none", "trunk_native_vlan", "switchport_mode"):
+                        toks = _stored_pointer_tokens(ctx, end["allowance_pointer"] + "/" + field)
+                        if toks is not None:
+                            tokens.append(toks)
+                            value = ctx.carriage_value(toks)
+                            if _is_text(value):
+                                allowance_values[toks] = value
+        cables.append({"ordinal": ordinal, "index": ci, "code_offset": code_offset,
+                       "member_count": member_count, "cable": deepcopy(cable), "pointers": pointers(tokens),
+                       "allowance_values": [{"tokens": list(toks), "value": value}
+                                             for toks, value in allowance_values.items()]})
+
+    summaries = {row["index"]: row["selections"]["carriage"]
+                 for row in document["inventory"]["vlans"]["rows"]["items"]}
+    vlans = []
+    for vi, rec in enumerate(snap.get("vlan_cutover") if isinstance(snap.get("vlan_cutover"), list) else []):
+        row = adm.section["rows"][vi] if adm.section is not None and vi < len(adm.section["rows"]) else None
+        valid_vlan = vlan_row_identity(rec) is not None
+        readable = row is not None and bool(row["codes"]) and valid_vlan
+        failed = adm.failed or ((_UV, _R_CARRIAGE_GAP) if vi in adm.gaps else None)
+        vlans.append({"vlan_index": vi, "vlan": row["vlan"] if row is not None else vlan_row_identity(rec),
+                      "summary": summaries[vi], "failed": list(failed) if failed else None,
+                      "readable": readable, "total": len(adm.offsets) if readable else 0,
+                      "codes": row["codes"] if readable else ""})
+
+    roles = []
+    observations = dict(adm.observations)
+    for host in sorted(hosts):
+        if host not in observations or (observations[host][0] is not None and observations[host][1] is None):
+            state, _why, observation = carriage_observation_admission(
+                _get(ctx.s, ("stp_topology_observations", host)))
+            observations[host] = ((observation, carriage_role_index(observation)) if state == _PUB
+                                  else (None, None))
+        observation, index = observations[host]
+        for (namespace, instance, interface), positions in (index.items() if index is not None else ()):
+            roles.append({"host": host, "namespace": namespace, "instance": instance, "interface": interface,
+                          "rows": [[position, deepcopy(observation["roles"][position])] for position in positions]})
+    return {"schema": CARRIAGE_PREPARATION_SCHEMA, "document": document, "context": context,
+            "cables": cables, "vlans": vlans, "roles": roles}
+
+
+class _PreparedCarriageCtx(_Ctx):
+    """Explicit resolver for a validated server derivative, never a snapshot or BoundSnapshot.
+
+    Membership and actual allowance strings were captured from resolving original pointers at ingest. Only
+    selected cable/member rows and their exact role groups reach this context; it cannot inspect the raw fleet.
+    """
+
+    def __init__(self, context: Dict[str, Any], vlan: Dict[str, Any], cables: Sequence[Dict[str, Any]],
+                 role_groups: Sequence[Dict[str, Any]]) -> None:
+        self._context = context
+        self._pointers = {row["pointer"]: tuple(row["tokens"]) for row in context["pointers"]}
+        self._allowances: Dict[Tuple[Any, ...], str] = {}
+        if vlan["readable"]:
+            row_toks = ("vlan_carriage", "rows", vlan["vlan_index"])
+            self._pointers[json_pointer(*row_toks)] = row_toks
+            self._pointers[json_pointer(*row_toks, "codes")] = row_toks + ("codes",)
+        for cable in cables:
+            for row in cable.get("pointers", ()):
+                self._pointers[row["pointer"]] = tuple(row["tokens"])
+            for row in cable.get("allowance_values", ()):
+                self._allowances[tuple(row["tokens"])] = row["value"]
+        for group in role_groups:
+            for position, _row in group["rows"]:
+                toks = ("stp_topology_observations", group["host"], "roles", position)
+                self._pointers[json_pointer(*toks)] = toks
+
+    @property
+    def any_failure(self) -> bool:
+        return self._context["any_failure"]
+
+    def pointer_tokens(self, pointer: str) -> Optional[Tuple[Any, ...]]:
+        return self._pointers.get(pointer)
+
+    def carriage_value(self, tokens: Sequence[Any]) -> Any:
+        return self._allowances.get(tuple(tokens), _MISSING)
+
+    def refs(self, entries: Iterable[Tuple[str, Sequence[Any]]]) -> List[Dict[str, str]]:
+        out = []
+        seen = set()
+        for role, toks in entries:
+            pointer = json_pointer(*toks)
+            key = (pointer, role)
+            if pointer in self._pointers and key not in seen:
+                seen.add(key)
+                out.append({"pointer": pointer, "role": role})
+        return out
+
+    def failure_entries(self, sections: Iterable[str], unavailable: bool) -> List[Tuple[str, Sequence[Any]]]:
+        label = "carriage" if tuple(sections) else "empty"
+        return [(role, tuple(tokens)) for role, tokens in self._context["failure_entries"][label][int(unavailable)]]
+
+    def unavailable_reason(self, sections: Iterable[str]) -> str:
+        return self._context["unavailable_reasons"]["carriage" if tuple(sections) else "empty"]
+
+
+def project_prepared_vlan_carriage(context: Dict[str, Any], vlan: Dict[str, Any],
+                                   cables_window: Sequence[Dict[str, Any]], role_groups: Sequence[Dict[str, Any]],
+                                   offset: int, limit: int, *, transport_overhead: int = 0) -> Dict[str, Any]:
+    """Render a bounded lazy page from server-validated ingest fragments, without snapshot admission.
+
+    The storage reader supplies only selected cables (plus a metadata-only member-boundary candidate), their
+    original code substring and exact indexed role groups. It owns snapshot/fragment integrity. The original
+    decoder, item renderer and complete-cable byte/member gates below own the resulting public document.
+    """
+    vi = vlan["vlan_index"]
+    ctx = _PreparedCarriageCtx(context, vlan, cables_window, role_groups)
+    failed = tuple(vlan["failed"]) if vlan["failed"] else None
+    # This is solely the existing compact-code decoder's indexed input, not a source-bound snapshot.
+    section = {"rows": {vi: {"vlan": vlan["vlan"], "codes": vlan["codes"]}},
+               "cables": {row["index"]: row["cable"] for row in cables_window if "cable" in row}}
+    offsets = [(row["index"], row["code_offset"] - vlan.get("code_start", 0), row["member_count"])
+               for row in cables_window]
+    adm = _CarriageAdmission({}, section, failed, {}, offsets)
+    role_index = {(group["host"], group["namespace"], group["instance"], group["interface"]): group["rows"]
+                  for group in role_groups}
+
+    def roles(host: str, interface: str, vid: int) -> List[Any]:
+        return role_index.get((host, "pvst_vlan", vid, carriage_join_interface(interface)), [])
+
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]]]:
+        relative = position - offset
+        row = cables_window[relative]
+        if row["ordinal"] != position:
+            raise ValueError("unverified: prepared carriage window is not a complete consecutive cable prefix")
+
+        def item() -> Dict[str, Any]:
+            cable, verdict, members = carriage_row_cables(section, vi, relative, relative + 1, offsets=offsets)[0]
+            return _carriage_page_item(ctx, adm, vi, cable, verdict, members, failed, roles)
+
+        return row["index"], row["member_count"], item
+
+    return _carriage_page_document(deepcopy(context["engine"]), deepcopy(context["vocab"]),
+                                   deepcopy(vlan["summary"]), vi, vlan["total"], offset, limit, load,
+                                   transport_overhead)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -10029,6 +10263,7 @@ __all__ = [
     "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
     "fleet_blind_spot_rows", "project_vlan_carriage", "carriage_admission", "CARRIAGE_SUMMARY_COUNTS",
+    "prepare_carriage_projection", "project_prepared_vlan_carriage", "CARRIAGE_PREPARATION_SCHEMA",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
     "IMPACT_INDETERMINATE_PREFIX", "L3_RISK_CLEAR", "L3_RISK_FLAGS", "L3_RISK_JOINER", "L3_RISK_TRACKING_NOT_ASSESSED",
     "L3_NO_FHRP_FLAG", "L3_SOLE_GATEWAY_FLAG", "L3_TRACKED_DOWN_FLAG", "VLAN_SOLE_GATEWAY_FHRP",
