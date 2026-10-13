@@ -929,3 +929,39 @@ results are required for these new controls and the final successor.
 The existing hosted G14 step additionally selects the new upload module, snapshot-storage controls
 and exact production startup recovery test. No original selection is removed; the complete default
 suite and every existing matrix/gate still run.
+
+### First hosted round-3 multipart and recovery evidence
+
+Implementation head `c6c42b7ba5c1976dfc668ad3c5a2a1c8dc83e6c9` runs against main `1d902ee2` as merge
+`5a5368ccd00431c0dcc8f6c46959e793e7406a63`, with equal tree `4d69fb405ee39a9499f10498da9d6a3c57501760`.
+Canonical privacy and all twelve raw/decoded history/publication patterns pass before its push
+(65 commits, 83 parent patches, zero matches/exceptions). The expanded focused G14 step in CI
+`38449865729`, Linux 3.12 job `115477690353`, passes, including the exact legacy-cap retry, production
+startup and Event-gated concurrent-reader/failure controls. This step starts at 18:51:04 UTC and
+finishes at 19:10:19 UTC on 2026-10-13; the separate complete default suite was still running when
+this record was written. The focused pass alone does not certify the whole head.
+
+Whole webapp run `38449863613` succeeds, including backend job `115477914906`, frontend/build, browser
+and visual checks. Duplicate same-head webapp run `38449865759` is cancelled during publication; it
+does not supply a passing verdict. The backend's actual multipart record reports:
+
+| Observation | Measured value / scope |
+|---|---|
+| Submitted fixture | 300 devices, 200 VLANs, 1,500 cables; original producer fixture plus upload-required devices map |
+| Whole ASGI multipart request | 88,344.8 ms; multipart, parse, provenance, summary, preparation and commit |
+| Row-stream staging call | 72,051.3 ms; outside the shared read/write critical section, excluding preparation factory work |
+| Prepared-part publication call | 8,982.3 ms; still serialized, excluding commit and other surrounding transaction work |
+| Uploaded / stored source bytes | 26,206,364 / 26,206,415; the route adds its owned provenance stamp |
+| Stored derivative payload | 43,951,249 bytes under the unchanged 64,000,000-byte limit |
+| Immutable staged representation | 52,563,524 bytes, including 8,612,275 bytes of framing/key metadata |
+| Framing/key metadata ceiling | 64,000,000 bytes, separate from the derivative payload cap |
+
+The staged representation remains bounded independently of cable/member input growth until refusal.
+The roughly nine-second part publication is real remaining serialized work: the Event control proves
+reads during expensive preparation, not a 300 ms concurrent-read promise during publication. The
+existing page timer starts after ingestion. The actual-upload input includes devices and server-owned
+provenance, so its derivative size is not the earlier direct-Store fixture's 42,815,611-byte observation.
+External network latency, client disconnection and peak RSS are unmeasured. Late stream-failure rollback
+and subsequent retry pass on the actual HTTP route. No upload duration ceiling, skip, warm-up or
+relaxed assertion was added. This documentation update requires its own fresh final-head checks; final
+qualification and measurements belong to the closing round-3 summary and the final PR Checks.
