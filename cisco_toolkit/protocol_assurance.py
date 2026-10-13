@@ -118,8 +118,24 @@ def _snapshot_identity_text(value: Any) -> str:
     return json.dumps(value, sort_keys=False, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
 
 
-class _SnapshotDataPickler(pickle.Pickler):
-    """Private C data encoder; foreign reductions are always refused, never delegated."""
+class _SnapshotDataPickler:
+    """Ordinary Python ownership of one exact C data encoder, never a C subtype."""
+
+    def __init__(self, *args, **kwargs):
+        native = _SNAPSHOT_PICKLER_BASE_OWNER(*args, **kwargs)
+        native.persistent_id = _SNAPSHOT_PICKLER_PERSISTENT_OWNER
+        self._native = native
+
+    @property
+    def fast(self):
+        return self._native.fast
+
+    @fast.setter
+    def fast(self, value):
+        self._native.fast = value
+
+    def dump(self, value):
+        return self._native.dump(value)
 
     @staticmethod
     def persistent_id(_value: Any) -> None:
