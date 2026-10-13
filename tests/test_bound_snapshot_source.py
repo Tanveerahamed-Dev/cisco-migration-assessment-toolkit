@@ -656,6 +656,15 @@ def test_protocol4_wrapper_refusal_adds_no_python_buffer_export(monkeypatch):
     value = pa.pickle.PickleBuffer(Buffer() if sys.version_info >= (3, 12) else memoryview(b"value"))
     construction_calls = list(calls)
     dump, marshal = pa._SnapshotDataPickler.dump, pa.marshal.dumps
+    whole = {"field": value}
+    try:
+        original_result = marshal(dict(whole), 2)
+    except Exception as error:
+        original_error = (type(error), error.args)
+    else:
+        original_error = None
+    original_export_trace = calls[len(construction_calls):]
+    calls[:] = construction_calls  # This pure exporter has only the declared trace side effect.
     codec_calls = []
 
     def observed_dump(self, whole):
@@ -672,14 +681,18 @@ def test_protocol4_wrapper_refusal_adds_no_python_buffer_export(monkeypatch):
 
     monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
     monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
-    pa._snapshot_identity_binary({"field": value})
+    if original_error is not None:
+        with pytest.raises(original_error[0]) as caught:
+            pa._snapshot_identity_binary(whole)
+        assert caught.value.args == original_error[1] and caught.value.__context__ is None
+    else:
+        assert pa._snapshot_identity_binary(whole) == original_result
     assert [mode for mode, _ in codec_calls] == (["candidate", "marshal"] if _actual_c_data_writer_available()
                                                else ["marshal"])
     assert len(codec_calls) == 1 or codec_calls[0][1] is codec_calls[1][1]
-    # Observe wrapper exports against the actual standalone original operation, without borrowing a count.
-    before_original = len(calls)
-    marshal({"field": value}, 2)
-    assert len(calls) - before_original == before_original - len(construction_calls)
+    assert codec_calls[-1][1]["field"] is value
+    # Exact original return/error AND exporter trace, never a success or borrowed-count assumption.
+    assert calls == construction_calls + original_export_trace
 
 
 @pytest.mark.parametrize("outer", [False, True])
@@ -813,3 +826,46 @@ def test_candidate_process_control_error_is_preserved_without_original_fallback(
     else:
         assert pa._snapshot_identity_binary({"rows": [1]}) == marshal({"rows": [1]}, 2)
         assert len(calls) == 1
+
+
+def test_stateless_refuser_identity_is_used_by_the_real_c_writer(monkeypatch):
+    descriptor = pa._SnapshotDataPickler.__dict__["reducer_override"]
+    owner = pa._SNAPSHOT_PICKLER_REFUSAL_OWNER
+    assert type(descriptor) is staticmethod and descriptor.__func__ is owner
+    assert pa._SnapshotDataPickler.reducer_override is owner and getattr(owner, "__self__", None) is None
+    hooks = []
+
+    class Foreign:
+        def __getattribute__(self, name):
+            if name in ("__reduce__", "__reduce_ex__", "__getstate__", "__module__", "__qualname__"):
+                hooks.append(name)
+            return object.__getattribute__(self, name)
+
+        def __reduce_ex__(self, _protocol):
+            hooks.append("reduce_ex")
+            raise AssertionError("foreign reducer executed")
+
+        def __repr__(self):
+            hooks.append("repr")
+            return "foreign"
+
+    foreign = Foreign()
+    with pa.io.BytesIO() as stream:
+        encoder = pa._SnapshotDataPickler(stream, protocol=4, fix_imports=False, buffer_callback=None)
+        encoder.fast = 1
+        assert type(encoder) is pa._SNAPSHOT_DATA_PICKLER_OWNER
+        assert encoder.reducer_override is owner and getattr(encoder.reducer_override, "__self__", None) is None
+        if _actual_c_data_writer_available():
+            with pytest.raises(TypeError, match="Snapshot binary optimization refuses foreign reductions") as caught:
+                encoder.dump({"field": foreign})  # REAL C dump resolves and invokes the exact static callable.
+            current = caught.value.__traceback__
+            while current.tb_next is not None:
+                current = current.tb_next
+            assert current.tb_frame.f_code is owner.__code__
+            assert current.tb_frame.f_locals["_value"] is foreign and "self" not in current.tb_frame.f_locals
+        else:
+            calls = _observe_real_data_dump_and_marshal(monkeypatch)
+            with pytest.raises(ValueError):
+                pa._snapshot_identity_binary({"field": foreign})
+            assert [mode for mode, _value in calls] == ["marshal"]
+    assert hooks == []

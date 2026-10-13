@@ -121,7 +121,8 @@ def _snapshot_identity_text(value: Any) -> str:
 class _SnapshotDataPickler(pickle.Pickler):
     """Private C data encoder; foreign reductions are always refused, never delegated."""
 
-    def reducer_override(self, _value: Any) -> Any:
+    @staticmethod
+    def reducer_override(_value: Any) -> Any:
         raise TypeError("Snapshot binary optimization refuses foreign reductions")
 
 
