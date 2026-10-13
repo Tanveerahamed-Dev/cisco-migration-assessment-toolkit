@@ -58,6 +58,25 @@ def url(sid, view="overview"):
     return f"/api/snapshots/{sid}/ui-projection/{view}"
 
 
+def test_carriage_storage_limit_refuses_upload_without_storing_a_partial_snapshot(client, monkeypatch):
+    from backend import storage
+
+    store = client.app.state.store
+    campaign = store.create_campaign("Bounded carriage storage")
+    # A small fixture reaches the real cap/rollback path; the production bound is not changed.
+    monkeypatch.setattr(storage, "CARRIAGE_PROJECTION_PAYLOAD_LIMIT", 1)
+    response = client.post(
+        f"/api/campaigns/{campaign['id']}/snapshots",
+        files={"file": ("synthetic.json", b'{"devices":{}}', "application/json")},
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Snapshot carriage detail exceeds the supported storage limit. "
+                                       "Reduce the collection scope and try again."}
+    assert store.list_snapshots(campaign["id"]) == []
+    with store._lock:
+        assert store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == 0
+
+
 def test_unknown_snapshot_and_selectors(client):
     assert client.get(url(991)).status_code == 404
     assert client.get(url(991, "invented")).status_code == 422
@@ -678,24 +697,24 @@ def test_warm_document_cache_refuses_missing_or_modified_prepared_document(clien
     source_before = store.get_snapshot_blob(sid)
     with store._lock:
         row = store._conn.execute(
-            "SELECT rowid,payload FROM carriage_projection_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+            "SELECT rowid,payload FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
         ).fetchone()
         assert row is not None
         if damage == "deleted":
-            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_delete")
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_delete")
             store._conn.execute(
-                "DELETE FROM carriage_projection_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+                "DELETE FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
             )
         elif hasattr(store._conn, "blobopen"):
             # SQLite's incremental BLOB API bypasses UPDATE triggers; warm cache authority must still see it.
-            with store._conn.blobopen("carriage_projection_parts", "payload", row["rowid"], readonly=False) as blob:
+            with store._conn.blobopen("carriage_projection_v2_parts", "payload", row["rowid"], readonly=False) as blob:
                 blob.write(b"[")
         else:
             # Python 3.10 lacks blobopen. Author the same changed bytes outside the trigger guard and require
             # the identical digest refusal; the missing API does not skip this adversarial condition.
-            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_update")
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_update")
             store._conn.execute(
-                "UPDATE carriage_projection_parts SET payload=? WHERE snapshot_id=? AND kind='document'",
+                "UPDATE carriage_projection_v2_parts SET payload=? WHERE snapshot_id=? AND kind='document'",
                 (b"[" + bytes(row["payload"])[1:], sid),
             )
         store._conn.commit()
@@ -1695,11 +1714,11 @@ def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(cli
         assert type(snapshot) is engine.PreparedCarriagePage and admission is None
         before = deepcopy(snapshot.pack)
         sources.append(snapshot)
-        assert set(snapshot.pack) == {"schema", "context", "cables", "vlans", "roles"}
-        assert len(snapshot.pack["vlans"]) == len(snapshot.pack["cables"]) == 1
+        assert set(snapshot.pack) == {"schema", "context", "rows", "vlans"}
+        assert len(snapshot.pack["vlans"]) == len(snapshot.pack["rows"]) == 1
         assert snapshot.pack["vlans"][0]["vlan_index"] == vlan_index
-        assert snapshot.pack["cables"][0]["ordinal"] == offset
-        assert sum(cable["member_count"] for cable in snapshot.pack["cables"]) <= 400
+        assert snapshot.pack["rows"][0]["ordinal"] == offset
+        assert sum(row["member_count"] for row in snapshot.pack["rows"]) <= 400
         result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
         assert snapshot.pack == before  # Only the selected server-owned fragments are read, never written.
         return result
@@ -1718,7 +1737,8 @@ def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(cli
     for name in ("bind_ui_projection_snapshot", "prepare_carriage_projection", "ui_projection",
                  "ui_projection_carriage_admission"):
         monkeypatch.setattr(engine, name, forbidden)
-    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts", "project"):
+    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts", "project",
+                 "carriage_row_cables", "_carriage_page_item", "_carriage_refs", "_carriage_role_query"):
         monkeypatch.setattr(owner, name, forbidden)
     monkeypatch.setattr(protocol_assurance, "bind_snapshot_json_bytes", forbidden)
     monkeypatch.setattr(engine, "ui_projection_carriage", checked_page)
@@ -1732,17 +1752,47 @@ def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(cli
     assert client.app.state.store.get_snapshot_blob(sid) == original
 
 
-@pytest.mark.parametrize("forgery", ["summary", "engine", "vlan_index"])
+def test_cold_carriage_pages_read_only_materialized_rows_without_a_fleet_document(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=2))
+    store = client.app.state.store
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a materialized page read a fleet document or recomputed a relation")
+
+    monkeypatch.setattr(api._ProjectionCache, "document", forbidden)
+    for name in ("get_snapshot_blob", "get_carriage_document", "verify_carriage_document"):
+        monkeypatch.setattr(store, name, forbidden)
+    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts",
+                 "carriage_row_cables", "_carriage_page_item", "_carriage_refs", "_carriage_role_query"):
+        monkeypatch.setattr(owner, name, forbidden)
+    cache = api._ProjectionCache(store)
+    first = api.carriage_page(cache, None, None, sid, 0, 0, 1)
+    api.UiProjectionCarriageResponse.model_validate(first)
+    assert first["payload"]["page"]["returned"] == 1
+    assert cache.entries == {}
+    assert api.carriage_page(cache, None, None, sid, 0, 0, 1) == first
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 1})
+    assert response.status_code == 200
+    assert response.json() == first
+
+
+@pytest.mark.parametrize("forgery", ["summary", "engine", "vlan_index", "input_summary", "input_engine"])
 def test_a_carriage_page_that_drifts_from_its_inventory_row_is_refused(client, tmp_path, monkeypatch, forgery):
     sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},)))
     page = engine.ui_projection_carriage
 
     def forged(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
         result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
-        if forgery == "summary":
+        if forgery in ("summary", "input_summary"):
             result["carriage"]["summary"]["forwarding"]["value"] += 1
-        elif forgery == "engine":
+            if forgery == "input_summary":
+                snapshot.pack["vlans"][0]["summary"] = deepcopy(result["carriage"]["summary"])
+        elif forgery in ("engine", "input_engine"):
             result["engine"]["script_version"] = {**result["engine"]["script_version"], "value": "forged"}
+            if forgery == "input_engine":
+                snapshot.pack["context"]["engine"] = deepcopy(result["engine"])
         else:
             result["carriage"]["vlan_index"] += 1
         return result

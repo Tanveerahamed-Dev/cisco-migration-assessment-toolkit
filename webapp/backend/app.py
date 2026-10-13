@@ -55,7 +55,7 @@ from . import (
     summary,
     ui_projection_api,
 )
-from .storage import ExecutionReceiptAuthorityError, Store
+from .storage import CarriagePreparationLimitError, ExecutionReceiptAuthorityError, Store
 
 _HERE = Path(__file__).resolve().parent
 _WEBAPP = _HERE.parent
@@ -2685,6 +2685,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         description="A live web platform over the Cisco Migration-Assessment engine.",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(CarriagePreparationLimitError)
+    async def carriage_preparation_limit_error(
+            _request: Request, _error: CarriagePreparationLimitError) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Snapshot carriage detail exceeds the supported storage limit. "
+                               "Reduce the collection scope and try again."},
+        )
 
     @app.exception_handler(ExecutionReceiptAuthorityError)
     async def execution_receipt_authority_error(

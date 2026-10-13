@@ -27,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .engine import carriage_derivative_byte_limit
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +76,41 @@ CREATE TABLE IF NOT EXISTS carriage_projection_parts (
 );
 CREATE INDEX IF NOT EXISTS ix_carriage_projection_window
     ON carriage_projection_parts(snapshot_id, kind, ordinal);
+CREATE TABLE IF NOT EXISTS carriage_projection_v2_parts (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    projection_version INTEGER NOT NULL CHECK (projection_version = 2),
+    kind TEXT NOT NULL,
+    part_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, kind, part_key)
+);
+CREATE INDEX IF NOT EXISTS ix_carriage_projection_v2_window
+    ON carriage_projection_v2_parts(snapshot_id, kind, ordinal);
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_update
+BEFORE UPDATE ON carriage_projection_v2_parts
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_replace
+BEFORE INSERT ON carriage_projection_v2_parts
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_v2_parts
+    WHERE snapshot_id=NEW.snapshot_id AND kind=NEW.kind AND part_key=NEW.part_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_delete
+BEFORE DELETE ON carriage_projection_v2_parts
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
 CREATE TABLE IF NOT EXISTS carriage_projection_role_presence (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
     key_0 INTEGER NOT NULL,
@@ -620,10 +657,14 @@ def _snapshot_blob_bytes(value: Any) -> bytes:
 
 def _snapshot_binding_from_row(row: sqlite3.Row) -> tuple[bytes, Dict[str, Any]]:
     raw = _snapshot_blob_bytes(row["snapshot_blob"])
-    return raw, {
+    return raw, _snapshot_binding_with_identity(row, _blob_identity(raw))
+
+
+def _snapshot_binding_with_identity(row: sqlite3.Row, identity: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "source": _SNAPSHOT_BINDING_SOURCE,
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        "bytes": len(raw),
+        "sha256": "sha256:" + identity["sha256"],
+        "bytes": identity["bytes"],
         "snapshot_id": int(row["snapshot_id"]),
         "campaign_id": int(row["campaign_id"]),
         "engagement_id": str(row["engagement_id"]),
@@ -705,8 +746,8 @@ _TRIAL_SOURCE_CODE = 1
 # This version owns the derivative behavior, not just its shape. A future preparer change
 # needs a new version and explicit migration; an engine release string cannot silently
 # re-authorize documents produced under different projection semantics.
-_CARRIAGE_PROJECTION_SCHEMA = "carriage_projection_preparation/1"
-_CARRIAGE_CODES_CHUNK = 400
+CARRIAGE_PROJECTION_PAYLOAD_LIMIT = carriage_derivative_byte_limit()
+_CARRIAGE_PROJECTION_SCHEMA = "carriage_projection_preparation/2"
 
 
 def _carriage_part_limbs(
@@ -720,10 +761,6 @@ def _carriage_part_limbs(
         "kind": kind, "part_key": part_key, "ordinal": ordinal,
         "payload": _blob_identity(payload),
     })
-
-
-def _carriage_role_key(host: str, namespace: str, instance: int, interface: str) -> str:
-    return json.dumps([host, namespace, instance, interface], separators=(",", ":"))
 
 
 def _authority_limbs(value: Dict[str, Any]) -> tuple[int, int, int, int]:
@@ -747,6 +784,17 @@ def _snapshot_authority_limbs(
         *, snapshot_id: int, campaign_id: int, engagement_id: str,
         label: str, uploaded_at: str, script_version: str,
         snapshot_blob: Any) -> tuple[int, int, int, int]:
+    return _snapshot_authority_limbs_with_identity(
+        snapshot_id=snapshot_id, campaign_id=campaign_id, engagement_id=engagement_id,
+        label=label, uploaded_at=uploaded_at, script_version=script_version,
+        identity=_blob_identity(snapshot_blob),
+    )
+
+
+def _snapshot_authority_limbs_with_identity(
+        *, snapshot_id: int, campaign_id: int, engagement_id: str,
+        label: str, uploaded_at: str, script_version: str,
+        identity: Dict[str, Any]) -> tuple[int, int, int, int]:
     return _authority_limbs({
         "schema": "snapshot_source_authority/1",
         "source": _SNAPSHOT_BINDING_SOURCE,
@@ -756,7 +804,7 @@ def _snapshot_authority_limbs(
         "label": str(label),
         "uploaded_at": str(uploaded_at),
         "script_version": str(script_version),
-        "snapshot_blob": _blob_identity(snapshot_blob),
+        "snapshot_blob": identity,
     })
 
 
@@ -806,7 +854,8 @@ def _authority_row_matches(
     )
 
 
-def _snapshot_authority_row_valid(row: sqlite3.Row) -> bool:
+def _snapshot_authority_row_valid(
+        row: sqlite3.Row, *, identity: Optional[Dict[str, Any]] = None) -> bool:
     if (
         "authority_snapshot_id" not in row.keys()
         or type(row["authority_snapshot_id"]) is not int
@@ -816,14 +865,14 @@ def _snapshot_authority_row_valid(row: sqlite3.Row) -> bool:
         or int(row["authority_version"]) != 1
     ):
         return False
-    expected = _snapshot_authority_limbs(
+    expected = _snapshot_authority_limbs_with_identity(
         snapshot_id=row["snapshot_id"],
         campaign_id=row["campaign_id"],
         engagement_id=row["engagement_id"],
         label=row["label"],
         uploaded_at=row["uploaded_at"],
         script_version=row["script_version"],
-        snapshot_blob=row["snapshot_blob"],
+        identity=_blob_identity(row["snapshot_blob"]) if identity is None else identity,
     )
     return _authority_row_matches(row, expected)
 
@@ -834,6 +883,10 @@ class StoreCorruptError(RuntimeError):
 
 class ExecutionReceiptAuthorityError(RuntimeError):
     """Persisted execution decision rows cannot be re-authorized from their exact sources."""
+
+
+class CarriagePreparationLimitError(ValueError):
+    """One snapshot's materialized derivative exceeds the closed ingest payload limit."""
 
 
 def _our_backups(backups: Path) -> List[Path]:
@@ -920,6 +973,15 @@ class Store:
                 self._conn.execute(
                     "ALTER TABLE snapshots ADD COLUMN carriage_projection_required "
                     "INTEGER NOT NULL DEFAULT 1 CHECK (carriage_projection_required IN (0,1))"
+                )
+            if "carriage_projection_version" not in snapshot_columns:
+                # /1 derivatives are deliberately superseded, never silently resealed. Only
+                # the original raw-only database receives the one-time /2 preparation.
+                version_default = 2 if migrate_carriage_projection else 0
+                self._conn.execute(
+                    "ALTER TABLE snapshots ADD COLUMN carriage_projection_version "
+                    f"INTEGER NOT NULL DEFAULT {version_default} "
+                    "CHECK (carriage_projection_version IN (0,2))"
                 )
             # v2/legacy classification is decision-bearing even before the first comparison exists.
             # Keep it in INTEGER columns (sqlite blobopen can incrementally rewrite TEXT/BLOB
@@ -1207,6 +1269,13 @@ class Store:
                     SELECT RAISE(ABORT, 'carriage projection requirement is immutable');
                 END
             """)
+            self._conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS carriage_projection_version_no_update
+                BEFORE UPDATE OF carriage_projection_version ON snapshots
+                BEGIN
+                    SELECT RAISE(ABORT, 'carriage projection version is immutable');
+                END
+            """)
             self._conn.commit()
 
     def _boot_hardening(self, dbfile: Path, db_mtime: float | None) -> None:
@@ -1449,10 +1518,10 @@ class Store:
                 cur = self._conn.execute(
                     """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
                                              n_devices, summary_json, snapshot_json,
-                                             carriage_projection_required)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                                             carriage_projection_required,carriage_projection_version)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (campaign_id, stored_label, uploaded_at, script_version,
-                     _n, summary_json, snapshot_json, 1),
+                     _n, summary_json, snapshot_json, 1, 2),
                 )
                 sid = int(cur.lastrowid or 0)
                 limbs = _snapshot_authority_limbs(
@@ -1485,6 +1554,11 @@ class Store:
             except Exception:
                 self._conn.rollback()
                 raise
+            finally:
+                stream = preparation.get("rows") if isinstance(preparation, dict) else None
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    close()
         return self.get_snapshot_meta(sid)  # type: ignore[return-value]
 
     def list_snapshots(self, campaign_id: int) -> List[Dict[str, Any]]:
@@ -1568,10 +1642,19 @@ class Store:
 
     def _bound_snapshot_row_locked(self, snapshot_id: int) -> Optional[sqlite3.Row]:
         """Read and verify source inside a caller-owned coherent SQLite transaction."""
-        row = self._conn.execute(
+        row = self._snapshot_source_row_locked(snapshot_id)
+        if row is not None and not _snapshot_authority_row_valid(row):
+            raise ExecutionReceiptAuthorityError(
+                "snapshot source authority does not reconcile with exact persisted bytes"
+            )
+        return row
+
+    def _snapshot_source_row_locked(self, snapshot_id: int) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
                 """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
                           s.label, s.uploaded_at, s.script_version,
                           s.carriage_projection_required,
+                          s.carriage_projection_version,
                            CAST(s.snapshot_json AS BLOB) AS snapshot_blob,
                            sa.snapshot_id AS authority_snapshot_id,
                            sa.authority_version AS authority_version,
@@ -1584,73 +1667,116 @@ class Store:
                    LEFT JOIN snapshot_authority sa ON sa.snapshot_id=s.id
                    WHERE s.id = ?""", (snapshot_id,)
         ).fetchone()
-        if row is not None and not _snapshot_authority_row_valid(row):
+
+    def _carriage_bound_source_locked(
+            self, snapshot_id: int) -> Optional[tuple[sqlite3.Row, bytes, Dict[str, Any]]]:
+        """Hash this transaction's exact source once for both authority and public binding."""
+        row = self._snapshot_source_row_locked(snapshot_id)
+        if row is None:
+            return None
+        raw = _snapshot_blob_bytes(row["snapshot_blob"])
+        identity = _blob_identity(raw)
+        if not _snapshot_authority_row_valid(row, identity=identity):
             raise ExecutionReceiptAuthorityError(
                 "snapshot source authority does not reconcile with exact persisted bytes"
             )
-        return row
+        return row, raw, _snapshot_binding_with_identity(row, identity)
 
     def _write_carriage_projection_locked(
             self, snapshot_id: int, preparation: Dict[str, Any], source: sqlite3.Row) -> None:
         if not isinstance(preparation, dict) or preparation.get("schema") != _CARRIAGE_PROJECTION_SCHEMA:
             raise ValueError("unsupported carriage projection preparation")
         source_limbs = tuple(source[f"authority_digest_{i}"] for i in range(4))
+        payload_bytes = 0
 
-        def put(kind: str, key: str, value: Any, ordinal: int = 0) -> None:
-            raw = _canonical_json_bytes(value)
+        def put(kind: str, key: str, value: Any, ordinal: int = 0, *, binary: bool = False) -> None:
+            nonlocal payload_bytes
+            raw = value if binary else _canonical_json_bytes(value)
+            if not isinstance(raw, bytes):
+                raise ValueError("carriage projection binary part must be bytes")
+            if payload_bytes + len(raw) > CARRIAGE_PROJECTION_PAYLOAD_LIMIT:
+                raise CarriagePreparationLimitError(
+                    f"carriage derivative payload exceeds {CARRIAGE_PROJECTION_PAYLOAD_LIMIT}-byte limit"
+                )
             limbs = _carriage_part_limbs(snapshot_id, source_limbs, kind, key, ordinal, raw)
             self._conn.execute(
-                """INSERT INTO carriage_projection_parts
+                """INSERT INTO carriage_projection_v2_parts
                    (snapshot_id,projection_version,kind,part_key,ordinal,payload,
                     digest_0,digest_1,digest_2,digest_3) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (snapshot_id, 1, kind, key, ordinal, sqlite3.Binary(raw), *limbs),
+                (snapshot_id, 2, kind, key, ordinal, sqlite3.Binary(raw), *limbs),
             )
+            payload_bytes += len(raw)
 
-        put("document", "", preparation["document"])
-        put("context", "", preparation["context"])
-        cables = preparation["cables"]
-        vlans = preparation["vlans"]
-        put("manifest", "", {
-            "schema": _CARRIAGE_PROJECTION_SCHEMA,
-            "cable_count": len(cables),
-            "vlan_count": len(vlans),
-        })
-        code_length = 0
-        for expected_ordinal, row in enumerate(cables):
-            ordinal = row["ordinal"]
-            if (type(ordinal) is not int or ordinal != expected_ordinal
-                    or type(row["member_count"]) is not int or row["member_count"] < 0
-                    or type(row["code_offset"]) is not int or row["code_offset"] != code_length
-                    or len(row["cable"]["members"]) != row["member_count"]):
-                raise ValueError("invalid carriage cable census")
-            code_length += 1 + 3 * row["member_count"]
-            meta = {key: row[key] for key in ("ordinal", "index", "code_offset", "member_count")}
-            put("cable_meta", str(ordinal), meta, ordinal)
-            put("cable", str(ordinal), row, ordinal)
-        for row in vlans:
-            key = str(row["vlan_index"])
-            codes = row["codes"]
-            if not isinstance(codes, str):
-                raise ValueError("carriage codes must be a string")
-            if (row["readable"] and (len(codes) != code_length or row["total"] != len(cables))
-                    or not row["readable"] and (codes or row["total"] != 0)):
-                raise ValueError("invalid carriage code census")
-            meta = {name: value for name, value in row.items() if name != "codes"}
-            meta["code_length"] = len(codes)
-            put("vlan", key, meta)
-            # Independently anchored fixed-size chunks avoid reading/hashing all V*C codes
-            # when the lazy endpoint needs at most one member-bounded cable window.
-            for start in range(0, len(codes), _CARRIAGE_CODES_CHUNK):
-                put("codes", f"{key}:{start // _CARRIAGE_CODES_CHUNK}",
-                    codes[start:start + _CARRIAGE_CODES_CHUNK])
-        for row in preparation["roles"]:
-            key = _carriage_role_key(row["host"], row["namespace"], row["instance"], row["interface"])
-            put("role", key, row)
-            self._conn.execute(
-                """INSERT INTO carriage_projection_role_presence
-                   (snapshot_id,key_0,key_1,key_2,key_3) VALUES (?,?,?,?,?)""",
-                (snapshot_id, *_authority_limbs({"role_key": key})),
-            )
+        from .engine import carriage_page_byte_limit, carriage_page_limits
+        member_limit, _cable_limit = carriage_page_limits()
+        byte_limit = carriage_page_byte_limit()
+        stream = preparation["rows"]
+        try:
+            put("document", "", preparation["document"])
+            put("context", "", preparation["context"])
+            cables = preparation["cables"]
+            vlans = preparation["vlans"]
+            readable = set()
+            for vi, vlan in enumerate(vlans):
+                if (type(vlan["vlan_index"]) is not int or vlan["vlan_index"] != vi
+                        or vlan["total"] != (len(cables) if vlan["readable"] else 0)):
+                    raise ValueError("invalid carriage VLAN census")
+                if vlan["readable"]:
+                    readable.add(vi)
+                put("vlan", str(vi), vlan)
+            rows_written = 0
+            for ordinal, row in enumerate(stream):
+                if (ordinal >= len(cables) or type(row["ordinal"]) is not int or row["ordinal"] != ordinal
+                        or type(row["index"]) is not int or row["index"] < 0
+                        or any(row[name] != cables[ordinal][name]
+                               for name in ("ordinal", "index", "member_count"))
+                        or type(row["member_count"]) is not int or row["member_count"] < 0
+                        or not isinstance(row["dictionary"], bytes) or len(row["dictionary"]) > 32768):
+                    raise ValueError("invalid carriage materialization census")
+                put("dictionary", str(ordinal), row["dictionary"], ordinal, binary=True)
+                seen = set()
+                variants = row["variants"]
+                try:
+                    for variant in variants:
+                        vi = variant["vlan_index"]
+                        size, payload = variant["bytes"], variant["payload"]
+                        if vi not in readable or vi in seen:
+                            raise ValueError("invalid carriage materialization VLAN")
+                        seen.add(vi)
+                        if (size is None and row["member_count"] <= member_limit
+                                or size is not None and (type(size) is not int or size <= 0)
+                                or payload is not None and not isinstance(payload, bytes)
+                                or size is None and payload is not None
+                                or size is not None and size <= byte_limit and payload is None
+                                or size is not None and size > byte_limit and payload is not None):
+                            raise ValueError("invalid carriage materialization payload")
+                        meta = {name: row[name] for name in ("ordinal", "index", "member_count")}
+                        meta.update(bytes=size, payload_present=payload is not None)
+                        put(f"row_meta:{vi}", str(ordinal), meta, ordinal)
+                        if payload is not None:
+                            put(f"row:{vi}", str(ordinal), payload, ordinal, binary=True)
+                finally:
+                    close = getattr(variants, "close", None)
+                    if close is not None:
+                        close()
+                if seen != readable:
+                    raise ValueError("incomplete carriage materialization VLAN census")
+                rows_written += 1
+            if rows_written != len(cables):
+                raise ValueError("incomplete carriage materialization cable census")
+            manifest = {"schema": _CARRIAGE_PROJECTION_SCHEMA, "cable_count": len(cables),
+                        "vlan_count": len(vlans), "payload_bytes": 0}
+            # Include the anchored manifest itself in the exact payload denominator.
+            while True:
+                total = payload_bytes + len(_canonical_json_bytes(manifest))
+                if manifest["payload_bytes"] == total:
+                    break
+                manifest["payload_bytes"] = total
+            put("manifest", "", manifest)
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
 
     def _read_carriage_part_locked(
             self, snapshot_id: int, source: sqlite3.Row, kind: str, key: str,
@@ -1658,17 +1784,9 @@ class Store:
         row = self._conn.execute(
             """SELECT projection_version,kind,part_key,ordinal,payload,
                       digest_0,digest_1,digest_2,digest_3
-               FROM carriage_projection_parts WHERE snapshot_id=? AND kind=? AND part_key=?""",
+               FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=? AND part_key=?""",
             (snapshot_id, kind, key),
         ).fetchone()
-        if kind == "role":
-            presence = self._conn.execute(
-                """SELECT 1 FROM carriage_projection_role_presence WHERE snapshot_id=?
-                   AND key_0=? AND key_1=? AND key_2=? AND key_3=?""",
-                (snapshot_id, *_authority_limbs({"role_key": key})),
-            ).fetchone()
-            if (presence is None) != (row is None):
-                raise ExecutionReceiptAuthorityError("carriage role presence does not reconcile")
         if row is None:
             if optional:
                 return None
@@ -1681,7 +1799,7 @@ class Store:
             self, snapshot_id: int, source: sqlite3.Row, row: sqlite3.Row,
             kind: str, key: str) -> bytes:
         try:
-            if (type(row["projection_version"]) is not int or row["projection_version"] != 1
+            if (type(row["projection_version"]) is not int or row["projection_version"] != 2
                     or row["kind"] != kind or row["part_key"] != key
                     or type(row["ordinal"]) is not int):
                 raise ValueError("projection identity mismatch")
@@ -1728,16 +1846,17 @@ class Store:
         with self._lock:
             try:
                 self._conn.execute("BEGIN")
-                source = self._bound_snapshot_row_locked(snapshot_id)
-                if source is None:
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
                     self._conn.commit()
                     return None
-                if source["carriage_projection_required"] != 1:
+                source, _raw, binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
                     raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
                 document = self._read_carriage_part_locked(
                     snapshot_id, source, "document", "", decode=decode
                 )
-                binding = _snapshot_binding_from_row(source)[1]
                 self._conn.commit()
                 return document, binding
             except Exception:
@@ -1747,14 +1866,23 @@ class Store:
     def get_carriage_page_source(
             self, snapshot_id: int, vlan_index: int, offset: int = 0,
             limit: int = 100) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
-        """Verify the source and selected parts of one member-bounded lazy window.
+        """Compatibility reader for the selected page fragments and their exact binding."""
+        result = self.get_carriage_page_bundle(snapshot_id, vlan_index, offset, limit)
+        return (result[2], result[1]) if result is not None else None
 
-        Unrequested fragments are deliberately neither loaded nor certified by this read.
+    def get_carriage_page_bundle(
+            self, snapshot_id: int, vlan_index: int, offset: int = 0, limit: int = 100,
+    ) -> Optional[tuple[bytes, Dict[str, Any], Dict[str, Any]]]:
+        """Verify source and selected precomputed rows in one bounded coherent read.
+
+        The exact source is read and hashed once. The page's stored context/summary and
+        compressed rows have independent anchors; neither source JSON nor the global document
+        is decoded or loaded here. Unrequested fragments are not certified by this read.
         """
-        from cisco_toolkit.vlan_carriage import carriage_join_interface
-        from .engine import carriage_page_limits
+        from .engine import carriage_page_byte_limit, carriage_page_limits
 
         member_limit, cable_limit = carriage_page_limits()
+        byte_limit = carriage_page_byte_limit()
 
         if (type(vlan_index) is not int or vlan_index < 0
                 or type(offset) is not int or offset < 0
@@ -1763,92 +1891,86 @@ class Store:
         with self._lock:
             try:
                 self._conn.execute("BEGIN")
-                source = self._bound_snapshot_row_locked(snapshot_id)
-                if source is None:
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
                     self._conn.commit()
                     return None
-                if source["carriage_projection_required"] != 1:
+                source, raw, binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
                     raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
                 manifest = self._read_carriage_part_locked(snapshot_id, source, "manifest", "")
                 context = self._read_carriage_part_locked(snapshot_id, source, "context", "")
                 if vlan_index >= manifest["vlan_count"]:
-                    raise ValueError("VLAN is not in the prepared carriage selector")
+                    raise IndexError("VLAN is not in the prepared carriage selector")
                 key = str(vlan_index)
                 vlan = self._read_carriage_part_locked(snapshot_id, source, "vlan", key)
-                vlan_id = vlan["vlan"]
                 expected_count = min(limit, max(0, vlan["total"] - offset))
+                kind = f"row_meta:{vlan_index}"
                 rows = self._conn.execute(
                     """SELECT projection_version,kind,part_key,ordinal,payload,
                               digest_0,digest_1,digest_2,digest_3
-                       FROM carriage_projection_parts WHERE snapshot_id=? AND kind='cable_meta'
+                       FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=?
                          AND ordinal>=? ORDER BY ordinal LIMIT ?""",
-                    (snapshot_id, offset, expected_count),
+                    (snapshot_id, kind, offset, expected_count),
                 ).fetchall()
                 if len(rows) != expected_count:
                     raise ExecutionReceiptAuthorityError("carriage cable window is incomplete")
-                cables = []
+                selected = []
                 member_count = 0
-                code_start = 0
-                code_end = 0
-                role_keys = set()
+                row_bytes = 0
                 for position, row in enumerate(rows, offset):
-                    meta = self._decode_carriage_part(snapshot_id, source, row, "cable_meta", str(position))
-                    if (meta["ordinal"] != position or meta["member_count"] < 0
-                            or cables and meta["code_offset"] != code_end):
+                    meta = self._decode_carriage_part(snapshot_id, source, row, kind, str(position))
+                    if meta["ordinal"] != position or meta["member_count"] < 0:
                         raise ExecutionReceiptAuthorityError("carriage cable window is invalid")
+                    output = {name: meta[name] for name in ("ordinal", "index", "member_count", "bytes")}
                     if member_count + meta["member_count"] > member_limit:
-                        # The renderer sees the boundary census, but never reads/decodes the
-                        # potentially unbounded cable that cannot fit in this whole-cable page.
-                        cables.append(meta)
+                        selected.append(output)
                         break
-                    cable = self._read_carriage_part_locked(snapshot_id, source, "cable", str(position))
-                    if any(cable[name] != meta[name] for name in meta):
-                        raise ExecutionReceiptAuthorityError("carriage cable census differs")
-                    cables.append(cable)
-                    if len(cables) == 1:
-                        code_start = meta["code_offset"]
-                    member_count += meta["member_count"]
-                    code_end = meta["code_offset"] + 1 + 3 * meta["member_count"]
-                    if vlan_id is not None:
-                        for member in cable["cable"].get("members", []):
-                            for side in ("a", "b"):
-                                end = member.get(side, {})
-                                interface = carriage_join_interface(end.get("stp_interface"))
-                                if end.get("host") and interface:
-                                    role_keys.add(_carriage_role_key(
-                                        end["host"], "pvst_vlan", vlan_id, interface
-                                    ))
-                code_length = vlan.pop("code_length")
-                chunks = []
-                if code_end > code_start and code_length:
-                    for chunk in range(code_start // _CARRIAGE_CODES_CHUNK,
-                                       (code_end - 1) // _CARRIAGE_CODES_CHUNK + 1):
-                        value = self._read_carriage_part_locked(
-                            snapshot_id, source, "codes", f"{key}:{chunk}"
-                        )
-                        expected_length = min(_CARRIAGE_CODES_CHUNK,
-                                              code_length - chunk * _CARRIAGE_CODES_CHUNK)
-                        if not isinstance(value, str) or len(value) != expected_length:
-                            raise ExecutionReceiptAuthorityError("carriage code chunk is incomplete")
-                        chunks.append(value)
-                joined = "".join(chunks)
-                start_in_chunk = code_start % _CARRIAGE_CODES_CHUNK
-                vlan["codes"] = joined[start_in_chunk:start_in_chunk + code_end - code_start]
-                if len(vlan["codes"]) != code_end - code_start:
-                    raise ExecutionReceiptAuthorityError("carriage code window is incomplete")
-                vlan["code_start"] = code_start
-                roles = []
-                for role_key in sorted(role_keys):
-                    role = self._read_carriage_part_locked(
-                        snapshot_id, source, "role", role_key, optional=True
+                    size = meta["bytes"]
+                    if type(size) is not int or size < 0:
+                        raise ExecutionReceiptAuthorityError("carriage row byte census is invalid")
+                    if row_bytes + size > byte_limit:
+                        selected.append(output)
+                        break
+                    if meta["payload_present"] is not True:
+                        raise ExecutionReceiptAuthorityError("carriage row payload is missing")
+                    output["dictionary"] = self._read_carriage_part_locked(
+                        snapshot_id, source, "dictionary", str(position), decode=False
                     )
-                    if role is not None:
-                        roles.append(role)
+                    output["payload"] = self._read_carriage_part_locked(
+                        snapshot_id, source, f"row:{vlan_index}", str(position), decode=False
+                    )
+                    selected.append(output)
+                    member_count += meta["member_count"]
+                    row_bytes += size
                 pack = {"schema": _CARRIAGE_PROJECTION_SCHEMA, "context": context,
-                        "cables": cables, "vlans": [vlan], "roles": roles}
-                binding = _snapshot_binding_from_row(source)[1]
+                        "vlans": [vlan], "rows": selected}
                 self._conn.commit()
-                return pack, binding
+                return raw, binding, pack
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_carriage_projection_payload_bytes(self, snapshot_id: int) -> Optional[int]:
+        """Read the exact ingest-time payload census from its source-bound INTEGER anchor."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
+                    self._conn.commit()
+                    return None
+                source, _raw, _binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                manifest = self._read_carriage_part_locked(snapshot_id, source, "manifest", "")
+                size = manifest["payload_bytes"]
+                if type(size) is not int or not 0 <= size <= CARRIAGE_PROJECTION_PAYLOAD_LIMIT:
+                    raise ExecutionReceiptAuthorityError("carriage derivative byte census is invalid")
+                self._conn.commit()
+                return size
             except Exception:
                 self._conn.rollback()
                 raise

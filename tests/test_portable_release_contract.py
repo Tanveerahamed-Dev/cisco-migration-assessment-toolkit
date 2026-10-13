@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -1271,7 +1272,7 @@ _PINNED_SCHEMA_SHAPES = {
     "atlas.portable-toolchain-receipt/2": "0ce3a0c0a1244f58ae8d17c3011a493b5ecd728936edb898536d57eb43b1cd41",
     "atlas.portable-signing/1": "9d5fd0888866cff704b03b7e5189dee91fa9e8137c005dcee5606097673e6fc2",
     "atlas.portable-authenticode-verification/1": "037244250cd1a7c1c69ec2543f99ae306cc3b411aa2ef0cc4e33294bacbe8501",
-    "atlas.portable-qualification/2": "7b93dc001ef903cd1f2bdc6bc19f7b1305d3276e015bff83456adc28f5f440f9",
+    "atlas.portable-qualification/3": "be5128e695f59ebac413df716661ff6a728faaaa9f64132bcce37b40b321125b",
     "atlas.portable-provenance/1": "52a6a2857f97c0afbc383234b6947ffcc880000d40c906ca58234da7eb8f7041",
     "atlas.portable-third-party-notices/2": "bc31159a8c08daf3ffb5eb2639a6e6cc8e10dfe50e19a2def69846162720b281",
     "atlas.portable-license-fallbacks/1": "1c87ae0649fcc76c6974fbe6473473a023f51d0f2846b6d7c19211bcf07b42f1",
@@ -1373,7 +1374,8 @@ def test_the_operator_readme_names_the_current_id_of_every_superseded_family() -
         for schema in shapes
         if schema.rsplit("/", 1)[0] == superseded.rsplit("/", 1)[0]
     }
-    assert len(current) == len(subject._SUPERSEDED_SCHEMAS), sorted(current)
+    superseded_families = {schema.rsplit("/", 1)[0] for schema in subject._SUPERSEDED_SCHEMAS}
+    assert len(current) == len(superseded_families), sorted(current)
     assert sorted(schema for schema in current if schema not in readme) == []
     assert "superseded" in readme
     # the notices bullet states the build-attributed packages, not only the production lock graphs
@@ -1429,6 +1431,43 @@ def test_the_scope_era_receipts_do_not_reuse_the_pre_scope_schema_ids() -> None:
     /scope smoke after the /1 ids were issued, so neither may still be /1."""
     assert subject.TOOLCHAIN_SCHEMA != "atlas.portable-toolchain-receipt/1"
     assert subject.QUALIFICATION_SCHEMA != "atlas.portable-qualification/1"
+
+
+def test_qualification_database_census_covers_the_actual_store_tables(tmp_path: Path) -> None:
+    """A Store schema addition must reach the closed portable qualification receipt too."""
+    from webapp.backend.storage import Store
+
+    database = tmp_path / "assesshub.db"
+    store = Store(database)
+    store.close()
+    connection = sqlite3.connect(database)
+    try:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )}
+    finally:
+        connection.close()
+    declared = subject.receipt_schema_shapes()[subject.QUALIFICATION_SCHEMA]["database_row_counts"]
+    assert tables == set(declared)
+    assert {"carriage_projection_parts", "carriage_projection_role_presence", "carriage_projection_v2_parts"} <= tables
+    counts = dict.fromkeys(tables, 0)
+    assert subject._has_shape(counts, subject.QUALIFICATION_SCHEMA, "database_row_counts")
+    for missing in tables:
+        incomplete = {table: count for table, count in counts.items() if table != missing}
+        assert not subject._has_shape(incomplete, subject.QUALIFICATION_SCHEMA, "database_row_counts")
+    assert not subject._has_shape(
+        {**counts, "unexpected_table": 0}, subject.QUALIFICATION_SCHEMA, "database_row_counts"
+    )
+
+
+def test_pre_carriage_qualification_receipt_is_refused_without_migration() -> None:
+    old_schema = "atlas.portable-qualification/2"
+    with pytest.raises(subject.PortableReleaseError) as refused:
+        subject._validate_qualification({"schema": old_schema}, {}, "0" * 64, real_runtime=True)
+    message = str(refused.value)
+    assert old_schema in message
+    assert "superseded" in message and "not migrated" in message
+    assert subject._SUPERSEDED_SCHEMAS[old_schema] in message
 
 
 def _pre_scope_toolchain(tmp_path: Path) -> dict:

@@ -133,6 +133,7 @@ import json
 import math
 import marshal
 import re
+import zlib
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
@@ -1407,10 +1408,6 @@ class _Ctx:
                 seen.add(key)
                 out.append({"pointer": key[0], "role": role})
         return out
-
-    def carriage_value(self, tokens: Sequence[Any]) -> Any:
-        """Read an allowance witness from the current snapshot, for the carriage page renderer."""
-        return _get(self.s, tokens)
 
     def classify(self, label: Any) -> str:
         if not isinstance(label, str):
@@ -4785,8 +4782,6 @@ _CARRIAGE_PAGE_MEMBER_LIMIT = 400
 
 def _stored_pointer_tokens(ctx: _Ctx, pointer: str) -> Optional[Tuple[Any, ...]]:
     """Resolve a validated stored pointer without guessing a missing list/dict namespace."""
-    if isinstance(ctx, _PreparedCarriageCtx):
-        return ctx.pointer_tokens(pointer)
     if pointer == "":
         return ()
     if not _is_text(pointer) or not pointer.startswith("/") or re.search(r"~(?![01])", pointer):
@@ -5816,7 +5811,7 @@ def _carriage_page_item(ctx: _Ctx, adm: _CarriageAdmission, vi: int, cable: Dict
                 witness += [(role, toks) for role, toks in _carriage_refs(ctx, [
                     end["allowance_pointer"] + "/" + field for field in (
                         "trunk_allowed_vlans", "trunk_allowed_none", "trunk_native_vlan", "switchport_mode")])
-                    if _is_text(ctx.carriage_value(toks)) and ctx.carriage_value(toks).strip()]
+                    if _is_text(_get(ctx.s, toks)) and _get(ctx.s, toks).strip()]
             elif end["stp_pointer"] is not None:
                 witness += _carriage_refs(ctx, [end["stp_pointer"]])
             signal = failed or ((decoded["state"], decoded["reason"]) if decoded["state"] != _PUB else None)
@@ -5873,7 +5868,7 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
         observation, index = observations[host]
         return carriage_role_rows(observation, stp_interface, vid, index=index) if index is not None else []
 
-    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]]]:
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]:
         ci, _code_offset, count = adm.offsets[position]
 
         def item() -> Dict[str, Any]:
@@ -5881,7 +5876,7 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
                 section, vlan_index, position, position + 1, offsets=adm.offsets)[0]
             return _carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
 
-        return ci, count, item
+        return ci, count, item, None
 
     return _carriage_page_document(engine, _vocab(), summary, vlan_index, total, offset, limit, load,
                                    transport_overhead)
@@ -5889,12 +5884,13 @@ def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *
 
 def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summary: Dict[str, Any],
                             vlan_index: int, total: int, offset: int, limit: int,
-                            load: Callable[[int], Tuple[int, int, Callable[[], Dict[str, Any]]]],
+                            load: Callable[[int], Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]],
                             transport_overhead: int) -> Dict[str, Any]:
     """The same whole-cable member/UTF-8 bounds for snapshot and prepared lazy readers.
 
-    ``load`` reads only one cable's metadata; its deferred item renderer runs only if that entire cable fits
-    the member bound. This also admits a metadata-only boundary row without reading any of its members.
+    ``load`` reads only one cable's metadata. Its last value is the authenticated exact encoded size, when the
+    row was materialized at ingest. Such rows need no decoding until their whole member/byte prefix fits; the
+    original snapshot reader still renders and measures its item exactly once, as before.
     """
     if (type(transport_overhead) is not int or transport_overhead < 0
             or transport_overhead >= CARRIAGE_PAGE_BYTE_LIMIT):
@@ -5917,11 +5913,14 @@ def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summa
     item_bytes, member_count = 0, 0
     expected = min(max(total - offset, 0), limit)
     for position in range(offset, offset + expected):
-        ci, count, render_item = load(position)
+        ci, count, render_item, encoded_size = load(position)
         over_members = member_count + count > _CARRIAGE_PAGE_MEMBER_LIMIT
         if not over_members:
-            item = render_item()
-            length = size(item)
+            if encoded_size is None:
+                item = render_item()
+                length = size(item)
+            else:
+                length = encoded_size
             candidate_count = len(items) + 1
             page.update(limit=limit if candidate_count == expected else candidate_count,
                         returned=candidate_count, has_more=offset + candidate_count < total)
@@ -5937,6 +5936,8 @@ def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summa
                 page.update(state=_UV, reason=(f"unsupported: complete cable /vlan_carriage/cables/{ci} and all "
                             "its members cannot fit within the carriage member/byte page bounds"))
             break
+        if encoded_size is not None:
+            item = render_item()
         items.append(item)
         member_count += count
         item_bytes += length
@@ -5948,16 +5949,41 @@ def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summa
     return document
 
 
-CARRIAGE_PREPARATION_SCHEMA = "carriage_projection_preparation/1"
+CARRIAGE_PREPARATION_SCHEMA = "carriage_projection_preparation/2"
+#: A separate server derivative bound; the original compact snapshot's 6 MB/+600 KB gates do not change.
+CARRIAGE_DERIVATIVE_BYTE_LIMIT = 64_000_000
+_CARRIAGE_DICTIONARY_BYTES = 32_768
+
+
+def _materialized_carriage_bytes(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
+    """Encode an exact complete row once at ingest, retaining at most the public page byte ceiling.
+
+    An oversized complete cable still has an exact measured size but no retained payload. Its lazy metadata
+    produces the same whole-cable unsupported hold; it can never be split or silently skipped.
+    """
+    chunks: List[bytes] = []
+    length = 0
+    for part in json.JSONEncoder(separators=(",", ":"), ensure_ascii=False, allow_nan=False).iterencode(item):
+        encoded = part.encode("utf-8")
+        length += len(encoded)
+        if length <= CARRIAGE_PAGE_BYTE_LIMIT:
+            chunks.append(encoded)
+        elif chunks:
+            chunks.clear()
+    return (b"".join(chunks) if length <= CARRIAGE_PAGE_BYTE_LIMIT else None), length
 
 
 def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
-    """Prepare the server-owned document and compact lazy-page inputs once, at snapshot ingest.
+    """Produce the document and a one-shot stream of exact materialized carriage rows at ingest.
 
-    Admission remains the original full-snapshot owner, including its current-STP, channel identity and alias
-    guards. This derivative is never a snapshot or a source-binding receipt. Its storage owner must bind every
-    persisted fragment to the exact original snapshot and integer anchor before a request can read it. All
-    original per-cable work happens here; the document contains only the already-produced carriage summaries.
+    The original full-snapshot owner admits current STP, channel identity, aliases and stale bases once. It
+    renders each readable VLAN/cable row here, before a request. A cable's first encoded row supplies a <=32 KiB
+    preset dictionary; each VLAN variant is an independently lossless zlib stream over its exact complete JSON.
+    The stream retains only one rendered row, one cable dictionary and one variant at a time, never a Cartesian
+    tree of DTOs. Storage authenticates every binary/metadata fragment and bounds the entire derivative.
+
+    This is server-owned derived data, not a new snapshot codec or source-binding receipt. Only a genuinely
+    unchanged BoundSnapshot is accepted; mutation during consumption refuses the final ingest transaction.
     """
     ctx = _Ctx(snap)
     if not isinstance(snap, BoundSnapshot) or ctx.source[0] != _PUB:
@@ -5965,8 +5991,6 @@ def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
     adm = _carriage_source(ctx)
     document = project(snap, carriage=adm)
     source = dict(document["inventory"]["vlans"]["selection_sources"]["carriage"])
-    # Full gap/issue witnesses remain in the original snapshot and lazy member facts. The first document
-    # points to the stored coverage/issues and their source sections, never a cable-sized witness list.
     source["refs"] = ctx.refs(
         [("subject", ("vlan_carriage",)), ("witness", ("vlan_carriage", "coverage")),
          ("witness", ("vlan_carriage", "issues"))]
@@ -5975,60 +5999,8 @@ def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
         if adm.gaps or (adm.section is not None and adm.section["issues"]) or adm.failed
         else [("subject", ("vlan_carriage",))])
     document["inventory"]["vlans"]["selection_sources"]["carriage"] = source
-
-    def pointers(entries: Iterable[Sequence[Any]]) -> List[Dict[str, Any]]:
-        found: Dict[str, List[Any]] = {}
-        for tokens in entries:
-            if _get(ctx.s, tokens) is not _MISSING:
-                found.setdefault(json_pointer(*tokens), list(tokens))
-        return [{"pointer": pointer, "tokens": tokens} for pointer, tokens in found.items()]
-
-    failure_entries = {}
-    unavailable_reasons = {}
-    failure_tokens: List[Sequence[Any]] = []
-    for label, sections in (("carriage", _CARRIAGE_SECTIONS), ("empty", ())):
-        failure_entries[label] = []
-        for unavailable in (False, True):
-            entries = ctx.failure_entries(sections, unavailable)
-            failure_entries[label].append([[role, list(tokens)] for role, tokens in entries])
-            failure_tokens.extend(tokens for _role, tokens in entries)
-        unavailable_reasons[label] = ctx.unavailable_reason(sections)
-    context = {"engine": document["engine"], "vocab": document["vocab"],
-               "failure_entries": failure_entries, "unavailable_reasons": unavailable_reasons,
-               "any_failure": ctx.any_failure, "pointers": pointers(failure_tokens)}
-
-    cables = []
-    hosts = set()
-    for ordinal, (ci, code_offset, member_count) in enumerate(adm.offsets):
-        cable = adm.section["cables"][ci]
-        cable_toks = ("vlan_carriage", "cables", ci)
-        tokens: List[Sequence[Any]] = [cable_toks, cable_toks + ("ends",), cable_toks + ("members",),
-                                       ("cable_map", "cables", ci)]
-        allowance_values: Dict[Tuple[Any, ...], str] = {}
-        for member in cable["members"]:
-            member_toks = cable_toks + ("members", member["index"])
-            tokens.append(member_toks)
-            for side in ("a", "b"):
-                end = member[side]
-                if end["host"] is not None:
-                    hosts.add(end["host"])
-                tokens.extend((member_toks + (side, "host"), member_toks + (side, "port")))
-                tokens.extend(toks for _role, toks in _carriage_refs(ctx, end["refs"]))
-                if end["stp_pointer"] is not None:
-                    tokens.extend(toks for _role, toks in _carriage_refs(ctx, [end["stp_pointer"]]))
-                if end["allowance_pointer"] is not None:
-                    for field in ("trunk_allowed_vlans", "trunk_allowed_none", "trunk_native_vlan", "switchport_mode"):
-                        toks = _stored_pointer_tokens(ctx, end["allowance_pointer"] + "/" + field)
-                        if toks is not None:
-                            tokens.append(toks)
-                            value = ctx.carriage_value(toks)
-                            if _is_text(value):
-                                allowance_values[toks] = value
-        cables.append({"ordinal": ordinal, "index": ci, "code_offset": code_offset,
-                       "member_count": member_count, "cable": deepcopy(cable), "pointers": pointers(tokens),
-                       "allowance_values": [{"tokens": list(toks), "value": value}
-                                             for toks, value in allowance_values.items()]})
-
+    context = {"schema": document["schema"], "engine": document["engine"], "vocab": document["vocab"],
+               "limitations": document["trust"]["limitations"]}
     summaries = {row["index"]: row["selections"]["carriage"]
                  for row in document["inventory"]["vlans"]["rows"]["items"]}
     vlans = []
@@ -6039,118 +6011,99 @@ def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
         failed = adm.failed or ((_UV, _R_CARRIAGE_GAP) if vi in adm.gaps else None)
         vlans.append({"vlan_index": vi, "vlan": row["vlan"] if row is not None else vlan_row_identity(rec),
                       "summary": summaries[vi], "failed": list(failed) if failed else None,
-                      "readable": readable, "total": len(adm.offsets) if readable else 0,
-                      "codes": row["codes"] if readable else ""})
+                      "readable": readable, "total": len(adm.offsets) if readable else 0})
+    cables = [{"ordinal": ordinal, "index": ci, "member_count": count}
+              for ordinal, (ci, _code_offset, count) in enumerate(adm.offsets)]
+    readable_vlans = [row for row in vlans if row["readable"]]
+    observations: Dict[str, Any] = dict(adm.observations)
 
-    roles = []
-    observations = dict(adm.observations)
-    for host in sorted(hosts):
+    def roles(host: str, interface: str, vid: int) -> List[Any]:
         if host not in observations or (observations[host][0] is not None and observations[host][1] is None):
             state, _why, observation = carriage_observation_admission(
                 _get(ctx.s, ("stp_topology_observations", host)))
             observations[host] = ((observation, carriage_role_index(observation)) if state == _PUB
                                   else (None, None))
         observation, index = observations[host]
-        for (namespace, instance, interface), positions in (index.items() if index is not None else ()):
-            roles.append({"host": host, "namespace": namespace, "instance": instance, "interface": interface,
-                          "rows": [[position, deepcopy(observation["roles"][position])] for position in positions]})
+        return carriage_role_rows(observation, interface, vid, index=index) if index is not None else []
+
+    def render(ordinal: int, row: Dict[str, Any]) -> Tuple[Optional[bytes], Optional[int]]:
+        if adm.offsets[ordinal][2] > _CARRIAGE_PAGE_MEMBER_LIMIT:
+            return None, None
+        vi = row["vlan_index"]
+        cable, verdict, members = carriage_row_cables(adm.section, vi, ordinal, ordinal + 1, offsets=adm.offsets)[0]
+        failed = tuple(row["failed"]) if row["failed"] else None
+        item = _carriage_page_item(ctx, adm, vi, cable, verdict, members, failed, roles)
+        return _materialized_carriage_bytes(item)
+
+    def variants(ordinal: int, dictionary: bytes, first: Tuple[Optional[bytes], Optional[int]]) -> Iterable[Dict[str, Any]]:
+        for position, row in enumerate(readable_vlans):
+            raw, length = first if position == 0 else render(ordinal, row)
+            first = (None, None)
+            if raw is None:
+                payload = None
+            else:
+                compressor = zlib.compressobj(zdict=dictionary)
+                payload = compressor.compress(raw) + compressor.flush()
+                del compressor
+            raw = None  # Do not retain the complete encoded row while storage persists its compressed variant.
+            yield {"vlan_index": row["vlan_index"], "bytes": length, "payload": payload}
+
+    def materialized_rows() -> Iterable[Dict[str, Any]]:
+        if bound_snapshot_source(snap).get("source_bound") is not True:
+            raise ValueError("carriage preparation requires an unchanged exact-byte BoundSnapshot")
+        for meta in cables:
+            first = render(meta["ordinal"], readable_vlans[0]) if readable_vlans else (None, None)
+            dictionary = first[0][-_CARRIAGE_DICTIONARY_BYTES:] if first[0] is not None else b""
+            stream = variants(meta["ordinal"], dictionary, first)
+            del first
+            yield {**meta, "dictionary": dictionary, "variants": stream}
+        if bound_snapshot_source(snap).get("source_bound") is not True:
+            raise ValueError("carriage preparation changed its BoundSnapshot during materialization")
+
     return {"schema": CARRIAGE_PREPARATION_SCHEMA, "document": document, "context": context,
-            "cables": cables, "vlans": vlans, "roles": roles}
+            "cables": cables, "vlans": vlans, "rows": materialized_rows()}
 
 
-class _PreparedCarriageCtx(_Ctx):
-    """Explicit resolver for a validated server derivative, never a snapshot or BoundSnapshot.
-
-    Membership and actual allowance strings were captured from resolving original pointers at ingest. Only
-    selected cable/member rows and their exact role groups reach this context; it cannot inspect the raw fleet.
-    """
-
-    def __init__(self, context: Dict[str, Any], vlan: Dict[str, Any], cables: Sequence[Dict[str, Any]],
-                 role_groups: Sequence[Dict[str, Any]]) -> None:
-        self._context = context
-        self._pointers = {row["pointer"]: tuple(row["tokens"]) for row in context["pointers"]}
-        self._allowances: Dict[Tuple[Any, ...], str] = {}
-        if vlan["readable"]:
-            row_toks = ("vlan_carriage", "rows", vlan["vlan_index"])
-            self._pointers[json_pointer(*row_toks)] = row_toks
-            self._pointers[json_pointer(*row_toks, "codes")] = row_toks + ("codes",)
-        for cable in cables:
-            for row in cable.get("pointers", ()):
-                self._pointers[row["pointer"]] = tuple(row["tokens"])
-            for row in cable.get("allowance_values", ()):
-                self._allowances[tuple(row["tokens"])] = row["value"]
-        for group in role_groups:
-            for position, _row in group["rows"]:
-                toks = ("stp_topology_observations", group["host"], "roles", position)
-                self._pointers[json_pointer(*toks)] = toks
-
-    @property
-    def any_failure(self) -> bool:
-        return self._context["any_failure"]
-
-    def pointer_tokens(self, pointer: str) -> Optional[Tuple[Any, ...]]:
-        return self._pointers.get(pointer)
-
-    def carriage_value(self, tokens: Sequence[Any]) -> Any:
-        return self._allowances.get(tuple(tokens), _MISSING)
-
-    def refs(self, entries: Iterable[Tuple[str, Sequence[Any]]]) -> List[Dict[str, str]]:
-        out = []
-        seen = set()
-        for role, toks in entries:
-            pointer = json_pointer(*toks)
-            key = (pointer, role)
-            if pointer in self._pointers and key not in seen:
-                seen.add(key)
-                out.append({"pointer": pointer, "role": role})
-        return out
-
-    def failure_entries(self, sections: Iterable[str], unavailable: bool) -> List[Tuple[str, Sequence[Any]]]:
-        label = "carriage" if tuple(sections) else "empty"
-        return [(role, tuple(tokens)) for role, tokens in self._context["failure_entries"][label][int(unavailable)]]
-
-    def unavailable_reason(self, sections: Iterable[str]) -> str:
-        return self._context["unavailable_reasons"]["carriage" if tuple(sections) else "empty"]
+def _decode_materialized_carriage_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Decode only a server-verified, already-computed complete row within its exact expansion bound."""
+    payload, dictionary, length = row.get("payload"), row.get("dictionary"), row.get("bytes")
+    if (type(payload) is not bytes or type(dictionary) is not bytes or len(dictionary) > _CARRIAGE_DICTIONARY_BYTES
+            or type(length) is not int or not 0 < length <= CARRIAGE_PAGE_BYTE_LIMIT):
+        raise ValueError("unverified: materialized carriage row has invalid binary metadata")
+    try:
+        decoder = zlib.decompressobj(zdict=dictionary)
+        raw = decoder.decompress(payload, length + 1)
+        if len(raw) != length or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+            raise ValueError("unverified: materialized carriage row is not one exact bounded zlib stream")
+        value = json.loads(raw)
+    except (zlib.error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("unverified: materialized carriage row cannot be decoded") from exc
+    if type(value) is not dict:
+        raise ValueError("unverified: materialized carriage row is not a complete object")
+    return value
 
 
 def project_prepared_vlan_carriage(context: Dict[str, Any], vlan: Dict[str, Any],
-                                   cables_window: Sequence[Dict[str, Any]], role_groups: Sequence[Dict[str, Any]],
-                                   offset: int, limit: int, *, transport_overhead: int = 0) -> Dict[str, Any]:
-    """Render a bounded lazy page from server-validated ingest fragments, without snapshot admission.
+                                   rows_window: Sequence[Dict[str, Any]], offset: int, limit: int, *,
+                                   transport_overhead: int = 0) -> Dict[str, Any]:
+    """Slice/decode complete ingest-produced rows; no snapshot, relation, role, or evidence recomputation.
 
-    The storage reader supplies only selected cables (plus a metadata-only member-boundary candidate), their
-    original code substring and exact indexed role groups. It owns snapshot/fragment integrity. The original
-    decoder, item renderer and complete-cable byte/member gates below own the resulting public document.
+    Storage authenticates each selected fragment and its expanded byte/member census. The unchanged shared
+    whole-cable gate includes the exact outer context and transport overhead before decoding an accepted row.
+    Public JSON/schema/source/summary and complete HTTP-byte guards still run at the transport boundary.
     """
-    vi = vlan["vlan_index"]
-    ctx = _PreparedCarriageCtx(context, vlan, cables_window, role_groups)
-    failed = tuple(vlan["failed"]) if vlan["failed"] else None
-    # This is solely the existing compact-code decoder's indexed input, not a source-bound snapshot.
-    section = {"rows": {vi: {"vlan": vlan["vlan"], "codes": vlan["codes"]}},
-               "cables": {row["index"]: row["cable"] for row in cables_window if "cable" in row}}
-    offsets = [(row["index"], row["code_offset"] - vlan.get("code_start", 0), row["member_count"])
-               for row in cables_window]
-    adm = _CarriageAdmission({}, section, failed, {}, offsets)
-    role_index = {(group["host"], group["namespace"], group["instance"], group["interface"]): group["rows"]
-                  for group in role_groups}
-
-    def roles(host: str, interface: str, vid: int) -> List[Any]:
-        return role_index.get((host, "pvst_vlan", vid, carriage_join_interface(interface)), [])
-
-    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]]]:
-        relative = position - offset
-        row = cables_window[relative]
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]:
+        row = rows_window[position - offset]
         if row["ordinal"] != position:
             raise ValueError("unverified: prepared carriage window is not a complete consecutive cable prefix")
-
-        def item() -> Dict[str, Any]:
-            cable, verdict, members = carriage_row_cables(section, vi, relative, relative + 1, offsets=offsets)[0]
-            return _carriage_page_item(ctx, adm, vi, cable, verdict, members, failed, roles)
-
-        return row["index"], row["member_count"], item
+        count = row["member_count"]
+        length = row.get("bytes")
+        if type(count) is not int or count < 0 or (length is not None and (type(length) is not int or length <= 0)):
+            raise ValueError("unverified: materialized carriage row has invalid member/byte census")
+        return row["index"], count, lambda: _decode_materialized_carriage_row(row), length
 
     return _carriage_page_document(deepcopy(context["engine"]), deepcopy(context["vocab"]),
-                                   deepcopy(vlan["summary"]), vi, vlan["total"], offset, limit, load,
+                                   deepcopy(vlan["summary"]), vlan["vlan_index"], vlan["total"], offset, limit, load,
                                    transport_overhead)
 
 
@@ -10264,6 +10217,7 @@ __all__ = [
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
     "fleet_blind_spot_rows", "project_vlan_carriage", "carriage_admission", "CARRIAGE_SUMMARY_COUNTS",
     "prepare_carriage_projection", "project_prepared_vlan_carriage", "CARRIAGE_PREPARATION_SCHEMA",
+    "CARRIAGE_DERIVATIVE_BYTE_LIMIT",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
     "IMPACT_INDETERMINATE_PREFIX", "L3_RISK_CLEAR", "L3_RISK_FLAGS", "L3_RISK_JOINER", "L3_RISK_TRACKING_NOT_ASSESSED",
     "L3_NO_FHRP_FLAG", "L3_SOLE_GATEWAY_FLAG", "L3_TRACKED_DOWN_FLAG", "VLAN_SOLE_GATEWAY_FHRP",

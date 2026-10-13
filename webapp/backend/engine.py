@@ -61,6 +61,16 @@ def carriage_page_limits() -> Tuple[int, int]:
     return _ui_projection._CARRIAGE_PAGE_MEMBER_LIMIT, 200
 
 
+def carriage_derivative_byte_limit() -> int:
+    """The separate total stored-derivative bound; raw-section and response bounds stay unchanged."""
+    return _ui_projection.CARRIAGE_DERIVATIVE_BYTE_LIMIT
+
+
+def carriage_page_byte_limit() -> int:
+    """The owner's unchanged complete-response ceiling, also bounding materialized row reads."""
+    return _ui_projection.CARRIAGE_PAGE_BYTE_LIMIT
+
+
 @dataclass(frozen=True)
 class PreparedCarriagePage:
     """A Store-verified bounded derivative window, never a transformed BoundSnapshot or a wire receipt."""
@@ -76,7 +86,7 @@ def ui_projection_carriage(snapshot: Any, vlan_index: int, offset: int, limit: i
         if len(rows) != 1 or rows[0]["vlan_index"] != vlan_index:
             raise ValueError("Prepared carriage window names another VLAN row")
         return _ui_projection.project_prepared_vlan_carriage(
-            pack["context"], rows[0], pack["cables"], pack["roles"], offset, limit,
+            pack["context"], rows[0], pack["rows"], offset, limit,
             transport_overhead=transport_overhead)
     return _ui_projection.project_vlan_carriage(snapshot, vlan_index, offset, limit, admission=admission,
                                                transport_overhead=transport_overhead)

@@ -699,3 +699,66 @@ syntax and whitespace checks pass. Golden/sample, historical W60 bindings, schem
 generated types, Scope bindings and workflow limits are unchanged. Source-byte integrity hashing
 remains O(bytes), and only selected fragments are certified on a page read. Version 1 requires an explicit
 future behavior-version/migration update. Fresh hosted validation on the final head remains mandatory.
+
+## Architecture integration: portable database census
+
+Published architecture head `eabd9cc8636f59e6000874fb309af394fa092672` follows canonical privacy
+and all-12-pattern raw/decoded scans (60 commits, 78 parent patches, zero matches/exceptions).
+Hosted merge `4b19156985b1b9f2aba7937eb25563cf14f86446` has ordered parents main `1d902ee2` and
+the author head, with equal tree `71fc8ebb0f8afb79f145b659af82cca8ba4d62e0`. CI run
+`38381067700` passes all six early bound-source processes. Other pending tests do not qualify it.
+The PR body edit supersedes webapp run `38381067723`; `38381085057` is its replacement.
+
+Portable run `38381067673`, job `115241319222`, fails with `database qualification evidence is
+invalid` after building and running the frozen application smokes. Independent static tracing
+identifies the exact mismatch: Store creates twelve tables and the database preflight emits every
+one, while the qualification receipt's closed row-count shape still names ten. The missing entries
+are `carriage_projection_parts` and `carriage_projection_role_presence`. The completed preflight
+cases already checked their request, row counts, raw hashes, source preservation and independent
+logical migration census; this later shape refusal is not evidence of a storage migration failure.
+
+The corrective source versions only the portable qualification receipt from `/2` to `/3`, adding
+both tables to its closed census. `/2` joins `/1` in explicit superseded refusal with a stated reason;
+no historical receipt is upgraded into a pass. The current shape fingerprint is updated under the
+new ID, the operator README is reconciled, and a new test compares the declaration with an actual
+Store database and refuses every missing table or an extra table. A separate control requires
+the `/2` refusal. The README-family assertion counts distinct schema families because one family
+now has two superseded versions; every current family and old-version refusal remains checked.
+The application/native schema pins, package version, historical custody bindings and golden/sample
+outputs remain unchanged. This integration correction requires fresh full hosted validation.
+
+## Materialized pages after eabd9cc8
+
+CI `38381067700`, Linux 3.12 job `115241603255`, reports 2 failed / 1,345 passed / one warning in
+796.98 seconds. Document growth is 91.7 ms (1,151.7 with carriage, 1,060.0 without), passing 2,000 ms.
+Warm page 537.0 ms fails 300; first-page 338.9 ms is an observation before its unreached assertion.
+The complete response is 1,317,481 bytes and 200 items. Ingest is 13,135.7 ms with carriage and 3,351.1
+without. These measurements qualify only that failing head; default-suite and UTC tails are skipped.
+The other failure is the new bounded-ref fixture: six cables yield seven refs in both representations,
+so its `old > new` assertion correctly fails. Webapp replacement run `38381085057`, W60b and Scope
+pass on that head; they do not erase either failure or certify the successor.
+
+The supervisor requires no relation computation on page requests. Preparation `/2` now renders full
+rows once during ingestion and streams independently compressed variants plus per-cable dictionaries
+into anchored storage. Page reads decode only selected, precomputed rows, with exact expansion bounds
+and the original complete member/byte prefix and full transport guards. Source, bounded context and
+selected rows are verified in one transaction with one raw-source hash. Cold pages never read or admit
+the global fleet document. Expected engine/summary copies precede the adapter call, so mutating both
+its input and output cannot forge agreement.
+
+The separate 64,000,000-byte derivative-payload cap includes every stored `/2` payload and its manifest;
+it excludes SQLite file/index/INTEGER overhead and is not an RSS bound. Ingestion over the cap rolls
+back atomically and returns an explicit HTTP 413. The original raw-section 6 MB / 600 KB growth gate,
+document 2,000 ms and page 300 ms / 3 MB limits are unchanged. Actual 100/200-VLAN derivative payload
+growth is measured after every existing timed operation and assertion, never as an added warm-up.
+The total database census is now thirteen tables; unpublished portable qualification `/3` is pinned to
+that shape, retaining explicit `/1` and `/2` refusal and all existing receipt guards.
+
+The bounded-reference fixture now uses twelve and twenty-four cables, retaining the strict reduction
+assertion and additionally proving original refs grow while prepared refs remain identical. Added
+controls cover streaming source mutation, malformed/truncated/trailing compressed data, exact expanded
+length, foreign/released buffers, cold-page no-document/no-relation traps, source/fragment substitution,
+selected-window census, migration refusal, source hash/read count and the ingestion rollback boundary.
+No GC setting, skip, warm-up, threshold or full response validator changes. A tiny pure synthetic probe
+passes eight complete original/materialized DTO comparisons plus malformed-stream and member-boundary
+controls; this is not a local runtime or hosted performance result. Fresh final-head CI remains required.

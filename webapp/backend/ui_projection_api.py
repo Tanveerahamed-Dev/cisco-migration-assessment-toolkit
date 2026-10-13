@@ -808,18 +808,19 @@ class _ProjectionCache:
                 entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
             return entry.snapshot, entry.carriage
 
-    def carriage_window(self, raw: bytes, digest: str, snapshot_id: int, vlan_index: int,
-                        offset: int, limit: int) -> tuple[Any, Any]:
-        """Read only the Store-verified selected window; no request-time preparation fallback."""
-        if self.store is not None:
-            prepared = self.store.get_carriage_page_source(snapshot_id, vlan_index, offset, limit)
-            if prepared is None:
-                raise ValueError("Stored carriage preparation is unavailable")
-            pack, binding = prepared
-            if binding["sha256"] != digest or binding["bytes"] != len(raw):
-                raise ValueError("Stored carriage window names another snapshot source")
-            return engine.PreparedCarriagePage(pack), None
-        return self.carriage_source(raw, digest)
+    def carriage_inputs(self, snapshot_id: int, vlan_index: int, offset: int,
+                        limit: int) -> tuple[bytes, dict[str, Any], Any]:
+        """One coherent source/context/window read; no full document or request-time relation work."""
+        if self.store is None:
+            raise ValueError("Stored carriage page requires its Store")
+        try:
+            prepared = self.store.get_carriage_page_bundle(snapshot_id, vlan_index, offset, limit)
+        except IndexError as exc:
+            raise HTTPException(404, "VLAN row not found") from exc
+        if prepared is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding, pack = prepared
+        return raw, binding, engine.PreparedCarriagePage(pack)
 
 
 def _common_document(document: dict[str, Any], binding: dict[str, Any], snapshot_id: int, view: str):
@@ -1078,33 +1079,56 @@ def _require_carriage_page(payload: dict[str, Any]) -> None:
         raise ValueError("Carriage page metadata disagrees with its items")
 
 
-def carriage_page(cache: _ProjectionCache, raw: bytes, binding: dict[str, Any], snapshot_id: int,
+def carriage_page(cache: _ProjectionCache, raw: bytes | None, binding: dict[str, Any] | None, snapshot_id: int,
                   vlan_index: int, offset: int, limit: int) -> dict[str, Any]:
-    """Build one carriage page response from the cached admission; the caller validates the transport.
+    """Slice one precomputed carriage page; the caller validates the complete transport.
 
-    The page summary must equal the summary the admitted inventory document carries for the same VLAN row, and the
-    engine block must equal that document's: the client and this server both refuse drift.
+    Stored context and target summary are captured from the same inventory document at ingest. The page
+    must echo them exactly; independent owned copies are captured before invoking the page adapter.
     """
-    main = (cache.document(raw, binding["sha256"], None, snapshot_id=snapshot_id)
-            if isinstance(cache, _ProjectionCache) and cache.store is not None
-            else cache.document(raw, binding["sha256"], None))
-    rows = main["inventory"]["vlans"]["rows"]["items"]
-    if not 0 <= vlan_index < len(rows):
-        raise HTTPException(404, "VLAN row not found")
-    snapshot, admission = (cache.carriage_window(raw, binding["sha256"], snapshot_id, vlan_index, offset, limit)
-                           if isinstance(cache, _ProjectionCache) and cache.store is not None
-                           else cache.carriage_source(raw, binding["sha256"]))
-    common = _common_document(main, binding, snapshot_id, "carriage")
+    if isinstance(cache, _ProjectionCache) and cache.store is not None:
+        source_raw, source_binding, snapshot = cache.carriage_inputs(snapshot_id, vlan_index, offset, limit)
+        if ((binding is not None and binding != source_binding)
+                or (raw is not None and len(raw) != source_binding["bytes"])):
+            raise ValueError("Stored carriage window names another snapshot source")
+        raw, binding = source_raw, source_binding
+        pack, admission = snapshot.pack, None
+        if len(pack["vlans"]) != 1 or pack["vlans"][0]["vlan_index"] != vlan_index:
+            raise ValueError("Stored carriage window names another VLAN row")
+        context = pack["context"]
+        _require_json_native(context)
+        _require_engine_source(context, binding["sha256"], len(raw))
+        expected_summary = deepcopy(pack["vlans"][0]["summary"])
+        common = {
+            "schema": TRANSPORT_SCHEMA, "projection_schema": context["schema"],
+            "identity": {"snapshot_id": snapshot_id, "sha256": binding["sha256"],
+                         "bytes": binding["bytes"], "digest_form": "assesshub-store-blob"},
+            "view": "carriage", "engine": deepcopy(context["engine"]),
+            "limitations": deepcopy(context["limitations"]),
+        }
+        owner_context = {"schema": context["schema"], "engine": common["engine"],
+                         "carriage": None, "vocab": context["vocab"]}
+    else:
+        if raw is None or binding is None:
+            raise ValueError("Standalone carriage page requires exact source bytes")
+        main = cache.document(raw, binding["sha256"], None)
+        rows = main["inventory"]["vlans"]["rows"]["items"]
+        if not 0 <= vlan_index < len(rows):
+            raise HTTPException(404, "VLAN row not found")
+        snapshot, admission = cache.carriage_source(raw, binding["sha256"])
+        common = _common_document(main, binding, snapshot_id, "carriage")
+        expected_summary = deepcopy(rows[vlan_index]["selections"]["carriage"])
+        owner_context = {"schema": main["schema"], "engine": common["engine"],
+                         "carriage": None, "vocab": main["vocab"]}
     def wire_size(value: Any) -> int:
         return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
-    owner_context = {"schema": main["schema"], "engine": main["engine"], "carriage": None, "vocab": main["vocab"]}
     overhead = max(0, wire_size({**common, "payload": None}) - wire_size(owner_context))
     produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission,
                                              transport_overhead=overhead)
     _require_json_native(produced)
     document = _copy_carriage_document(produced)
-    if (document["engine"] != main["engine"]
-            or document["carriage"]["summary"] != rows[vlan_index]["selections"]["carriage"]
+    if (document["engine"] != common["engine"]
+            or document["carriage"]["summary"] != expected_summary
             or document["carriage"]["vlan_index"] != vlan_index
             or document["carriage"]["page"]["offset"] != offset
             or document["carriage"]["page"]["limit"] > limit):
@@ -1154,11 +1178,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
         offset: Annotated[int, Query(ge=0, le=2**53 - 1)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
     ) -> dict[str, Any]:
-        bound = store.get_snapshot_blob(snapshot_id)
-        if bound is None:
-            raise HTTPException(404, "Snapshot not found")
-        raw, binding = bound
-        page = carriage_page(cache, raw, binding, snapshot_id, vlan_index, offset, limit)
+        page = carriage_page(cache, None, None, snapshot_id, vlan_index, offset, limit)
         response.headers["Cache-Control"] = "no-store"
         return page
 

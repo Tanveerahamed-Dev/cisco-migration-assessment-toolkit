@@ -577,7 +577,7 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     warm_id = store.add_snapshot(campaign["id"], "warm-up", {"vlan_cutover": []}, {})["id"]
     cache = api._ProjectionCache(store)
     if diagnostics:
-        for name in ("get_carriage_document", "verify_carriage_document", "get_carriage_page_source"):
+        for name in ("get_carriage_document", "verify_carriage_document", "get_carriage_page_bundle"):
             monkeypatch.setattr(store, name, traced(name, getattr(store, name)))
 
     def no_request_preparation(*_args, **_kwargs):
@@ -585,12 +585,15 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
 
     # Actual ingestion above must prepare both samples once. The original first-use stub below
     # is unchanged; no target snapshot/document/page is read or warmed before its real timer.
+    request_owners = []
     for module, names in (
         (api.engine, ("bind_ui_projection_snapshot", "ui_projection_carriage_admission", "ui_projection",
                       "prepare_carriage_projection")),
-        (uip, ("carriage_admission", "_carriage_gaps", "validate_vlan_carriage", "carriage_row_counts")),
+        (uip, ("carriage_admission", "_carriage_gaps", "validate_vlan_carriage", "carriage_row_counts",
+               "carriage_row_cables", "_carriage_page_item", "_carriage_refs", "_carriage_role_query")),
     ):
         for name in names:
+            request_owners.append((module, name, getattr(module, name)))
             monkeypatch.setattr(module, name, no_request_preparation)
     warm_raw, warm_binding = store.get_snapshot_blob(warm_id)
     cache.document(warm_raw, warm_binding["sha256"], None, snapshot_id=warm_id)  # original first-use stub only
@@ -619,7 +622,8 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     measured = {"document_ms_without": without_ms, "document_ms_with": with_ms,
                 "document_growth_ms": round(with_ms - without_ms, 1), "first_page_ms": first_page_ms,
                 "page_ms": page_ms, "page_bytes": _bytes(response), "page_items": len(response["payload"]["page"]["items"]),
-                "ingest_ms_without": ingest_without_ms, "ingest_ms_with": ingest_with_ms}
+                "ingest_ms_without": ingest_without_ms, "ingest_ms_with": ingest_with_ms,
+                "stored_derivative_bytes_v200": store.get_carriage_projection_payload_bytes(with_id)}
     _report(capsys, "api", measured)
     if diagnostics:
         with capsys.disabled():
@@ -642,10 +646,29 @@ def test_the_first_document_and_one_full_page_stay_within_their_api_budgets(flee
     assert all(entry.snapshot is None and entry.carriage is None and entry.prepared_document
                for entry in cache.entries.values())
     assert measured["page_bytes"] <= BUDGET["page_bytes"]
+    assert 0 < measured["stored_derivative_bytes_v200"] <= uip.CARRIAGE_DERIVATIVE_BYTE_LIMIT
     if _timed_leg():
         assert measured["document_growth_ms"] <= BUDGET["document_growth_ms"]
         assert measured["page_ms"] <= BUDGET["page_ms"]
         assert measured["first_page_ms"] <= BUDGET["page_ms"]
+
+    # Disclose the additional persisted derivative's real growth AFTER every timed operation and gate.
+    # This cannot warm the target document/page; it restores ingestion owners solely for a new snapshot.
+    for module, name, original in request_owners:
+        monkeypatch.setattr(module, name, original)
+    smaller = {**fleet, "vlan_cutover": fleet["vlan_cutover"][:100]}
+    smaller["vlan_carriage"] = compute_vlan_carriage(
+        smaller["cable_map"], smaller["interfaces"], smaller["stp_topology_observations"], smaller["vlan_cutover"])
+    smaller_id = store.add_snapshot(campaign["id"], "100 VLAN derivative census", smaller, {})["id"]
+    smaller_bytes = store.get_carriage_projection_payload_bytes(smaller_id)
+    assert 0 < smaller_bytes <= uip.CARRIAGE_DERIVATIVE_BYTE_LIMIT
+    _report(capsys, "materialized-derivative", {
+        "stored_payload_bytes_v100": smaller_bytes,
+        "stored_payload_bytes_v200": measured["stored_derivative_bytes_v200"],
+        "growth_bytes_v100_v200": measured["stored_derivative_bytes_v200"] - smaller_bytes,
+        "payload_byte_limit": uip.CARRIAGE_DERIVATIVE_BYTE_LIMIT,
+        "includes_sqlite_file_overhead": False,
+    })
 
 
 def _round2_record(port, peer="", remote="", channel=""):

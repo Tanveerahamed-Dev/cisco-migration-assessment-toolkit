@@ -17,6 +17,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -29,24 +30,29 @@ from backend.app import create_app  # noqa: E402
 
 def _carriage_storage_pack(cable_count=3, members=1):
     """Synthetic producer output: persistence tests do not trust uploaded derivatives."""
-    cables = []
-    for ordinal in range(cable_count):
-        end = {"host": "switch-a", "stp_interface": "Gi1/0/1"}
-        cables.append({
-            "ordinal": ordinal, "index": ordinal, "code_offset": ordinal * (1 + 3 * members),
-            "member_count": members,
-            "cable": {"members": [{"a": end, "b": {}} for _ in range(members)]},
-            "pointers": [], "allowance_values": [],
-        })
+    cables = [{"ordinal": ordinal, "index": ordinal, "member_count": members}
+              for ordinal in range(cable_count)]
+
+    def rows():
+        for meta in cables:
+            if members > 400:
+                yield {**meta, "dictionary": b"",
+                       "variants": iter([{"vlan_index": 0, "bytes": None, "payload": None}])}
+                continue
+            raw = json.dumps({"stored": "row", "index": meta["index"]}, separators=(",", ":")).encode()
+            dictionary = b"stored row dictionary"
+            compressor = zlib.compressobj(zdict=dictionary)
+            payload = compressor.compress(raw) + compressor.flush()
+            yield {**meta, "dictionary": dictionary,
+                   "variants": iter([{"vlan_index": 0, "bytes": len(raw), "payload": payload}])}
+
     return {
-        "schema": "carriage_projection_preparation/1",
+        "schema": "carriage_projection_preparation/2",
         "document": {"stored": "okay", "cable_count": cable_count},
         "context": {"stored": "context"}, "cables": cables,
         "vlans": [{"vlan_index": 0, "vlan": 10, "summary": {}, "failed": None,
-                   "readable": True, "total": cable_count,
-                   "codes": "P" * cable_count * (1 + 3 * members)}],
-        "roles": [{"host": "switch-a", "namespace": "pvst_vlan", "instance": 10,
-                   "interface": "Gi1/0/1", "rows": [[0, {"role": "designated"}]]}],
+                   "readable": True, "total": cable_count}],
+        "rows": rows(),
     }
 
 
@@ -81,7 +87,7 @@ def test_carriage_storage_prepares_final_bytes_once_and_reads_only_the_document(
         second = store.get_carriage_document(sid)
         assert first == second == ({"stored": "okay", "cable_count": 1200}, binding)
         assert observed == [raw]
-        parts = [query for query in queries if "FROM carriage_projection_parts" in query]
+        parts = [query for query in queries if "FROM carriage_projection_v2_parts" in query]
         assert len(parts) == 2
         assert all("kind='document'" in query for query in parts)
         assert not any("json_extract" in query.lower() for query in queries)
@@ -122,6 +128,43 @@ def test_carriage_storage_warm_verification_does_not_decode_document(tmp_path, m
         store.close()
 
 
+def test_carriage_storage_bundle_reads_and_hashes_source_once_without_decoding_document(tmp_path, monkeypatch):
+    from backend import storage
+
+    store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    try:
+        expected_raw, expected_binding = store.get_snapshot_blob(sid)
+        expected_pack, _binding = store.get_carriage_page_source(sid, 0)
+        expected_document = bytes(store._conn.execute(
+            "SELECT payload FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+        ).fetchone()[0])
+        source_hashes = []
+        original_identity = storage._blob_identity
+        original_loads = storage._strict_json_loads
+
+        def identity(value):
+            if value == expected_raw:
+                source_hashes.append(value)
+            return original_identity(value)
+
+        def loads(value):
+            assert value not in (expected_raw, expected_document), "bundle decoded source/full document"
+            return original_loads(value)
+
+        monkeypatch.setattr(storage, "_blob_identity", identity)
+        monkeypatch.setattr(storage, "_strict_json_loads", loads)
+        queries = []
+        store._conn.set_trace_callback(queries.append)
+        raw, binding, pack = store.get_carriage_page_bundle(sid, 0)
+        assert (raw, binding, pack) == (expected_raw, expected_binding, expected_pack)
+        assert source_hashes == [expected_raw]
+        assert sum("CAST(s.snapshot_json AS BLOB)" in query for query in queries) == 1
+        assert queries.count("BEGIN") == queries.count("COMMIT") == 1
+        assert not any("kind='document'" in query for query in queries)
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("mutation", ["blob", "delete", "source"])
 def test_carriage_storage_warm_verification_refuses_current_tampering(tmp_path, monkeypatch, mutation):
     from backend.storage import ExecutionReceiptAuthorityError
@@ -131,17 +174,17 @@ def test_carriage_storage_warm_verification_refuses_current_tampering(tmp_path, 
         assert store.get_carriage_document(sid)[0]["stored"] == "okay"
         assert store.verify_carriage_document(sid) is not None
         if mutation == "delete":
-            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_delete")
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_delete")
             store._conn.execute(
-                "DELETE FROM carriage_projection_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+                "DELETE FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
             )
         else:
             if mutation == "blob":
                 row = store._conn.execute(
-                    "SELECT rowid,payload FROM carriage_projection_parts "
+                    "SELECT rowid,payload FROM carriage_projection_v2_parts "
                     "WHERE snapshot_id=? AND kind='document'", (sid,),
                 ).fetchone()
-                rowid, table, column = row["rowid"], "carriage_projection_parts", "payload"
+                rowid, table, column = row["rowid"], "carriage_projection_v2_parts", "payload"
                 forged = bytes(row["payload"]).replace(b"okay", b"evil")
             else:
                 rowid, table, column = sid, "snapshots", "snapshot_json"
@@ -150,60 +193,187 @@ def test_carriage_storage_warm_verification_refuses_current_tampering(tmp_path, 
                 with store._conn.blobopen(table, column, rowid) as blob:
                     blob.write(forged)
             elif mutation == "blob":
-                store._conn.execute("DROP TRIGGER carriage_projection_parts_no_update")
+                store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_update")
                 store._conn.execute(
-                    "UPDATE carriage_projection_parts SET payload=? WHERE rowid=?", (forged, rowid),
+                    "UPDATE carriage_projection_v2_parts SET payload=? WHERE rowid=?", (forged, rowid),
                 )
             else:
                 store._conn.execute("UPDATE snapshots SET snapshot_json=? WHERE id=?", (forged, rowid))
         store._conn.commit()
         with pytest.raises(ExecutionReceiptAuthorityError):
             store.verify_carriage_document(sid)
+        if mutation == "source":
+            with pytest.raises(ExecutionReceiptAuthorityError):
+                store.get_carriage_page_bundle(sid, 0)
+        else:
+            # A page certifies only its independently anchored context/summary/row fragments.
+            assert store.get_carriage_page_bundle(sid, 0)[2]["rows"]
     finally:
         store.close()
 
 
-def test_carriage_storage_page_reads_bounded_members_codes_and_exact_role_groups(tmp_path, monkeypatch):
+def test_carriage_storage_page_reads_only_bounded_precomputed_rows(tmp_path, monkeypatch):
     store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch, cable_count=1200, members=3)
     try:
         queries = []
         store._conn.set_trace_callback(queries.append)
         pack, _binding = store.get_carriage_page_source(sid, 0, offset=199, limit=200)
-        materialized = [row for row in pack["cables"] if "cable" in row]
+        materialized = [row for row in pack["rows"] if "payload" in row]
         assert len(materialized) == 133
         assert sum(row["member_count"] for row in materialized) == 399
-        assert pack["cables"][-1] == {
-            "ordinal": 332, "index": 332, "code_offset": 3320, "member_count": 3,
-        }
-        assert pack["vlans"][0]["code_start"] == 1990
-        assert pack["vlans"][0]["codes"] == "P" * 1330
-        assert len(pack["roles"]) == 1
-        code_queries = [query for query in queries if "kind='codes'" in query]
-        assert len(code_queries) == 5
+        assert pack["rows"][-1]["ordinal"] == 332
+        assert pack["rows"][-1]["member_count"] == 3
+        assert "payload" not in pack["rows"][-1]
+        for row in materialized:
+            decoder = zlib.decompressobj(zdict=row["dictionary"])
+            raw = decoder.decompress(row["payload"]) + decoder.flush()
+            assert len(raw) == row["bytes"]
+            assert json.loads(raw) == {"stored": "row", "index": row["index"]}
+        assert not any("role" in query or "codes" in query for query in queries)
         assert not any("kind='document'" in query for query in queries)
     finally:
         store.close()
 
 
-@pytest.mark.parametrize("kind", ["document", "context", "cable", "codes", "role"])
+def test_carriage_storage_unknown_selector_is_distinct_from_missing_derivative(tmp_path, monkeypatch):
+    from backend.storage import ExecutionReceiptAuthorityError
+
+    store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(IndexError, match="prepared carriage selector"):
+            store.get_carriage_page_bundle(sid, 1)
+        store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_delete")
+        store._conn.execute(
+            "DELETE FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='vlan'", (sid,),
+        )
+        store._conn.commit()
+        with pytest.raises(ExecutionReceiptAuthorityError, match="missing"):
+            store.get_carriage_page_bundle(sid, 0)
+    finally:
+        store.close()
+
+
+def test_carriage_storage_oversized_member_row_reads_only_held_metadata(tmp_path, monkeypatch):
+    store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch, members=401)
+    try:
+        queries = []
+        store._conn.set_trace_callback(queries.append)
+        pack, _binding = store.get_carriage_page_source(sid, 0)
+        assert pack["rows"] == [{"ordinal": 0, "index": 0, "member_count": 401, "bytes": None}]
+        assert not any("kind='dictionary'" in query or "kind='row:0'" in query for query in queries)
+    finally:
+        store.close()
+
+
+def test_carriage_storage_page_stops_before_expanded_byte_boundary_payload(tmp_path, monkeypatch):
+    from backend import engine
+
+    store, cid, _sid, _observed = _carriage_store(tmp_path, monkeypatch)
+
+    def prepare(_raw):
+        result = _carriage_storage_pack(3)
+
+        def rows():
+            for meta in result["cables"]:
+                raw = json.dumps({"index": meta["index"], "stored": "x" * 1_600_000}).encode()
+                dictionary = raw[-32768:]
+                compressor = zlib.compressobj(zdict=dictionary)
+                payload = compressor.compress(raw) + compressor.flush()
+                yield {**meta, "dictionary": dictionary,
+                       "variants": iter([{"vlan_index": 0, "bytes": len(raw), "payload": payload}])}
+
+        result["rows"] = rows()
+        return result
+
+    try:
+        monkeypatch.setattr(engine, "prepare_carriage_projection", prepare)
+        sid = store.add_snapshot(cid, "byte boundary", {"devices": {}}, {})["id"]
+        queries = []
+        store._conn.set_trace_callback(queries.append)
+        pack, _binding = store.get_carriage_page_source(sid, 0)
+        assert len(pack["rows"]) == 2
+        assert "payload" in pack["rows"][0]
+        assert "payload" not in pack["rows"][1]
+        assert not any("kind='row:0' AND part_key='1'" in query for query in queries)
+        assert not any("kind='dictionary' AND part_key='1'" in query for query in queries)
+    finally:
+        store.close()
+
+
+def test_carriage_storage_payload_census_counts_every_materialized_part(tmp_path, monkeypatch):
+    from backend.storage import CARRIAGE_PROJECTION_PAYLOAD_LIMIT
+
+    store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    try:
+        actual = store._conn.execute(
+            "SELECT SUM(length(payload)) FROM carriage_projection_v2_parts WHERE snapshot_id=?", (sid,),
+        ).fetchone()[0]
+        assert store.get_carriage_projection_payload_bytes(sid) == actual
+        assert 0 < actual <= CARRIAGE_PROJECTION_PAYLOAD_LIMIT == 64_000_000
+    finally:
+        store.close()
+
+
+def test_carriage_storage_materialization_limit_rolls_back_and_closes_stream(tmp_path, monkeypatch):
+    from backend import engine, storage
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    streams = []
+
+    class TrackedRows:
+        def __init__(self, source):
+            self.source = source
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.source)
+
+        def close(self):
+            self.closed = True
+            self.source.close()
+
+    def prepare(_raw):
+        result = _carriage_storage_pack(30)
+        result["rows"] = TrackedRows(result["rows"])
+        streams.append(result["rows"])
+        return result
+
+    try:
+        before = store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0]
+        monkeypatch.setattr(engine, "prepare_carriage_projection", prepare)
+        monkeypatch.setattr(storage, "CARRIAGE_PROJECTION_PAYLOAD_LIMIT", 1000)
+        with pytest.raises(storage.CarriagePreparationLimitError, match="carriage derivative payload exceeds"):
+            store.add_snapshot(cid, "over limit", {"devices": {}}, {})
+        assert streams and all(stream.closed for stream in streams)
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+        assert store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == before
+        assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("kind", ["document", "context", "vlan", "row_meta:0", "row:0", "dictionary"])
 def test_carriage_storage_detects_incremental_blob_tampering(tmp_path, monkeypatch, kind):
     from backend.storage import ExecutionReceiptAuthorityError
 
     store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
     try:
         row = store._conn.execute(
-            "SELECT rowid,payload FROM carriage_projection_parts WHERE snapshot_id=? AND kind=? LIMIT 1",
+            "SELECT rowid,payload FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=? LIMIT 1",
             (sid, kind),
         ).fetchone()
         original = bytes(row["payload"])
         forged = original.replace(b"okay", b"evil") if kind == "document" else b" " + original[1:]
         if hasattr(store._conn, "blobopen"):
-            with store._conn.blobopen("carriage_projection_parts", "payload", row["rowid"]) as blob:
+            with store._conn.blobopen("carriage_projection_v2_parts", "payload", row["rowid"]) as blob:
                 blob.write(forged)
         else:
             # Python 3.10 lacks blobopen; exercise the same changed exact bytes through SQL.
-            store._conn.execute("DROP TRIGGER carriage_projection_parts_no_update")
-            store._conn.execute("UPDATE carriage_projection_parts SET payload=? WHERE rowid=?",
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_update")
+            store._conn.execute("UPDATE carriage_projection_v2_parts SET payload=? WHERE rowid=?",
                                 (forged, row["rowid"]))
         store._conn.commit()
         with pytest.raises(ExecutionReceiptAuthorityError):
@@ -222,12 +392,12 @@ def test_carriage_storage_retains_raw_source_authority_and_integer_anchors(tmp_p
     try:
         anchor = store._conn.execute(
             "SELECT rowid,typeof(digest_0),typeof(digest_1),typeof(digest_2),typeof(digest_3) "
-            "FROM carriage_projection_parts WHERE snapshot_id=? LIMIT 1", (sid,),
+            "FROM carriage_projection_v2_parts WHERE snapshot_id=? LIMIT 1", (sid,),
         ).fetchone()
         assert tuple(anchor)[1:] == ("integer",) * 4
         if hasattr(store._conn, "blobopen"):
             with pytest.raises(sqlite3.OperationalError):
-                store._conn.blobopen("carriage_projection_parts", "digest_0", anchor[0])
+                store._conn.blobopen("carriage_projection_v2_parts", "digest_0", anchor[0])
         raw = store.get_snapshot_blob(sid)[0]
         forged = raw.replace(b'"final"', b'"other"')
         assert forged != raw and len(forged) == len(raw)
@@ -245,24 +415,30 @@ def test_carriage_storage_retains_raw_source_authority_and_integer_anchors(tmp_p
         store.close()
 
 
-def test_carriage_storage_refuses_cross_snapshot_derivative_substitution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind", ["document", "context", "row:0", "dictionary"])
+def test_carriage_storage_refuses_cross_snapshot_derivative_substitution(tmp_path, monkeypatch, kind):
     from backend.storage import ExecutionReceiptAuthorityError
 
     store, cid, first, _observed = _carriage_store(tmp_path, monkeypatch)
     try:
         second = store.add_snapshot(cid, "second", {"vlan_carriage": {}}, {})["id"]
-        store._conn.execute("DROP TRIGGER carriage_projection_parts_no_update")
+        store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_update")
+        key = "0" if kind in ("row:0", "dictionary") else ""
         store._conn.execute(
-            """UPDATE carriage_projection_parts SET
+            """UPDATE carriage_projection_v2_parts SET
                (payload,digest_0,digest_1,digest_2,digest_3) =
-               (SELECT payload,digest_0,digest_1,digest_2,digest_3 FROM carriage_projection_parts
-                WHERE snapshot_id=? AND kind='document')
-               WHERE snapshot_id=? AND kind='document'""", (second, first),
+               (SELECT payload,digest_0,digest_1,digest_2,digest_3 FROM carriage_projection_v2_parts
+                WHERE snapshot_id=? AND kind=? AND part_key=?)
+               WHERE snapshot_id=? AND kind=? AND part_key=?""",
+            (second, kind, key, first, kind, key),
         )
         store._conn.commit()
         assert store.get_carriage_document(second)[0]["stored"] == "okay"
         with pytest.raises(ExecutionReceiptAuthorityError):
-            store.get_carriage_document(first)
+            if kind == "document":
+                store.get_carriage_document(first)
+            else:
+                store.get_carriage_page_bundle(first, 0)
     finally:
         store.close()
 
@@ -271,9 +447,9 @@ def test_carriage_storage_refuses_ordinary_part_rewrite_replace_and_delete(tmp_p
     store, _cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
     try:
         for sql in (
-            "UPDATE carriage_projection_parts SET payload=x'7b7d' WHERE kind='document'",
-            "DELETE FROM carriage_projection_parts WHERE kind='document'",
-            "INSERT OR REPLACE INTO carriage_projection_parts SELECT * FROM carriage_projection_parts",
+            "UPDATE carriage_projection_v2_parts SET payload=x'7b7d' WHERE kind='document'",
+            "DELETE FROM carriage_projection_v2_parts WHERE kind='document'",
+            "INSERT OR REPLACE INTO carriage_projection_v2_parts SELECT * FROM carriage_projection_v2_parts",
             "UPDATE snapshots SET carriage_projection_required=0",
         ):
             with pytest.raises(sqlite3.IntegrityError, match="immutable"):
@@ -313,7 +489,7 @@ def test_carriage_storage_nonfinite_source_refuses_before_preparation(tmp_path, 
 def test_carriage_storage_observer_failure_rolls_back_source_and_all_parts(tmp_path, monkeypatch):
     store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
     try:
-        before = store._conn.execute("SELECT COUNT(*) FROM carriage_projection_parts").fetchone()[0]
+        before = store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0]
 
         def refuse(_digest):
             raise RuntimeError("synthetic observer refusal")
@@ -322,20 +498,20 @@ def test_carriage_storage_observer_failure_rolls_back_source_and_all_parts(tmp_p
         with pytest.raises(RuntimeError, match="synthetic observer refusal"):
             store.add_snapshot(cid, "rolled back", {"vlan_carriage": {}}, {})
         assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
-        assert store._conn.execute("SELECT COUNT(*) FROM carriage_projection_parts").fetchone()[0] == before
+        assert store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == before
         assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
     finally:
         store.close()
 
 
-@pytest.mark.parametrize("kind", ["document", "role"])
+@pytest.mark.parametrize("kind", ["document", "dictionary", "row:0"])
 def test_carriage_storage_restart_does_not_reseal_missing_parts(tmp_path, monkeypatch, kind):
     from backend.storage import ExecutionReceiptAuthorityError, Store
 
     store, _cid, sid, observed = _carriage_store(tmp_path, monkeypatch)
     path = store.db_path
-    store._conn.execute("DROP TRIGGER carriage_projection_parts_no_delete")
-    store._conn.execute("DELETE FROM carriage_projection_parts WHERE snapshot_id=? AND kind=?", (sid, kind))
+    store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_delete")
+    store._conn.execute("DELETE FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=?", (sid, kind))
     store._conn.commit()
     store.close()
     reopened = Store(path)
@@ -357,9 +533,11 @@ def test_carriage_storage_legacy_migration_prepares_once_from_unchanged_source(t
     path = store.db_path
     raw = store.get_snapshot_blob(sid)[0]
     store._conn.execute("DROP TRIGGER carriage_projection_requirement_no_update")
-    store._conn.execute("DROP TABLE carriage_projection_parts")
+    store._conn.execute("DROP TRIGGER carriage_projection_version_no_update")
+    store._conn.execute("DROP TABLE carriage_projection_v2_parts")
     store._conn.execute("DROP TABLE carriage_projection_role_presence")
     store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_required")
+    store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_version")
     store._conn.commit()
     store.close()
     migrated = Store(path)
@@ -372,7 +550,38 @@ def test_carriage_storage_legacy_migration_prepares_once_from_unchanged_source(t
     reopened = Store(path)
     try:
         assert observed == [raw, raw]
-        assert reopened.get_carriage_page_source(sid, 0)[0]["cables"]
+        assert reopened.get_carriage_page_source(sid, 0)[0]["rows"]
+    finally:
+        reopened.close()
+
+
+def test_carriage_storage_superseded_v1_derivative_refuses_without_resealing(tmp_path, monkeypatch):
+    from backend.storage import ExecutionReceiptAuthorityError, Store
+
+    store, _cid, sid, observed = _carriage_store(tmp_path, monkeypatch)
+    path = store.db_path
+    raw = store.get_snapshot_blob(sid)[0]
+    store._conn.execute("DROP TABLE carriage_projection_v2_parts")
+    store._conn.execute("DROP TRIGGER carriage_projection_version_no_update")
+    store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_version")
+    store._conn.execute(
+        """INSERT INTO carriage_projection_parts
+           (snapshot_id,projection_version,kind,part_key,ordinal,payload,digest_0,digest_1,digest_2,digest_3)
+           VALUES (?,1,'document','',0,?,0,0,0,0)""", (sid, b"superseded-v1"),
+    )
+    store._conn.commit()
+    store.close()
+    reopened = Store(path)
+    try:
+        assert observed == [raw]
+        assert reopened.get_snapshot_blob(sid)[0] == raw
+        assert reopened._conn.execute("SELECT payload FROM carriage_projection_parts").fetchone()[0] == b"superseded-v1"
+        assert reopened._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == 0
+        for read in (lambda: reopened.get_carriage_document(sid),
+                     lambda: reopened.get_carriage_page_bundle(sid, 0),
+                     lambda: reopened.get_carriage_projection_payload_bytes(sid)):
+            with pytest.raises(ExecutionReceiptAuthorityError, match="unavailable"):
+                read()
     finally:
         reopened.close()
 

@@ -255,3 +255,41 @@ time separately, and traps request-time binding, full projection, admission and 
 timers, the existing first-use stub, the full 200-item assertion, schemas and thresholds remain. The old
 after-timer full-admission profiler is no longer invoked as a model of HTTP work; its standalone controls
 remain. Ingest-only derivatives require no golden/sample, frontend type, native pin or Scope data rewrite.
+
+## Current materialized-page boundary (2026-10-13, supersedes the /1 page representation)
+
+The supervisor's second direction moves every cable/member relation and evidence envelope to ingestion too.
+The first `/1` derivative met document growth (91.7 ms) but still rendered page relations on GET and failed
+the 300 ms page gate. `carriage_projection_preparation/2` replaces that request work:
+
+- The original owner admits the exact snapshot and renders each readable VLAN/cable row once at ingest.
+  It streams complete canonical JSON rows through lossless zlib compression, with a shared dictionary
+  per cable and independently anchored row variants. The writer never retains the full rendered Cartesian
+  matrix. Compression encodes already-computed JSON; it is not a source-identity codec or Python pickle.
+- `carriage_projection_v2_parts` stores the prepared document, small context, per-VLAN summaries, row
+  metadata, dictionaries and compressed rows. Its source/version/key/ordinal/content INTEGER anchors and
+  immutable guards preserve the same custody rules. A new 64,000,000-byte cap bounds the sum of all these
+  payload bytes, including the manifest itself. It excludes SQLite page/index/anchor overhead, so it is
+  not a database-file/RSS bound. Exceeding it rolls back the entire ingestion and returns HTTP 413.
+- The raw `vlan_carriage/2` section keeps its existing 6,000,000-byte and 600,000-byte growth budgets.
+  Materialized derivative cost is separate and explicitly reported at 100 and 200 VLANs; its compressed
+  representation can still grow with VLAN-by-cable cardinality. This tradeoff is not hidden inside the
+  raw-section budget or represented as constant-size storage.
+- A page performs one coherent raw-source/context/selected-row read and hashes the source once. It does
+  not load the complete fleet document, even on a cold request. Its context and expected target summary
+  are captured from the ingest document; the API owns comparison copies before invoking the page adapter.
+  Raw integrity hashing remains O(source bytes); row selection and decoding are O(page size).
+- Selected metadata applies the unchanged 400-member / 200-cable / 3,000,000-byte whole-cable prefix.
+  Exact stored expanded lengths let the owner reject a boundary cable before decoding it. Accepted rows
+  must decompress to exactly that length, terminate exactly once, have no trailing/unconsumed data, and
+  decode as JSON. Native-value, complete schema, summary/source equality, ownership and full-wire checks
+  still run. There is no request-time code decoding, role join, evidence resolution or relation rendering.
+- Raw-only prior databases prepare `/2` once before service. Already prepared `/1` derivatives remain
+  explicitly unavailable; they are neither silently reinterpreted nor resealed. Their original raw bytes
+  remain available. Missing/corrupt `/2` parts never cause regeneration on GET or restart.
+
+Portable qualification `/3` now has the closed thirteen-table census (the two retained `/1` tables and the
+new `/2` table included), a new shape fingerprint, and explicit refusal of superseded qualification `/2`.
+The application/native schema pins and package version do not change. No frontend DTO shape changed, so
+this correction requires no new generated-dist import. All original timing/byte limits, validation and
+historical W60 bindings remain. Runtime performance and derivative costs require fresh hosted evidence.
