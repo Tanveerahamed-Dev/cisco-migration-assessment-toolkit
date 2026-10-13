@@ -860,3 +860,72 @@ This reports the slowest completed setup/call/teardown phases after the same ful
 timeout can still prevent its end-of-session table. Independent source review confirms the invocation
 and portable guards accept this reporting flag. No command removal, job, runner, dependency, permission,
 exit-code handling, skip, scheduling or limit changes; the diagnostic is not a substitute gate.
+
+## Round-2 independent verdict and round-3 ingestion corrections
+
+Author head `a4f428892446f07279378b9f89dcdb1a972d3ad3`, base `1d902ee2`, runs as PR execution
+`013da8dffe85e2f4b8ff6c7d3b0439b63d596cda` with the same tree `adeba528123d23f25350228f8d08c49b49d22455`.
+CI `38419773394` and all fifteen required contexts pass. Linux 3.12 job `115373710625` has 1,379 focused
+passes and 19,192 full passes / 153 skips / three expected failures / 26 subtests. Focused/full document
+growth is 193.9/40.2 ms, cold pages 124.3/130.9 ms and warm pages 126.7/132.4 ms, both with 200 items and
+1,317,481 bytes. With-carriage ingestion is 49,789.6/51,643.1 ms; without is 2,893.8/2,095.0 ms. The
+100/200-VLAN derivatives remain 24,667,919/42,815,611 payload bytes (18,147,692 growth), with 21,184,389
+bytes remaining under the unchanged 64,000,000-byte cap at 200 VLANs. This does not bound SQLite
+file/index/anchor overhead, whole-process RSS, other evidence/member mixes or every admissible scope.
+
+Portable source/frontend job `115373711762` in run `38419773225` passes in 70m48s including setup and
+frontend, below the unchanged 120-minute limit and the prior roughly 108-minute Python-only baseline.
+The complete frontend tail passes 38 files / 537 tests, build and tracked-dist equality. Its G14 pytest
+call durations are 100.83 seconds for eight-member traversal, 92.23 for document/page plus ingestion,
+and 54.03 for two-member traversal. These are test-body durations, not request latency or causal
+attribution. The separate Windows matrix passes 19,287 tests in 6,127.09 seconds; coverage is 87.44%
+against 85%. CodeQL, Master Reference, Scope, W60b and replacement webapp `38419773285` pass; initial
+same-head webapp `38419772614` was superseded/cancelled by the description edit. The author summary is
+comment `6150930184`. None of these positive results erases a source counterexample.
+
+Independent whole-PR review `6151643431` is **BLOCKED** on that same source. It explicitly closes stale
+STP admission (including null stored pointers), channel-record identity and complete member/byte paging.
+P1 shows that raw-only legacy migration commits its requirement/version columns before preparation,
+so a one-byte-cap failure can become an apparently complete but unreadable upgrade on restart. The
+same cap error bypasses the production startup handler. P2 traces the actual lazy row rendering,
+encoding and compression inside `Store._lock` and `BEGIN IMMEDIATE`; existing committed reads wait
+behind the upload. P3 limits qualification: prior ingestion measurements call Store directly, and
+the tiny real HTTP 413 test does not measure a full-scale multipart upload or disconnect/RSS behavior.
+
+Round 3 uses an explicit `-2` pending projection version for newly admitted raw-only legacy upgrades;
+the source-authority initialization and pending markers share one transaction. A pending source is
+verified before preparation and again before publication. Required parts and the one-way `-2` to `2`
+completion commit together. Interrupted/capped preparation leaves a source-bound pending record for
+the next startup; missing pending source anchors never trigger a new trust seal. Completed version `2`
+and superseded version `0` never enter retry, even when their parts are missing. Existing historical
+source-authority migration contracts are retained; this is not a general database-tamper certificate.
+The production entry catches the specific preparation-limit exception and refuses startup with
+preservation and retry guidance. Unrelated ValueError behavior is not hidden by that handler.
+
+The producer's complete row/variant stream and part encoding run before the shared Store lock/write
+transaction. One private immutable stage per Store owns the bytes; the original 64,000,000-byte
+payload limit remains, and framing/key metadata has its own 64,000,000-byte ceiling. This bounds the
+staged representation, not total RSS, which also includes the source, producer and construction
+buffers. Legacy startup stages one snapshot at a time. Final source checking, small identity-anchor
+framing, SQL inserts and atomic publication still serialize; this is read availability during expensive
+preparation, not a claim of wait-free reads during final publication. No new file-backed staging
+artifact, stored-derivative format, portable table census, native JSON schema pin or frontend DTO shape
+is introduced. A completed derivative's bytes and source identity remain subject to the existing guards.
+
+Additive test controls implement the exact cap=1/open/release/restore/reopen document falsifier and
+the real multipart first-next Event falsifier. Metadata, raw, inventory and campaign reads must finish
+while that gate remains closed. A later genuine-stream failure leaves the original snapshot/anchors/
+parts intact, publishes no new snapshot, and permits a subsequent successful upload. A production
+`serve.main` test covers the cap refusal and real reopen through the server entry. One multipart
+request uses the unchanged 300-device/200-VLAN/1,500-cable producer fixture, adding the top-level devices
+map required by real upload admission; its in-process ASGI timer includes multipart handling, parse,
+provenance, summary, preparation and commit, but not external network latency. It emits an exact-head
+`VLAN-CARRIAGE-BUDGET` multipart-upload record with source/derivative/staging bytes and limits. It also
+observes the single row-stream staging call and part-publication call; the latter excludes final
+commit, and neither is a new latency gate. This is not a whole-upload latency/RSS guarantee. Failure rollback is
+covered; network-client disconnection and peak RSS remain unqualified. All existing assertions,
+budgets, timeouts, historical bindings, raw golden and sample bytes remain unchanged. Fresh hosted
+results are required for these new controls and the final successor.
+The existing hosted G14 step additionally selects the new upload module, snapshot-storage controls
+and exact production startup recovery test. No original selection is removed; the complete default
+suite and every existing matrix/gate still run.

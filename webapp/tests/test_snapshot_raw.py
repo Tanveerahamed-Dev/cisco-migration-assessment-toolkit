@@ -740,6 +740,470 @@ def test_carriage_storage_superseded_v1_derivative_refuses_without_resealing(tmp
         reopened.close()
 
 
+def _round3_raw_only_fixture(tmp_path, monkeypatch, *, snapshots=1):
+    store, cid, sid, observed = _carriage_store(tmp_path, monkeypatch)
+    ids = [sid]
+    for index in range(1, snapshots):
+        ids.append(store.add_snapshot(cid, f"legacy-{index}", {"devices": {}, "index": index}, {})["id"])
+    sources = {item: store.get_snapshot_blob(item) for item in ids}
+    path = store.db_path
+    store._conn.execute("DROP TRIGGER carriage_projection_requirement_no_update")
+    store._conn.execute("DROP TRIGGER carriage_projection_version_no_update")
+    store._conn.execute("DROP TABLE carriage_projection_v2_parts")
+    store._conn.execute("DROP TABLE carriage_projection_role_presence")
+    store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_required")
+    store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_version")
+    store._conn.commit()
+    store.close()
+    return path, ids, sources, observed
+
+
+def _round3_leave_pending_upgrade(path, monkeypatch):
+    from backend import storage
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "CARRIAGE_PROJECTION_PAYLOAD_LIMIT", 1)
+        with pytest.raises(storage.CarriagePreparationLimitError):
+            storage.Store(path)
+
+
+def test_pending_carriage_upgrade_recovers_after_real_payload_refusal(tmp_path, monkeypatch):
+    from backend.storage import Store
+
+    path, ids, sources, observed = _round3_raw_only_fixture(tmp_path, monkeypatch)
+    _round3_leave_pending_upgrade(path, monkeypatch)
+    connection = sqlite3.connect(path, timeout=0.1)
+    try:
+        assert connection.execute("SELECT carriage_projection_version FROM snapshots").fetchall() == [(-2,)]
+        assert connection.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == 0
+        connection.execute("BEGIN IMMEDIATE")  # Failed Store released its transaction/connection.
+        connection.rollback()
+    finally:
+        connection.close()
+    reopened = Store(path)
+    try:
+        assert reopened.get_snapshot_blob(ids[0]) == sources[ids[0]]
+        assert reopened.get_carriage_document(ids[0])[0]["stored"] == "okay"
+        assert reopened._conn.execute("SELECT carriage_projection_version FROM snapshots").fetchall()[0][0] == 2
+        assert len(observed) == 3  # Initial fixture, refused attempt, source-bound retry.
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("loss", ["row", "table"])
+def test_pending_carriage_upgrade_never_reseals_missing_source_anchor(tmp_path, monkeypatch, loss):
+    from backend import storage
+
+    path, ids, sources, observed = _round3_raw_only_fixture(tmp_path, monkeypatch)
+    _round3_leave_pending_upgrade(path, monkeypatch)
+    connection = sqlite3.connect(path)
+    try:
+        if loss == "table":
+            connection.execute("DROP TABLE snapshot_authority")
+        else:
+            connection.execute("DELETE FROM snapshot_authority WHERE snapshot_id=?", (ids[0],))
+        raw = sources[ids[0]][0]
+        forged = raw.replace(b'"final"', b'"other"')
+        assert forged != raw and len(forged) == len(raw)
+        connection.execute("UPDATE snapshots SET snapshot_json=? WHERE id=?", (forged, ids[0]))
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(storage.ExecutionReceiptAuthorityError):
+        storage.Store(path)
+    assert len(observed) == 2
+    connection = sqlite3.connect(path, timeout=0.1)
+    try:
+        assert connection.execute("SELECT carriage_projection_version FROM snapshots").fetchone()[0] == -2
+        assert connection.execute("SELECT CAST(snapshot_json AS BLOB) FROM snapshots").fetchone()[0] == forged
+        if loss == "table":
+            assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='snapshot_authority'").fetchone() is None
+        else:
+            assert connection.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 0
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_raw_only_initial_anchor_failure_rolls_back_schema_and_markers(tmp_path, monkeypatch):
+    from backend import storage
+
+    path, ids, sources, _observed = _round3_raw_only_fixture(tmp_path, monkeypatch)
+    connection = sqlite3.connect(path)
+    try:
+        for table in ("snapshot_authority", "execution_comparison_authority", "execution_l2_failure_trial_authority"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.commit()
+    finally:
+        connection.close()
+
+    def refuse_anchor(**_kwargs):
+        raise RuntimeError("synthetic initial-anchor refusal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "_snapshot_authority_limbs", refuse_anchor)
+        with pytest.raises(RuntimeError, match="initial-anchor refusal"):
+            storage.Store(path)
+    connection = sqlite3.connect(path, timeout=0.1)
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(snapshots)")}
+        assert "carriage_projection_required" not in columns
+        assert "carriage_projection_version" not in columns
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert not {"snapshot_authority", "execution_comparison_authority",
+                    "execution_l2_failure_trial_authority", "carriage_projection_v2_parts"} & tables
+        assert connection.execute("SELECT CAST(snapshot_json AS BLOB) FROM snapshots").fetchone()[0] == sources[ids[0]][0]
+    finally:
+        connection.close()
+    reopened = storage.Store(path)
+    try:
+        assert reopened.get_carriage_document(ids[0])[0]["stored"] == "okay"
+    finally:
+        reopened.close()
+
+
+def test_pending_carriage_partial_publication_control_failure_rolls_back_and_retries(tmp_path, monkeypatch):
+    from backend import storage
+
+    path, ids, sources, _observed = _round3_raw_only_fixture(tmp_path, monkeypatch)
+    _round3_leave_pending_upgrade(path, monkeypatch)
+    original_write = storage.Store._write_carriage_projection_locked
+    original_error = KeyboardInterrupt("synthetic publication interruption")
+
+    def interrupt_after_first_part(self, snapshot_id, staged, source):
+        kind_size, key_size, _ordinal, payload_size = storage._CARRIAGE_STAGE_HEADER.unpack_from(staged)
+        end = storage._CARRIAGE_STAGE_HEADER.size + kind_size + key_size + payload_size
+        original_write(self, snapshot_id, staged[:end], source)
+        raise original_error
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage.Store, "_write_carriage_projection_locked", interrupt_after_first_part)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            storage.Store(path)
+        assert raised.value is original_error
+    connection = sqlite3.connect(path, timeout=0.1)
+    try:
+        assert connection.execute("SELECT carriage_projection_version FROM snapshots").fetchone()[0] == -2
+        assert connection.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == 0
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+    finally:
+        connection.close()
+    reopened = storage.Store(path)
+    try:
+        assert reopened.get_snapshot_blob(ids[0]) == sources[ids[0]]
+        assert reopened.get_carriage_document(ids[0])[0]["stored"] == "okay"
+    finally:
+        reopened.close()
+
+
+def test_pending_carriage_upgrade_stages_one_snapshot_outside_transaction_at_a_time(tmp_path, monkeypatch):
+    from backend import storage
+
+    path, ids, _sources, _observed = _round3_raw_only_fixture(tmp_path, monkeypatch, snapshots=3)
+    original_stage = storage.Store._stage_carriage_projection
+    completed_before_stage = []
+
+    def stage(self, preparation):
+        assert self._lock.acquire(blocking=False), "legacy preparation owns the shared read lock"
+        self._lock.release()
+        assert not self._conn.in_transaction
+        completed_before_stage.append(self._conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE carriage_projection_version=2"
+        ).fetchone()[0])
+        return original_stage(self, preparation)
+
+    monkeypatch.setattr(storage.Store, "_stage_carriage_projection", stage)
+    reopened = storage.Store(path)
+    try:
+        assert completed_before_stage == [0, 1, 2]
+        assert all(reopened.get_carriage_document(sid) is not None for sid in ids)
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("legacy_id", [-1, 0])
+def test_pending_carriage_upgrade_preserves_supported_nonpositive_snapshot_ids(tmp_path, monkeypatch, legacy_id):
+    from backend.storage import Store
+
+    path, ids, sources, _observed = _round3_raw_only_fixture(tmp_path, monkeypatch)
+    connection = sqlite3.connect(path)
+    try:
+        for table in ("snapshot_authority", "execution_comparison_authority", "execution_l2_failure_trial_authority"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute("UPDATE snapshots SET id=? WHERE id=?", (legacy_id, ids[0]))
+        connection.commit()
+    finally:
+        connection.close()
+    reopened = Store(path)
+    try:
+        raw, binding = reopened.get_snapshot_blob(legacy_id)
+        assert raw == sources[ids[0]][0]
+        assert binding["snapshot_id"] == legacy_id
+        assert reopened.get_carriage_document(legacy_id)[0]["stored"] == "okay"
+    finally:
+        reopened.close()
+
+
+def test_carriage_staging_encodes_parts_outside_read_lock_and_owns_aliases(tmp_path, monkeypatch):
+    from backend import storage
+
+    store, cid, _sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    original_stage = store._stage_carriage_projection
+    original_encode = storage._canonical_json_bytes
+
+    def encode(value):
+        anchor = isinstance(value, dict) and ("source_authority" in value
+                 or value.get("schema") == "snapshot_source_authority/1")
+        if not anchor:
+            assert not store._lock.locked(), "part encoding still owns the shared read lock"
+            assert not store._conn.in_transaction
+        return original_encode(value)
+
+    def stage(preparation):
+        result = original_stage(preparation)
+        assert type(result) is bytes
+        assert len(result) <= storage.CARRIAGE_PROJECTION_PAYLOAD_LIMIT + storage._CARRIAGE_STAGING_METADATA_LIMIT
+        preparation["document"]["stored"] = "changed after ownership"
+        preparation["context"]["stored"] = "changed after ownership"
+        return result
+
+    try:
+        monkeypatch.setattr(storage, "_canonical_json_bytes", encode)
+        monkeypatch.setattr(store, "_stage_carriage_projection", stage)
+        sid = store.add_snapshot(cid, "owned stage", {"devices": {}}, {})["id"]
+        assert store.get_carriage_document(sid)[0]["stored"] == "okay"
+        assert store.get_carriage_page_source(sid, 0)[0]["context"]["stored"] == "context"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("target", ["dictionary", "payload"])
+def test_carriage_staging_refuses_bytes_subclass_length_hooks(tmp_path, monkeypatch, target):
+    from backend import engine
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    calls = []
+
+    class MisleadingBytes(bytes):
+        def __len__(self):
+            calls.append("length hook")
+            return 0
+
+    def prepare(_raw):
+        result = _carriage_storage_pack()
+        original_rows = result["rows"]
+
+        def rows():
+            try:
+                for row in original_rows:
+                    if target == "dictionary":
+                        row["dictionary"] = MisleadingBytes(row["dictionary"])
+                    else:
+                        variants = list(row["variants"])
+                        variants[0]["payload"] = MisleadingBytes(variants[0]["payload"])
+                        row["variants"] = iter(variants)
+                    yield row
+            finally:
+                original_rows.close()
+
+        result["rows"] = rows()
+        return result
+
+    try:
+        monkeypatch.setattr(engine, "prepare_carriage_projection", prepare)
+        with pytest.raises(ValueError, match="materialization"):
+            store.add_snapshot(cid, "foreign binary", {"devices": {}}, {})
+        assert calls == []
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+    finally:
+        store.close()
+
+
+def test_carriage_staging_metadata_refusal_and_observer_control_error_are_atomic(tmp_path, monkeypatch):
+    from backend import storage
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    original_error = KeyboardInterrupt("synthetic observer interruption")
+
+    def refuse(_digest):
+        raise original_error
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(storage, "_CARRIAGE_STAGING_METADATA_LIMIT", 1)
+            with pytest.raises(storage.CarriagePreparationLimitError, match="staging metadata"):
+                store.add_snapshot(cid, "metadata bound", {"devices": {}}, {})
+        store.add_snapshot_digest_observer(refuse)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            store.add_snapshot(cid, "observer control error", {"devices": {}}, {})
+        assert raised.value is original_error
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+        assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+        assert store.get_carriage_document(sid)[0]["stored"] == "okay"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_carriage_staging_cleanup_preserves_primary_and_attempts_every_close(tmp_path, monkeypatch, primary_failure):
+    from backend import engine, storage
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    events = []
+    primary = KeyboardInterrupt("row preparation interrupted")
+    variant_cleanup = RuntimeError("variant cleanup failed")
+    original_buffer = storage.io.BytesIO
+
+    class FailingBuffer(original_buffer):
+        def close(self):
+            events.append("buffer")
+            super().close()
+            raise RuntimeError("buffer cleanup failed")
+
+    class Variants:
+        def __init__(self, source):
+            self.source = source
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if primary_failure:
+                raise primary
+            return next(self.source)
+
+        def close(self):
+            events.append("variant")
+            raise variant_cleanup
+
+    class Rows:
+        def __init__(self, source):
+            self.source = source
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            row = next(self.source)
+            row["variants"] = Variants(row["variants"])
+            return row
+
+        def close(self):
+            events.append("stream")
+            self.source.close()
+            raise RuntimeError("stream cleanup failed")
+
+    def prepare(_raw):
+        result = _carriage_storage_pack()
+        result["rows"] = Rows(result["rows"])
+        return result
+
+    try:
+        monkeypatch.setattr(storage.io, "BytesIO", FailingBuffer)
+        monkeypatch.setattr(engine, "prepare_carriage_projection", prepare)
+        with pytest.raises(BaseException) as raised:
+            store.add_snapshot(cid, "failing cleanup", {"devices": {}}, {})
+        assert raised.value is (primary if primary_failure else variant_cleanup)
+        assert events == ["variant", "stream", "buffer"]
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+    finally:
+        store.close()
+
+
+def test_failed_carriage_rollback_poison_prevents_reading_partial_snapshot(tmp_path, monkeypatch):
+    from backend import storage
+
+    original_connect = sqlite3.connect
+    events = []
+
+    class FailedRollbackConnection(sqlite3.Connection):
+        refuse_cleanup = False
+
+        def rollback(self):
+            if self.refuse_cleanup:
+                events.append("rollback")
+                raise RuntimeError("rollback refused")
+            return super().rollback()
+
+        def close(self):
+            if self.refuse_cleanup:
+                events.append("close")
+                raise RuntimeError("close refused")
+            return super().close()
+
+    monkeypatch.setattr(storage.sqlite3, "connect", lambda *args, **kwargs: original_connect(
+        *args, **{**kwargs, "factory": FailedRollbackConnection}))
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    connection = store._conn
+    original_error = KeyboardInterrupt("observer interrupted publication")
+
+    def refuse(_digest):
+        connection.refuse_cleanup = True
+        raise original_error
+
+    try:
+        store.add_snapshot_digest_observer(refuse)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            store.add_snapshot(cid, "must never be exposed", {"devices": {}}, {})
+        assert raised.value is original_error
+        assert events == ["rollback", "close"]
+        for read in (lambda: store.list_snapshots(cid), lambda: store.get_snapshot_meta(sid),
+                     lambda: store.get_snapshot(sid + 1), lambda: store.get_carriage_document(sid)):
+            with pytest.raises(storage.ExecutionReceiptAuthorityError, match="unusable"):
+                read()
+    finally:
+        connection.refuse_cleanup = False
+        sqlite3.Connection.rollback(connection)
+        sqlite3.Connection.close(connection)
+    reader = original_connect(tmp_path / "carriage.db")
+    try:
+        assert reader.execute("SELECT id FROM snapshots").fetchall() == [(sid,)]
+    finally:
+        reader.close()
+
+
+def test_carriage_stage_page_limit_lookup_failure_closes_owned_stream_and_buffer(tmp_path, monkeypatch):
+    from backend import engine, storage
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    original_buffer = storage.io.BytesIO
+    original_error = KeyboardInterrupt("page-limit lookup interrupted")
+    events = []
+
+    class Buffer(original_buffer):
+        def close(self):
+            events.append("buffer")
+            super().close()
+
+    class Rows:
+        def close(self):
+            events.append("stream")
+
+    def prepare(_raw):
+        result = _carriage_storage_pack()
+        result["rows"].close()
+        result["rows"] = Rows()
+        return result
+
+    def refuse_limits():
+        raise original_error
+
+    try:
+        monkeypatch.setattr(storage.io, "BytesIO", Buffer)
+        monkeypatch.setattr(engine, "prepare_carriage_projection", prepare)
+        monkeypatch.setattr(engine, "carriage_page_limits", refuse_limits)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            store.add_snapshot(cid, "setup refused", {"devices": {}}, {})
+        assert raised.value is original_error
+        assert events == ["stream", "buffer"]
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+    finally:
+        store.close()
+
+
 @pytest.fixture()
 def db_path(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
