@@ -948,12 +948,14 @@ class Store:
         if boot_hardening:
             self._boot_hardening(dbfile, db_mtime)  # BEFORE the schema touches a corrupt file
         with self._lock:
+            existing_schema = self._conn.execute(
+                "SELECT name, type FROM sqlite_master"
+            ).fetchall()
             existing_tables = {
                 str(row["name"])
-                for row in self._conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
+                for row in existing_schema if row["type"] == "table"
             }
+            fresh_schema = not existing_schema
             backfill_snapshot_authority = "snapshot_authority" not in existing_tables
             backfill_comparison_authority = (
                 "execution_comparison_authority" not in existing_tables
@@ -961,7 +963,27 @@ class Store:
             backfill_trial_authority = (
                 "execution_l2_failure_trial_authority" not in existing_tables
             )
-            self._conn.executescript(_SCHEMA)
+            # A new database otherwise durably commits each CREATE separately. Keep only
+            # that schema-empty bootstrap in one transaction; any existing schema object
+            # (including a view) retains the original script and locking/migration behavior.
+            # BEGIN belongs inside the script because executescript commits an earlier transaction.
+            schema_script = ("BEGIN IMMEDIATE;\n" + _SCHEMA + "\nCOMMIT;"
+                             if fresh_schema else _SCHEMA)
+            try:
+                self._conn.executescript(schema_script)
+            except BaseException:
+                if fresh_schema:
+                    # Cleanup must not replace the original database/control exception,
+                    # and a failed rollback must not prevent the close attempt.
+                    try:
+                        self._conn.rollback()
+                    except BaseException:
+                        pass
+                    try:
+                        self._conn.close()
+                    except BaseException:
+                        pass
+                raise
             snapshot_columns = {
                 str(row["name"])
                 for row in self._conn.execute("PRAGMA table_info(snapshots)").fetchall()

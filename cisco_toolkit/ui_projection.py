@@ -5953,14 +5953,84 @@ CARRIAGE_PREPARATION_SCHEMA = "carriage_projection_preparation/2"
 #: A separate server derivative bound; the original compact snapshot's 6 MB/+600 KB gates do not change.
 CARRIAGE_DERIVATIVE_BYTE_LIMIT = 64_000_000
 _CARRIAGE_DICTIONARY_BYTES = 32_768
+_MATERIALIZED_JSON_DUMPS_OWNER = json.dumps
+_MATERIALIZED_JSON_ENCODER_OWNER = json.JSONEncoder
+_MATERIALIZED_JSON_ENCODER_METHODS = (json.JSONEncoder.__init__, json.JSONEncoder.encode, json.JSONEncoder.iterencode)
+_MATERIALIZED_JSON_NATIVE_ENCODER = json.encoder.c_make_encoder
+_MATERIALIZED_JSON_STRING_ENCODER = json.encoder.encode_basestring
+_MATERIALIZED_JSON_STREAM_ENCODER = json.encoder._make_iterencode
 
 
-def _materialized_carriage_bytes(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
-    """Encode an exact complete row once at ingest, retaining at most the public page byte ceiling.
+def _materialized_carriage_small_tree(item: Any) -> Optional[Tuple[Any, int]]:
+    """Own a small ordinary tree while proving a conservative UTF-8 JSON bound, or use the original stream.
 
-    An oversized complete cable still has an exact measured size but no retained payload. Its lazy metadata
-    produces the same whole-cable unsupported hold; it can never be split or silently skipped.
+    Six bytes cover every escaped ASCII character; quotes, separators and punctuation are counted as private
+    entries are appended, never from a borrowed container's possibly changing length. Small integers need at
+    most 20 bytes including their sign. Only exact builtins are inspected; no foreign hooks run. Every alias
+    occurrence is copied/counts separately and active ancestors detect cycles. Eligibility depth/node limits
+    bound this copy, never the input domain. Rejected inputs retain the original streaming encoder and errors.
     """
+    total, nodes = 0, 0
+    active = set()
+    roots: List[Any] = []
+    stack = [(None, iter(((0, item),)), roots, False)]
+    while stack:
+        identity, entries, target, mapping = stack[-1]
+        try:
+            key, value = next(entries)
+        except StopIteration:
+            stack.pop()
+            if identity is not None:
+                active.remove(identity)
+            continue
+        nodes += 1
+        if nodes > 100_000:
+            return None
+        if identity is not None and target:
+            total += 1  # The comma before this owned entry.
+        if mapping:
+            nodes += 1
+            if nodes > 100_000 or type(key) is not str or not key.isascii():
+                return None
+            total += 3 + 6 * len(key)  # Key quotes and the key/value colon.
+        kind = type(value)
+        if kind is str:
+            if not value.isascii():
+                return None
+            total += 2 + 6 * len(value)
+            owned = value
+        elif value is None:
+            total += 4
+            owned = value
+        elif kind is bool:
+            total += 5
+            owned = value
+        elif kind is int:
+            if value.bit_length() > 63:
+                return None
+            total += 20
+            owned = value
+        elif kind is dict or kind is list:
+            identity = id(value)
+            if identity in active or len(stack) > 64:
+                return None
+            total += 2
+            owned = {} if kind is dict else []
+            active.add(identity)
+            stack.append((identity, iter(value.items()) if kind is dict else enumerate(value), owned, kind is dict))
+        else:
+            return None
+        if total > CARRIAGE_PAGE_BYTE_LIMIT:
+            return None
+        if mapping:
+            target[key] = owned
+        else:
+            target.append(owned)
+    return roots[0], total
+
+
+def _materialized_carriage_stream(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
+    """Original exact row encoder: stream/count every byte, retain no oversized payload."""
     chunks: List[bytes] = []
     length = 0
     for part in json.JSONEncoder(separators=(",", ":"), ensure_ascii=False, allow_nan=False).iterencode(item):
@@ -5971,6 +6041,38 @@ def _materialized_carriage_bytes(item: Dict[str, Any]) -> Tuple[Optional[bytes],
         elif chunks:
             chunks.clear()
     return (b"".join(chunks) if length <= CARRIAGE_PAGE_BYTE_LIMIT else None), length
+
+
+def _materialized_carriage_bytes(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
+    """Encode one ingest row using the ordinary JSON encoder after proving its complete output is bounded.
+
+    Large, foreign, non-ASCII, floating, cyclic and deep inputs keep the exact original streaming path and its
+    errors. The fast path removes per-token Python encoding/allocation only; no relation or evidence changes.
+    """
+    try:
+        candidate = (_materialized_carriage_small_tree(item)
+                     if json.dumps is _MATERIALIZED_JSON_DUMPS_OWNER
+                     and json.JSONEncoder is _MATERIALIZED_JSON_ENCODER_OWNER
+                     and json.JSONEncoder.__init__ is _MATERIALIZED_JSON_ENCODER_METHODS[0]
+                     and json.JSONEncoder.encode is _MATERIALIZED_JSON_ENCODER_METHODS[1]
+                     and json.JSONEncoder.iterencode is _MATERIALIZED_JSON_ENCODER_METHODS[2]
+                     and json.encoder.c_make_encoder is _MATERIALIZED_JSON_NATIVE_ENCODER
+                     and json.encoder.encode_basestring is _MATERIALIZED_JSON_STRING_ENCODER
+                     and json.encoder._make_iterencode is _MATERIALIZED_JSON_STREAM_ENCODER
+                     else None)
+    except (MemoryError, RecursionError, RuntimeError):
+        # A failed private copy, including source mutation during iteration, keeps the original stream.
+        candidate = None
+    if candidate is not None:
+        owned, _upper_bound = candidate
+        try:
+            raw = json.dumps(owned, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (MemoryError, RecursionError):
+            # An optional contiguous allocation cannot replace the original streaming resource behavior.
+            candidate = owned = None
+        else:
+            return raw, len(raw)
+    return _materialized_carriage_stream(item)
 
 
 def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:

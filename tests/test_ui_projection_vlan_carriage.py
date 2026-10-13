@@ -545,6 +545,151 @@ def test_materialized_size_is_the_original_complete_utf8_json_encoding():
         uip._materialized_carriage_bytes({"invalid": float("nan")})
 
 
+def test_small_materialized_encoder_owns_the_complete_tree_and_preserves_exact_native_bytes(monkeypatch):
+    shared = [{"control": '"\\\n\u0000', "values": [None, True, False, -(2**63 - 1), 2**63 - 1]}]
+    item = {"first": shared, "second": shared, "empty": [{}, []]}
+    before = deepcopy(item)
+    expected = uip._materialized_carriage_stream(item)
+    owned, upper = uip._materialized_carriage_small_tree(item)
+    assert owned == item and owned is not item
+    assert owned["first"] is not shared and owned["first"][0] is not shared[0]
+    assert owned["second"] is not shared and owned["second"][0]["values"] is not shared[0]["values"]
+    assert expected[1] <= upper <= uip.CARRIAGE_PAGE_BYTE_LIMIT
+
+    def forbidden(*_args):
+        raise AssertionError("small ordinary row still used the Python per-token encoder")
+
+    monkeypatch.setattr(uip, "_materialized_carriage_stream", forbidden)
+    assert uip._materialized_carriage_bytes(item) == expected
+    assert item == before
+
+
+def test_small_materialized_private_copy_cannot_grow_after_its_bound_was_proved(monkeypatch):
+    item = {"nested": [{"value": "before"}]}
+    expected = uip._materialized_carriage_stream(item)
+    prepare = uip._materialized_carriage_small_tree
+
+    def concurrent_source_growth(source):
+        result = prepare(source)
+        source["nested"][0]["value"] = "x" * (uip.CARRIAGE_PAGE_BYTE_LIMIT + 1)
+        source["nested"].append({"later": True})
+        return result
+
+    monkeypatch.setattr(uip, "_materialized_carriage_small_tree", concurrent_source_growth)
+    assert uip._materialized_carriage_bytes(item) == expected
+    assert len(item["nested"][0]["value"]) > uip.CARRIAGE_PAGE_BYTE_LIMIT
+
+
+@pytest.mark.parametrize("case", ["unicode", "surrogate", "float", "nan", "huge-int", "tuple", "non-string-key",
+                                  "cycle", "deep", "too-many-nodes", "bound-too-large"])
+def test_small_materialized_refusals_keep_original_stream_values_errors_and_input_domain(monkeypatch, case):
+    if case == "cycle":
+        value = []
+        value.append(value)
+    elif case == "deep":
+        value = "leaf"
+        for _ in range(70):
+            value = [value]
+    elif case == "too-many-nodes":
+        value = [None] * 100_001
+    else:
+        value = {"unicode": "雪", "surrogate": "\ud800", "float": -0.0, "nan": float("nan"),
+                 "huge-int": 2**100, "tuple": (1, 2), "non-string-key": {1: "value"},
+                 "bound-too-large": "x" * (uip.CARRIAGE_PAGE_BYTE_LIMIT // 6)}[case]
+    item = {"value": value}
+    assert uip._materialized_carriage_small_tree(item) is None
+    original = uip._materialized_carriage_stream
+    calls = []
+
+    def observed(source):
+        assert source is item
+        calls.append(source)
+        return original(source)
+
+    def outcome(fn):
+        try:
+            return "return", fn(item)
+        except Exception as exc:
+            return "error", type(exc), str(exc)
+
+    expected = outcome(original)
+    monkeypatch.setattr(uip, "_materialized_carriage_stream", observed)
+    assert outcome(uip._materialized_carriage_bytes) == expected
+    assert calls == [item]
+
+
+def test_small_materialized_foreign_values_and_keys_keep_the_original_hook_order(monkeypatch):
+    events = []
+
+    class ForeignDict(dict):
+        def items(self):
+            events.append("items")
+            return super().items()
+
+    class ForeignList(list):
+        def __iter__(self):
+            events.append("iterate")
+            return super().__iter__()
+
+    class ForeignText(str):
+        def isascii(self):
+            raise AssertionError("foreign key/string ran during optional eligibility")
+
+    original = uip._materialized_carriage_stream
+    for item in (ForeignDict(value=ForeignList(["ok"])), {ForeignText("key"): ForeignText("value")}):
+        events.clear()
+        assert uip._materialized_carriage_small_tree(item) is None
+        assert events == []
+        expected = original(item)
+        expected_events = list(events)
+        events.clear()
+        assert uip._materialized_carriage_bytes(item) == expected
+        assert events == expected_events
+    called = []
+
+    def replaced_dumps(*_args, **_kwargs):
+        called.append(True)
+        raise AssertionError("foreign encoder must not enter the bounded fast path")
+
+    monkeypatch.setattr(uip.json, "dumps", replaced_dumps)
+    assert uip._materialized_carriage_bytes({"ordinary": "value"}) == original({"ordinary": "value"})
+    assert called == []
+
+
+@pytest.mark.parametrize("replacement", ["observer", "whitespace"])
+def test_small_materialized_replaced_stream_factory_keeps_original_calls_and_exact_bytes(monkeypatch, replacement):
+    item = {"ordinary": ["value", None, True, 17]}
+    ordinary = uip._materialized_carriage_stream(item)
+    original_factory = uip.json.encoder._make_iterencode
+    events = []
+
+    def replaced_factory(*args, **kwargs):
+        events.append("factory")
+        encode = original_factory(*args, **kwargs)
+
+        def observed(value, level):
+            events.append(("input", value is item, level))
+            yield from encode(value, level)
+            if replacement == "whitespace":
+                yield " "  # Legal JSON bytes, deliberately distinct from the C encoder's output.
+
+        return observed
+
+    monkeypatch.setattr(uip.json.encoder, "_make_iterencode", replaced_factory)
+    expected = uip._materialized_carriage_stream(item)
+    expected_events = list(events)
+    assert expected_events == ["factory", ("input", True, 0)]
+    assert expected == ((ordinary[0] + b" ", ordinary[1] + 1) if replacement == "whitespace" else ordinary)
+    events.clear()
+
+    def forbidden(*_args):
+        raise AssertionError("replaced original stream owner entered optional fast-path eligibility")
+
+    monkeypatch.setattr(uip, "_materialized_carriage_small_tree", forbidden)
+    assert uip._materialized_carriage_bytes(item) == expected
+    assert events == expected_events
+
+
 def _resolves(snap, pointer):
     return uip._stored_pointer_tokens(uip._Ctx(snap), pointer) is not None
 

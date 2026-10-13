@@ -15,6 +15,7 @@ source it reads. What it must guarantee, each pinned below:
 """
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import zlib
@@ -26,6 +27,159 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` importable
 
 from backend.app import create_app  # noqa: E402
+
+
+def _trace_bootstrap_connections(monkeypatch):
+    from backend import storage
+
+    original_connect = sqlite3.connect
+    scripts, statements, cleanup = [], [], []
+
+    class TracedConnection(sqlite3.Connection):
+        def executescript(self, sql):
+            scripts.append(sql)
+            return super().executescript(sql)
+
+        def rollback(self):
+            cleanup.append("rollback")
+            return super().rollback()
+
+        def close(self):
+            cleanup.append("close")
+            return super().close()
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **{**kwargs, "factory": TracedConnection})
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(storage.sqlite3, "connect", connect)
+    return original_connect, scripts, statements, cleanup
+
+
+def test_fresh_store_schema_bootstrap_uses_one_transaction_before_migrations(tmp_path, monkeypatch):
+    from backend import engine, storage
+
+    _connect, scripts, statements, _cleanup = _trace_bootstrap_connections(monkeypatch)
+    store = storage.Store(tmp_path / "fresh-bootstrap.db")
+    try:
+        assert scripts == ["BEGIN IMMEDIATE;\n" + storage._SCHEMA + "\nCOMMIT;"]
+        normalized = [statement.strip().rstrip(";").strip().upper() for statement in statements]
+        begin = normalized.index("BEGIN IMMEDIATE")
+        commit = normalized.index("COMMIT", begin + 1)
+        schema_count = len(re.findall(r"^CREATE (?:TABLE|INDEX|TRIGGER)\b", storage._SCHEMA, re.MULTILINE))
+        actual_count = sum(bool(re.search(r"\bCREATE (?:TABLE|INDEX|TRIGGER)\b", statement))
+                           for statement in normalized[begin + 1:commit])
+        assert actual_count == schema_count
+        assert normalized.count("BEGIN IMMEDIATE") == 1
+        assert next(i for i, statement in enumerate(normalized)
+                    if statement.startswith("ALTER TABLE")) > commit
+        assert store._conn.in_transaction is False
+        # The bootstrap transaction is closed before the first real snapshot/source anchor.
+        monkeypatch.setattr(engine, "prepare_carriage_projection", lambda _raw: _carriage_storage_pack())
+        cid = store.create_campaign("first guarded source")["id"]
+        sid = store.add_snapshot(cid, "first", {"devices": {}, "marker": "before"}, {})["id"]
+        assert store.get_carriage_document(sid)[0]["stored"] == "okay"
+        raw = store.get_snapshot_blob(sid)[0]
+        store._conn.execute("UPDATE snapshots SET snapshot_json=? WHERE id=?",
+                            (raw.replace(b"before", b"after!"), sid))
+        store._conn.commit()
+        with pytest.raises(storage.ExecutionReceiptAuthorityError):
+            store.get_carriage_document(sid)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("existing", ["same_version", "partial", "view_only"])
+def test_existing_store_bootstrap_keeps_original_script_and_locking(tmp_path, monkeypatch, existing):
+    from backend import storage
+
+    database = tmp_path / "existing-bootstrap.db"
+    prior_view_sql = None
+    if existing == "same_version":
+        storage.Store(database).close()
+    else:
+        connection = sqlite3.connect(database)
+        if existing == "partial":
+            connection.execute("CREATE TABLE retained_partial_evidence(value TEXT)")
+            connection.execute("INSERT INTO retained_partial_evidence VALUES ('keep')")
+        else:
+            connection.execute("CREATE VIEW retained_readonly_view AS SELECT 'keep' AS value")
+            prior_view_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='view' AND name='retained_readonly_view'"
+            ).fetchone()[0]
+        connection.commit()
+        connection.close()
+    _connect, scripts, statements, _cleanup = _trace_bootstrap_connections(monkeypatch)
+    store = storage.Store(database)
+    try:
+        assert scripts == [storage._SCHEMA]
+        assert scripts[0] is storage._SCHEMA
+        assert not any("BEGIN IMMEDIATE" in statement.upper() for statement in statements)
+        if existing == "partial":
+            assert store._conn.execute("SELECT value FROM retained_partial_evidence").fetchone()[0] == "keep"
+        elif existing == "view_only":
+            assert store._conn.execute("SELECT value FROM retained_readonly_view").fetchone()[0] == "keep"
+            assert store._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='view' AND name='retained_readonly_view'"
+            ).fetchone()[0] == prior_view_sql
+    finally:
+        store.close()
+
+
+def test_fresh_store_failed_bootstrap_rolls_back_every_schema_object_and_closes(tmp_path, monkeypatch):
+    from backend import storage
+
+    database = tmp_path / "failed-bootstrap.db"
+    original_connect, _scripts, _statements, cleanup = _trace_bootstrap_connections(monkeypatch)
+    monkeypatch.setattr(storage, "_SCHEMA", storage._SCHEMA + "\nSELECT * FROM missing_bootstrap_guard;")
+    with pytest.raises(sqlite3.OperationalError, match="missing_bootstrap_guard"):
+        storage.Store(database)
+    assert cleanup == ["rollback", "close"]
+    connection = original_connect(database, timeout=0.1)
+    try:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index','trigger')").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+    finally:
+        connection.close()
+
+
+def test_fresh_bootstrap_preserves_control_exception_when_both_cleanup_calls_fail(tmp_path, monkeypatch):
+    from backend import storage
+
+    database = tmp_path / "cleanup-failure.db"
+    original_connect = sqlite3.connect
+    original_error = KeyboardInterrupt("bootstrap interrupted")
+    cleanup = []
+
+    class FailingCleanupConnection(sqlite3.Connection):
+        def executescript(self, _sql):
+            super().executescript("BEGIN IMMEDIATE; CREATE TABLE unfinished_bootstrap(value);")
+            raise original_error
+
+        def rollback(self):
+            cleanup.append("rollback")
+            super().rollback()
+            raise RuntimeError("secondary rollback error")
+
+        def close(self):
+            cleanup.append("close")
+            super().close()
+            raise RuntimeError("secondary close error")
+
+    monkeypatch.setattr(storage.sqlite3, "connect", lambda *args, **kwargs: original_connect(
+        *args, **{**kwargs, "factory": FailingCleanupConnection}))
+    with pytest.raises(KeyboardInterrupt) as raised:
+        storage.Store(database)
+    assert raised.value is original_error
+    assert cleanup == ["rollback", "close"]
+    connection = original_connect(database, timeout=0.1)
+    try:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
+    finally:
+        connection.close()
 
 
 def _carriage_storage_pack(cable_count=3, members=1):

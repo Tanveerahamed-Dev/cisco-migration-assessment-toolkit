@@ -145,7 +145,7 @@ jobs:
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-        run: python -m pytest
+        run: python -m pytest --durations=40
       - name: Reproduce the complete committed sample under UTC
         if: matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'
         env:

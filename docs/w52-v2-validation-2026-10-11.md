@@ -804,3 +804,59 @@ a real antecedent and cross-request isolation assertion rather than weakening th
 zero. The separate internal-document non-transport-proof controls remain. No product code, timing,
 byte, nonce, schema or validation gate changes. Default-suite/UTC tails were skipped by these failures;
 the budget pass does not certify the full candidate. Fresh final-head 15/15 remains required.
+
+## Complete matrix recovery and Windows source-gate timeout
+
+Published `7de8357b` follows fresh canonical privacy and all twelve raw/decoded marker scans (63 commits,
+81 parent patches, zero matches/exceptions). CI `38393149663` completes every full matrix job: Linux
+3.10/3.11/3.12/3.13/3.14 and Windows 3.12. Linux 3.12 job `115281882944` passes 1,363 focused tests and
+19,170 full-suite tests (153 existing skips, three expected failures, 26 passed subtests). Focused/full
+document growth is 286.5/-14.7 ms; first-page 180.6/182.0 ms; warm-page 188.2/187.1 ms. Both retain
+200 items and 1,317,481 complete response bytes. Every unchanged assertion passes. Negative growth is
+baseline/timing variation, not negative work. With-carriage ingestion is 88,101.0/90,366.5 ms; actual
+100/200-VLAN derivative payloads remain 24,667,919/42,815,611 bytes. Coverage is 87.43% against 85%; UTC
+sample reproduction is FRESH. These results belong only to that exact source.
+
+The separate Windows full-source/frontend job `115281838516` in portable run `38393149677` is CANCELLED
+after its unchanged 120-minute limit. Pytest reaches 96%; its final aggregate and later frontend
+tests/build/dist reproduction are unreached. The annotation explicitly reports the two-hour timeout.
+Portable build/qualification succeeds independently, as do CodeQL, Master Reference, Scope, W60b and
+the replacement webapp run `38407832213`. This leaves 14/15 protected successes, not final acceptance.
+The full Windows matrix job `115281882938` separately passes 19,265 tests, 58 existing skips, three
+expected failures and 26 passed subtests in 9,540.05 seconds; it cannot substitute for the timed-out gate.
+
+The successor reduces two real costs without weakening existing assertions, limits, scheduling or source custody.
+For small exact native carriage rows, a conservative iterative preflight constructs an owned tree
+and proves a UTF-8 upper bound within the existing 3 MB ceiling before one ordinary JSON encode.
+Immutable scalar leaves may be shared; mutable containers are privately copied, including repeated
+aliases. Unsupported/foreign/non-ASCII/floating/deep/cyclic/large values and replaced encoder helpers
+use the original token stream and its byte/error behavior. Optional allocation failure also falls back.
+This changes producer serialization only, never page interpretation, row relations or stored bytes.
+
+Fresh database creation previously committed 64 CREATE statements separately. Only a database with
+no schema objects now runs that same schema inside one explicit transaction. Any existing table,
+index, trigger or view retains the original script; subsequent ALTER/backfill/authority migrations
+are unchanged. Failure attempts rollback and close independently while preserving the original
+exception, including process-control errors. Additive test controls cover fresh transaction boundaries,
+first-source custody, existing/partial/view-only behavior, whole-schema rollback and cleanup failures.
+Independent source review identified the initially missing `_make_iterencode` identity check and
+view-only database distinction; both are corrected before publication, with additive controls.
+
+Tiny synthetic pure-function probes establish byte parity, ownership, fallback and compressed-fragment
+parity only. A small two-member row reduces Python calls from 16,241 to 2,851; paired helper medians
+were 0.3285/0.2189 ms and one-cable producer medians 11.5180/10.3578 ms. These are not full budget or
+Windows runtime evidence. A guarded pointer-cache experiment had no overall gain (10.0687/10.1192 ms)
+and was completely withdrawn. An anchor-write micro-optimization was likewise not implemented.
+The fresh-schema 64-to-one commit reduction is structural, with hosted timing still unverified.
+All current performance/byte/member gates, historical W60 bindings, workflow limits, golden/sample
+outputs and frontend DTO shapes remain unchanged. Fresh exact-head hosted validation remains required.
+
+Supervisor comment `6147190093` supplies additional same-job progress comparisons: 7de spends 14.8
+minutes from 80 to 89 percent and 30.3 from 89 to 96, versus 3.7/18.4 on passing `02d14897`. Its
+ingestion-cost explanation is explicitly a hypothesis. This evidence motivates reducing producer
+and repeated Store initialization work; exact slow-test attribution requires hosted duration output.
+The existing complete-default CI command and portable source-gate command add only `--durations=40`.
+This reports the slowest completed setup/call/teardown phases after the same full selection; a hard
+timeout can still prevent its end-of-session table. Independent source review confirms the invocation
+and portable guards accept this reporting flag. No command removal, job, runner, dependency, permission,
+exit-code handling, skip, scheduling or limit changes; the diagnostic is not a substitute gate.
