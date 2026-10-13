@@ -197,9 +197,77 @@ def _as_num(x, default=0):
     return int(f) if f.is_integer() else f
 
 
+def _ifname_prefix_replacement(match) -> str:
+    prefix = match.lastgroup
+    return "Vlan" + match.group("Vlan") if prefix == "Vlan" else prefix
+
+
+_IFNAME_TYPE_OWNER = type
+_IFNAME_STR_OWNER = str
+_IFNAME_RE_OWNER = re
+_IFNAME_RE_TYPE_OWNER = type(re)
+_IFNAME_REPLACEMENT_OWNER = _ifname_prefix_replacement
+_IFNAME_PREFIX_PATTERN = None
+_IFNAME_PREFIX_PATTERN_OWNER = None
+try:
+    _ifname_namespace = re.__dict__
+    _IFNAME_SUB_OWNER = _ifname_namespace["sub"]
+    _IFNAME_COMPILE_OWNER = _ifname_namespace["compile"]
+    _IFNAME_IGNORECASE_OWNER = _ifname_namespace["IGNORECASE"]
+    _IFNAME_PATTERN_TYPE_OWNER = _ifname_namespace["Pattern"]
+    _IFNAME_HELPER_OWNERS = tuple(
+        (name, _ifname_namespace[name])
+        for name in ("_compile", "_compile_repl", "_compile_template", "_subx")
+        if name in _ifname_namespace
+    )
+    _IFNAME_PREFIX_PATTERN = re.compile(
+        r"^(?:"
+        r"(?P<Eth>(?i:Ethernet))|"
+        r"(?P<Fa>(?i:FastEthernet))|"
+        r"(?P<Gi>(?i:GigabitEthernet))|"
+        r"(?P<Te>(?i:TenGigabitEthernet))|"
+        r"(?P<Fo>(?i:FortyGigabitEthernet))|"
+        r"(?P<Twe>(?i:TwentyFiveGig(?:abitEthernet|E)?))|"
+        r"(?P<Tw>(?i:TwoGigabitEthernet))|"
+        r"(?P<Fif>(?i:FiftyGig(?:abitEthernet|E)?))|"
+        r"(?P<Fi>(?i:FiveGigabitEthernet))|"
+        r"(?P<Ap>(?i:AppGigabitEthernet))|"
+        r"(?P<Hu>(?i:HundredGigE))|"
+        r"(?P<Po>[Pp]ort-[Cc]hannel)|"
+        r"(?P<Tu>(?i:Tunnel))|"
+        r"(?i:Vl(?P<Vlan>\d+)\b)"
+        r")"
+    )
+    if type(_IFNAME_PREFIX_PATTERN) is not _IFNAME_PATTERN_TYPE_OWNER:
+        _IFNAME_PREFIX_PATTERN = None
+    _IFNAME_PREFIX_PATTERN_OWNER = _IFNAME_PREFIX_PATTERN
+except Exception:
+    # Optional setup cannot turn an existing literal normalizer into an import failure.
+    _IFNAME_PREFIX_PATTERN = None
+
+
 def normalize_ifname(s: str) -> str:
     if not s: return ""
     x = s.strip()
+    if (_IFNAME_PREFIX_PATTERN is not None
+            and type is _IFNAME_TYPE_OWNER and str is _IFNAME_STR_OWNER
+            and type(s) is _IFNAME_STR_OWNER and type(x) is _IFNAME_STR_OWNER
+            and re is _IFNAME_RE_OWNER and type(re) is _IFNAME_RE_TYPE_OWNER
+            and _IFNAME_PREFIX_PATTERN is _IFNAME_PREFIX_PATTERN_OWNER
+            and _ifname_prefix_replacement is _IFNAME_REPLACEMENT_OWNER):
+        namespace = re.__dict__
+        if (namespace.get("sub") is _IFNAME_SUB_OWNER
+                and namespace.get("compile") is _IFNAME_COMPILE_OWNER
+                and namespace.get("IGNORECASE") is _IFNAME_IGNORECASE_OWNER
+                and namespace.get("Pattern") is _IFNAME_PATTERN_TYPE_OWNER):
+            for name, owner in _IFNAME_HELPER_OWNERS:
+                if namespace.get(name) is not owner:
+                    break
+            else:
+                # Original languages are disjoint; a replacement cannot enter a LATER rule.
+                # It may enter an earlier rule, so deliberately do not normalize recursively.
+                return _IFNAME_PREFIX_PATTERN.sub(_ifname_prefix_replacement, x)
+    # Literal original operations/errors for foreign input or changed optional owners.
     x = re.sub(r"^Ethernet",          "Eth", x, flags=re.IGNORECASE)
     x = re.sub(r"^FastEthernet",      "Fa",  x, flags=re.IGNORECASE)
     x = re.sub(r"^GigabitEthernet",   "Gi",  x, flags=re.IGNORECASE)

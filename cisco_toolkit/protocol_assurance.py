@@ -122,6 +122,18 @@ class _SnapshotDataPickler(pickle.Pickler):
     """Private C data encoder; foreign reductions are always refused, never delegated."""
 
     @staticmethod
+    def persistent_id(_value: Any) -> None:
+        # Refuse unsupported native fast paths before C dispatch; never emit a persistent ID.
+        if _value is None:
+            return None
+        kind = type(_value)
+        if kind is str or kind is dict or kind is list or kind is bool or kind is int:
+            return None
+        if kind is float and math.isfinite(_value):
+            return None
+        return _SNAPSHOT_PICKLER_REFUSAL_OWNER(_value)
+
+    @staticmethod
     def reducer_override(_value: Any) -> Any:
         raise TypeError("Snapshot binary optimization refuses foreign reductions")
 
@@ -129,6 +141,7 @@ class _SnapshotDataPickler(pickle.Pickler):
 _SNAPSHOT_PICKLER_BASE_OWNER = pickle.Pickler
 _SNAPSHOT_DATA_PICKLER_OWNER = _SnapshotDataPickler
 _SNAPSHOT_PICKLER_REFUSAL_OWNER = _SnapshotDataPickler.reducer_override
+_SNAPSHOT_PICKLER_PERSISTENT_OWNER = _SnapshotDataPickler.persistent_id
 _SNAPSHOT_BINARY_STREAM_OWNER = io.BytesIO
 # Source-reviewed CPython writers; all other runtimes keep the literal original codec.
 # This is an optional availability profile, never a test/suite/latency exemption.
@@ -153,6 +166,7 @@ def _snapshot_identity_binary(value: dict) -> bytes:
             and _SNAPSHOT_PICKLER_BASE_OWNER.__module__ == "_pickle"
             and _SnapshotDataPickler is _SNAPSHOT_DATA_PICKLER_OWNER
             and _SnapshotDataPickler.reducer_override is _SNAPSHOT_PICKLER_REFUSAL_OWNER
+            and _SnapshotDataPickler.persistent_id is _SNAPSHOT_PICKLER_PERSISTENT_OWNER
             and io.BytesIO is _SNAPSHOT_BINARY_STREAM_OWNER):
         try:
             with io.BytesIO() as stream:
