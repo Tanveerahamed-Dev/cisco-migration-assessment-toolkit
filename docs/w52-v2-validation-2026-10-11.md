@@ -779,3 +779,28 @@ JSON-only 413 handler. No download path calls the ingestion operation that raise
 the handler writes no content-disposition or filename. Only the current app blob binding is reconciled.
 Discovery, every existing mutation/refusal control and historical W60 bindings remain unchanged. This
 is a reviewed current-source binding update, not a new exemption, budget pass or generated-dist import.
+
+## First materialized-page budget pass and transport-proof fixture alignment
+
+Published `0518f33a` follows fresh canonical privacy and all twelve raw/decoded marker scans (62 commits,
+80 parent patches, zero matches/exceptions). CI `38389043907`, Linux 3.12 job `115268253289`, passes
+the early census and bound-source processes, then reports 4 failed / 1,359 passed / one warning in
+1,254.55 seconds. All unchanged performance and response gates pass: document growth 87.7 ms;
+first/warm page 186.8/194.1 ms; 1,317,481 complete response bytes; 200 returned items. Source/page
+bundle reads are 52.1/51.9 ms and page assembly 14.1/16.1 ms in inclusive telemetry. Ingest with
+carriage is 107,864.7 ms versus 3,698.7 without. This is a material upfront cost, not a free cache.
+Actual derivative payloads are 24,667,919 bytes at 100 VLANs and 42,815,611 at 200 (growth 18,147,692),
+below the separate 64,000,000-byte cap; these exclude SQLite overhead. The original raw section is
+1,809,504 bytes and its 100-to-200-VLAN growth is 297,203, within the unchanged raw-section gates.
+
+The four failures are only the carriage variants of
+`test_native_document_success_never_certifies_a_nonnative_transport`. Their assertion expects one
+genuine whole-document native validation during each page request; the new cold-page path correctly
+does none. The test is aligned by explicitly making a successful inventory request first, with a
+genuine document acceptance and complete native transport proof, then exercising the original four
+absent/false/nonboolean/exception carriage-provider outcomes. The original one-document-True, no-proof
+on fallback, restored positive carriage proof and absent-nonce assertions remain unchanged. This adds
+a real antecedent and cross-request isolation assertion rather than weakening the expected count to
+zero. The separate internal-document non-transport-proof controls remain. No product code, timing,
+byte, nonce, schema or validation gate changes. Default-suite/UTC tails were skipped by these failures;
+the budget pass does not certify the full candidate. Fresh final-head 15/15 remains required.

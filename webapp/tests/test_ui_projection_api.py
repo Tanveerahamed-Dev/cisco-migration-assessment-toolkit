@@ -2158,6 +2158,14 @@ def test_native_document_success_never_certifies_a_nonnative_transport(tmp_path,
         with monkeypatch.context() as changed:
             changed.setattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native", ActualDocument())
             changed.setattr(validator, "_NativeTransportValidator__native", None if outcome == "absent" else Declined())
+            if surface == "carriage":
+                # Materialized pages never admit the full document. Establish genuine document AND
+                # complete transport success in a preceding request, then require that neither proof
+                # leaks into a page whose own transport provider is absent/declines/faults.
+                admitted = client.get(url(sid, "inventory"), headers=headers)
+                assert admitted.status_code == 200, admitted.text[:300]
+                assert document_results == [True]
+                assert admitted.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.6"
             response = client.get(path, params=params, headers=headers)
             assert response.status_code == 200, response.text[:300]
             assert len(document_results) == 1 and document_results[0] is True  # Genuine provider, exact boolean.
