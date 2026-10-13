@@ -762,3 +762,20 @@ selected-window census, migration refusal, source hash/read count and the ingest
 No GC setting, skip, warm-up, threshold or full response validator changes. A tiny pure synthetic probe
 passes eight complete original/materialized DTO comparisons plus malformed-stream and member-boundary
 controls; this is not a local runtime or hosted performance result. Fresh final-head CI remains required.
+
+## Current-source download binding after 1f83892f
+
+Published `1f83892f` follows fresh canonical privacy and all twelve raw/decoded marker scans (61 commits,
+79 parent patches; zero matches/exceptions). CI `38387518019` stops every matrix leg in the early client
+artifact census. Linux 3.12 job `115263336238` reports 2 failed / 658 passed in 29.08 seconds; bound-source,
+carriage budget and full default tails are not reached. The new HTTP 413 handler/import changed the
+complete `webapp/backend/app.py` blob from `f3ee6dbc` to `d6029eef`, but its current-source download-chain
+binding was missed. The strict gate correctly withholds implicit download-name classification.
+
+The corrective review inspects the full existing frontend caller/factory/catalogue and backend route,
+header, `_send_file`, SPECS/docmeta chain. All seven other bound files and all download functions/scopes
+are unchanged; the only app changes are the dedicated `CarriagePreparationLimitError` import and its
+JSON-only 413 handler. No download path calls the ingestion operation that raises that exception, and
+the handler writes no content-disposition or filename. Only the current app blob binding is reconciled.
+Discovery, every existing mutation/refusal control and historical W60 bindings remain unchanged. This
+is a reviewed current-source binding update, not a new exemption, budget pass or generated-dist import.

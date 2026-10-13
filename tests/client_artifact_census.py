@@ -1382,7 +1382,9 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    "webapp/backend/app.py": "f3ee6dbca5e74fb7e3daa39fe0b26d25a115741a",
+    # G14 materialization adds only its dedicated HTTP 413 handler/import; the complete download
+    # caller/route/catalogue/_send_file chain was re-inspected and retains the same name owners.
+    "webapp/backend/app.py": "d6029eefc3369c1f3123ccf475ad3831f0ad9410",
     "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
     "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
 }
