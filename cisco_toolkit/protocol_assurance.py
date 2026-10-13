@@ -15,9 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import marshal
 import math
+import pickle
+import sys
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -115,13 +118,56 @@ def _snapshot_identity_text(value: Any) -> str:
     return json.dumps(value, sort_keys=False, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
 
 
+class _SnapshotDataPickler(pickle.Pickler):
+    """Private C data encoder; foreign reductions are always refused, never delegated."""
+
+    def reducer_override(self, _value: Any) -> Any:
+        raise TypeError("Snapshot binary optimization refuses foreign reductions")
+
+
+_SNAPSHOT_PICKLER_BASE_OWNER = pickle.Pickler
+_SNAPSHOT_DATA_PICKLER_OWNER = _SnapshotDataPickler
+_SNAPSHOT_PICKLER_REFUSAL_OWNER = _SnapshotDataPickler.reducer_override
+_SNAPSHOT_BINARY_STREAM_OWNER = io.BytesIO
+# Source-reviewed CPython writers; all other runtimes keep the literal original codec.
+# This is an optional availability profile, never a test/suite/latency exemption.
+_SNAPSHOT_C_PICKLER_PROFILES = (
+    (3, 10, 22), (3, 11, 17), (3, 12, 15), (3, 13, 16), (3, 14, 8),
+)
+
+
 def _snapshot_identity_binary(value: dict) -> bytes:
     """Fresh complete same-process typed encoding; never load, persist or accept it as custody.
 
-    Version 2 carries no reference/intern tags. Exact typed framing distinguishes every JSON key,
-    container and value, including signed zero. Audit/buffer hooks are not a sandbox boundary.
+    Optional source-reviewed C protocol4/fast mode emits a data tree without memo references. Its
+    native framing distinguishes every finite JSON key/container/value, including signed zero.
+    Unsupported/candidate-fault paths use real original marshal2 BEFORE the existing text guard.
+    Successful Pickler encoding omits the marshal-specific audit event; no fake event is emitted.
+    Original fallback audit/buffer hooks and namespace inspection are not a sandbox boundary.
     """
-    return marshal.dumps(dict(value), 2)
+    whole = dict(value)  # SAME original whole root copy, never normalize/fragment the input.
+    if (getattr(sys.implementation, "name", None) == "cpython"
+            and sys.version_info[:3] in _SNAPSHOT_C_PICKLER_PROFILES
+            and pickle.Pickler is _SNAPSHOT_PICKLER_BASE_OWNER
+            and _SNAPSHOT_PICKLER_BASE_OWNER.__module__ == "_pickle"
+            and _SnapshotDataPickler is _SNAPSHOT_DATA_PICKLER_OWNER
+            and _SnapshotDataPickler.reducer_override is _SNAPSHOT_PICKLER_REFUSAL_OWNER
+            and io.BytesIO is _SNAPSHOT_BINARY_STREAM_OWNER):
+        try:
+            with io.BytesIO() as stream:
+                encoder = _SnapshotDataPickler(stream, protocol=4, fix_imports=False,
+                                               buffer_callback=None)
+                encoder.fast = 1  # No memo PUT/GET: reread every noncyclic alias occurrence.
+                encoder.dump(whole)
+                observed = stream.getvalue()
+        except Exception:
+            pass  # Refusal is not a source verdict. Process-control BaseExceptions propagate.
+        else:
+            if type(observed) is bytes:
+                return observed
+    # OUTSIDE the discarded candidate exception suite: no Pickler notes/context leaks into a
+    # genuine original-codec error. This also preserves the required Buffer provider observation.
+    return marshal.dumps(whole, 2)
 
 
 def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
@@ -182,7 +228,7 @@ def _snapshot_content_proof(value: dict, source_sha256: str, source_bytes: int,
 def _matches_snapshot_content_proof(value: Any) -> bool:
     """Freshly encode every current value/type/position, never reuse a mutable read result.
 
-    Optional complete same-process version2 typed bytes prove equality only for a fully minted original graph.
+    Optional complete same-process data-tree typed bytes prove equality only for a fully minted original graph.
     Any mismatch or encoding exception keeps the complete JSON/scaffold/canonical path below. That original
     path also preserves canonically equivalent scalar subclasses and unsafe key/container fallback behavior.
     Like that guard this observation is not atomic over a concurrent writer.
