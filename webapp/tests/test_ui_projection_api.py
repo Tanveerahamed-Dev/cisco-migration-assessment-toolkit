@@ -3426,3 +3426,175 @@ def test_transport_serves_a_withheld_engine_identity_exactly_as_the_owner_wrote_
     assert body["engine"] == document["engine"]
     assert body["engine"]["snapshot_sha256"]["value"] is None and body["engine"]["snapshot_bytes"]["value"] is None
     assert body["identity"]["bytes"] > 0
+
+
+def test_carriage_output_copy_preserves_all_values_aliases_and_mutable_isolation(monkeypatch):
+    from backend import ui_projection_api as api
+
+    shared = [{"value": [False, 0, 0.0, -0.0, None, "\ud800", "\U0001f600", 2**100]}]
+    source = {"engine": {"nested": shared}, "carriage": {"first": shared, "second": shared},
+              "vocab": ["preserve", {"all": "fields"}]}
+    expected = deepcopy(source)
+
+    def generic_copy_forbidden(*_args):
+        raise AssertionError("Native page leaves reached generic copy dispatch")
+
+    monkeypatch.setattr(api, "deepcopy", generic_copy_forbidden)
+    copied = api._copy_carriage_document(source)
+    assert copied == expected and copied is not source
+    assert copied["carriage"]["first"] is copied["carriage"]["second"] is copied["engine"]["nested"]
+    assert copied["carriage"]["first"] is not shared
+    assert copied["carriage"]["first"][0]["value"][3].hex() == (-0.0).hex()
+    copied["carriage"]["first"][0]["value"].append("copy mutation")
+    assert shared == expected["carriage"]["first"]
+    source["vocab"][1]["all"] = "source mutation"
+    assert copied["vocab"][1] == expected["vocab"][1]
+
+
+@pytest.mark.parametrize("shape", ["list", "dict"])
+def test_carriage_output_copy_keeps_cycles_in_the_memo_without_admitting_them(shape):
+    from backend import ui_projection_api as api
+
+    source = [] if shape == "list" else {}
+    if shape == "list":
+        source.append(source)
+    else:
+        source["self"] = source
+    with pytest.raises(ValueError, match="cyclic"):
+        api._require_json_native(source)
+    expected, copied = deepcopy(source), api._copy_carriage_document(source)
+    slot = 0 if shape == "list" else "self"
+    assert type(copied) is type(expected) and copied is not source
+    assert copied[slot] is copied and expected[slot] is expected
+
+
+def test_carriage_output_copy_preserves_foreign_hooks_order_and_shared_memo():
+    from backend import ui_projection_api as api
+
+    events = []
+    shared = [{"mutable": True}]
+
+    class ForeignKey(str):
+        def __deepcopy__(self, memo):
+            events.append("key")
+            return str(self)
+
+    class ForeignList(list):
+        def __deepcopy__(self, memo):
+            events.append("value")
+            assert any(kept is shared for kept in memo[id(memo)])
+            return deepcopy(list(self), memo)
+
+    source = {"shared": shared, ForeignKey("foreign"): ForeignList([shared])}
+    expected = deepcopy(source)
+    expected_events = list(events)
+    events.clear()
+    copied = api._copy_carriage_document(source)
+    assert events == expected_events == ["value", "key"]
+    assert copied == expected
+    assert copied["shared"] is copied["foreign"][0] and copied["shared"] is not shared
+    assert expected["shared"] is expected["foreign"][0]
+
+
+@pytest.mark.parametrize("damage", ["scalar", "key", "delete-container", "replace-container"])
+def test_carriage_output_copy_keeps_native_memo_semantics_after_a_foreign_hook(damage):
+    from backend import ui_projection_api as api
+
+    later = "".join(("later", " scalar memo subject"))
+    later_key = "".join(("later", " key memo subject"))
+    shared, calls = [], []
+
+    class Hook:
+        def __deepcopy__(self, memo):
+            calls.append(True)
+            if damage == "scalar":
+                memo[id(later)] = {"from_memo": True}
+            elif damage == "key":
+                memo[id(later_key)] = "foreign replacement key"
+            elif damage == "delete-container":
+                del memo[id(shared)]
+            else:
+                memo[id(shared)] = ["foreign replacement"]
+            return "copied hook"
+
+    shared.append(Hook())
+    source = {"first": shared, "again": shared, "later": later, later_key: "value"}
+    expected = deepcopy(source)
+    assert calls == [True]
+    calls.clear()
+    copied = api._copy_carriage_document(source)
+    assert calls == [True] and copied == expected
+    assert copied["first"] is copied["again"] and copied["first"] is not shared
+    assert expected["first"] is expected["again"]
+    assert type(copied["later"]) is type(expected["later"])
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_carriage_output_copy_preserves_original_error_before_key_hook(error_type):
+    from backend import ui_projection_api as api
+
+    error = error_type("declared copy refusal")
+    events = []
+
+    class ForeignValue:
+        def __deepcopy__(self, _memo):
+            events.append("value")
+            raise error
+
+    class ForeignKey(str):
+        def __deepcopy__(self, _memo):
+            events.append("key")
+            raise AssertionError("Key copied before the failing value")
+
+    source = {ForeignKey("foreign"): ForeignValue()}
+    for copier in (deepcopy, api._copy_carriage_document):
+        events.clear()
+        with pytest.raises(error_type) as caught:
+            copier(source)
+        assert caught.value is error and events == ["value"]
+
+
+def test_carriage_route_owns_the_complete_producer_page_and_refuses_non_native_before_copy(
+        client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding"))
+    original, retained, copies = engine.ui_projection_carriage, [], []
+    copy_page = api._copy_carriage_document
+
+    def producer(*args, **kwargs):
+        result = original(*args, **kwargs)
+        retained.append(result)
+        return result
+
+    def observed(value):
+        result = copy_page(value)
+        assert result == value and result is not value
+        assert result["engine"] is not value["engine"]
+        assert result["carriage"] is not value["carriage"]
+        assert result["vocab"] is not value["vocab"]
+        copies.append(result)
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", producer)
+    monkeypatch.setattr(api, "_copy_carriage_document", observed)
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1})
+    assert response.status_code == 200 and len(copies) == len(retained) == 1
+    before = deepcopy(copies[0])
+    retained[0]["carriage"]["page"]["items"].clear()
+    retained[0]["engine"].clear()
+    retained[0]["vocab"].clear()
+    assert copies[0] == before and response.json()["payload"] == before["carriage"]
+
+    class ForeignList(list):
+        pass
+
+    def malformed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result["carriage"]["page"]["items"] = ForeignList(result["carriage"]["page"]["items"])
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", malformed)
+    with pytest.raises(ValueError, match="non-JSON-native"):
+        client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1})
+    assert len(copies) == 1

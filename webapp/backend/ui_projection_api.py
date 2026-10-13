@@ -621,6 +621,60 @@ def _require_json_native(value: Any) -> None:
     visit(value)
 
 
+def _copy_carriage_document(value: Any) -> Any:
+    """Own the already checked page without generic copy dispatch for every immutable JSON leaf.
+
+    Keep one memo for the complete output, including repeated mutable aliases and cycles. Foreign
+    values retain stdlib deepcopy and its hooks; this helper does not replace native/schema admission.
+    Snapshot inputs, cached source documents and validator schemas keep their existing copy paths.
+    """
+    memo: dict[int, Any] = {}
+    missing = object()
+    foreign_history = False
+
+    def clone(node: Any, recurse: Any) -> Any:
+        nonlocal foreign_history
+        if foreign_history:
+            # A real copy hook may have changed ANY memo entry. Preserve this interpreter's
+            # original lookup/atomic-dispatch semantics for every later value and key.
+            return deepcopy(node, memo)
+        kind = type(node)
+        if node is None or kind in (str, bool, int, float):
+            return node
+        identity = id(node)
+        retained = memo.get(identity, missing)
+        if retained is not missing:
+            return retained
+        if kind is dict:
+            result: Any = {}
+            memo[identity] = result
+            for key, child in node.items():
+                copied = recurse(child, recurse)  # Match stdlib's value-before-key hook order.
+                if not foreign_history and type(key) is str:
+                    result[key] = copied
+                else:
+                    result[recurse(key, recurse)] = copied
+        elif kind is list:
+            result = []
+            memo[identity] = result
+            for child in node:
+                result.append(recurse(child, recurse))
+        else:
+            foreign_history = True
+            return deepcopy(node, memo)
+        # A child hook can delete or replace its parent's entry; stdlib restores the completed copy.
+        memo[identity] = result
+        # Match deepcopy's keepalive rule if a foreign fallback removes a source object mid-copy.
+        try:
+            memo[id(memo)].append(node)
+        except KeyError:
+            memo[id(memo)] = [node]
+        return result
+
+    # Explicit recursion avoids a function/closure cycle retaining the complete source and copy memo.
+    return clone(value, clone)
+
+
 _DOCUMENT_VALIDATOR = _NativeTransportValidator(_OWNER, "document", transport_proof=False)
 _DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
 _PATH_DOCUMENT_VALIDATOR = _compiled_validator({"$ref": "#/$defs/PathDocument", "$defs": _DEFS})
@@ -1000,7 +1054,7 @@ def carriage_page(cache: _ProjectionCache, raw: bytes, binding: dict[str, Any], 
     produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission,
                                              transport_overhead=overhead)
     _require_json_native(produced)
-    document = deepcopy(produced)
+    document = _copy_carriage_document(produced)
     if (document["engine"] != main["engine"]
             or document["carriage"]["summary"] != rows[vlan_index]["selections"]["carriage"]
             or document["carriage"]["vlan_index"] != vlan_index
