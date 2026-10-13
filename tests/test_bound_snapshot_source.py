@@ -463,34 +463,19 @@ def test_non_json_buffer_provider_cannot_recreate_json_typed_binary_authority(mo
     assert bool(calls) is (sys.version_info >= (3, 12))
 
 
-def _actual_c_data_writer_available():
-    # Independent inspected runtime inventory, not a flag copied from the implementation.
-    return (sys.implementation.name == "cpython" and sys.version_info[:3] in {
-        (3, 10, 22), (3, 11, 17), (3, 12, 15), (3, 13, 16), (3, 14, 8),
-    } and pa.pickle.Pickler.__module__ == "_pickle")
+def _observe_real_original_marshal(monkeypatch):
+    marshal, calls = pa.marshal.dumps, []
 
+    def observed(whole, version):
+        assert type(whole) is dict and version == 2
+        calls.append(whole)
+        return marshal(whole, version)
 
-def _observe_real_data_dump_and_marshal(monkeypatch):
-    dump, marshal = pa._SnapshotDataPickler.dump, pa.marshal.dumps
-    calls = []
-
-    def observed_dump(self, value):
-        # Wrapping the inherited method keeps the guarded factory/refusal owners intact.
-        assert self.fast == 1
-        calls.append(("candidate", value))
-        return dump(self, value)
-
-    def observed_marshal(value, version):
-        calls.append(("marshal", value))
-        assert version == 2
-        return marshal(value, version)
-
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
-    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
+    monkeypatch.setattr(pa.marshal, "dumps", observed)
     return calls
 
 
-def test_real_c_data_lane_checks_live_copies_new_keys_aliases_and_late_mutation(monkeypatch):
+def test_real_original_codec_checks_live_copies_new_keys_aliases_and_late_mutation(monkeypatch):
     raw = (b'{"first":[],"second":[],"non_interned_key_abcdefghijklmnopqrstuvwxyz":'
            b'{"rows":[false,1,0.0,-0.0,null,"\\ud800","\\ud83d\\ude00"]}}')
     bound = pa.bind_snapshot_json_bytes(raw)
@@ -500,11 +485,11 @@ def test_real_c_data_lane_checks_live_copies_new_keys_aliases_and_late_mutation(
     new_key = ("_" + key)[1:]
     assert new_key == key and new_key is not key
     copied[new_key] = copied.pop(key)
-    # Replacing the final key preserves order on the genuine copied binder object/proof.
     copied["second"] = copied["first"]
     assert copied[new_key] is not keepalive and copied["first"] is not bound["first"]
     expected = _original_source(bound)
-    calls = _observe_real_data_dump_and_marshal(monkeypatch)
+    assert bound._bound_content_proof.binary_text == pa.marshal.dumps(dict(bound), 2)
+    calls = _observe_real_original_marshal(monkeypatch)
     encoder, complete = pa._snapshot_identity_binary, []
 
     def observed(value):
@@ -517,18 +502,16 @@ def test_real_c_data_lane_checks_live_copies_new_keys_aliases_and_late_mutation(
         assert actual == expected and all(type(actual[k]) is type(expected[k]) for k in expected)
     assert len(complete) == 4 and all(current is wanted for current, wanted in zip(
         complete, (bound, copied, copied, bound)))
-    lane = "candidate" if _actual_c_data_writer_available() else "marshal"
-    assert [kind for kind, _value in calls] == [lane] * 4
-    assert all(type(value) is dict and value is not subject and value[new_key] is subject[new_key]
-               for (_kind, value), subject in zip(calls, (bound, copied, copied, bound)))
-    assert bound._bound_content_proof.binary_text.startswith(b"\x80\x04") is _actual_c_data_writer_available()
+    assert len(calls) == 4
+    assert all(value is not subject and value[new_key] is subject[new_key]
+               for value, subject in zip(calls, (bound, copied, copied, bound)))
     copied[new_key]["rows"][-1] = "changed"
     assert _fallback_matches_original(copied, monkeypatch)["source_bound"] is False
     assert pa.bound_snapshot_source(bound) == expected
 
 
 @pytest.mark.parametrize("shape", ["scalar", "dict", "list", "recursive-key"])
-def test_foreign_hooks_and_copyreg_are_refused_before_original_codec(monkeypatch, shape):
+def test_original_codec_refuses_foreign_hooks_without_copyreg_or_reduction(monkeypatch, shape):
     import copyreg
     events = []
 
@@ -587,42 +570,29 @@ def test_foreign_hooks_and_copyreg_are_refused_before_original_codec(monkeypatch
              {"field": ForeignDict(a=1)} if shape == "dict" else
              {"field": ForeignList([1])} if shape == "list" else
              {(ForeignStr("raw_private_key"),): ForeignValue()})
-    dump, marshal = pa._SnapshotDataPickler.dump, pa.marshal.dumps
-    calls = []
-
-    def observed_dump(self, whole):
-        calls.append(("candidate", whole))
-        return dump(self, whole)
-
-    def observed_marshal(whole, version):
-        assert events == []  # Includes repr/value hooks on the failed recursive key.
-        calls.append(("marshal", whole))
-        return marshal(whole, version)
-
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
-    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
+    calls = _observe_real_original_marshal(monkeypatch)
     with pytest.raises(ValueError) as actual:
         pa._snapshot_identity_binary(value)
-    assert actual.value.__context__ is None
-    assert getattr(actual.value, "__notes__", []) == []
-    assert [kind for kind, _ in calls] == (["candidate", "marshal"] if _actual_c_data_writer_available()
-                                          else ["marshal"])
-    assert len(calls) == 1 or calls[0][1] is calls[1][1]
+    assert actual.value.__context__ is None and getattr(actual.value, "__notes__", []) == []
+    assert len(calls) == 1 and calls[0] is not value
     assert events == []
 
 
 @pytest.mark.parametrize("kind", ["bytearray", "bytearray-subclass", "buffer", "released", "noncontiguous"])
-def test_native_unsupported_data_preserves_same_whole_original_fallback(monkeypatch, kind):
+def test_original_codec_preserves_buffer_domains_and_same_complete_copy(monkeypatch, kind):
+    callbacks = []
+
     class ForeignBytearray(bytearray):
         def __reduce_ex__(self, _protocol):
+            callbacks.append("reduce_ex")
             raise AssertionError("foreign bytearray reduction executed")
 
     value = (bytearray(b"value") if kind == "bytearray" else ForeignBytearray(b"value")
-             if kind == "bytearray-subclass" else pa.pickle.PickleBuffer(
-                 memoryview(b"value")[::2] if kind == "noncontiguous" else b"value"))
+             if kind == "bytearray-subclass" else memoryview(b"value")[::2]
+             if kind == "noncontiguous" else memoryview(b"value"))
     if kind == "released":
         value.release()
-    whole = {"field": value}
+    whole = {"field": value, "tail": [False, 0, -0.0, None]}
     original = pa.marshal.dumps
     try:
         expected = original(dict(whole), 2)
@@ -630,94 +600,61 @@ def test_native_unsupported_data_preserves_same_whole_original_fallback(monkeypa
         expected_error = (type(error), error.args)
     else:
         expected_error = None
-    calls = _observe_real_data_dump_and_marshal(monkeypatch)
+    original_callbacks = list(callbacks)
+    callbacks.clear()
+    calls = _observe_real_original_marshal(monkeypatch)
     if expected_error is not None:
         with pytest.raises(expected_error[0]) as caught:
             pa._snapshot_identity_binary(whole)
-        assert caught.value.args == expected_error[1]
-        assert caught.value.__context__ is None
+        assert caught.value.args == expected_error[1] and caught.value.__context__ is None
     else:
         assert pa._snapshot_identity_binary(whole) == expected
-    assert [mode for mode, _ in calls] == (["candidate", "marshal"] if _actual_c_data_writer_available()
-                                         else ["marshal"])
-    assert len(calls) == 1 or calls[0][1] is calls[1][1]
-    assert calls[-1][1]["field"] is value
+    assert len(calls) == 1 and calls[0] is not whole
+    assert calls[0]["field"] is value and calls[0]["tail"] is whole["tail"]
+    assert callbacks == original_callbacks == []
 
 
-def test_protocol4_wrapper_refusal_adds_no_python_buffer_export(monkeypatch):
-    calls = []
+def test_original_codec_preserves_one_genuine_root_copy_hook_trace(monkeypatch):
+    events = []
 
-    class Buffer:
-        def __buffer__(self, flags):
-            calls.append(flags)
-            return memoryview(b"value")
+    class Source(dict):
+        def __iter__(self):
+            events.append("iter")
+            return dict.__iter__(self)
 
-    # On older interpreters use a real native exporter; the old direct-Buffer test remains literal.
-    value = pa.pickle.PickleBuffer(Buffer() if sys.version_info >= (3, 12) else memoryview(b"value"))
-    construction_calls = list(calls)
-    dump, marshal = pa._SnapshotDataPickler.dump, pa.marshal.dumps
-    whole = {"field": value}
-    try:
-        original_result = marshal(dict(whole), 2)
-    except Exception as error:
-        original_error = (type(error), error.args)
-    else:
-        original_error = None
-    original_export_trace = calls[len(construction_calls):]
-    calls[:] = construction_calls  # This pure exporter has only the declared trace side effect.
-    codec_calls = []
+        def keys(self):
+            events.append("keys")
+            return dict.keys(self)
 
-    def observed_dump(self, whole):
-        codec_calls.append(("candidate", whole))
-        try:
-            return dump(self, whole)
-        finally:
-            assert calls == construction_calls
+        def __getitem__(self, key):
+            events.append(("get", key))
+            return dict.__getitem__(self, key)
 
-    def observed_marshal(whole, version):
-        assert calls == construction_calls
-        codec_calls.append(("marshal", whole))
-        return marshal(whole, version)
-
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
-    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
-    if original_error is not None:
-        with pytest.raises(original_error[0]) as caught:
-            pa._snapshot_identity_binary(whole)
-        assert caught.value.args == original_error[1] and caught.value.__context__ is None
-    else:
-        assert pa._snapshot_identity_binary(whole) == original_result
-    assert [mode for mode, _ in codec_calls] == (["candidate", "marshal"] if _actual_c_data_writer_available()
-                                               else ["marshal"])
-    assert len(codec_calls) == 1 or codec_calls[0][1] is codec_calls[1][1]
-    assert codec_calls[-1][1]["field"] is value
-    # Exact original return/error AND exporter trace, never a success or borrowed-count assumption.
-    assert calls == construction_calls + original_export_trace
+    value = Source(field=[False, 1, -0.0], tail={"last": "value"})
+    original_whole = dict(value)
+    original = pa.marshal.dumps(original_whole, 2)
+    expected_events = list(events)
+    assert ("get", "tail") in expected_events  # Genuine mapping-copy path, not a flags-only fake.
+    events.clear()
+    calls = _observe_real_original_marshal(monkeypatch)
+    assert pa._snapshot_identity_binary(value) == original
+    assert events == expected_events and len(calls) == 1
+    assert calls[0] is not value and type(calls[0]) is dict
+    assert calls[0]["field"] is value["field"] and calls[0]["tail"] is value["tail"]
 
 
 @pytest.mark.parametrize("outer", [False, True])
-def test_discarded_candidate_notes_do_not_replace_original_error_context(monkeypatch, outer):
-    class ForeignValue:
-        def __reduce_ex__(self, _protocol):
-            raise AssertionError("foreign reducer executed")
-
-    # A successfully encoded native recursive key precedes a failing value/error-note path.
-    key = (("raw_private_key", frozenset({("safe", 1)})),)
-    value = {key: ForeignValue()}
+def test_original_codec_error_retains_exact_object_context_and_notes(monkeypatch, outer):
+    value = {"field": [False, 1, "value"]}
     original_error = OSError("declared original encoder refusal")
     ambient = RuntimeError("deliberately pre-existing outer context")
-    dump, calls = pa._SnapshotDataPickler.dump, []
-
-    def observed_dump(self, whole):
-        calls.append(("candidate", whole))
-        return dump(self, whole)
+    calls = []
 
     def refused_marshal(whole, version):
-        calls.append(("marshal", whole))
-        assert version == 2
+        calls.append(whole)
+        assert type(whole) is dict and version == 2
         raise original_error
 
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
     monkeypatch.setattr(pa.marshal, "dumps", refused_marshal)
     if outer:
         try:
@@ -731,108 +668,73 @@ def test_discarded_candidate_notes_do_not_replace_original_error_context(monkeyp
     assert caught.value is original_error and caught.value.args == ("declared original encoder refusal",)
     assert caught.value.__context__ is (ambient if outer else None)
     assert getattr(caught.value, "__notes__", []) == []
-    assert [mode for mode, _ in calls] == (["candidate", "marshal"] if _actual_c_data_writer_available()
-                                         else ["marshal"])
-    assert len(calls) == 1 or calls[0][1] is calls[1][1]
-
-
-@pytest.mark.parametrize("fault", ["construction", "allocation", "dump", "nonbytes"])
-def test_real_candidate_fault_preserves_one_original_codec(monkeypatch, fault):
-    init, dump, marshal = pa._SnapshotDataPickler.__init__, pa._SnapshotDataPickler.dump, pa.marshal.dumps
-    candidate_calls, legacy_calls = [], []
-    value = {"rows": [False, 1, 0.0, "value"]}
-    expected = marshal(dict(value), 2)
-
-    def observed_init(self, stream, *args, **kwargs):
-        candidate_calls.append("construction")
-        init(self, stream, *args, **kwargs)
-        self.test_stream = stream
-        if fault in ("construction", "allocation"):
-            raise (MemoryError if fault == "allocation" else OSError)("candidate construction")
-
-    def observed_dump(self, whole):
-        candidate_calls.append("dump")
-        dump(self, whole)  # Genuine C operation before either fault below.
-        if fault == "dump":
-            raise OSError("candidate dump")
-        if fault == "nonbytes":
-            self.test_stream.getvalue = lambda: bytearray(b"unsupported result")
-
-    def observed_marshal(whole, version):
-        legacy_calls.append(whole)
-        return marshal(whole, version)
-
-    monkeypatch.setattr(pa._SnapshotDataPickler, "__init__", observed_init)
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
-    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
-    assert pa._snapshot_identity_binary(value) == expected
-    expected_calls = []
-    if _actual_c_data_writer_available():
-        expected_calls = (["construction"] if fault in ("construction", "allocation") else
-                          ["construction", "dump"])
-    assert candidate_calls == expected_calls
-    assert len(legacy_calls) == 1 and legacy_calls[0] is not value and legacy_calls[0]["rows"] is value["rows"]
-
-
-@pytest.mark.parametrize("drift", ["profile", "base", "factory", "refusal", "stream"])
-def test_unavailable_or_drifted_candidate_uses_original_without_invoking_it(monkeypatch, drift):
-    value = {"field": [1, False]}
-    marshal, calls = pa.marshal.dumps, []
-    expected = marshal(dict(value), 2)
-
-    def unexpected(*_args, **_kwargs):
-        raise AssertionError("unavailable candidate invoked")
-
-    if drift == "profile":
-        monkeypatch.setattr(pa, "_SNAPSHOT_C_PICKLER_PROFILES", ())
-        monkeypatch.setattr(pa._SnapshotDataPickler, "dump", unexpected)
-    elif drift == "base":
-        monkeypatch.setattr(pa.pickle, "Pickler", unexpected)
-    elif drift == "factory":
-        monkeypatch.setattr(pa, "_SnapshotDataPickler", unexpected)
-    elif drift == "refusal":
-        monkeypatch.setattr(pa._SnapshotDataPickler, "reducer_override", unexpected)
-        monkeypatch.setattr(pa._SnapshotDataPickler, "dump", unexpected)
-    else:
-        monkeypatch.setattr(pa.io, "BytesIO", unexpected)
-
-    def observed_marshal(whole, version):
-        calls.append(whole)
-        return marshal(whole, version)
-
-    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
-    assert pa._snapshot_identity_binary(value) == expected
     assert len(calls) == 1 and calls[0] is not value and calls[0]["field"] is value["field"]
 
 
-def test_candidate_process_control_error_is_preserved_without_original_fallback(monkeypatch):
-    dump, marshal, calls = pa._SnapshotDataPickler.dump, pa.marshal.dumps, []
-    stopped = KeyboardInterrupt("declared candidate interruption")
+@pytest.mark.parametrize("fault", ["allocation", "runtime", "nonbytes", "incomplete"])
+def test_original_codec_fault_retains_complete_json_and_scaffold_fallback(monkeypatch, fault):
+    bound = pa.bind_snapshot_json_bytes(b'{"nested":{"rows":[false,1,0.0]},"last":"value"}')
+    marshal, calls = pa.marshal.dumps, []
 
-    def observed_dump(self, whole):
-        dump(self, whole)
-        raise stopped
+    def observed_marshal(whole, version):
+        assert type(whole) is dict and version == 2
+        assert whole is not bound and whole["nested"] is bound["nested"]
+        calls.append(whole)
+        result = marshal(whole, version)  # Genuine original native operation before declared fault.
+        if fault in ("allocation", "runtime"):
+            raise (MemoryError if fault == "allocation" else OSError)("declared original codec fault")
+        if fault == "nonbytes":
+            return bytearray(result)
+        return result + b"declared incomplete observation"
+
+    monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
+    assert _fresh_encoder_matches_original(bound, monkeypatch)["source_bound"] is True
+    assert len(calls) == 2  # EACH source read attempts the complete original codec before fallback.
+
+
+@pytest.mark.parametrize("drift", ["profile", "base", "factory", "refusal", "stream"])
+def test_removed_encoder_namespace_cannot_intercept_original_codec(monkeypatch, drift):
+    value = {"field": [1, False], "tail": {"last": "value"}}
+    original = pa.marshal.dumps(dict(value), 2)
+    intercepted = []
+
+    def unexpected(*args, **kwargs):
+        intercepted.append((args, kwargs))
+        raise AssertionError("removed optional encoder invoked")
+
+    name, replacement = {
+        "profile": ("_SNAPSHOT_C_PICKLER_PROFILES", ()),
+        "base": ("pickle", SimpleNamespace(Pickler=unexpected)),
+        "factory": ("_SnapshotDataPickler", unexpected),
+        "refusal": ("_SNAPSHOT_PICKLER_REFUSAL_OWNER", unexpected),
+        "stream": ("io", SimpleNamespace(BytesIO=unexpected)),
+    }[drift]
+    assert not hasattr(pa, name)
+    monkeypatch.setattr(pa, name, replacement, raising=False)
+    calls = _observe_real_original_marshal(monkeypatch)
+    assert pa._snapshot_identity_binary(value) == original
+    assert intercepted == [] and len(calls) == 1
+    assert calls[0] is not value and calls[0]["field"] is value["field"]
+
+
+def test_original_codec_process_control_error_is_preserved_without_second_call(monkeypatch):
+    marshal, calls = pa.marshal.dumps, []
+    value = {"rows": [1]}
+    stopped = KeyboardInterrupt("declared original codec interruption")
 
     def observed_marshal(whole, version):
         calls.append(whole)
-        return marshal(whole, version)
+        assert type(whole) is dict and whole is not value and whole["rows"] is value["rows"] and version == 2
+        marshal(whole, version)  # Genuine native operation before the process-control exception.
+        raise stopped
 
-    monkeypatch.setattr(pa._SnapshotDataPickler, "dump", observed_dump)
     monkeypatch.setattr(pa.marshal, "dumps", observed_marshal)
-    if _actual_c_data_writer_available():
-        with pytest.raises(KeyboardInterrupt) as caught:
-            pa._snapshot_identity_binary({"rows": [1]})
-        assert caught.value is stopped and calls == []
-    else:
-        assert pa._snapshot_identity_binary({"rows": [1]}) == marshal({"rows": [1]}, 2)
-        assert len(calls) == 1
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pa._snapshot_identity_binary(value)
+    assert caught.value is stopped and len(calls) == 1
 
 
-def test_stateless_refuser_identity_is_used_by_the_real_c_writer(monkeypatch):
-    descriptor = pa._SnapshotDataPickler.__dict__["reducer_override"]
-    owner = pa._SNAPSHOT_PICKLER_REFUSAL_OWNER
-    assert type(descriptor) is staticmethod and descriptor.__func__ is owner
-    assert pa._SnapshotDataPickler.reducer_override is owner and getattr(owner, "__self__", None) is None
+def test_original_native_refusal_adds_no_foreign_reduction_or_attribute_hooks():
     hooks = []
 
     class Foreign:
@@ -850,22 +752,20 @@ def test_stateless_refuser_identity_is_used_by_the_real_c_writer(monkeypatch):
             return "foreign"
 
     foreign = Foreign()
-    with pa.io.BytesIO() as stream:
-        encoder = pa._SnapshotDataPickler(stream, protocol=4, fix_imports=False, buffer_callback=None)
-        encoder.fast = 1
-        assert type(encoder) is pa._SNAPSHOT_DATA_PICKLER_OWNER
-        assert encoder.reducer_override is owner and getattr(encoder.reducer_override, "__self__", None) is None
-        if _actual_c_data_writer_available():
-            with pytest.raises(TypeError, match="Snapshot binary optimization refuses foreign reductions") as caught:
-                encoder.dump({"field": foreign})  # REAL C dump resolves and invokes the exact static callable.
-            current = caught.value.__traceback__
-            while current.tb_next is not None:
-                current = current.tb_next
-            assert current.tb_frame.f_code is owner.__code__
-            assert current.tb_frame.f_locals["_value"] is foreign and "self" not in current.tb_frame.f_locals
-        else:
-            calls = _observe_real_data_dump_and_marshal(monkeypatch)
-            with pytest.raises(ValueError):
-                pa._snapshot_identity_binary({"field": foreign})
-            assert [mode for mode, _value in calls] == ["marshal"]
+    value = {"field": foreign}
+    try:
+        pa.marshal.dumps(dict(value), 2)
+    except Exception as error:
+        expected_error = (type(error), error.args)
+    else:
+        pytest.fail("genuine original codec must refuse the foreign object")
+    with pytest.raises(expected_error[0]) as caught:
+        pa._snapshot_identity_binary(value)
+    assert caught.value.args == expected_error[1] and caught.value.__context__ is None
+    current = caught.value.__traceback__
+    while current.tb_next is not None:
+        current = current.tb_next
+    assert current.tb_frame.f_code is pa._snapshot_identity_binary.__code__
+    whole = current.tb_frame.f_locals["whole"]
+    assert type(whole) is dict and whole is not value and whole["field"] is foreign
     assert hooks == []

@@ -15,12 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import io
 import json
 import marshal
 import math
-import pickle
-import sys
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -118,86 +115,14 @@ def _snapshot_identity_text(value: Any) -> str:
     return json.dumps(value, sort_keys=False, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
 
 
-class _SnapshotDataPickler:
-    """Ordinary Python ownership of one exact C data encoder, never a C subtype."""
-
-    def __init__(self, *args, **kwargs):
-        native = _SNAPSHOT_PICKLER_BASE_OWNER(*args, **kwargs)
-        native.persistent_id = _SNAPSHOT_PICKLER_PERSISTENT_OWNER
-        self._native = native
-
-    @property
-    def fast(self):
-        return self._native.fast
-
-    @fast.setter
-    def fast(self, value):
-        self._native.fast = value
-
-    def dump(self, value):
-        return self._native.dump(value)
-
-    @staticmethod
-    def persistent_id(_value: Any) -> None:
-        # Refuse unsupported native fast paths before C dispatch; never emit a persistent ID.
-        if _value is None:
-            return None
-        kind = type(_value)
-        if kind is str or kind is dict or kind is list or kind is bool or kind is int:
-            return None
-        if kind is float and math.isfinite(_value):
-            return None
-        return _SNAPSHOT_PICKLER_REFUSAL_OWNER(_value)
-
-    @staticmethod
-    def reducer_override(_value: Any) -> Any:
-        raise TypeError("Snapshot binary optimization refuses foreign reductions")
-
-
-_SNAPSHOT_PICKLER_BASE_OWNER = pickle.Pickler
-_SNAPSHOT_DATA_PICKLER_OWNER = _SnapshotDataPickler
-_SNAPSHOT_PICKLER_REFUSAL_OWNER = _SnapshotDataPickler.reducer_override
-_SNAPSHOT_PICKLER_PERSISTENT_OWNER = _SnapshotDataPickler.persistent_id
-_SNAPSHOT_BINARY_STREAM_OWNER = io.BytesIO
-# Source-reviewed CPython writers; all other runtimes keep the literal original codec.
-# This is an optional availability profile, never a test/suite/latency exemption.
-_SNAPSHOT_C_PICKLER_PROFILES = (
-    (3, 10, 22), (3, 11, 17), (3, 12, 15), (3, 13, 16), (3, 14, 8),
-)
-
-
 def _snapshot_identity_binary(value: dict) -> bytes:
     """Fresh complete same-process typed encoding; never load, persist or accept it as custody.
 
-    Optional source-reviewed C protocol4/fast mode emits a data tree without memo references. Its
-    native framing distinguishes every finite JSON key/container/value, including signed zero.
-    Unsupported/candidate-fault paths use real original marshal2 BEFORE the existing text guard.
-    Successful Pickler encoding omits the marshal-specific audit event; no fake event is emitted.
-    Original fallback audit/buffer hooks and namespace inspection are not a sandbox boundary.
+    The original marshal2 codec reads the entire current payload on every invocation. Its genuine
+    audit/buffer hooks and errors remain intact, ahead of the unchanged complete text/scaffold guard.
+    This is a same-process content comparison, not a sandbox or artifact custody boundary.
     """
     whole = dict(value)  # SAME original whole root copy, never normalize/fragment the input.
-    if (getattr(sys.implementation, "name", None) == "cpython"
-            and sys.version_info[:3] in _SNAPSHOT_C_PICKLER_PROFILES
-            and pickle.Pickler is _SNAPSHOT_PICKLER_BASE_OWNER
-            and _SNAPSHOT_PICKLER_BASE_OWNER.__module__ == "_pickle"
-            and _SnapshotDataPickler is _SNAPSHOT_DATA_PICKLER_OWNER
-            and _SnapshotDataPickler.reducer_override is _SNAPSHOT_PICKLER_REFUSAL_OWNER
-            and _SnapshotDataPickler.persistent_id is _SNAPSHOT_PICKLER_PERSISTENT_OWNER
-            and io.BytesIO is _SNAPSHOT_BINARY_STREAM_OWNER):
-        try:
-            with io.BytesIO() as stream:
-                encoder = _SnapshotDataPickler(stream, protocol=4, fix_imports=False,
-                                               buffer_callback=None)
-                encoder.fast = 1  # No memo PUT/GET: reread every noncyclic alias occurrence.
-                encoder.dump(whole)
-                observed = stream.getvalue()
-        except Exception:
-            pass  # Refusal is not a source verdict. Process-control BaseExceptions propagate.
-        else:
-            if type(observed) is bytes:
-                return observed
-    # OUTSIDE the discarded candidate exception suite: no Pickler notes/context leaks into a
-    # genuine original-codec error. This also preserves the required Buffer provider observation.
     return marshal.dumps(whole, 2)
 
 
