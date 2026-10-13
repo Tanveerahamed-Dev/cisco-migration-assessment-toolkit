@@ -965,3 +965,25 @@ External network latency, client disconnection and peak RSS are unmeasured. Late
 and subsequent retry pass on the actual HTTP route. No upload duration ceiling, skip, warm-up or
 relaxed assertion was added. This documentation update requires its own fresh final-head checks; final
 qualification and measurements belong to the closing round-3 summary and the final PR Checks.
+
+### Actual fixture dependency engages webapp CI
+
+Measured-record head `81327be4` follows fresh privacy/history scans (66 commits, 84 parent patches,
+zero matches/exceptions). Its expanded focused G14 step and whole webapp run `38454975703` pass.
+The latter's backend job `115495532189` measures 61,250.4 ms for the actual multipart request,
+49,349.1 ms staging and 5,478.6 ms part publication excluding commit; every byte figure matches
+the first round-3 observation above. These are separate hosted observations, not a claimed speedup
+caused by the documentation-only change.
+
+Full Linux 3.13 job `115495732289` in CI `38454975455` then reports 1 failed / 19,201 passed / 164 skips /
+three expected failures / 26 subtests in 3,704.07 seconds. The sole failure is the unchanged
+`test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci`: the new multipart test imports
+`tests/test_vlan_carriage_budget.py`, but that helper was omitted from webapp CI's relevant-path policy.
+The strict guard correctly catches a future coverage gap when that imported fixture changes.
+
+The correction adds only that exact helper path to the classifier's owner tuple and identical
+main-push filter. PR triggering stays unconditional, and no assertion, exclusion, timeout or budget
+changes. The imported fixture and production behavior are unchanged. A tiny extracted pure-function
+probe checks the new path, unchanged unrelated-path behavior and exact workflow/owner policy parity;
+full runtime validation remains hosted. The failed result is retained and final-head 15/15 still
+precedes the round-3 summary and independent re-review.

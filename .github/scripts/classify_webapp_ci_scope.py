@@ -44,6 +44,7 @@ RELEVANT_PATH_FILTERS = (
     "tests/golden/**",
     "tests/synthetic_fixtures.py",
     "tests/test_vlan_carriage.py",
+    "tests/test_vlan_carriage_budget.py",
     "tests/test_ui_projection_vlan_carriage.py",
     "tests/pytest_invocation_reader.py",
     ".github/workflows/webapp-ci.yml",
