@@ -3261,6 +3261,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
 
 #: Suffix literals that are not client artifact names, keyed by (file, literal), with the reason.
 NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
+    (".github/scripts/run_carriage_compute_pair.py", "-source-identity.json"):
+        _CI_EVIDENCE + "; standalone diagnostic source commit, tree and ref identities",
     (".github/scripts/frontend_artifact_receive.py", "-payload.json"): _CI_EVIDENCE,
     (".github/scripts/frontend_artifact_receive.py", ".stdout.json"): _CI_EVIDENCE,
     (".github/scripts/refresh_visual_baseline_pins.py", "-728.png"):

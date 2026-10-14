@@ -1267,3 +1267,13 @@ Independent static review required the standalone checkout and preservation of
 the preceding GC window. The next evidence is the corrected unchanged-source pair;
 only a demonstrated cause/retention correction followed by the original complete
 gates with margin and all fifteen checks can close round 6.
+
+The corrected diagnostic publication `5ff0c341` also exposed a missing scaffold
+classification in ordinary CI `38643201045`: Linux 3.12 job `116123585236` (and
+3.13/3.14 jobs `116123585175` / `116123585415`) stopped at 1 failed / 659 passed
+in the artifact-census selection, before the budget selections. The added writer
+count was correct, but its exact `-source-identity.json` filename suffix was not
+registered. Its narrow CI-evidence entry is corrected without changing the census
+assertion or any old classification. This failure does not affect the historical
+subjects in paired run `38643201157`; they contain neither diagnostic writer.
+That pair remains in progress, and no source fix or acceptance is inferred.
