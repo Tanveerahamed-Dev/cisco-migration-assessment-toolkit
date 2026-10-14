@@ -197,6 +197,8 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
     payload = _small_snapshot_bytes()
     campaign_id = store.create_campaign("Accepted upload disconnect control")["id"]
     disconnected, handler_finished, ready = Event(), Event(), Event()
+    seed_finished, retry_finished = Event(), Event()
+    phase_completions = {b"seed": seed_finished, b"retry": retry_finished}
     target_peer = []
     server_errors = []
 
@@ -211,6 +213,13 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
                 disconnected.set()
 
     async def observed_app(scope, receive, send):
+        # Receiving 201 does not imply that the outer middleware's finally has run.
+        # Capture the exact request's phase at entry, independently of TCP peer reuse.
+        completion = None
+        if (scope.get("type") == "http" and scope.get("method") == "POST"
+                and scope.get("path") == f"/api/campaigns/{campaign_id}/snapshots"):
+            phase = dict(scope.get("headers") or ()).get(b"x-carriage-lifecycle-phase")
+            completion = phase_completions.get(phase)
         try:
             await app(scope, receive, send)
         finally:
@@ -218,6 +227,8 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
                     and tuple(scope.get("client") or ()) == target_peer[0]
                     and scope.get("path") == f"/api/campaigns/{campaign_id}/snapshots"):
                 handler_finished.set()
+            if completion is not None:
+                completion.set()
 
     class ObservedServer(uvicorn.Server):
         async def startup(self, sockets=None):
@@ -247,8 +258,12 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
     try:
         assert ready.wait(20), f"the real Uvicorn server did not start: {server_errors!r}"
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=20, trust_env=False) as client:
+            assert not seed_finished.is_set()
+            client.headers["x-carriage-lifecycle-phase"] = "seed"
             committed = _upload(client, campaign_id, payload, "committed before disconnect")
             assert committed.status_code == 201
+            assert seed_finished.wait(20), "the initial upload's ASGI cleanup did not finish"
+            del client.headers["x-carriage-lifecycle-phase"]
             existing_id = committed.json()["id"]
             metadata_before = client.get(f"/api/snapshots/{existing_id}")
             raw_before = client.get(f"/api/snapshots/{existing_id}/raw")
@@ -330,8 +345,12 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
                     (accepted_id,),
                 ).fetchone()) == (1, 2)
             monkeypatch.setattr(engine, "prepare_carriage_projection", original)
+            assert not retry_finished.is_set()
+            client.headers["x-carriage-lifecycle-phase"] = "retry"
             retry = _upload(client, campaign_id, payload, "later deliberate upload")
             assert retry.status_code == 201 and retry.json()["id"] != accepted_id
+            assert retry_finished.wait(20), "the later upload's ASGI cleanup did not finish"
+            del client.headers["x-carriage-lifecycle-phase"]
             assert _free_heavy_slots(app) == 1
             assert all(spool.closed for spool in body_spools + upload_spools)
             assert len(store.list_snapshots(campaign_id)) == 3

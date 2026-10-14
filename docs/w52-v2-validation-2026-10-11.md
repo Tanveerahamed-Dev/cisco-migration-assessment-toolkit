@@ -1064,3 +1064,40 @@ schema pins, golden/sample and frontend bytes remain unchanged. The two ingest w
 are classified under their existing private-temp artifact families, retaining the original async
 route subjects; the download owner chain is unchanged and its full app-source proof is refreshed.
 No new SQLite table, schema-observer exemption or release authority is introduced.
+
+### First round-4 hosted evidence and ASGI-completion correction
+
+Published `510a92c50c3552221a11a287f890fb08315cc6cc` follows passing canonical privacy and all twelve
+marker scans (68 commits / 86 parent patches, no exceptions or errors). Whole webapp run
+`38520450353`, including backend job `115708835498`, succeeds; its new seed-saturation and real
+late-disconnect controls pass there. Linux 3.11/3.13 full jobs report 19,088/19,212 passes respectively,
+with their existing skips and expected failures. These successes do not erase the failed Windows gate.
+
+The actual multipart backend observation is 49,896.5 ms total, 40,743.7 ms staging and 3,750.4 ms
+part publication excluding commit. Payload/stage/framing remain 43,951,249 / 52,563,524 / 8,612,275
+bytes. Its shared-process RSS samples are start 857,735,168, highest 1,471,537,152 and end
+1,295,134,720 bytes: 473 samples at a nominal 100 ms interval, zero sampling errors and sampler
+stopped. The separately labeled process-lifetime getrusage high-water readings are 883,798,016
+before and 1,471,082,496 after bytes. The two methods retain their distinct figures; no causal
+reconciliation or hard RAM bound is inferred. These are exact prior-head observations; current-head
+numbers and full qualification still belong to the closing round-4 summary and hosted logs.
+
+Windows source/frontend job `115708700346` in portable run `38520450047` FAILS in the Python phase:
+`test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_releases_resources`, then
+line 335, sees `_free_heavy_slots(app) == 0` immediately after the final ordinary retry returns 201.
+The actual disconnected request had already passed its explicit outer-handler completion, full
+publication, spool closure and free-slot assertions. The later frontend/build tail is not reached.
+This failure remains negative evidence on `510a92c5`.
+
+An HTTP client can receive the completed response before the outer body middleware's `finally`
+finishes: that middleware still awaits spool closure before releasing its heavy-work semaphore.
+The correction therefore adds request-specific outer-ASGI completion events for the initial upload
+and final deliberate retry. Test-only phase headers select an event at request entry; the event is
+set only when the entire app/middleware call has returned. Each existing 201 assertion is followed
+by a bounded completion wait before inspecting resources. The physical raw-TCP disconnect barrier
+and every existing snapshot, spool, slot and raw/source assertion stay unchanged. Static AST
+comparison retains all 67 prior assertions and 14 prior timeout/wait calls; four assertions and two
+additional 20-second completion waits are added. There are no sleeps, polling-to-pass, increased
+existing deadlines, product-code changes or relaxed equalities. This repairs evidence synchronization,
+not a demonstrated capacity-leak fix. A fresh successor must pass all fifteen protected contexts and
+all applicable complete workflows, including the unchanged Windows 120-minute source gate.
