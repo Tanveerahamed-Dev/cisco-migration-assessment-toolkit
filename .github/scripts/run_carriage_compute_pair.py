@@ -1,6 +1,6 @@
 """Hosted-only round-6 paired investigation, never a replacement for normal CI.
 
-One runner/interpreter/dependency resolution; isolated source worktrees and fresh
+One runner/interpreter/dependency resolution; standalone source clones and fresh
 pytest processes. Keep failed observations, all original tests and their order.
 """
 import hashlib
@@ -46,6 +46,40 @@ def _dependencies():
     return sorted(records)
 
 
+def _git_output(root, *arguments):
+    return subprocess.check_output(["git", *arguments], cwd=root, text=True).strip()
+
+
+def _standalone_checkout(root, checkout, source):
+    # The original full gate includes a guard which deliberately refuses .git
+    # files/common-directory indirection. Preserve that gate's standalone layout.
+    _command(["git", "clone", "--no-hardlinks", "--no-checkout", str(root), str(checkout)], cwd=root)
+    # The Actions checkout has remote-tracking refs, not necessarily local branch
+    # refs. Carry that complete namespace too; historical custody tests need it.
+    _command(["git", "fetch", "--force", str(root),
+              "+refs/remotes/origin/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"], cwd=checkout)
+    _command(["git", "remote", "set-url", "origin", _git_output(root, "remote", "get-url", "origin")], cwd=checkout)
+    _command(["git", "checkout", "--detach", source], cwd=checkout)
+    git_dir = checkout / ".git"
+    if (not git_dir.is_dir() or git_dir.is_symlink() or (git_dir / "commondir").exists()
+            or (git_dir / "objects/info/alternates").exists()):
+        raise RuntimeError("Diagnostic source is not a standalone repository")
+    if _git_output(checkout, "rev-parse", "HEAD") != source:
+        raise RuntimeError("Diagnostic checkout source mismatch")
+    if _git_output(checkout, "rev-parse", "--is-shallow-repository") != "false":
+        raise RuntimeError("Diagnostic checkout is shallow")
+    refs = _git_output(root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin", "refs/tags")
+    for line in refs.splitlines():
+        ref, value = line.split()
+        if _git_output(checkout, "rev-parse", ref) != value:
+            raise RuntimeError("Historical source ref was not preserved")
+    _command(["git", "diff", "--exit-code", "HEAD", "--"], cwd=checkout)
+    return {"commit": source, "tree": _git_output(checkout, "rev-parse", "HEAD^{tree}"),
+            "standalone": True, "full_history": True,
+            "preserved_refs_sha256": hashlib.sha256(refs.encode()).hexdigest(),
+            "preserved_ref_count": len(refs.splitlines())}
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "linux" or sys.version_info[:3] != (3, 12, 15):
         raise SystemExit("This paired diagnostic requires hosted Linux Python 3.12.15")
@@ -82,7 +116,8 @@ def main():
         if label != subject:
             continue
         checkout = Path(os.environ["RUNNER_TEMP"]) / f"g14-pair-source-{label}"
-        _command(["git", "worktree", "add", "--detach", str(checkout), source], cwd=root)
+        identity = _standalone_checkout(root, checkout, source)
+        (output / f"{label}-source-identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
         _command([sys.executable, "-m", "pip", "install", "--no-deps", "--no-build-isolation", "-e", "."], cwd=checkout)
         if _dependencies() != dependencies:
             raise RuntimeError("Installed dependency closure changed between subjects")
@@ -126,7 +161,7 @@ def main():
             measured = document.get("measurement", {})
             valid = (document.get("source") == source and document.get("leg") == leg
                      and document.get("observer_sha256") == runtime["observer_sha256"]
-                     and "observer_error" not in measured
+                     and measured.get("observer_error") is None and document.get("callback_error_count") == 0
                      and all(type(measured.get(key)) in (int, float)
                              for key in ("original_timer_ms", "wall_ms", "process_cpu_ms")))
             observations.append({"label": label, "leg": leg, "valid": valid})

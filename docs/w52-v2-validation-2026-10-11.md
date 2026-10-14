@@ -1190,3 +1190,80 @@ runner allocation: the job-level environment referenced `runner.temp`, which Git
 does not expose at that scope. Zero test jobs or compute measurements ran. Moving
 that same output-path binding to each execution step corrects the workflow schema;
 it changes no measurement or runtime setting. This startup failure remains evidence.
+
+### First paired result and diagnostic correction (2026-10-15)
+
+Hosted [run 38614432595](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38614432595),
+job `116025755267`, completed with failure. Artifacts `11924765723` (baseline) and
+`11930285463` (complete pair) retain every log, collection order and observation.
+Both subjects used Python 3.12.15, Ubuntu image `20261004.327.1`, FastAPI 0.143.1,
+Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1. All installed distribution versions
+and RECORD digests matched. The observer SHA-256 was
+`a2570012d5a467c84cdaf38ee01e9f52bbdfa4a5fff3e4542bcdaa64c4a6620f`.
+
+| Source / process | Original compute ms | Observed process CPU ms | Natural GC ms | Gen 0 / 1 / 2 events |
+|---|---:|---:|---:|---|
+| `69bf8980` focused | 1,455.5 | 1,455.25 | 17.62 | 417 / 38 / 0 |
+| `69bf8980` complete | 1,479.6 | 1,479.44 | 18.24 | 417 / 37 / 0 |
+| `3abe9d0f` focused | 1,449.2 | 1,449.02 | 16.64 | 419 / 38 / 0 |
+| `3abe9d0f` complete | 1,495.8 | 1,495.68 | 17.67 | 417 / 38 / 0 |
+
+The complete/focused ratios were 1.017 and 1.032. Wall and process CPU times
+nearly agreed; no generation-2 collection occurred inside these four observed
+calls. GC remained enabled at thresholds 700/10/10, with one live Python thread
+before and after each call. Producer admission caches had no misses during the
+calls. Ordered prefixes through compute matched: 649 focused and 15,858 complete
+nodes. Common relative order matched throughout; the only two new round-5 cases
+occurred after compute. Imported budget/compute source digests also matched.
+
+The census after both budget calls contained 3,393,298 and 3,393,361 tracked objects
+in the old/new complete processes, a difference of 63. Both had 57 FastAPI objects,
+3,078 routes, 57 Stores, 46 frames and 13 tracebacks. All four observations counted
+zero Tasks, Futures, CancelScopes, WorkerThreads, request objects, body spools and
+coroutines. This later census includes unreachable objects awaiting natural GC;
+it neither proves entry-time ownership nor excludes transient retention. The old
+focused census was additionally affected by its failed API test frame.
+
+This is **not closing evidence**. Both complete processes failed four earlier
+`test_graphify_guarded.py` controls (`test_cli_passthrough_happens_after_overlay_and_restores_argv`,
+`test_ambient_graphify_and_git_controls_are_sanitized_and_restored`,
+`test_relative_and_repo_local_executable_paths_are_excluded`, and
+`test_graphify_runtime_failure_is_not_misreported_as_a_preflight_failure`). The
+diagnostic's linked worktree has a `.git` file, while the original guard requires
+a standalone `.git` directory; `G017` therefore refused before the tests' stubbed
+CLI operations. Collection order equality does not undo that different execution
+state. Old complete reported 4 failed / 19,219 passed; new complete 4 failed /
+19,221 passed. Old focused also failed its original 300 ms cold-page gate at
+372.5 ms (1 failed / 1,457 passed); new focused passed all 1,460. None is waived.
+
+Separately, ordinary CI on diagnostic head `5c29b609` fails the unchanged strict
+Linux runner census: the temporary diagnostic adds job 25 against assertion 24.
+This is the sole full-suite failure on all six matrix legs, coverage, W60b replay
+and Windows source qualification; the extra job must be removed before final
+acceptance, rather than changing that assertion. The Windows source Python phase
+finished in 100m51s, below its unchanged 120-minute limit; its later frontend tail
+was not reached. Whole webapp, Scope, Master Reference, CodeQL, distribution and
+portable build/qualification succeeded. Ordinary Linux 3.12 measured 980.5 /
+895.4 ms focused/complete, but its earlier census failure and lack of a correction
+make that 0.913 ratio another observation, not a fix or acceptance substitute.
+
+The corrected diagnostic uses standalone full-history clones of the same exact
+two historical commits, preserving and checking every origin-tracking/tag ref,
+commit/tree identity and unchanged tracked bytes. The original commands, test
+order, shared runtime and all gate failures remain. The timer wrapper is now
+precreated at plugin import and installed before fixture setup, avoiding a new
+closure immediately before the original timer. It still invokes the original
+timer/callable once and returns the identical result tuple. Natural generation-2
+events retain a bounded preceding window with test/phase labels, frozen when the
+original timed call returns or raises so later API work cannot overwrite it.
+Callable-only wall/CPU spans distinguish observer boundary overhead; a later
+aggregate AST/receipt-graph census investigates a statically identified unused
+test cache without changing it. No cache intervention is included in this control.
+These changes reduce observer effects; they cannot make observation effect-free.
+
+The original failure, replay and this unsuccessful diagnostic remain negative
+evidence. No cleanup leak, GC cause or product correction is established yet.
+Independent static review required the standalone checkout and preservation of
+the preceding GC window. The next evidence is the corrected unchanged-source pair;
+only a demonstrated cause/retention correction followed by the original complete
+gates with margin and all fifteen checks can close round 6.
