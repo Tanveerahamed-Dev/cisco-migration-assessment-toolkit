@@ -23,7 +23,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
-      G14_PAIR_OUTPUT: ${{ runner.temp }}/g14-compute-pair
       ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
       ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
     steps:
@@ -43,6 +42,8 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip install "graphifyy==0.9.51" "wheel==0.48.0"
       - name: Observe original focused and complete selections at 69bf8980
+        env:
+          G14_PAIR_OUTPUT: ${{ runner.temp }}/g14-compute-pair
         run: python .github/scripts/run_carriage_compute_pair.py baseline
       - name: Preserve the completed baseline before the second subject
         if: ${{ !cancelled() }}
@@ -54,6 +55,8 @@ jobs:
           retention-days: 30
       - name: Observe original focused and complete selections at 3abe9d0f
         if: ${{ !cancelled() }}
+        env:
+          G14_PAIR_OUTPUT: ${{ runner.temp }}/g14-compute-pair
         run: python .github/scripts/run_carriage_compute_pair.py round5
       - name: Preserve all observations including failed gates
         if: always()

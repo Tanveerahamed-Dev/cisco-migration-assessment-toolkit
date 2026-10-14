@@ -1184,3 +1184,9 @@ unchanged. The new investigation's bounded job is separate from the unchanged
 120-minute Windows source gate. Final source correction, complete-suite margin,
 all fifteen checks and the round-6 evidence summary are still required before stopping
 for independent re-review. No approval, merge or release authority follows.
+
+The first diagnostic publication `229ae73a`, run `38613692672`, was refused before
+runner allocation: the job-level environment referenced `runner.temp`, which GitHub
+does not expose at that scope. Zero test jobs or compute measurements ran. Moving
+that same output-path binding to each execution step corrects the workflow schema;
+it changes no measurement or runtime setting. This startup failure remains evidence.
