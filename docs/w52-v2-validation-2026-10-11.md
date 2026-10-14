@@ -1101,3 +1101,40 @@ additional 20-second completion waits are added. There are no sleeps, polling-to
 existing deadlines, product-code changes or relaxed equalities. This repairs evidence synchronization,
 not a demonstrated capacity-leak fix. A fresh successor must pass all fifteen protected contexts and
 all applicable complete workflows, including the unchanged Windows 120-minute source gate.
+
+## Round 5: multipart cleanup admission (2026-10-14)
+
+Independent round-4 review [6168909385](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6168909385)
+reviews `69bf8980167b86ad113b721d175213a67bcef803`: the round-3 admission P2 is closed, no P0/P1
+was found, and the bounded RAM/late-disconnect dispositions are honest. Its remaining P2 predates
+this PR: `_RequestBodyLimitMiddleware` awaited body-spool closure before releasing heavy admission;
+an error or cancellation at that await could permanently consume capacity in the surviving app.
+All fifteen checks on that old head and its 106m18s Windows source gate remain prior evidence,
+not qualification of the correction. Earlier failures and cancellations remain in this record and
+the [round-4 summary](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6167228665).
+
+The only product change is the middleware cleanup: an AnyIO shield protects entry to the threaded
+close, and an inner `finally` releases exactly the acquired heavy-work token even if close raises
+or the await is cancelled. The original close exception propagates to the ASGI caller/server;
+it is not suppressed or turned into a successful cleanup claim. An actual failed close need not
+have closed its spool. Snapshot preparation, publication/rollback and the accepted-work policy
+are unchanged; this cleanup runs after downstream work, without changing its durable outcome.
+
+`webapp/tests/test_carriage_lifecycle.py::test_multipart_cleanup_releases_admission_and_preserves_completed_upload`
+adds two hosted cases. `close_error` submits the reviewer's exact `boundary=x`, `{"devices":{}}`
+multipart bytes through the real `/api/campaigns/1/snapshots` route and real `BoundedSemaphore(1)`.
+The middleware spool's injected `OSError("synthetic close failure")` must propagate unchanged;
+the completed snapshot/source hash remains readable and both admissions are free. An ordinary
+second multipart upload must return 201, with the first snapshot bytes preserved. `cancelled_scope`
+lets the real downstream route/parser cleanup complete normally, cancels the enclosing request
+scope immediately before body-middleware cleanup, and requires actual spool closure, observable
+cancellation at the next checkpoint, released admissions and the same usable next upload.
+The error case closes its deliberately failing test spool separately in test teardown.
+
+No prior test definition, assertion, timer, timeout, fixture, budget, workflow or golden/sample
+byte changes. The download owner functions are unchanged; their existing full-app blob pin is
+refreshed for this isolated cleanup delta. Approved W60b/W60c bindings and all native/schema and
+frontend bytes remain. No new gate, dependency, UI behavior, abort/idempotency machinery or wider
+cleanup redesign is introduced. Runtime verification remains GitHub-only. The final exact-head
+hosted checks and round-5 summary own the test verdict; it is not yet verified by this authored
+record. Stop at all15 and independent re-review, with PR #652 draft.

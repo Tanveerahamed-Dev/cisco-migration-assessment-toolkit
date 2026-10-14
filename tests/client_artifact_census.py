@@ -1382,9 +1382,9 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    # G14 admission adds a busy response and moves ingest calls into admitted worker helpers.
+    # Multipart cleanup shields spool closure and unconditionally releases its heavy-work token.
     # The complete download caller/route/catalogue/_send_file chain retains its same name owners.
-    "webapp/backend/app.py": "512fa658eb19b74d5d083cdadd148e08518456f1",
+    "webapp/backend/app.py": "d6c905f222cc8baeb9d1e70b1772180b4d894226",
     "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
     "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
 }

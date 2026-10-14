@@ -29,6 +29,7 @@ import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, BinaryIO, Callable, Dict, List, Literal
 
+from anyio import CancelScope
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
@@ -666,9 +667,12 @@ class _RequestBodyLimitMiddleware:
 
             await self.app(scope, replay_receive, send)
         finally:
-            await run_in_threadpool(spool.close)
-            if slot_held and self.upload_semaphore is not None:
-                self.upload_semaphore.release()
+            try:
+                with CancelScope(shield=True):
+                    await run_in_threadpool(spool.close)
+            finally:
+                if slot_held and self.upload_semaphore is not None:
+                    self.upload_semaphore.release()
 
 
 # --- client-data confidentiality (Plan A / Tier-1 #4) -------------------------------

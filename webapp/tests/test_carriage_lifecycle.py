@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import socket
 import sys
-from threading import Event, Thread
+from threading import BoundedSemaphore, Event, Thread
 
 import anyio.to_thread
 from fastapi.testclient import TestClient
@@ -365,3 +365,110 @@ def test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_relea
         listener.close()
     assert not thread.is_alive(), "the real server retained upload work after shutdown"
     assert server_errors == []
+
+
+@pytest.mark.parametrize("cleanup_failure", ["close_error", "cancelled_scope"])
+def test_multipart_cleanup_releases_admission_and_preserves_completed_upload(
+        tmp_path, monkeypatch, cleanup_failure):
+    """The review's exact multipart request survives both cleanup failure boundaries."""
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    monkeypatch.delenv("ASSESSHUB_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("ASSESSHUB_MAX_CONCURRENT_GENERATIONS", "1")
+    app = backend_app.create_app(db_path=str(tmp_path / "cleanup-admission.db"), scope_dist_dir=None)
+    original_spool = backend_app.tempfile.SpooledTemporaryFile
+    original_call = backend_app._RequestBodyLimitMiddleware.__call__
+    body_spools, close_calls, cancellation_observed = [], [], []
+    close_error = OSError("synthetic close failure")
+    original_close = []
+
+    def observed_spool(*args, **kwargs):
+        spool = original_spool(*args, **kwargs)
+        if not body_spools:
+            original_close.append(spool.close)
+
+            def close():
+                close_calls.append(True)
+                if cleanup_failure == "close_error":
+                    raise close_error
+                original_close[0]()
+
+            spool.close = close
+        body_spools.append(spool)
+        return spool
+
+    async def cancel_at_cleanup(self, scope, receive, send):
+        # The real downstream route, parser cleanup and publication finish normally.
+        # Cancel the enclosing request scope immediately before its middleware cleanup.
+        downstream = self.app
+        with anyio.CancelScope() as request_scope:
+            async def accepted_work(inner_scope, inner_receive, inner_send):
+                await downstream(inner_scope, inner_receive, inner_send)
+                request_scope.cancel()
+
+            self.app = accepted_work
+            try:
+                await original_call(self, scope, receive, send)
+                await anyio.lowlevel.checkpoint()
+            finally:
+                self.app = downstream
+        cancellation_observed.append(request_scope.cancelled_caught)
+
+    # Byte-for-byte body and boundary from independent review 6168909385.
+    body = (
+        b'--x\r\nContent-Disposition: form-data; name="file"; filename="synthetic.snapshot.json"\r\n'
+        b'Content-Type: application/json\r\n\r\n{"devices":{}}\r\n--x--\r\n'
+    )
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
+        store = app.state.store
+        campaign_id = store.create_campaign("Multipart cleanup control")["id"]
+        assert campaign_id == 1
+        assert isinstance(app.state.generation_semaphore, BoundedSemaphore)
+        assert _free_heavy_slots(app) == 1
+        monkeypatch.setattr(backend_app.tempfile, "SpooledTemporaryFile", observed_spool)
+        if cleanup_failure == "cancelled_scope":
+            monkeypatch.setattr(backend_app._RequestBodyLimitMiddleware, "__call__", cancel_at_cleanup)
+        try:
+            if cleanup_failure == "close_error":
+                with pytest.raises(OSError, match="synthetic close failure") as raised:
+                    client.post("/api/campaigns/1/snapshots", content=body,
+                                headers={"Content-Type": "multipart/form-data; boundary=x"})
+                assert raised.value is close_error
+                assert not body_spools[0].closed
+            else:
+                response = client.post("/api/campaigns/1/snapshots", content=body,
+                                       headers={"Content-Type": "multipart/form-data; boundary=x"})
+                assert response.status_code == 201
+                assert cancellation_observed == [True]
+                assert body_spools[0].closed
+            assert close_calls == [True]
+            assert _free_heavy_slots(app) == 1
+            assert store._preparation_lock.acquire(blocking=False)
+            store._preparation_lock.release()
+            snapshots = store.list_snapshots(campaign_id)
+            assert len(snapshots) == 1
+            committed_id = snapshots[0]["id"]
+            monkeypatch.setattr(backend_app._RequestBodyLimitMiddleware, "__call__", original_call)
+            raw = client.get(f"/api/snapshots/{committed_id}/raw")
+            assert raw.status_code == 200
+            assert json.loads(raw.content)["devices"] == {}
+            assert raw.headers["x-snapshot-sha256"] == hashlib.sha256(raw.content).hexdigest()
+            with store._lock:
+                assert store._conn.in_transaction is False
+                assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+            # Restore only fault injection; the following ordinary multipart still uses the real app.
+            monkeypatch.setattr(backend_app.tempfile, "SpooledTemporaryFile", original_spool)
+            retry = client.post(
+                "/api/campaigns/1/snapshots",
+                files={"file": ("synthetic.snapshot.json", b'{"devices":{}}', "application/json")},
+            )
+            assert retry.status_code == 201, retry.text
+            assert retry.json()["id"] != committed_id
+            assert len(store.list_snapshots(campaign_id)) == 2
+            assert _free_heavy_slots(app) == 1
+            assert store._preparation_lock.acquire(blocking=False)
+            store._preparation_lock.release()
+            assert client.get(f"/api/snapshots/{committed_id}/raw").content == raw.content
+        finally:
+            monkeypatch.setattr(backend_app._RequestBodyLimitMiddleware, "__call__", original_call)
+            for close in original_close:
+                close()
