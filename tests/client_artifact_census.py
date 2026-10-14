@@ -3113,6 +3113,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     # ---- other tracked Python (CI, tooling, references, research) --------------------------------
     ".github/scripts/classify_webapp_ci_scope.py::main": (
         1, NON_CLIENT, (), "the webapp CI scope verdict written to $GITHUB_OUTPUT"),
+    ".github/scripts/carriage_compute_observer.py::pytest_collection_finish": (1, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/carriage_compute_observer.py::_publish": (1, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/run_carriage_compute_pair.py::main": (
+        6, NON_CLIENT, ("engine-log",), _CI_EVIDENCE + "; aggregate synthetic budget observations and pytest logs"),
     ".github/scripts/engine_output_handoff.py::<module>": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/engine_output_handoff.py::write_new": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/engine_output_handoff.py::phase_before": (1, NON_CLIENT, (), _CI_EVIDENCE),

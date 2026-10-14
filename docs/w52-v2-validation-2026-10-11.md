@@ -1138,3 +1138,49 @@ frontend bytes remain. No new gate, dependency, UI behavior, abort/idempotency m
 cleanup redesign is introduced. Runtime verification remains GitHub-only. The final exact-head
 hosted checks and round-5 summary own the test verdict; it is not yet verified by this authored
 record. Stop at all15 and independent re-review, with PR #652 draft.
+
+## Round 6: paired compute investigation (2026-10-14)
+
+Independent [round-5 review 6174489134](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6174489134)
+closes the cleanup P2 on `3abe9d0f` but blocks compute-budget reliability. The original
+Linux 3.12 complete leg measured 3,597.6 ms against 3,000 ms, versus 1,570.8 ms in its
+focused process. The one owner-authorized unchanged replay measured 2,894.2 / 1,258.6 ms,
+still 2.30 times and only 105.8 ms under the original ceiling. Both observations remain
+negative evidence for stable margin; fifteen green contexts do not establish a cause.
+The earlier `69bf8980` pair was 1,517.0 / 1,593.3 ms. FastAPI also resolved from 0.143.0
+to 0.143.1 between those historical runs, so a source-only attribution is unproved.
+
+The first round-6 publication changes no product code, test assertion or existing workflow.
+The closed hosted-runner census registers the added job through its existing strict owner. Its
+new artifact writers are classified as CI evidence in the unchanged write-site census mechanism;
+the scripts live under `.github/scripts`, outside the existing LF byte-owner path denominator. The
+temporary hosted diagnostic runs exact `69bf8980167b86ad113b721d175213a67bcef803` and
+`3abe9d0f435ddef23f2710e9e61088b722575ef3` in isolated worktrees on one Ubuntu 24.04 /
+Python 3.12.15 runner, using one resolved dependency environment. Installed versions
+and RECORD digests must remain equal after each source-only editable rebind. Each
+source runs the original focused selection and complete default selection in fresh
+processes; ordered collection receipts compare the prefix through compute and the
+relative order of all common cases. Both original budget files remain byte-identical.
+
+The opt-in pytest observer calls the unchanged `_timed` implementation on the original
+compute callable exactly once. Lightweight wall/process CPU, `gc.get_count`, active
+thread and bounded-cache counters plus natural GC start/stop callbacks run inside its
+original timer. Numeric event buffers are allocated at plugin import, avoiding a new
+tracked event container per callback. No collection, GC threshold/enablement, cache,
+prewarming, input computation, test assertion or selection is changed. The allocating
+object census waits until both original engine and document/page budget tests finish;
+it reports aggregate suspect types, frames and tracebacks, never payloads or frame
+locals. These post-target GC-tracked counts include unreachable cycles awaiting
+natural collection and are not proof of live ownership or a leak. Observer failures
+are reported as missing evidence without replacing a compute result or exception.
+Nested pytest processes do not inherit active observation. Full logs, source/runtime
+bindings, collection order, natural events and failed gates are retained as artifacts.
+
+The root cause and correction are **not yet verified**. The extra shield's allocations,
+retained app/request state, framework resolution and scheduling remain hypotheses.
+Original 3,000/1,500 ms engine, 2,000 ms document, 300 ms/3 MB page gates and every
+existing timeout/assertion, historical custody binding and golden/sample byte stay
+unchanged. The new investigation's bounded job is separate from the unchanged
+120-minute Windows source gate. Final source correction, complete-suite margin,
+all fifteen checks and the round-6 evidence summary are still required before stopping
+for independent re-review. No approval, merge or release authority follows.
