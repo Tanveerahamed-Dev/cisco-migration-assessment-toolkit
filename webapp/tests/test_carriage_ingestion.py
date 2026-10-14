@@ -1,10 +1,12 @@
 """Round-3 real upload lifecycle: committed reads, failed preparation and measured scale intake."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
-from threading import Event
+from threading import Event, Thread
 import time
 
 import pytest
@@ -21,6 +23,72 @@ from backend.app import create_app  # noqa: E402
 
 # Reuse the actual 300-device / 200-VLAN / 1,500-cable producer fixture, without changing it.
 fleet = budget.fleet
+
+
+@contextmanager
+def _observe_upload_rss():
+    """Cheap observation of the same request, not a memory gate or an allocation/RSS bound.
+
+    Linux samples include the whole shared pytest process and can miss shorter spikes. The
+    separate getrusage high-water values cover process lifetime, including earlier fixtures.
+    Windows keeps the unchanged upload test without adding an expensive observer to its gate.
+    """
+    observed = {"rss_measured": False, "rss_observation": "unavailable on this platform"}
+    if sys.platform != "linux":
+        yield observed
+        return
+    import resource
+
+    period = 0.1
+    stopped = Event()
+    observed.update({
+        "rss_observation": "sampled shared pytest process; may miss between-sample spikes",
+        "rss_method": "/proc/self/statm resident pages times SC_PAGE_SIZE",
+        "rss_sample_period_ms": 100,
+        "rss_sample_count": 0,
+        "rss_sample_errors": 0,
+        "rss_includes_child_processes": False,
+        "rss_sampled_peak_bytes": None,
+        "rss_start_bytes": None,
+        "rss_end_bytes": None,
+        "rss_lifetime_high_water_method": "getrusage(RUSAGE_SELF).ru_maxrss times 1024; Linux",
+        "rss_lifetime_high_water_before_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024,
+    })
+
+    def sample():
+        try:
+            with open("/proc/self/statm", encoding="ascii") as stream:
+                resident = int(stream.read(128).split()[1]) * int(os.sysconf("SC_PAGE_SIZE"))
+            if resident <= 0:
+                raise ValueError("unavailable resident-page observation")
+        except (OSError, ValueError, IndexError):
+            observed["rss_sample_errors"] += 1
+            return
+        if observed["rss_start_bytes"] is None:
+            observed["rss_start_bytes"] = resident
+        observed["rss_end_bytes"] = resident
+        observed["rss_sampled_peak_bytes"] = max(resident, observed["rss_sampled_peak_bytes"] or 0)
+        observed["rss_sample_count"] += 1
+        observed["rss_measured"] = True
+
+    def collect():
+        while not stopped.wait(period):
+            sample()
+
+    sample()
+    worker = Thread(target=collect, name="carriage-upload-rss-observer", daemon=True)
+    worker.start()
+    try:
+        yield observed
+    finally:
+        stopped.set()
+        worker.join(timeout=1)
+        observed["rss_sampler_stopped"] = not worker.is_alive()
+        if not worker.is_alive():
+            sample()
+        observed["rss_lifetime_high_water_after_bytes"] = (
+            int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+        )
 
 
 @pytest.fixture()
@@ -165,9 +233,11 @@ def test_actual_multipart_upload_reports_the_existing_budget_fleet(client, fleet
     # Each wrapper observes exactly one ordinary call; there is no target preflight or warm-up.
     monkeypatch.setattr(store, "_stage_carriage_projection", measured_stage)
     monkeypatch.setattr(store, "_write_carriage_projection_locked", measured_publish)
-    started = time.perf_counter()
-    response = _upload(client, campaign_id, payload, "300-device multipart upload")
-    upload_ms = round(1000 * (time.perf_counter() - started), 1)
+    # Sampling observes this single original request; start/stop overhead stays outside its timer.
+    with _observe_upload_rss() as rss:
+        started = time.perf_counter()
+        response = _upload(client, campaign_id, payload, "300-device multipart upload")
+        upload_ms = round(1000 * (time.perf_counter() - started), 1)
     assert response.status_code == 201
     snapshot_id = response.json()["id"]
     stored_raw, binding = store.get_snapshot_blob(snapshot_id)
@@ -190,5 +260,6 @@ def test_actual_multipart_upload_reports_the_existing_budget_fleet(client, fleet
         "stage_framing_bytes": framing_bytes, "stage_framing_limit": storage._CARRIAGE_STAGING_METADATA_LIMIT,
         "part_publication_ms": publications[0], "part_publication_includes_commit": False,
         "devices": 300, "vlans": 200, "cables": 1500,
-        "includes_sqlite_file_overhead": False, "rss_measured": False,
+        "includes_sqlite_file_overhead": False,
+        **rss,
     })

@@ -1204,6 +1204,146 @@ def test_carriage_stage_page_limit_lookup_failure_closes_owned_stream_and_buffer
         store.close()
 
 
+def test_carriage_preparation_busy_refuses_before_input_access_or_side_effects(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend import storage
+
+    store, cid, sid, observed = _carriage_store(tmp_path, monkeypatch)
+    original_blob = store.get_snapshot_blob(sid)
+    attempted_reads, statements = [], []
+
+    class UnreadableSnapshot(dict):
+        def get(self, *_args, **_kwargs):
+            attempted_reads.append("snapshot")
+            raise AssertionError("busy admission touched a snapshot before refusing")
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            with store.snapshot_preparation():
+                store._conn.set_trace_callback(statements.append)
+                try:
+                    insertion = workers.submit(store.add_snapshot, cid, "busy", UnreadableSnapshot(), {})
+                    with pytest.raises(storage.CarriagePreparationBusyError):
+                        insertion.result(timeout=3)
+                    # The internal startup path shares the same refusal, including reentry.
+                    resume = workers.submit(store._resume_pending_carriage_upgrades)
+                    with pytest.raises(storage.CarriagePreparationBusyError):
+                        resume.result(timeout=3)
+                finally:
+                    store._conn.set_trace_callback(None)
+        assert attempted_reads == []
+        assert statements == []
+        assert len(observed) == 1
+        assert store.get_snapshot_blob(sid) == original_blob
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+        assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+        assert store._conn.execute("SELECT DISTINCT snapshot_id FROM carriage_projection_v2_parts").fetchall()[0][0] == sid
+        added = store.add_snapshot(cid, "retry after busy", {"devices": {}}, {})
+        assert added["id"] != sid
+        assert store.get_carriage_document(added["id"])[0]["stored"] == "okay"
+    finally:
+        store.close()
+
+
+def test_carriage_preparation_lease_is_same_thread_single_use_and_cannot_escape(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend import engine, storage
+
+    store, cid, sid, observed = _carriage_store(tmp_path, monkeypatch)
+    original_prepare = engine.prepare_carriage_projection
+    reentrant_calls = []
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            with store.snapshot_preparation() as preparation:
+                assert not store._lock.locked()
+                assert not store._conn.in_transaction
+                foreign_thread = workers.submit(preparation.add_snapshot, cid, "foreign worker", {"devices": {}}, {})
+                with pytest.raises(storage.CarriagePreparationBusyError):
+                    foreign_thread.result(timeout=3)
+                with pytest.raises(storage.CarriagePreparationBusyError):
+                    with store.snapshot_preparation():
+                        pytest.fail("nested reservation entered")
+
+                def prepare(raw):
+                    with pytest.raises(storage.CarriagePreparationBusyError):
+                        preparation.add_snapshot(cid, "reentrant", {"devices": {}}, {})
+                    reentrant_calls.append("refused")
+                    return original_prepare(raw)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(engine, "prepare_carriage_projection", prepare)
+                    added = preparation.add_snapshot(cid, "owned worker", {"devices": {}}, {})
+                with pytest.raises(storage.CarriagePreparationBusyError):
+                    preparation.add_snapshot(cid, "already consumed", {"devices": {}}, {})
+            with pytest.raises(storage.CarriagePreparationBusyError):
+                preparation.add_snapshot(cid, "escaped", {"devices": {}}, {})
+            # Even an unused lease expires; a new reservation cannot revive it.
+            with store.snapshot_preparation() as unused:
+                pass
+            with store.snapshot_preparation() as replacement:
+                with pytest.raises(storage.CarriagePreparationBusyError):
+                    unused.add_snapshot(cid, "expired unused", {"devices": {}}, {})
+                last = replacement.add_snapshot(cid, "new reservation", {"devices": {}}, {})
+        assert reentrant_calls == ["refused"]
+        assert len(observed) == 3
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid, added["id"], last["id"]]
+        assert store.get_carriage_document(added["id"])[0]["stored"] == "okay"
+        assert store.get_carriage_document(last["id"])[0]["stored"] == "okay"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("failure", ["lease", "before_use", "serialization", "producer", "publication"])
+def test_carriage_preparation_reservation_releases_after_control_failure_and_allows_retry(
+        tmp_path, monkeypatch, failure):
+    from backend import engine, storage
+
+    store, cid, sid, _observed = _carriage_store(tmp_path, monkeypatch)
+    original_blob = store.get_snapshot_blob(sid)
+    original_write = store._write_carriage_projection_locked
+    primary = KeyboardInterrupt("synthetic reserved preparation interruption")
+
+    def refuse(*_args, **_kwargs):
+        raise primary
+
+    def interrupt_publication(*args, **kwargs):
+        original_write(*args, **kwargs)
+        raise primary
+
+    try:
+        with monkeypatch.context() as patch:
+            if failure == "lease":
+                patch.setattr(storage, "_SnapshotPreparation", refuse)
+            elif failure == "serialization":
+                patch.setattr(storage.json, "dumps", refuse)
+            elif failure == "producer":
+                patch.setattr(engine, "prepare_carriage_projection", refuse)
+            elif failure == "publication":
+                patch.setattr(store, "_write_carriage_projection_locked", interrupt_publication)
+            with pytest.raises(KeyboardInterrupt) as raised:
+                with store.snapshot_preparation() as preparation:
+                    if failure == "before_use":
+                        raise primary
+                    preparation.add_snapshot(cid, "must roll back", {"devices": {}}, {})
+            assert raised.value is primary
+        assert not store._preparation_lock.locked()
+        assert not store._conn.in_transaction
+        assert store.get_snapshot_blob(sid) == original_blob
+        assert [row["id"] for row in store.list_snapshots(cid)] == [sid]
+        assert store._conn.execute("SELECT COUNT(*) FROM snapshot_authority").fetchone()[0] == 1
+        assert [row[0] for row in store._conn.execute(
+            "SELECT DISTINCT snapshot_id FROM carriage_projection_v2_parts"
+        )] == [sid]
+        retried = store.add_snapshot(cid, "after interruption", {"devices": {}}, {})
+        assert retried["id"] != sid
+        assert store.get_carriage_document(retried["id"])[0]["stored"] == "okay"
+    finally:
+        store.close()
+
+
 @pytest.fixture()
 def db_path(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)

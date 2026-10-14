@@ -25,9 +25,10 @@ import struct
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from .engine import carriage_derivative_byte_limit
 
@@ -908,6 +909,29 @@ class CarriagePreparationLimitError(ValueError):
     """One snapshot's materialized derivative exceeds the closed ingest payload limit."""
 
 
+class CarriagePreparationBusyError(RuntimeError):
+    """Preparation capacity is occupied; the caller must refuse rather than wait."""
+
+
+class _SnapshotPreparation:
+    """One Store-bound, same-thread insertion under an active preparation reservation."""
+
+    def __init__(self, store: Store):
+        self._store = store
+        self._owner = threading.current_thread()
+        self._active = True
+        self._used = False
+
+    def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
+                     summary: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._active or self._used or threading.current_thread() is not self._owner:
+            raise CarriagePreparationBusyError("snapshot preparation reservation is not available to this call")
+        # Consume before entering caller-controlled input access, producer or observer hooks.
+        # A reentrant call must not start another stage under the same reservation.
+        self._used = True
+        return self._store._add_snapshot_prepared(campaign_id, label, snapshot, summary)
+
+
 def _our_backups(backups: Path) -> List[Path]:
     """Backups this code created, oldest first — never the engineer's own parked copies."""
     return sorted((p for p in backups.glob(f"{_BACKUP_PREFIX}*.db") if _BACKUP_RE.match(p.name)),
@@ -1349,7 +1373,7 @@ class Store:
         from .engine import prepare_carriage_projection
 
         after_id = None
-        with self._preparation_lock:
+        with self.snapshot_preparation():
             while True:
                 with self._lock:
                     pending = self._conn.execute(
@@ -1617,8 +1641,34 @@ class Store:
         return self.delete_campaign_if_unreceipted(campaign_id) == "deleted"
 
     # -- snapshots ---------------------------------------------------------
+    @contextmanager
+    def snapshot_preparation(self) -> Iterator[_SnapshotPreparation]:
+        """Reserve preparation without waiting, before parsing or creating route-owned records.
+
+        Public ingestion routes hold their heavy-work admission too. A reservation permits
+        exactly one insertion on its owning worker; it cannot be reused after the context,
+        moved to another thread, or used for a reentrant stage. No shared read lock or database
+        transaction is held while the caller prepares its input or the derivative is staged.
+        """
+        if not self._preparation_lock.acquire(blocking=False):
+            raise CarriagePreparationBusyError("snapshot preparation is busy; retry after the current request")
+        preparation = None
+        try:
+            preparation = _SnapshotPreparation(self)
+            yield preparation
+        finally:
+            if preparation is not None:
+                preparation._active = False
+            self._preparation_lock.release()
+
     def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
                      summary: Dict[str, Any]) -> Dict[str, Any]:
+        # Refuse before accessing/serializing caller inputs, not after retaining another raw copy.
+        with self.snapshot_preparation() as preparation:
+            return preparation.add_snapshot(campaign_id, label, snapshot, summary)
+
+    def _add_snapshot_prepared(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
+                               summary: Dict[str, Any]) -> Dict[str, Any]:
         # SSOT: the canonical inventoried count (executive_brief.scale.n_devices), falling back to
         # len(devices) ONLY when the canonical field is ABSENT. isinstance-guarded so a truthy non-dict
         # executive_brief/scale on a malformed upload degrades instead of raising AttributeError (-> a 500
@@ -1640,56 +1690,55 @@ class Store:
         # before add_snapshot. Missing carriage is prepared as unavailable too, so no
         # first-document request falls back to source parsing or semantic projection.
         from .engine import prepare_carriage_projection
-        with self._preparation_lock:
-            staged = self._stage_carriage_projection(prepare_carriage_projection(snapshot_raw))
-            with self._lock:
-                try:
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    identity = self._conn.execute(
-                        "SELECT engagement_id FROM campaign_identities WHERE campaign_id=?",
-                        (campaign_id,),
-                    ).fetchone()
-                    if identity is None:
-                        raise ValueError("snapshot campaign has no durable engagement identity")
-                    cur = self._conn.execute(
-                        """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
+        staged = self._stage_carriage_projection(prepare_carriage_projection(snapshot_raw))
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                identity = self._conn.execute(
+                    "SELECT engagement_id FROM campaign_identities WHERE campaign_id=?",
+                    (campaign_id,),
+                ).fetchone()
+                if identity is None:
+                    raise ValueError("snapshot campaign has no durable engagement identity")
+                cur = self._conn.execute(
+                    """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
                                                  n_devices, summary_json, snapshot_json,
                                                  carriage_projection_required,carriage_projection_version)
                            VALUES (?,?,?,?,?,?,?,?,?)""",
-                        (campaign_id, stored_label, uploaded_at, script_version,
-                         _n, summary_json, snapshot_json, 1, 2),
-                    )
-                    sid = int(cur.lastrowid or 0)
-                    limbs = _snapshot_authority_limbs(
-                        snapshot_id=sid,
-                        campaign_id=campaign_id,
-                        engagement_id=identity["engagement_id"],
-                        label=stored_label,
-                        uploaded_at=uploaded_at,
-                        script_version=script_version,
-                        snapshot_blob=snapshot_raw,
-                    )
-                    self._conn.execute(
-                        """INSERT INTO snapshot_authority(
+                    (campaign_id, stored_label, uploaded_at, script_version,
+                     _n, summary_json, snapshot_json, 1, 2),
+                )
+                sid = int(cur.lastrowid or 0)
+                limbs = _snapshot_authority_limbs(
+                    snapshot_id=sid,
+                    campaign_id=campaign_id,
+                    engagement_id=identity["engagement_id"],
+                    label=stored_label,
+                    uploaded_at=uploaded_at,
+                    script_version=script_version,
+                    snapshot_blob=snapshot_raw,
+                )
+                self._conn.execute(
+                    """INSERT INTO snapshot_authority(
                                snapshot_id,authority_version,digest_0,digest_1,digest_2,digest_3)
                            VALUES (?,?,?,?,?,?)""",
-                        (sid, 1, *limbs),
-                    )
-                    source_row = self._bound_snapshot_row_locked(sid)
-                    if source_row is None:
-                        raise ExecutionReceiptAuthorityError("carriage source is missing")
-                    self._write_carriage_projection_locked(sid, staged, source_row)
-                    if self._snapshot_digest_observers:
-                        # BEFORE the commit, so an observer that must react to this digest (the
-                        # /scope privacy withdrawal) has reacted before the row is readable; an
-                        # observer that raises rolls the insert back (fail closed).
-                        blob_digest = hashlib.sha256(snapshot_raw).hexdigest()
-                        for observer in tuple(self._snapshot_digest_observers):
-                            observer(blob_digest)
-                    self._conn.commit()
-                except BaseException:
-                    self._rollback_carriage_publication()
-                    raise
+                    (sid, 1, *limbs),
+                )
+                source_row = self._bound_snapshot_row_locked(sid)
+                if source_row is None:
+                    raise ExecutionReceiptAuthorityError("carriage source is missing")
+                self._write_carriage_projection_locked(sid, staged, source_row)
+                if self._snapshot_digest_observers:
+                    # BEFORE the commit, so an observer that must react to this digest (the
+                    # /scope privacy withdrawal) has reacted before the row is readable; an
+                    # observer that raises rolls the insert back (fail closed).
+                    blob_digest = hashlib.sha256(snapshot_raw).hexdigest()
+                    for observer in tuple(self._snapshot_digest_observers):
+                        observer(blob_digest)
+                self._conn.commit()
+            except BaseException:
+                self._rollback_carriage_publication()
+                raise
         return self.get_snapshot_meta(sid)  # type: ignore[return-value]
 
     def list_snapshots(self, campaign_id: int) -> List[Dict[str, Any]]:

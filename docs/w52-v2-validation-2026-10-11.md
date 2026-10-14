@@ -987,3 +987,80 @@ changes. The imported fixture and production behavior are unchanged. A tiny extr
 probe checks the new path, unchanged unrelated-path behavior and exact workflow/owner policy parity;
 full runtime validation remains hosted. The failed result is retained and final-head 15/15 still
 precedes the round-3 summary and independent re-review.
+
+### Round-4 admission, RAM observation and accepted-upload disconnect scope
+
+Independent whole-PR review [6161038114](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6161038114)
+BLOCKS `39336b6c` despite its exact-head 15/15. Both precise round-2 blockers are independently
+closed: source-bound pending legacy retry/atomic completion and staging outside the Store read/write
+critical section. The three round-1 findings remain closed. The new P2 is a different boundary:
+public demo seed skipped heavy-work admission, and concurrent callers could occupy the shared
+worker pool while waiting for the stage lock. The prior 104m32s Windows source/frontend pass and
+all earlier failures/cancellations remain historical observations, not qualification of this successor.
+
+All four public preparation paths (snapshot upload, ZIP ingest, folder ingest and demo seed) now
+hold the existing memory-derived one-to-four heavy-work admission. Demo admission occurs on the
+ASGI event loop before its worker starts. Each admitted workflow owns a nonblocking Store
+`snapshot_preparation()` reservation in one worker, before snapshot JSON parsing, engine work,
+summary or demo campaign creation. A busy reservation raises the typed preparation-busy refusal;
+the HTTP response is 503 with `Retry-After: 5`. It never queues a worker behind a stage. Direct
+`Store.add_snapshot` also reserves before reading or serializing caller input. The internal lease is
+Store/thread-bound, active and single-use; it is an ownership/liveness mechanism, not an
+authenticated Python capability. Construction, producer, serialization and publication errors release
+it. Legacy startup uses the same nonblocking boundary while retaining one-source-at-a-time retry.
+Existing bounded network-body spooling precedes multipart heavy admission; no slow-body slot is
+introduced. Final SQL publication still serializes; committed-read liveness during preparation is
+not a wait-free publication guarantee.
+
+Additive hosted falsifiers in `webapp/tests/test_carriage_lifecycle.py` cover:
+
+- `test_simultaneous_demo_seeds_refuse_before_side_effects_and_leave_committed_reads_live`, at
+  one and four existing heavy-work slots, with an isolated three-worker AnyIO limiter. The genuine
+  first-next Event holds one accepted upload; four simultaneous public seeds must return 503 and
+  `Retry-After: 5`, without sample reads, summary calls or persisted campaign/source/part changes.
+  Committed metadata and raw reads must finish before release. Production capacities and every
+  existing assertion/deadline remain unchanged.
+- `test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_releases_resources`
+  uses a real Uvicorn HTTP server and loopback TCP connection. After the complete multipart body
+  is accepted and the genuine stage is held, it closes that exact client socket and observes the
+  server's connection-loss callback. No partial snapshot exists while held; releasing the stage
+  produces one complete, source-bound snapshot/document, closes both body and multipart-parser
+  spools, releases heavy/stage reservations, preserves the prior snapshot and permits another upload.
+  This tests late disconnection after acceptance, not every network/shutdown failure.
+
+**Closing the page does not cancel an accepted upload.** Accepted worker work runs through atomic
+completion; an actual preparation/publication error takes the existing rollback path. The client can
+lose its response while a complete snapshot is saved. Inspect the campaign's snapshot list and the
+new snapshot before choosing whether to submit again. There is no automatic outcome reconciliation,
+exactly-once retry promise, frontend abort signal or new idempotency mechanism in this PR. Earlier
+body interruption, process death, external-network deadlines and arbitrary cancellation remain
+separate from the finite late-disconnect control.
+
+The encoded stage is **in RAM**: `io.BytesIO` plus the returned immutable `bytes`, not a spool or
+on-disk staging artifact. Payload remains capped at 64,000,000 bytes and framing/key metadata at a
+separate 64,000,000 bytes, so completed encoded stage length is at most 128,000,000 logical bytes.
+Those limits do not bound BytesIO capacity/conversion, transient JSON/encodings, source/proof/producer
+trees, SQLite buffers or total process RSS. The existing budget fixture previously measured
+43,951,249 derivative payload + 8,612,275 framing = 52,563,524 stage bytes; those remain prior-head
+byte observations, not a memory-capacity certificate.
+
+`webapp/tests/test_carriage_ingestion.py::_observe_upload_rss` adds a cheap observation around the
+same existing actual 300-device/200-VLAN/1,500-cable multipart request. Linux samples resident pages
+from `/proc/self/statm` every 100 ms, reporting start/end/sampled maximum, count, sampling errors and
+sampler-stop status. It separately records Linux `getrusage(RUSAGE_SELF).ru_maxrss` before/after,
+explicitly a process-lifetime high-water value that includes earlier fixtures. The interval samples
+include the shared pytest process and SQLite buffers, exclude child processes and may miss spikes
+between samples; the baseline already contains the prepared test fixture and upload bytes. They do
+not isolate stage allocations or certify maximum concurrency/whole-process capacity. Sampling
+start/stop stays outside the unchanged upload timer, but the small observer cost during the request
+is part of that observation. Windows runs the unchanged upload measurement without this sampler.
+No new upload, warm-up, dependency, memory threshold, timeout or skip is added. Unsupported/error
+observations must be disclosed; a payload/length pass is never a peak-memory pass.
+
+The current successor's hosted logs and closing round-4 PR summary own its measured RSS, ingestion,
+page/document timings and exact-head verdict; those are not yet verified by this authored record.
+The original budget file, all existing assertions/timeouts, historical W60b/W60c bindings, native
+schema pins, golden/sample and frontend bytes remain unchanged. The two ingest worker callbacks
+are classified under their existing private-temp artifact families, retaining the original async
+route subjects; the download owner chain is unchanged and its full app-source proof is refreshed.
+No new SQLite table, schema-observer exemption or release authority is introduced.

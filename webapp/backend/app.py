@@ -55,7 +55,9 @@ from . import (
     summary,
     ui_projection_api,
 )
-from .storage import CarriagePreparationLimitError, ExecutionReceiptAuthorityError, Store
+from .storage import (
+    CarriagePreparationBusyError, CarriagePreparationLimitError, ExecutionReceiptAuthorityError, Store,
+)
 
 _HERE = Path(__file__).resolve().parent
 _WEBAPP = _HERE.parent
@@ -1190,7 +1192,7 @@ def _generation_slot(semaphore: threading.BoundedSemaphore):
 
 @contextlib.contextmanager
 def _request_generation_slot(request: Request):
-    """Reuse the multipart middleware's pre-body slot, or acquire one for non-upload work."""
+    """Reuse the multipart middleware's post-body slot, or acquire one for non-upload work."""
     if request.scope.get("state", {}).get("assesshub_generation_slot_held") is True:
         yield
         return
@@ -2695,6 +2697,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                                "Reduce the collection scope and try again."},
         )
 
+    @app.exception_handler(CarriagePreparationBusyError)
+    async def carriage_preparation_busy_error(
+            _request: Request, _error: CarriagePreparationBusyError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "AssessHub is preparing another snapshot; retry shortly."},
+            headers={"Retry-After": "5"},
+        )
+
     @app.exception_handler(ExecutionReceiptAuthorityError)
     async def execution_receipt_authority_error(
             _request: Request, _error: ExecutionReceiptAuthorityError) -> JSONResponse:
@@ -3078,23 +3089,67 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return {"records": gates.annotate_out_of_order(store.list_gates(campaign_id))}
 
     # -- snapshots ---------------------------------------------------------
+    def _upload_snapshot_work(campaign_id: int, stream: BinaryIO,
+                              label: str, filename: str) -> Dict[str, Any]:
+        # One worker owns this nonblocking reservation from input parsing through publication.
+        # Refusal happens before parsing/summary work; no worker queues behind a preparation.
+        with store.snapshot_preparation() as preparation:
+            snap = _parse_snapshot_stream(ingest.iobase_upload_file(stream))
+            _stamp_snapshot_origin(snap, summary.DIRECT_UPLOAD_ORIGIN)
+            lbl = _bounded_label(label, filename, "snapshot")
+            derived = summary.summarize(snap)
+            return preparation.add_snapshot(campaign_id, lbl, snap, derived)
+
+    def _ingest_zip_work(campaign_id: int, stream: BinaryIO,
+                         label: str, filename: str) -> Dict[str, Any]:
+        with store.snapshot_preparation() as preparation:
+            try:
+                stream = ingest.iobase_upload_file(stream)
+                _bounded_upload_size(stream, "Archive")
+                snap, report = ingest.run_collection_zip(stream)
+            except ingest.IngestError as e:
+                raise HTTPException(400, str(e)) from e
+            except ingest.EngineRunError as e:
+                raise HTTPException(500, str(e)) from e
+            _stamp_snapshot_origin(snap, summary.LOCAL_ENGINE_ORIGIN, integrity_verified=True)
+            report["verification"] = summary.snapshot_verification(snap)
+            lbl = _bounded_label(label, filename, "collection")
+            derived = summary.summarize(snap)
+            meta = preparation.add_snapshot(campaign_id, lbl, snap, derived)
+            meta["ingest"] = report
+            return meta
+
+    def _ingest_folder_work(campaign_id: int, path: str, label: str) -> Dict[str, Any]:
+        with store.snapshot_preparation() as preparation:
+            try:
+                snap, report = ingest.run_collection_folder(path, contain=True)
+            except ingest.IngestError as e:
+                raise HTTPException(400, str(e)) from e
+            except ingest.EngineRunError as e:
+                raise HTTPException(500, str(e)) from e
+            _stamp_snapshot_origin(snap, summary.LOCAL_ENGINE_ORIGIN, integrity_verified=True)
+            report["verification"] = summary.snapshot_verification(snap)
+            lbl = _bounded_label(label, path, "folder")
+            derived = summary.summarize(snap)
+            meta = preparation.add_snapshot(campaign_id, lbl, snap, derived)
+            meta["ingest"] = report
+            return meta
+
     @app.post("/api/campaigns/{campaign_id}/snapshots", status_code=201)
     async def upload_snapshot(campaign_id: RowId, request: Request, file: UploadFile = File(...),
                               label: str = Form("", max_length=_LEN_NAME)) -> Dict[str, Any]:
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        # Multipart middleware acquired this slot before accepting the first body byte. UploadFile
+        # Multipart middleware acquired this slot after receiving the bounded body. UploadFile
         # is already a bounded spool; parse from that seekable file without a second chunks+join copy.
         # iobase_upload_file: every stream leaving the route layer carries the full IO probe
         # interface (py3.10's spool does not -- the owner's docstring has the why).
         with _request_generation_slot(request):
-            snap = await run_in_threadpool(
-                _parse_snapshot_stream, ingest.iobase_upload_file(file.file)
+            # An accepted worker retains ownership until atomic completion. A closed browser page
+            # is not an upload-cancellation request; no preparation is abandoned in the background.
+            return await run_in_threadpool(
+                _upload_snapshot_work, campaign_id, file.file, label, file.filename or ""
             )
-            _stamp_snapshot_origin(snap, summary.DIRECT_UPLOAD_ORIGIN)
-            lbl = _bounded_label(label, file.filename or "", "snapshot")
-            derived = await run_in_threadpool(summary.summarize, snap)
-            return await run_in_threadpool(store.add_snapshot, campaign_id, lbl, snap, derived)
 
     @app.post("/api/campaigns/{campaign_id}/ingest", status_code=201)
     async def ingest_collection(campaign_id: RowId, request: Request, file: UploadFile = File(...),
@@ -3108,25 +3163,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         # iobase_upload_file: the runner's contract is a stream with the full IO probe interface,
         # and the runner is replaceable -- so the route normalizes, not just _safe_extract.
         with _request_generation_slot(request):
-            try:
-                stream = ingest.iobase_upload_file(file.file)
-                await run_in_threadpool(_bounded_upload_size, stream, "Archive")
-                # The engine run blocks for seconds-to-minutes; off the event loop so the rest of the
-                # API (including a live war-room console) stays responsive.
-                snap, report = await run_in_threadpool(ingest.run_collection_zip, stream)
-            except ingest.IngestError as e:
-                raise HTTPException(400, str(e)) from e
-            except ingest.EngineRunError as e:
-                raise HTTPException(500, str(e)) from e
-            _stamp_snapshot_origin(
-                snap, summary.LOCAL_ENGINE_ORIGIN, integrity_verified=True
+            return await run_in_threadpool(
+                _ingest_zip_work, campaign_id, file.file, label, file.filename or ""
             )
-            report["verification"] = summary.snapshot_verification(snap)
-            lbl = _bounded_label(label, file.filename or "", "collection")
-            derived = await run_in_threadpool(summary.summarize, snap)
-            meta = await run_in_threadpool(store.add_snapshot, campaign_id, lbl, snap, derived)
-            meta["ingest"] = report
-            return meta
 
     @app.post("/api/campaigns/{campaign_id}/ingest-folder", status_code=201)
     async def ingest_collection_folder(campaign_id: RowId, body: FolderIngestIn,
@@ -3144,22 +3183,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             raise HTTPException(404, "Campaign not found")
         # Forks the same engine child with the same 600s timeout as /ingest — same generation slot.
         with _request_generation_slot(request):
-            try:
-                snap, report = await run_in_threadpool(
-                    functools.partial(ingest.run_collection_folder, body.path, contain=True))
-            except ingest.IngestError as e:
-                raise HTTPException(400, str(e)) from e
-            except ingest.EngineRunError as e:
-                raise HTTPException(500, str(e)) from e
-            _stamp_snapshot_origin(
-                snap, summary.LOCAL_ENGINE_ORIGIN, integrity_verified=True
+            return await run_in_threadpool(
+                _ingest_folder_work, campaign_id, body.path, body.label
             )
-            report["verification"] = summary.snapshot_verification(snap)
-            lbl = _bounded_label(body.label, body.path, "folder")
-            derived = await run_in_threadpool(summary.summarize, snap)
-            meta = await run_in_threadpool(store.add_snapshot, campaign_id, lbl, snap, derived)
-            meta["ingest"] = report
-            return meta
 
     def _summary_freshened(snapshot_id: int, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Heal a headline summary frozen by an OLDER engine schema than the one now recomputing the
@@ -4145,16 +4171,24 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         )
 
     # -- demo --------------------------------------------------------------
+    def _demo_seed_work() -> Dict[str, Any]:
+        # Refuse before loading the sample or creating a campaign, including when a public
+        # caller holds heavy-work admission but another preparation owns this Store's stage.
+        with store.snapshot_preparation() as preparation:
+            if not SAMPLE_SNAPSHOT.exists():
+                raise HTTPException(503, "No bundled sample snapshot available")
+            snap = json.loads(SAMPLE_SNAPSHOT.read_text(encoding="utf-8"))
+            c = store.create_campaign("Sample Fleet (demo)",
+                                      "Bundled sample snapshot — explore AssessHub with zero setup.")
+            s = preparation.add_snapshot(c["id"], "Baseline collection", snap, summary.summarize(snap))
+            return {"campaign": store.get_campaign(c["id"]), "snapshot": s}
+
     @app.post("/api/demo/seed")
-    def demo_seed() -> Dict[str, Any]:
+    async def demo_seed(request: Request) -> Dict[str, Any]:
         """One-click: create a 'Sample Fleet' campaign seeded with the bundled sample snapshot."""
-        if not SAMPLE_SNAPSHOT.exists():
-            raise HTTPException(503, "No bundled sample snapshot available")
-        snap = json.loads(SAMPLE_SNAPSHOT.read_text(encoding="utf-8"))
-        c = store.create_campaign("Sample Fleet (demo)",
-                                  "Bundled sample snapshot — explore AssessHub with zero setup.")
-        s = store.add_snapshot(c["id"], "Baseline collection", snap, summary.summarize(snap))
-        return {"campaign": store.get_campaign(c["id"]), "snapshot": s}
+        # Admission runs on the event loop before this request can occupy a shared worker.
+        with _request_generation_slot(request):
+            return await run_in_threadpool(_demo_seed_work)
 
     # -- Atlas Scope (/scope) ---------------------------------------------
     # Registered BEFORE the SPA catch-all below, and ALWAYS (built or not), so a /scope URL never
