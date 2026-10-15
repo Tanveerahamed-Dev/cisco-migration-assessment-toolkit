@@ -172,8 +172,8 @@ MANIFEST_SCHEMA = "atlas.portable-member-manifest/1"
 #: attribution of every shipped frontend (``npm_build_attribution``).
 TOOLCHAIN_SCHEMA = "atlas.portable-toolchain-receipt/2"
 SIGNING_SCHEMA = "atlas.portable-signing/1"
-#: /2: adds the /scope runtime-shell smoke (``loopback_http_scope_runtime_shell``) to the closed set.
-QUALIFICATION_SCHEMA = "atlas.portable-qualification/2"
+#: /3: adds the versioned ingest-owned carriage preparation tables to the closed database row census.
+QUALIFICATION_SCHEMA = "atlas.portable-qualification/3"
 #: Every superseded receipt schema id, with why a document carrying it is REFUSED rather than
 #: migrated. One id names one shape: a shape change bumps the id and lands the old id here, so an
 #: older package is refused with its reason instead of failing a shape check with none
@@ -188,6 +188,13 @@ _SUPERSEDED_SCHEMAS = {
         "a /1 qualification receipt predates the /scope runtime-shell smoke "
         "(loopback_http_scope_runtime_shell): its bundle was never proved to serve its own Atlas "
         "Scope view, and a check that never ran cannot be migrated into a pass"
+    ),
+    "atlas.portable-qualification/2": (
+        "a /2 qualification receipt predates the stored carriage preparation tables: its closed "
+        "database census has no carriage_projection_parts, carriage_projection_role_presence or "
+        "carriage_projection_v2_parts "
+        "evidence, and database qualification that never covered those tables cannot be migrated "
+        "into a pass"
     ),
     "atlas.portable-third-party-notices/1": (
         "a /1 notices document predates the per-project npm notices: it has no namespaced entry "
@@ -2006,6 +2013,8 @@ _SCHEMA_SHAPES: Mapping[str, Mapping[str, Any]] = _frozen({
         }),
         "database_row_counts": frozenset({
             "campaign_identities", "campaigns", "execution_comparison_authority",
+            "carriage_projection_parts", "carriage_projection_role_presence",
+            "carriage_projection_v2_parts",
             "execution_comparisons", "execution_l2_failure_trial_authority",
             "execution_l2_failure_trial_sources", "executions", "gates", "snapshot_authority",
             "snapshots",

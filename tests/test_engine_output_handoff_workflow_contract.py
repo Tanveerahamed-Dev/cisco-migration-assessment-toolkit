@@ -39,7 +39,7 @@ def _load():
 
 
 handoff = _load()
-GATE, UPGRADE, INSTALL, BEFORE, GOLDEN, SAMPLE, CAPTURE, PRESERVE = handoff.REQUIRED_STEPS
+GATE, UPGRADE, INSTALL, CONTROLS, BEFORE, GOLDEN, SAMPLE, CAPTURE, PRESERVE = handoff.REQUIRED_STEPS
 RECEIVE, KEEP_RECEIPT = handoff.RECEIPT_STEPS
 
 
@@ -107,6 +107,11 @@ def assert_wiring(doc):
     assert len(python) == 1 and python[0] == {"uses": PYTHON, "with": {"python-version": "3.12"}}
     assert named(steps, UPGRADE) == {"name": UPGRADE, "run": "python -m pip install --upgrade pip"}
     assert named(steps, INSTALL) == {"name": INSTALL, "run": "python -m pip install -r requirements-dev.txt"}
+    assert handoff.CONTROL_COMMAND == (
+        "python -m pytest -p no:cacheprovider tests/test_engine_output_handoff.py"
+        " tests/test_engine_output_handoff_workflow_contract.py"
+    )
+    assert named(steps, CONTROLS) == {"name": CONTROLS, "run": handoff.CONTROL_COMMAND}
     assert named(steps, BEFORE) == {
         "name": BEFORE, "env": {"EXPECTED_SOURCE_COMMIT": "${{ inputs.expected_source_commit }}"},
         "run": 'python -I -B .github/scripts/engine_output_handoff.py before --state "$RUNNER_TEMP/engine-output-state"',
@@ -134,7 +139,7 @@ def assert_wiring(doc):
         },
     }
     order = [steps.index(step) for step in (gate, checkout[0], python[0], named(steps, UPGRADE),
-                                            named(steps, INSTALL), named(steps, BEFORE), named(steps, GOLDEN),
+                                            named(steps, INSTALL), named(steps, CONTROLS), named(steps, BEFORE), named(steps, GOLDEN),
                                             named(steps, SAMPLE), named(steps, CAPTURE), named(steps, PRESERVE))]
     assert order == list(range(len(steps)))
 
@@ -148,7 +153,7 @@ def test_handoff_workflow_is_manual_read_only_source_bound_and_closed():
     "input-in-shell", "upload-always", "upload-on-failure", "continue-on-error", "retained-credentials",
     "floating-ref", "dropped-before", "dropped-gate", "extra-step", "whole-golden-file", "no-update-golden",
     "forced-shrink", "dropped-tz", "other-python", "floating-image", "reordered", "different-sample-command",
-    "input-default-shrink", "optional-source", "no-error-on-empty",
+    "input-default-shrink", "optional-source", "no-error-on-empty", "dropped-controls", "different-controls",
 ])
 def test_wiring_guard_detects_trigger_privilege_scope_and_order_regressions(mutation):
     doc = copy.deepcopy(document())
@@ -182,6 +187,10 @@ def test_wiring_guard_detects_trigger_privilege_scope_and_order_regressions(muta
         next(step for step in steps if step.get("uses") == CHECKOUT)["with"]["ref"] = "${{ inputs.expected_source_commit }}"
     elif mutation == "dropped-before":
         steps.remove(named(steps, BEFORE))
+    elif mutation == "dropped-controls":
+        steps.remove(named(steps, CONTROLS))
+    elif mutation == "different-controls":
+        named(steps, CONTROLS)["run"] = "python -m pytest tests/test_sample_fleet.py"
     elif mutation == "dropped-gate":
         steps.remove(named(steps, GATE))
     elif mutation == "extra-step":
@@ -428,11 +437,36 @@ def test_sample_command_runs_the_tracked_builder_with_its_default_output():
     assert "webapp/sample_data/build_sample.py" in _tracked("webapp/sample_data")
 
 
+def test_final_committed_sample_has_a_non_regenerating_utc_gate():
+    ci = yaml.load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"), Loader=_RunnerWorkflowLoader)
+    steps = ci["jobs"]["test"]["steps"]
+    candidates = [step for step in steps if step.get("name") == "Reproduce the complete committed sample under UTC"]
+    assert candidates == [{
+        "name": "Reproduce the complete committed sample under UTC",
+        "if": "matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'",
+        "env": {"TZ": "UTC"},
+        "run": "python webapp/sample_data/build_sample.py --check",
+    }]
+    assert steps.index(candidates[0]) > next(i for i, step in enumerate(steps)
+                                            if step.get("name") == "Run the complete default suite")
+
+
 def test_repository_identity_matches_the_published_project():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert f"github.com/{handoff.REPO}" in pyproject
     receiver = (ROOT / ".github" / "scripts" / "frontend_artifact_receive.py").read_text(encoding="utf-8")
     assert f'REPO = "{handoff.REPO}"' in receiver
+
+
+def test_installer_profile_is_a_fixed_non_code_set_for_the_tracked_project():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'name = "cisco-migration-assessment-toolkit"' in pyproject
+    assert 'build-backend = "setuptools.build_meta"' in pyproject
+    assert handoff.INSTALLER_ROOT == "cisco_migration_assessment_toolkit.egg-info/"
+    assert handoff.INSTALLER_PATHS == {
+        "cisco_migration_assessment_toolkit.egg-info/" + name for name in
+        ("PKG-INFO", "SOURCES.txt", "dependency_links.txt", "entry_points.txt", "requires.txt", "top_level.txt")
+    }
 
 
 def test_handoff_doc_and_registry_name_the_owner():

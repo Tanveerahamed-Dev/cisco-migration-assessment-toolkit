@@ -6,6 +6,9 @@ export type Schemas = components["schemas"];
 export type Projection = Schemas["UiProjectionViewResponse"];
 export type ProjectionList = Schemas["UiProjectionListResponse"];
 export type PathProjection = Schemas["UiProjectionPathResponse"];
+export type CarriageProjection = Schemas["UiProjectionCarriageResponse"];
+export type CarriageSummary = Schemas["UiProjection1_CarriageSummary"];
+export type CarriagePage = Schemas["UiProjection1_CarriagePage"];
 export type View = Projection["view"];
 export type Identity = Projection["identity"];
 export type ViewDocument<V extends View> = Extract<Projection, { view: V }>;
@@ -39,7 +42,11 @@ function requireIdentity(identity: Identity, sid: number) {
   }
 }
 
-export function requireProjectionPage(page: Page["page"]): void {
+type PageWindow = {
+  readonly offset: number; readonly limit: number; readonly returned: number; readonly total: number;
+  readonly has_more: boolean; readonly items: readonly unknown[];
+};
+export function requireProjectionPage(page: PageWindow): void {
   if (![page.offset, page.limit, page.returned, page.total].every(Number.isSafeInteger) ||
       page.offset < 0 || page.limit < 1 || page.limit > 200 || page.returned < 0 || page.total < 0 ||
       !Array.isArray(page.items) || page.returned !== page.items.length || page.returned > page.limit ||
@@ -111,6 +118,45 @@ export async function loadPathProjection(document: ViewDocument<"topology">, src
   if (echoed.src_ip !== src_ip || echoed.dst_ip !== dst_ip || echoed.max_hops !== 32 ||
       echoed.required_mtu !== null || echoed.disclose !== true) {
     throw new Error("The path response belongs to a different query.");
+  }
+  return data;
+}
+
+// G14 v2: one VLAN row's lazy carriage page. It must echo the summary the inventory row already shows, from the same
+// stored snapshot, engine and qualification registry; any drift is refused rather than merged.
+export async function loadCarriagePage(document: ViewDocument<"inventory">, summary: CarriageSummary, offset: number,
+  limit: number, signal?: AbortSignal): Promise<CarriageProjection> {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+    throw new Error("Carriage page request is outside the projection page bounds.");
+  }
+  const query = new URLSearchParams({ vlan_index: String(summary.vlan_index), offset: String(offset), limit: String(limit) });
+  const data = await fetch(`/api/snapshots/${document.identity.snapshot_id}/ui-projection/inventory/carriage?${query}`, { signal })
+    .then(response<CarriageProjection>);
+  if (data.schema !== document.schema || data.projection_schema !== document.projection_schema || data.view !== "carriage" ||
+      !sameIdentity(data.identity, document.identity)) {
+    throw new ProjectionContextError("Carriage snapshot identity changed. Reload this view before continuing.");
+  }
+  if (!equalJson(data.engine, document.engine) || !equalJson(data.limitations, document.limitations)) {
+    throw new ProjectionContextError("Carriage engine or qualification context changed. Reload this view before continuing.");
+  }
+  if (data.payload.vlan_index !== summary.vlan_index || !equalJson(data.payload.summary, summary)) {
+    throw new ProjectionContextError("Carriage summary changed. Reload this view before continuing.");
+  }
+  const page = data.payload.page;
+  if (page.byte_limit !== 3000000) throw new Error("Carriage page byte bound changed.");
+  if (page.state === "published") {
+    if (page.reason !== null) throw new Error("Published carriage page carries an unsupported reason.");
+    requireProjectionPage(page);
+  } else if (page.state === "unverified") {
+    if (typeof page.reason !== "string" || !page.reason.startsWith("unsupported:") || page.returned !== 0 ||
+        !Array.isArray(page.items) || page.items.length !== 0 || ![page.offset, page.limit, page.total].every(Number.isSafeInteger) ||
+        page.offset < 0 || page.total < 0 || page.limit < 1 || page.limit > limit ||
+        page.has_more !== (page.offset < page.total)) {
+      throw new Error("Unsupported carriage page is incomplete or inconsistent.");
+    }
+  } else throw new Error("Carriage page has no admitted resource state.");
+  if (page.offset !== offset || page.limit > limit) {
+    throw new ProjectionContextError("Carriage page context changed. Reload this view before continuing.");
   }
   return data;
 }

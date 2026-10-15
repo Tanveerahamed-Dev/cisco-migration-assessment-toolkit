@@ -9,6 +9,7 @@ round trip proves the two halves agree.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import hashlib
 import importlib.util
@@ -17,6 +18,7 @@ import json
 import marshal
 import os
 from pathlib import Path
+import py_compile
 import stat
 import struct
 import subprocess
@@ -48,15 +50,37 @@ RUN_ID = 41
 ARTIFACT_ID = 9001
 # Built from fragments so this source never carries the marker it proves is refused.
 MARKER_TEXT = "al" + "jazeera" + " campus"
-# The policy closure imports tomllib, standard library from 3.11; the hosted ends run 3.12 only.
-BOUND_POLICY = pytest.mark.skipif(sys.version_info < (3, 11),
-                                  reason="the marker-policy closure imports tomllib (standard library from 3.11)")
+_PROVIDER_RECORDS = {"example-parser": b"example_parser/__init__.py,sha256=provider,10\n"
+                                          b"example_parser-1.2.dist-info/RECORD,,\n",
+                     "example-reader": b"example_reader/__init__.py,sha256=provider,20\n"
+                                          b"example_reader-2.0.dist-info/RECORD,,\n"}
 
 
 @pytest.fixture(autouse=True)
-def reviewed_python(monkeypatch):
+def reviewed_python(monkeypatch, tmp_path):
     # Both hosted ends require the reviewed Python 3.12 profile; this suite runs on every supported version.
     monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    # Real importlib.metadata providers and physical RECORD files, independent of the test runner's
+    # dependencies. The source-derived editable repository distribution has no wheel RECORD and is
+    # intentionally kept in the already-existing Git/installer ledgers instead.
+    providers = tmp_path / "installed-providers"
+    providers.mkdir()
+    distributions = []
+    for name, version, raw_name in (("example-reader", "2.0", "Example_Reader"),
+                                    ("example-parser", "1.2", "example-parser")):
+        directory = providers / f"{name.replace('-', '_')}-{version}.dist-info"
+        directory.mkdir()
+        (directory / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {raw_name}\nVersion: {version}\n",
+                                            encoding="utf-8")
+        (directory / "RECORD").write_bytes(_PROVIDER_RECORDS[name])
+        distributions.append(handoff.distribution_metadata.Distribution.at(directory))
+    local = providers / "cisco_migration_assessment_toolkit.egg-info"
+    local.mkdir()
+    (local / "PKG-INFO").write_text("Metadata-Version: 2.1\nName: cisco-migration-assessment-toolkit\n"
+                                  "Version: 8.2.4\n", encoding="utf-8")
+    distributions.append(handoff.distribution_metadata.Distribution.at(local))
+    monkeypatch.setattr(handoff.distribution_metadata, "distributions", lambda: iter(distributions))
+    return SimpleNamespace(providers=providers, distributions=distributions)
 
 
 def _sha(data: bytes) -> str:
@@ -136,6 +160,16 @@ def _manifest(root: Path, outputs: dict, source: str, run_id: int = RUN_ID, atte
     return {
         "schema": handoff.MANIFEST_SCHEMA, "source_commit": source,
         "tree": _git(root, "rev-parse", source + "^{tree}"),
+        "source_inputs": {
+            path: {"mode": _git(root, "ls-tree", source, "--", path).split()[0],
+                   "blob": _git(root, "rev-parse", source + ":" + path),
+                   "bytes": len(_blob(root, source, path)), "sha256": _sha(_blob(root, source, path))}
+            for path in _git(root, "ls-tree", "-r", "--name-only", source).splitlines()
+            if path not in handoff.OUTPUT_PATHS
+        },
+        "installer_inputs": {},
+        "resolved_distributions": handoff.distribution_binding(handoff.resolved_distribution_inputs(),
+                                                                handoff.resolved_distribution_inputs()),
         "files": [{"path": p, "sha256": _sha(outputs[p]), "bytes": len(outputs[p])} for p in handoff.OUTPUT_PATHS],
         "changed_from_source": sorted(p for p in handoff.OUTPUT_PATHS if outputs[p] != _blob(root, source, p)),
         "producer": {"workflow": handoff.WORKFLOW, "run_id": str(run_id), "run_attempt": str(attempt),
@@ -888,7 +922,7 @@ def test_hash_and_size_mismatches_are_refused(repo, kind):
 @pytest.mark.parametrize("mutation", [
     lambda m: m.update(extra=True),
     lambda m: m.pop("status"),
-    lambda m: m.update(schema="engine_output_handoff/2"),
+    lambda m: m.update(schema="engine_output_handoff/1"),
     lambda m: m.update(status="APPROVED"),
     lambda m: m.update(release_authority=True),
     lambda m: m["files"].reverse(),
@@ -908,6 +942,15 @@ def test_hash_and_size_mismatches_are_refused(repo, kind):
     lambda m: m["producer"].update(python="3.11.9"),
     lambda m: m["producer"].update(runner_os="Windows"),
     lambda m: m["producer"].update(extra=1),
+    lambda m: m["source_inputs"].pop("engine.py"),
+    lambda m: m["source_inputs"]["engine.py"].update(bytes=True),
+    lambda m: m["source_inputs"]["engine.py"].update(sha256="0" * 64),
+    lambda m: m["source_inputs"]["engine.py"].update(extra=True),
+    lambda m: m["installer_inputs"].update({"untracked.py": {"mode": 420, "bytes": 1, "sha256": "0" * 64}}),
+    lambda m: m["installer_inputs"].update({handoff.INSTALLER_ROOT + "PKG-INFO":
+                                         {"mode": 493, "bytes": 1, "sha256": "0" * 64}}),
+    lambda m: m["installer_inputs"].update({handoff.INSTALLER_ROOT + "PKG-INFO":
+                                         {"mode": 420, "bytes": True, "sha256": "0" * 64}}),
 ])
 def test_malformed_or_promoting_manifest_is_refused(repo, mutation):
     with pytest.raises(handoff.HandoffRefusal):
@@ -1046,7 +1089,6 @@ def _flags_marker(policy) -> bool:
     return any(pattern.search(MARKER_TEXT) for pattern in policy("tests/golden/snapshot.json"))
 
 
-@BOUND_POLICY
 def test_bound_policy_executes_admitted_git_bytes_not_a_same_path_or_cached_module(closure_repo, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     foreign = _foreign_policy_module(source)
@@ -1062,7 +1104,6 @@ def test_bound_policy_executes_admitted_git_bytes_not_a_same_path_or_cached_modu
     assert sys.path is path_identity and sys.path == path_contents
 
 
-@BOUND_POLICY
 def test_bound_policy_ignores_a_permissive_working_tree_edit(closure_repo):
     (closure_repo / "cisco_toolkit" / "distribution_verify.py").write_text(
         "def _marker_patterns_for(name):\n    return ()\n", encoding="utf-8")
@@ -1070,7 +1111,6 @@ def test_bound_policy_ignores_a_permissive_working_tree_edit(closure_repo):
         assert _flags_marker(policy)
 
 
-@BOUND_POLICY
 @pytest.mark.parametrize("kind,match", [
     ("relative-escape", "escaped the admitted closure"),
     ("absolute-project", "not standard library"),
@@ -1091,14 +1131,20 @@ def test_bound_policy_refuses_an_import_outside_its_admitted_closure(closure_rep
     assert not [name for name in sys.modules if name.startswith("_engine_handoff_marker_")]
 
 
-@BOUND_POLICY
+def test_marker_policy_refuses_another_checkouts_owner(tmp_path):
+    # The canonical owner is already imported from this repository, so a foreign root cannot supply it.
+    identity, contents = sys.path, list(sys.path)
+    with pytest.raises(handoff.HandoffRefusal, match="git rev-parse failed"):
+        handoff.marker_patterns_for(tmp_path)
+    assert sys.path is identity and sys.path == contents
+
+
 def test_bound_policy_loads_this_repository_closure_from_git():
     with handoff.bound_marker_policy(ROOT, _git(ROOT, "rev-parse", "HEAD")) as policy:
         assert _flags_marker(policy)
         assert policy("tests/golden/snapshot.json")
 
 
-@BOUND_POLICY
 def test_producer_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_repo, tmp_path, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     monkeypatch.setitem(sys.modules, "cisco_toolkit.distribution_verify", _foreign_policy_module(source))
@@ -1110,7 +1156,6 @@ def test_producer_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_r
     assert not (output / handoff.MANIFEST_NAME).exists()
 
 
-@BOUND_POLICY
 def test_receiver_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_repo, monkeypatch):
     source = closure_repo / "cisco_toolkit" / "distribution_verify.py"
     monkeypatch.setitem(sys.modules, "cisco_toolkit.distribution_verify", _foreign_policy_module(source))
@@ -1120,7 +1165,6 @@ def test_receiver_marker_scan_cannot_be_disarmed_by_a_preloaded_policy(closure_r
     assert not _review_dir(closure_repo).exists()
 
 
-@BOUND_POLICY
 def test_receiver_admits_through_the_bound_policy(closure_repo):
     result, _lines = _receive(closure_repo, _api(closure_repo), policy=None)
     assert result["status"] == handoff.RECEIPT_STATUS and _review_files(closure_repo) == _regenerated()
@@ -1152,6 +1196,170 @@ def test_marker_closure_tables_are_exactly_the_closure_sources_imports():
         # (tomllib joined it in 3.11; tomli is the 3.10 fallback the bound loader refuses).
         outside = absolute - set(sys.stdlib_module_names)
         assert outside <= {"tomllib", "tomli"}, (path, outside)
+
+
+def test_marker_policy_ignores_a_cached_same_path_impostor(monkeypatch):
+    name = "cisco_toolkit.distribution_verify"
+    fake = SimpleNamespace(__file__=str(ROOT / "cisco_toolkit" / "distribution_verify.py"),
+                           _marker_patterns_for=lambda _path: ())
+    monkeypatch.setitem(sys.modules, name, fake)
+    before = {key for key in sys.modules if key.startswith("_engine_handoff_marker_")}
+    path_identity, path_contents = sys.path, list(sys.path)
+    policy = handoff.marker_patterns_for(ROOT)
+    assert len(policy(handoff.OUTPUT_PATHS[0])) == 12
+    assert any(pattern.search("al" + "jazeera") for pattern in policy(handoff.OUTPUT_PATHS[0]))
+    assert sys.modules[name] is fake
+    assert sys.path is path_identity and sys.path == path_contents
+    assert {key for key in sys.modules if key.startswith("_engine_handoff_marker_")} == before
+
+
+def _policy_checkout(repo):
+    for _suffix, path in handoff.MARKER_CLOSURE:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / path).read_bytes())
+    _commit(repo, "admitted marker sources")
+
+
+def test_marker_policy_uses_admitted_bytes_instead_of_bytecode(repo, tmp_path):
+    _policy_checkout(repo)
+    real = repo / "cisco_toolkit" / "distribution_verify.py"
+    poison = tmp_path / "poison.py"
+    poison.write_text("def _marker_patterns_for(name): return ()\n", encoding="utf-8")
+    cache = Path(importlib.util.cache_from_source(str(real)))
+    cache.parent.mkdir()
+    py_compile.compile(str(poison), cfile=str(cache), dfile=str(real), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    # The hostile cache is usable by the ordinary loader; merely creating an
+    # irrelevant filename would not establish this negative control.
+    spec = importlib.util.spec_from_file_location("marker_cache_positive_control", real)
+    assert spec and spec.loader
+    ordinary = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ordinary)
+    assert ordinary._marker_patterns_for(handoff.OUTPUT_PATHS[0]) == ()
+    policy = handoff.marker_patterns_for(repo)
+    assert any(pattern.search("al" + "jazeera") for pattern in policy(handoff.OUTPUT_PATHS[0]))
+    assert Path(policy.__code__.co_filename) == repo / "cisco_toolkit" / "distribution_verify.py"
+
+
+def test_marker_policy_refuses_physical_code_drift(repo):
+    _policy_checkout(repo)
+    (repo / "cisco_toolkit" / "distribution_verify.py").write_bytes(
+        b"def _marker_patterns_for(name): return ()\n"
+    )
+    with pytest.raises(handoff.HandoffRefusal, match="closure bytes differ"):
+        handoff.marker_patterns_for(repo)
+
+
+def test_marker_policy_cannot_import_an_unadmitted_project_sibling(repo):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + b"\nfrom .surprise import marker_override\n")
+    (repo / "cisco_toolkit" / "surprise.py").write_bytes(b"marker_override = ()\n")
+    _commit(repo, "unadmitted policy import")
+    with pytest.raises(handoff.HandoffRefusal, match="relative import escaped"):
+        handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("poison_kind", ["cached", "project"])
+def test_marker_only_toml_import_never_uses_cache_or_project_code(repo, tmp_path, monkeypatch, poison_kind):
+    _policy_checkout(repo)
+    if poison_kind == "cached":
+        poison = SimpleNamespace(loads=lambda _text: pytest.fail("cached TOML capability was used"))
+        for name in ("tomllib", "tomli"):
+            monkeypatch.setitem(sys.modules, name, poison)
+    else:
+        for name in ("tomllib", "tomli"):
+            (tmp_path / f"{name}.py").write_text("raise AssertionError('project TOML code executed')\n", encoding="utf-8")
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.syspath_prepend(str(tmp_path))
+    # Exercise the missing-stdlib condition on every hosted interpreter, including
+    # the actual Python 3.10 leg. No foreign TOML provider is needed by marker rules.
+    monkeypatch.setattr(sys, "stdlib_module_names", sys.stdlib_module_names - {"tomllib"})
+    attempts = []
+    original_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name.split(".", 1)[0] in ("tomllib", "tomli"):
+            attempts.append(name)
+            raise AssertionError("marker loader attempted a real TOML import")
+        return original_import(name, *args, **kwargs)
+
+    # Override only the helper's view of builtins, not the process-global importer.
+    monkeypatch.setattr(handoff, "builtins", SimpleNamespace(**{**vars(builtins), "__import__": observe_import}))
+    identity, contents = sys.path, list(sys.path)
+    before = {name for name in sys.modules if name.startswith("_engine_handoff_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    for output in handoff.OUTPUT_PATHS:
+        actual = policy(output)
+        assert len(actual) == 12
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(output)]
+    # Preserve the existing path-specific policy, not just the JSON-output profile:
+    # only immediate minified JS assets omit the canonical bare-initials rule.
+    for path, count, bare_initials in (
+        ("webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("release-root/webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("webapp/frontend/dist/assets/nested/index-reviewed.js", 12, True),
+        ("webapp/frontend/dist/assets/index-reviewed.css", 12, True),
+    ):
+        actual = policy(path)
+        assert len(actual) == count
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(path)]
+        assert any(rule.search("a" + "j") for rule in actual) is bare_initials
+        assert any(rule.search("al" + "jazeera") for rule in actual)
+    assert attempts == []
+    assert sys.path is identity and sys.path == contents
+    assert {name for name in sys.modules if name.startswith("_engine_handoff_marker_")} == before
+    for name in ("tomllib", "tomli"):
+        if poison_kind == "cached":
+            assert sys.modules[name] is poison
+        else:
+            assert name not in sys.modules
+
+
+@pytest.mark.parametrize("statement", [
+    "import tomli", "import tomllib._parser", "from tomllib import loads",
+    "__import__('tomllib', dict(globals()), None, None, 0)",
+    "__import__('tomllib', globals(), None, None, None)",
+    "__import__('tomllib', globals(), None, None, False)",
+])
+def test_marker_only_toml_boundary_refuses_other_import_forms(repo, statement):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + b"\n" + statement.encode("utf-8") + b"\n")
+    _commit(repo, "unsupported TOML import form")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+def test_marker_only_toml_boundary_refuses_another_admitted_caller(repo):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "registry_integrity.py"
+    target.write_bytes(target.read_bytes() + b"\nimport tomllib\n")
+    _commit(repo, "TOML import by another closure member")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("expression", [
+    "tomllib.loads('value = 1')", "getattr(tomllib, 'loads')", "hasattr(tomllib, 'loads')",
+    "getattr(tomllib, 'loads', None)", "tomllib.__dict__", "bool(tomllib)", "tomllib()",
+])
+def test_marker_policy_refuses_toml_capability_even_after_namespace_cleanup(repo, expression):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + (
+        "\n_original_markers = _marker_patterns_for\n"
+        "def _marker_patterns_for(name):\n"
+        f"    {expression}\n"
+        "    return _original_markers(name)\n"
+    ).encode("utf-8"))
+    _commit(repo, "future marker dependency on TOML is outside profile")
+    before = {name for name in sys.modules if name.startswith("_engine_handoff_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    assert {name for name in sys.modules if name.startswith("_engine_handoff_marker_")} == before
+    with pytest.raises(handoff.HandoffRefusal, match="TOML capability is unavailable"):
+        policy(handoff.OUTPUT_PATHS[0])
 
 
 # --------------------------------------------------------------------------- hosted producer phases
@@ -1203,12 +1411,34 @@ def test_producer_round_trip_is_admitted_by_the_receiver(repo, produced):
     result, _lines = _receive(repo, FakeAPI(archive, manifest["source_commit"]))
     assert result["status"] == handoff.RECEIPT_STATUS and _review_files(repo) == outputs
     assert [row["identical_to_source"] for row in result["outputs"]] == [True, False, False]
+    assert result["resolved_distributions"] == manifest["resolved_distributions"]
+    assert any("producer distributions: 2 third-party providers" in line for line in _lines)
 
 
 def test_producer_reports_byte_identical_regeneration(repo, produced):
     manifest = produced.after()
     assert manifest["changed_from_source"] == []
     assert [row["sha256"] for row in manifest["files"]] == [_sha(_blob(repo, "HEAD", p)) for p in handoff.OUTPUT_PATHS]
+
+
+@pytest.mark.parametrize("changed", [{"GITHUB_RUN_ID": "42"}, {"GITHUB_RUN_ATTEMPT": "2"}])
+def test_producer_cannot_relabel_another_same_source_run_or_attempt(repo, produced, changed):
+    produced.regenerate(_regenerated())
+    with pytest.raises(handoff.HandoffRefusal, match="run, attempt or interpreter changed"):
+        handoff.phase_after(repo, produced.state, produced.output, environ=_hosted(repo, **changed), patterns_for=POLICY)
+    assert not produced.output.exists()
+
+
+def test_producer_cannot_hide_an_output_mode_change_beside_expected_byte_changes(repo, produced):
+    if os.name == "nt":
+        pytest.skip("executable mode is a hosted Linux producer property")
+    produced.regenerate(_regenerated())
+    target = repo / handoff.OUTPUT_PATHS[0]
+    target.chmod(0o755)
+    assert target.read_bytes() != _blob(repo, "HEAD", handoff.OUTPUT_PATHS[0])
+    with pytest.raises(handoff.HandoffRefusal, match="output executable mode"):
+        produced.after()
+    assert not produced.output.exists()
 
 
 @pytest.mark.parametrize("kind", ["tracked-outside-set", "new-untracked", "staged", "output-deleted",
@@ -1236,12 +1466,298 @@ def test_producer_refuses_effects_outside_the_closed_set(repo, produced, kind):
 
 def test_producer_refuses_a_removed_untracked_file(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
-    (repo / "build.log").write_bytes(b"installer residue\n")
+    metadata = repo / handoff.INSTALLER_ROOT / "PKG-INFO"
+    metadata.parent.mkdir()
+    metadata.write_bytes(b"Metadata-Version: 2.4\nName: cisco-migration-assessment-toolkit\n")
     env, state = _hosted(repo), tmp_path / "state"
     handoff.phase_before(repo, state, environ=env)
-    (repo / "build.log").unlink()
+    metadata.unlink()
     with pytest.raises(handoff.HandoffRefusal, match="untracked file set"):
         handoff.phase_after(repo, state, tmp_path / "handoff", environ=env, patterns_for=POLICY)
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_producer_refuses_hidden_index_flags_before_generation(repo, tmp_path, monkeypatch, flag):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    _git(repo, "update-index", flag, "engine.py")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    assert _git(repo, "diff", "--name-only", "HEAD") == ""
+    with pytest.raises(handoff.HandoffRefusal, match="hidden or non-cached flags"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_producer_refuses_hidden_source_after_generation(repo, produced, flag):
+    produced.regenerate(_regenerated())
+    _git(repo, "update-index", flag, "engine.py")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    assert "engine.py" not in _git(repo, "diff", "--name-only", "HEAD").splitlines()
+    with pytest.raises(handoff.HandoffRefusal, match="hidden or non-cached flags"):
+        produced.after()
+    assert not produced.output.exists()
+
+
+def test_physical_source_ledger_refuses_same_size_same_mtime_drift(repo, produced):
+    produced.regenerate(_regenerated())
+    source = repo / "engine.py"
+    before = source.stat()
+    source.write_bytes(b"VALUE = 2\n")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert source.stat().st_size == before.st_size
+    assert source.read_bytes() != _blob(repo, "HEAD", "engine.py")
+    with pytest.raises(handoff.HandoffRefusal, match="physical source bytes"):
+        handoff.source_inputs(repo, _git(repo, "rev-parse", "HEAD"))
+
+
+def test_source_ledger_has_every_non_output_file(repo, produced):
+    before = json.loads((produced.state / "source-before.json").read_bytes())
+    assert set(before["inputs"]) == {"engine.py", "docs/NOW.md"}
+    for path in before["inputs"]:
+        raw = _blob(repo, "HEAD", path)
+        assert before["inputs"][path] == {
+            "mode": "100644", "blob": _git(repo, "rev-parse", "HEAD:" + path),
+            "bytes": len(raw), "sha256": _sha(raw),
+        }
+    produced.regenerate(_regenerated())
+    manifest = produced.after()
+    assert manifest["source_inputs"] == before["inputs"]
+    assert manifest["installer_inputs"] == {}
+    assert manifest["resolved_distributions"]["before"] == before["resolved_distributions"]
+    assert manifest["resolved_distributions"]["after"] == before["resolved_distributions"]
+
+
+def test_resolved_providers_use_sorted_normalized_metadata_and_exact_record_bytes(repo, produced):
+    before = json.loads((produced.state / "source-before.json").read_bytes())
+    assert before["resolved_distributions"] == [
+        {"name": name, "version": version, "record_sha256": _sha(_PROVIDER_RECORDS[name])}
+        for name, version in (("example-parser", "1.2"), ("example-reader", "2.0"))
+    ]
+    manifest = produced.after()
+    ledger = manifest["resolved_distributions"]
+    assert set(ledger) == {"schema", "before", "after", "sha256"}
+    assert ledger["sha256"] == _sha(handoff.canonical_json(before["resolved_distributions"]))
+
+
+@pytest.mark.parametrize("mutation", ["version", "record", "missing-provider", "extra-provider"])
+def test_producer_refuses_changed_resolved_distribution_set(repo, produced, reviewed_python, mutation):
+    directory = reviewed_python.providers / "example_parser-1.2.dist-info"
+    if mutation == "version":
+        (directory / "METADATA").write_text("Metadata-Version: 2.1\nName: example-parser\nVersion: 1.3\n",
+                                            encoding="utf-8")
+    elif mutation == "record":
+        (directory / "RECORD").write_bytes(_PROVIDER_RECORDS["example-parser"] + b"new_file.py,,\n")
+    elif mutation == "missing-provider":
+        reviewed_python.distributions.pop(0)
+    else:
+        directory = reviewed_python.providers / "example_extra-1.0.dist-info"
+        directory.mkdir()
+        (directory / "METADATA").write_text("Metadata-Version: 2.1\nName: example-extra\nVersion: 1.0\n",
+                                            encoding="utf-8")
+        (directory / "RECORD").write_bytes(b"example_extra-1.0.dist-info/RECORD,,\n")
+        reviewed_python.distributions.append(handoff.distribution_metadata.Distribution.at(directory))
+    with pytest.raises(handoff.HandoffRefusal, match="resolved third-party distributions changed"):
+        produced.after()
+    assert not produced.output.exists()
+
+
+def test_provider_drift_during_output_capture_refuses_the_manifest(repo, produced, monkeypatch):
+    original, calls = handoff.resolved_distribution_inputs, []
+
+    def drifting():
+        rows = original()
+        calls.append(None)
+        if len(calls) == 2:  # the second _closed_effect observes the post-copy provider set
+            rows[0]["version"] = "1.3"
+        return rows
+
+    monkeypatch.setattr(handoff, "resolved_distribution_inputs", drifting)
+    with pytest.raises(handoff.HandoffRefusal, match="resolved third-party distributions changed"):
+        produced.after()
+    assert not (produced.output / handoff.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing-record", "foreign-record", "duplicate-name", "bad-name", "blank-version"])
+def test_resolved_provider_census_cannot_omit_unreadable_or_ambiguous_metadata(reviewed_python, mutation):
+    directory = reviewed_python.providers / "example_parser-1.2.dist-info"
+    if mutation == "missing-record":
+        (directory / "RECORD").unlink()
+    elif mutation == "foreign-record":
+        (directory / "RECORD").write_bytes(b"example_reader-2.0.dist-info/RECORD,,\n")
+    elif mutation == "duplicate-name":
+        reviewed_python.distributions.append(reviewed_python.distributions[1])
+    else:
+        name = "bad provider" if mutation == "bad-name" else "example-parser"
+        version = "1.2" if mutation == "bad-name" else ""
+        (directory / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+                                            encoding="utf-8")
+    with pytest.raises(handoff.HandoffRefusal):
+        handoff.resolved_distribution_inputs()
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda binding: binding.update(extra=True),
+    lambda binding: binding.update(sha256="0" * 64),
+    lambda binding: binding["after"][0].update(version="1.3"),
+    lambda binding: binding["before"].reverse(),
+    lambda binding: binding["before"].append(binding["before"][0]),
+    lambda binding: binding["before"][0].update(record_sha256="invalid"),
+    lambda binding: binding["before"][0].update(extra=True),
+    lambda binding: binding.update(before=[], after=[]),
+])
+def test_receiver_refuses_nonclosed_or_unequal_producer_distribution_binding(repo, mutation):
+    def edit(manifest):
+        mutation(manifest["resolved_distributions"])
+
+    with pytest.raises(handoff.HandoffRefusal):
+        _receive(repo, _api(repo, edit_manifest=edit))
+    assert not _review_dir(repo).exists()
+
+
+def test_receipt_reports_producer_ledger_without_comparing_its_different_environment(repo, monkeypatch):
+    api = _api(repo)
+
+    def forbidden():
+        raise AssertionError("a stdlib-only receiver must not inventory itself as the producer")
+
+    monkeypatch.setattr(handoff.distribution_metadata, "distributions", forbidden)
+    receipt, lines = _receive(repo, api)
+    assert receipt["resolved_distributions"]["before"] == receipt["resolved_distributions"]["after"]
+    assert any("provider example-parser 1.2: RECORD sha256" in line for line in lines)
+
+
+@pytest.mark.parametrize("path", ["build.log", "shadow.py", "cisco_toolkit/__pycache__/shadow.pyc",
+                                  "shadow.pth", "shadow.pyd", "shadow.dll",
+                                  handoff.INSTALLER_ROOT + "unexpected.txt",
+                                  handoff.INSTALLER_ROOT + "nested/PKG-INFO"])
+def test_producer_refuses_unadmitted_preexisting_inputs(repo, tmp_path, monkeypatch, path):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"unadmitted")
+    with pytest.raises(handoff.HandoffRefusal, match="unadmitted untracked"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
+
+
+def test_installer_metadata_is_bound_as_data_not_git_source(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    path = handoff.INSTALLER_ROOT + "PKG-INFO"
+    target = repo / path
+    target.parent.mkdir()
+    raw = b"Metadata-Version: 2.4\nName: cisco-migration-assessment-toolkit\n"
+    target.write_bytes(raw)
+    state = tmp_path / "state"
+    record = handoff.phase_before(repo, state, environ=_hosted(repo))
+    assert path not in record["inputs"] and record["untracked"] == [path]
+    assert record["installer_inputs"][path]["bytes"] == len(raw)
+    assert record["installer_inputs"][path]["sha256"] == _sha(raw)
+    target.write_bytes(raw + b"changed")
+    with pytest.raises(handoff.HandoffRefusal, match="installer metadata bytes"):
+        handoff.phase_after(repo, state, tmp_path / "handoff", environ=_hosted(repo), patterns_for=POLICY)
+
+
+def _sentinel_filter(repo: Path, tmp_path: Path) -> Path:
+    """A configured clean filter that writes a sentinel whenever Git runs it, on a stat-dirty tracked file."""
+    sentinel, script = tmp_path / "filter-ran", tmp_path / "clean_filter.py"
+    script.write_text("import pathlib, sys\n"
+                      f"pathlib.Path({sentinel.as_posix()!r}).write_text('ran')\n"
+                      "sys.stdout.buffer.write(sys.stdin.buffer.read())\n", encoding="utf-8")
+    _git(repo, "config", "filter.sentinel.clean", f'"{Path(sys.executable).as_posix()}" "{script.as_posix()}"')
+    (repo / ".gitattributes").write_bytes(b"engine.py filter=sentinel\n")
+    _commit(repo, "filtered source")
+    if sentinel.exists():
+        sentinel.unlink()  # `git add` ran the filter while committing; the bound phases must never run it.
+    engine = repo / "engine.py"
+    info = engine.stat()
+    os.utime(engine, ns=(info.st_atime_ns + 10**10, info.st_mtime_ns + 10**10))  # same bytes, stale stat cache
+    return sentinel
+
+
+def test_a_producer_refuses_a_clean_filter_before_status_can_run_it_on_a_stat_dirty_file(repo, tmp_path):
+    sentinel = _sentinel_filter(repo, tmp_path)
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not sentinel.exists() and not (tmp_path / "state").exists()
+
+
+def test_a_receiver_refuses_a_clean_filter_before_status_or_any_api_call(repo, tmp_path):
+    sentinel = _sentinel_filter(repo, tmp_path)
+    api = _api(repo)
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        _receive(repo, api)
+    assert not sentinel.exists() and api.calls == [] and not _review_dir(repo).exists()
+
+
+def test_a_replacement_ref_cannot_substitute_another_tree_for_the_bound_commit(repo, tmp_path):
+    real, real_tree = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    other = _commit(repo, "a different tree")
+    _git(repo, "reset", "-q", "--hard", real)
+    _git(repo, "replace", real, other)
+    # An ordinary Git view now reads the other commit's tree for HEAD; the bound phases must not.
+    assert _git(repo, "rev-parse", "HEAD") == real and _git(repo, "rev-parse", "HEAD^{tree}") != real_tree
+    record = handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert record["source_commit"] == real and record["tree"] == real_tree
+
+
+def test_the_receivers_closing_status_follows_its_own_index_admission(repo, monkeypatch):
+    order = []
+    for name in ("source_index", "require_clean_tracked_tree"):
+        original = getattr(handoff, name)
+
+        def recorded(*args, _original=original, _name=name, **kwargs):
+            order.append(_name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(handoff, name, recorded)
+    result, _lines = _receive(repo, _api(repo))
+    assert result["status"] == handoff.RECEIPT_STATUS
+    statuses = [i for i, name in enumerate(order) if name == "require_clean_tracked_tree"]
+    assert len(statuses) == 2 and all(i > 0 and order[i - 1] == "source_index" for i in statuses), order
+
+
+@pytest.mark.parametrize("escaped", [
+    "al" + "\\u006a" + "azeera campus", "\\u0061\\u006c" + "jazeera campus", "AL" + "\\u004a" + "AZEERA campus",
+])
+def test_an_escaped_marker_in_a_regenerated_output_is_refused(escaped):
+    data = ('{"site": "' + escaped + '"}').encode("utf-8")
+    assert MARKER_TEXT not in data.decode("utf-8").lower()  # the raw text alone would pass the scan
+    with pytest.raises(handoff.HandoffRefusal, match="client-marker"):
+        handoff.check_output_bytes(handoff.OUTPUT_PATHS[2], data, POLICY)
+    handoff.check_output_bytes(handoff.OUTPUT_PATHS[2], b'{"site": "public \\u0063ampus"}', POLICY)
+
+
+def test_source_filters_are_refused_before_content_conversion(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    (repo / ".gitattributes").write_bytes(b"engine.py filter=unadmitted\n")
+    _commit(repo, "filter attribute")
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "executable"])
+def test_installer_metadata_cannot_supply_linked_or_executable_inputs(repo, tmp_path, monkeypatch, kind):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    target = repo / handoff.INSTALLER_ROOT / "PKG-INFO"
+    target.parent.mkdir()
+    outside = tmp_path / "installer-source"
+    outside.write_bytes(b"Metadata-Version: 2.4\n")
+    if kind == "symlink":
+        _symlink_or_skip(target, outside)
+    elif kind == "hardlink":
+        try:
+            os.link(outside, target)
+        except (OSError, NotImplementedError) as error:
+            pytest.skip(f"hard links unavailable: {error}")
+    else:
+        if os.name == "nt":
+            pytest.skip("executable mode is a hosted Linux producer property")
+        target.write_bytes(outside.read_bytes())
+        target.chmod(0o755)
+    with pytest.raises(handoff.HandoffRefusal):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
 
 
 @pytest.mark.parametrize("changes", [

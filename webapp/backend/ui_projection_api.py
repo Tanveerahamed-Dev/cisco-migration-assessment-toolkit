@@ -40,6 +40,7 @@ _MAX_CONSTRUCTION_NODES = 8192
 _NO_RETRIEVAL = Registry()
 _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.6"
+_NATIVE_TRANSPORT_KINDS = frozenset({"view", "list", "carriage"})
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
@@ -58,11 +59,27 @@ _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # docs/w41-punch-facets-validation-2026-10-09.md,
 # docs/w42-cross-layer-validation-2026-10-09.md
 # (prior: docs/w28-trust-inputs-validation-2026-10-08.md).
+# W52 / G14 (Claude takeover of #631): that W51 schema plus the G14 stored cable/VLAN
+# carriage delta (9 Carriage* definitions, VlanSelections.carriage, the stored_vlan_carriage_scope
+# limitation id, four unranked carriage vocabularies, Trust limitations 32 -> 33). Recomputed
+# statically on the merged schema with this module's own _native_schema_hash; the same method
+# reproduces every parent's committed pins. Hosted CI must confirm.
+# W52 / G14 v2 (vlan_carriage/2): VlanSelections.carriage is now the closed CarriageSummary
+# (CarriageList removed); CarriagePage, Carriage and CarriageDocument are added for the lazy
+# page route. The previous pins (414419ba.../0f6d3e3d...) were reproduced on the v1 head with
+# this module's own _native_schema_hash before these were computed the same way, as a pure call.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
+# Round 2: actual hosted 8a3c04d3/tree8dfd99b6 emitted the complete page-resource
+# delta. All four whole schemas, local refs, unchanged domain and canonical types
+# were independently reviewed before adopting these literals; no runtime auto-pin.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
-    "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058",
+    "view": "2f70b393a3d682063a34a930026e3b4cf145278dbb387037fbaf6b30aff28714",
+    "list": "82ca31f0505c3c30ee8f97503d0b1396a8d45d0f16ae9f7123f129720cd72bb7",
+    # W52 v2 whole Carriage, including the reviewed round-two page-resource fields.
+    "carriage": "55d75f4efeb2eb627071cffb29a64a7756618da00480a50edbe06730310cd95b",
+    # Full OWNER root with all 251 definitions. Internal admission never marks transport smoke.
+    "document": "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -266,7 +283,9 @@ def _compiled_validator(schema: dict[str, Any]):
     compile_node(schema)
     stock_one_of = Draft202012Validator.VALIDATORS["oneOf"]
     stock_ref = Draft202012Validator.VALIDATORS["$ref"]
+    stock_properties = Draft202012Validator.VALIDATORS["properties"]
     references: dict[str, Any] = {}
+    property_plans: dict[int, tuple[Any, tuple[tuple[str, Any], ...]]] = {}
     context_members: dict[int, Any] = {}
     contexts = MappingProxyType(context_members)
 
@@ -290,6 +309,19 @@ def _compiled_validator(schema: dict[str, Any]):
         else:
             yield from stock_ref(validator, ref, instance, containing_schema)
 
+    def properties(validator, members, instance, containing_schema):
+        plan = property_plans.get(id(members)) if owned_context(validator) else None
+        if plan is not None and plan[0] is members:
+            if validator.is_type(instance, "object"):
+                for name, child in plan[1]:
+                    if name in instance:
+                        # Each child retains its complete keyword plan and exact root
+                        # context. As with private descend, failures never escape:
+                        # the facade replays them through the public stock schema.
+                        yield from child.iter_errors(instance[name])
+            return
+        yield from stock_properties(validator, members, instance, containing_schema)
+
     def one_of(validator, branches, instance, containing_schema):
         rule = dispatch.get(id(branches)) if owned_context(validator) else None
         if rule is not None and isinstance(instance, dict):
@@ -307,7 +339,8 @@ def _compiled_validator(schema: dict[str, Any]):
                 branches = [branches[index] for index in indexes]
         yield from stock_one_of(validator, branches, instance, containing_schema)
 
-    validator_class = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})
+    validator_class = validators.extend(Draft202012Validator,
+                                        {"oneOf": one_of, "$ref": reference, "properties": properties})
     compiled = validator_class(schema, registry=_NO_RETRIEVAL)
     root_resolver, root_registry = compiled._resolver, compiled._registry
     stock_evolve, stock_descend = validator_class.evolve, validator_class.descend
@@ -349,6 +382,14 @@ def _compiled_validator(schema: dict[str, Any]):
 
         validator_class.evolve = evolve
         validator_class.descend = descend
+        for node in owned_nodes.values():
+            members = node.get("properties") if type(node) is dict else None
+            if (type(members) is dict and all(type(name) is str and type(child) in (dict, bool)
+                                             for name, child in members.items())):
+                # Only eagerly retained private children are eligible. No request
+                # key, instance, generator, outcome or validation error is cached.
+                plan = tuple((name, constructions[id(child)][1]) for name, child in members.items())
+                property_plans[id(members)] = (members, plan)
     for name, definition in schema.get("$defs", {}).items():
         if not any(escape in name for escape in ("/", "~", "%")):
             references["#/$defs/" + name] = compiled.evolve(schema=definition)
@@ -414,15 +455,18 @@ def _native_provider():
 
 
 class _NativeTransportValidator:
-    """Native acceptance only for two pinned schemas and their audited instance domain.
+    """Native acceptance only for literal-pinned complete schemas and their audited instance domain.
 
     Python remains the source of public errors and unsupported/context behavior.
     No instances or validation results are retained between calls.
     """
-    __slots__ = ("schema", "__original", "__fingerprint", "__python", "__native")
+    __slots__ = ("schema", "__original", "__fingerprint", "__python", "__native", "__transport_proof")
 
-    def __init__(self, schema, kind):
+    def __init__(self, schema, kind, *, transport_proof=True):
         self.schema = self.__original = schema
+        # Internal document admission must never certify a later Python-only transport.
+        self.__transport_proof = (transport_proof is True and type(kind) is str
+                                  and kind in _NATIVE_TRANSPORT_KINDS)
         self.__fingerprint = _schema_fingerprint(schema)
         self.__python = _compiled_validator(schema)
         self.__native = None
@@ -459,7 +503,7 @@ class _NativeTransportValidator:
                 if (accepted is True and self.schema is self.__original
                         and _schema_fingerprint(self.schema) == self.__fingerprint):
                     trace = _NATIVE_SMOKE_TRACE.get()
-                    if trace is not None:
+                    if trace is not None and self.__transport_proof:
                         trace["native"] = True
                     return
         if self.schema is self.__original and _schema_fingerprint(self.schema) == self.__fingerprint:
@@ -577,7 +621,61 @@ def _require_json_native(value: Any) -> None:
     visit(value)
 
 
-_DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
+def _copy_carriage_document(value: Any) -> Any:
+    """Own the already checked page without generic copy dispatch for every immutable JSON leaf.
+
+    Keep one memo for the complete output, including repeated mutable aliases and cycles. Foreign
+    values retain stdlib deepcopy and its hooks; this helper does not replace native/schema admission.
+    Snapshot inputs, cached source documents and validator schemas keep their existing copy paths.
+    """
+    memo: dict[int, Any] = {}
+    missing = object()
+    foreign_history = False
+
+    def clone(node: Any, recurse: Any) -> Any:
+        nonlocal foreign_history
+        if foreign_history:
+            # A real copy hook may have changed ANY memo entry. Preserve this interpreter's
+            # original lookup/atomic-dispatch semantics for every later value and key.
+            return deepcopy(node, memo)
+        kind = type(node)
+        if node is None or kind in (str, bool, int, float):
+            return node
+        identity = id(node)
+        retained = memo.get(identity, missing)
+        if retained is not missing:
+            return retained
+        if kind is dict:
+            result: Any = {}
+            memo[identity] = result
+            for key, child in node.items():
+                copied = recurse(child, recurse)  # Match stdlib's value-before-key hook order.
+                if not foreign_history and type(key) is str:
+                    result[key] = copied
+                else:
+                    result[recurse(key, recurse)] = copied
+        elif kind is list:
+            result = []
+            memo[identity] = result
+            for child in node:
+                result.append(recurse(child, recurse))
+        else:
+            foreign_history = True
+            return deepcopy(node, memo)
+        # A child hook can delete or replace its parent's entry; stdlib restores the completed copy.
+        memo[identity] = result
+        # Match deepcopy's keepalive rule if a foreign fallback removes a source object mid-copy.
+        try:
+            memo[id(memo)].append(node)
+        except KeyError:
+            memo[id(memo)] = [node]
+        return result
+
+    # Explicit recursion avoids a function/closure cycle retaining the complete source and copy memo.
+    return clone(value, clone)
+
+
+_DOCUMENT_VALIDATOR = _NativeTransportValidator(_OWNER, "document", transport_proof=False)
 _DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
 _PATH_DOCUMENT_VALIDATOR = _compiled_validator({"$ref": "#/$defs/PathDocument", "$defs": _DEFS})
 _PROJECTION_VERSION = (
@@ -605,6 +703,9 @@ class _SnapshotProjection:
         self.lock = Lock()
         self.snapshot: dict[str, Any] | None = None
         self.documents: dict[str | None, dict[str, Any]] = {}
+        # G14 v2: the engine's read-only carriage admission (validation, join, basis gaps), built once per digest.
+        self.carriage: Any = None
+        self.prepared_document = False
 
 
 class _ProjectionCache:
@@ -615,27 +716,53 @@ class _ProjectionCache:
     with the owning app; nothing is persisted, shared between stores, or served without
     a fresh authoritative store read. A restart discards the cache with the old code.
     """
-    def __init__(self) -> None:
+    def __init__(self, store: Any = None) -> None:
         self.lock = Lock()
         self.entries: dict[tuple[Any, ...], _SnapshotProjection] = {}
+        self.store = store
 
-    def document(self, raw: bytes, digest: str, host: str | None) -> dict[str, Any]:
+    def document(self, raw: bytes, digest: str, host: str | None, *,
+                 snapshot_id: int | None = None) -> dict[str, Any]:
         key = (*_PROJECTION_VERSION, digest)
         with self.lock:
             entry = self.entries.setdefault(key, _SnapshotProjection())
-            if host in entry.documents:
-                return entry.documents[host]
+            cached = entry.documents.get(host)
+        if cached is not None:
+            self._verify_prepared_hit(raw, digest, host, snapshot_id)
+            return cached
         # Never wait for a builder while holding the publication lock: an unrelated
         # cold host must not prevent reads of already validated documents.
         with entry.lock:
             with self.lock:
-                if host in entry.documents:
-                    return entry.documents[host]
-            if entry.snapshot is None:
-                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
-            # A producer may retain its input too. Its later mutation must not
-            # poison the private bound source used by another lazy host document.
-            produced = engine.ui_projection(deepcopy(entry.snapshot), host)
+                cached = entry.documents.get(host)
+            if cached is not None:
+                self._verify_prepared_hit(raw, digest, host, snapshot_id)
+                return cached
+            prepared = None
+            if self.store is not None and host is None:
+                if snapshot_id is None:
+                    raise ValueError("Stored projection requires its snapshot identity")
+                prepared = self.store.get_carriage_document(snapshot_id)
+                if prepared is None:
+                    raise ValueError("Stored projection preparation is unavailable")
+            if prepared is not None:
+                produced, binding = prepared
+                if binding["sha256"] != digest or binding["bytes"] != len(raw):
+                    raise ValueError("Stored projection names another snapshot source")
+                # The ingest owner already performed every carriage admission/count operation.
+                # Do not decode/bind/copy its full snapshot or load its cable/code/role tables here.
+                entry.prepared_document = True
+            else:
+                if entry.snapshot is None:
+                    entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+                # Standalone pure-owner callers and lazy device views retain their original path.
+                # HTTP fleet documents always supply Store/ID and never regenerate on a request.
+                if host is None:
+                    if entry.carriage is None:
+                        entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
+                    produced = engine.ui_projection(deepcopy(entry.snapshot), host, entry.carriage)
+                else:
+                    produced = engine.ui_projection(deepcopy(entry.snapshot), host)
             # The producer may retain aliases. Cache only an owned complete document
             # after both guards succeed; an exception leaves this host retryable.
             _require_json_native(produced)
@@ -645,6 +772,15 @@ class _ProjectionCache:
             with self.lock:
                 entry.documents[host] = document
             return document
+
+    def _verify_prepared_hit(self, raw: bytes, digest: str, host: str | None,
+                             snapshot_id: int | None) -> None:
+        if self.store is not None and host is None:
+            if snapshot_id is None:
+                raise ValueError("Stored projection requires its snapshot identity")
+            binding = self.store.verify_carriage_document(snapshot_id)
+            if binding is None or binding["sha256"] != digest or binding["bytes"] != len(raw):
+                raise ValueError("Stored projection names another snapshot source")
 
 
     def source_copy(self, raw: bytes, digest: str) -> dict[str, Any]:
@@ -656,6 +792,35 @@ class _ProjectionCache:
             if entry.snapshot is None:
                 entry.snapshot = engine.bind_ui_projection_snapshot(raw)
             return deepcopy(entry.snapshot)
+
+    def carriage_source(self, raw: bytes, digest: str) -> tuple[dict[str, Any], Any]:
+        """The bound snapshot and its carriage admission, built once per digest (basis gaps included).
+
+        Neither is copied: a carriage page reads the cached snapshot read-only and only its result is owned.
+        """
+        key = (*_PROJECTION_VERSION, digest)
+        with self.lock:
+            entry = self.entries.setdefault(key, _SnapshotProjection())
+        with entry.lock:
+            if entry.snapshot is None:
+                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+            if entry.carriage is None:
+                entry.carriage = engine.ui_projection_carriage_admission(entry.snapshot)
+            return entry.snapshot, entry.carriage
+
+    def carriage_inputs(self, snapshot_id: int, vlan_index: int, offset: int,
+                        limit: int) -> tuple[bytes, dict[str, Any], Any]:
+        """One coherent source/context/window read; no full document or request-time relation work."""
+        if self.store is None:
+            raise ValueError("Stored carriage page requires its Store")
+        try:
+            prepared = self.store.get_carriage_page_bundle(snapshot_id, vlan_index, offset, limit)
+        except IndexError as exc:
+            raise HTTPException(404, "VLAN row not found") from exc
+        if prepared is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding, pack = prepared
+        return raw, binding, engine.PreparedCarriagePage(pack)
 
 
 def _common_document(document: dict[str, Any], binding: dict[str, Any], snapshot_id: int, view: str):
@@ -677,7 +842,7 @@ def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view
     if bound is None:
         raise HTTPException(404, "Snapshot not found")
     raw, binding = bound
-    document = cache.document(raw, binding["sha256"], host if view == "device" else None)
+    document = cache.document(raw, binding["sha256"], host if view == "device" else None, snapshot_id=snapshot_id)
     return document, _common_document(document, binding, snapshot_id, view)
 
 
@@ -773,6 +938,18 @@ _PATH_SCHEMA = {
 Draft202012Validator.check_schema(_PATH_SCHEMA)
 # Query documents are a separate Python-validated contract, never a native profile.
 _PATH_VALIDATOR = _compiled_validator(_PATH_SCHEMA)
+# G14 v2: one VLAN row's lazy carriage page, beside the path route. The payload is exactly the owner's Carriage
+# definition; MAX_PAGE_SIZE binds it in the route and in _require_carriage_page. Its complete pinned native
+# profile uses the same audited domain and full Python/stock fallbacks as the existing view/list profiles.
+_CARRIAGE_SCHEMA = {
+    **_closed({**_common_schema("carriage"), "payload": {"$ref": "#/$defs/Carriage"}}),
+    "$defs": _DEFS,
+}
+Draft202012Validator.check_schema(_CARRIAGE_SCHEMA)
+# Whole-schema source admission still requires actual hosted provider controls. Unsupported
+# instances/context and public errors retain full Python behavior; no runtime auto-pin.
+_CARRIAGE_VALIDATOR = _NativeTransportValidator(_CARRIAGE_SCHEMA, "carriage")
+_CARRIAGE_BYTE_LIMIT = _DEFS["CarriagePage"]["properties"]["byte_limit"]["const"]
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -849,6 +1026,119 @@ class UiProjectionPathResponse(RootModel[dict[str, JsonValue]]):
         return {"type": "object", "title": cls.__name__}
 
 
+class UiProjectionCarriageResponse(RootModel[dict[str, JsonValue]]):
+    """One VLAN row's carriage page; its summary is the inventory row's summary, compared before it is served."""
+    model_config = ConfigDict(strict=True, allow_inf_nan=False, revalidate_instances="always")
+
+    @model_validator(mode="before")
+    @classmethod
+    def json_native_contract(cls, value: Any) -> Any:
+        _require_json_native(value.root if isinstance(value, cls) else value)
+        return value
+
+    @model_validator(mode="after")
+    def owner_carriage_contract(self):
+        trace = _NATIVE_SMOKE_TRACE.get()
+        if trace is not None:
+            trace.update(native=False, complete=False)
+        try:
+            _CARRIAGE_VALIDATOR.validate(self.root)
+        except ValidationError as exc:
+            raise ValueError("Engine carriage transport failed its owner contract") from exc
+        _require_carriage_page(self.root["payload"])
+        if len(json.dumps(self.root, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")) > _CARRIAGE_BYTE_LIMIT:
+            raise ValueError("Carriage complete response exceeds its owner byte bound")
+        if trace is not None:
+            trace["complete"] = trace["native"]
+        return self
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, _core_schema, _handler):
+        return {"type": "object", "title": cls.__name__}
+
+
+def _require_carriage_page(payload: dict[str, Any]) -> None:
+    """Page metadata must agree with its items and with the summary it echoes: where the summary publishes its
+    assessed cables a page totals them, or nothing when the row's codes are not readable; a row whose counts
+    publish totals every one. (A withheld assessed count, under a failed source, binds no total.)"""
+    page, summary = payload["page"], payload["summary"]
+    expected = min(max(page["total"] - page["offset"], 0), page["limit"])
+    assessed = summary["assessed"]["value"] if summary["assessed"]["state"] == "published" else None
+    counted = summary["forwarding"]["state"] == "published"
+    unsupported = page["state"] == "unverified"
+    if ((page["state"] == "published" and page["reason"] is not None)
+            or (unsupported and (page["returned"] != 0 or not isinstance(page["reason"], str)
+                                 or not page["reason"].startswith("unsupported:")))
+            or page["state"] not in ("published", "unverified")):
+        raise ValueError("Carriage page resource state disagrees with its complete items")
+    if (page["limit"] > MAX_PAGE_SIZE or len(page["items"]) > MAX_PAGE_SIZE
+            or page["returned"] != len(page["items"]) or (not unsupported and page["returned"] != expected)
+            or page["has_more"] != (page["offset"] + page["returned"] < page["total"])
+            or (assessed is not None and page["total"] not in (0, assessed))
+            or (counted and page["total"] != assessed)):
+        raise ValueError("Carriage page metadata disagrees with its items")
+
+
+def carriage_page(cache: _ProjectionCache, raw: bytes | None, binding: dict[str, Any] | None, snapshot_id: int,
+                  vlan_index: int, offset: int, limit: int) -> dict[str, Any]:
+    """Slice one precomputed carriage page; the caller validates the complete transport.
+
+    Stored context and target summary are captured from the same inventory document at ingest. The page
+    must echo them exactly; independent owned copies are captured before invoking the page adapter.
+    """
+    if isinstance(cache, _ProjectionCache) and cache.store is not None:
+        source_raw, source_binding, snapshot = cache.carriage_inputs(snapshot_id, vlan_index, offset, limit)
+        if ((binding is not None and binding != source_binding)
+                or (raw is not None and len(raw) != source_binding["bytes"])):
+            raise ValueError("Stored carriage window names another snapshot source")
+        raw, binding = source_raw, source_binding
+        pack, admission = snapshot.pack, None
+        if len(pack["vlans"]) != 1 or pack["vlans"][0]["vlan_index"] != vlan_index:
+            raise ValueError("Stored carriage window names another VLAN row")
+        context = pack["context"]
+        _require_json_native(context)
+        _require_engine_source(context, binding["sha256"], len(raw))
+        expected_summary = deepcopy(pack["vlans"][0]["summary"])
+        common = {
+            "schema": TRANSPORT_SCHEMA, "projection_schema": context["schema"],
+            "identity": {"snapshot_id": snapshot_id, "sha256": binding["sha256"],
+                         "bytes": binding["bytes"], "digest_form": "assesshub-store-blob"},
+            "view": "carriage", "engine": deepcopy(context["engine"]),
+            "limitations": deepcopy(context["limitations"]),
+        }
+        owner_context = {"schema": context["schema"], "engine": common["engine"],
+                         "carriage": None, "vocab": context["vocab"]}
+    else:
+        if raw is None or binding is None:
+            raise ValueError("Standalone carriage page requires exact source bytes")
+        main = cache.document(raw, binding["sha256"], None)
+        rows = main["inventory"]["vlans"]["rows"]["items"]
+        if not 0 <= vlan_index < len(rows):
+            raise HTTPException(404, "VLAN row not found")
+        snapshot, admission = cache.carriage_source(raw, binding["sha256"])
+        common = _common_document(main, binding, snapshot_id, "carriage")
+        expected_summary = deepcopy(rows[vlan_index]["selections"]["carriage"])
+        owner_context = {"schema": main["schema"], "engine": common["engine"],
+                         "carriage": None, "vocab": main["vocab"]}
+    def wire_size(value: Any) -> int:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    overhead = max(0, wire_size({**common, "payload": None}) - wire_size(owner_context))
+    produced = engine.ui_projection_carriage(snapshot, vlan_index, offset, limit, admission,
+                                             transport_overhead=overhead)
+    _require_json_native(produced)
+    document = _copy_carriage_document(produced)
+    if (document["engine"] != common["engine"]
+            or document["carriage"]["summary"] != expected_summary
+            or document["carriage"]["vlan_index"] != vlan_index
+            or document["carriage"]["page"]["offset"] != offset
+            or document["carriage"]["page"]["limit"] > limit):
+        raise ValueError("Engine carriage page changed its source, VLAN row or summary")
+    response = {**common, "payload": document["carriage"]}
+    if wire_size(response) > _CARRIAGE_BYTE_LIMIT:
+        raise ValueError("Carriage complete response exceeds its owner byte bound")
+    return response
+
+
 def _at_pointer(value: Any, pointer: str) -> Any:
     for token in pointer.removeprefix("/").split("/"):
         value = value[token.replace("~1", "/").replace("~0", "~")]
@@ -876,8 +1166,22 @@ def _page_view(value: dict[str, Any], view: str, limit: int) -> dict[str, Any]:
 
 def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
-    cache = _ProjectionCache()
+    if engine.carriage_page_limits()[1] != MAX_PAGE_SIZE:
+        raise RuntimeError("Carriage storage and transport page limits disagree")
+    cache = _ProjectionCache(store)
     app.add_middleware(_NativeValidationSmoke)
+    @app.get("/api/snapshots/{snapshot_id}/ui-projection/inventory/carriage",
+             response_model=UiProjectionCarriageResponse, operation_id="get_ui_projection_carriage")
+    def projection_carriage(
+        snapshot_id: Annotated[int, PathParam(ge=-(2**63), le=2**63 - 1)], response: Response,
+        vlan_index: Annotated[int, Query(ge=0, le=2**53 - 1)],
+        offset: Annotated[int, Query(ge=0, le=2**53 - 1)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
+    ) -> dict[str, Any]:
+        page = carriage_page(cache, None, None, snapshot_id, vlan_index, offset, limit)
+        response.headers["Cache-Control"] = "no-store"
+        return page
+
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/topology/path",
              response_model=UiProjectionPathResponse, operation_id="get_ui_projection_path")
     def projection_path(
@@ -891,7 +1195,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
         raw, binding = bound
         # Admit the complete source document and preserve its global context. Query
         # work uses a separate owned input and never holds a cache lock while tracing.
-        main = cache.document(raw, binding["sha256"], None)
+        main = cache.document(raw, binding["sha256"], None, snapshot_id=snapshot_id)
         source = cache.source_copy(raw, binding["sha256"])
         produced = engine.ui_projection_path(source, src_ip, dst_ip)
         _require_json_native(produced)
@@ -940,7 +1244,8 @@ def install_routes(app: FastAPI, store: Any) -> None:
                             for name, schema in _TRANSPORT_DEFS.items()})
             for name, source in (("UiProjectionViewResponse", _VIEW_SCHEMA),
                                  ("UiProjectionListResponse", _LIST_SCHEMA),
-                                 ("UiProjectionPathResponse", _PATH_SCHEMA)):
+                                 ("UiProjectionPathResponse", _PATH_SCHEMA),
+                                 ("UiProjectionCarriageResponse", _CARRIAGE_SCHEMA)):
                 schemas[name] = _rewrite_refs({key: value for key, value in source.items() if key != "$defs"})
                 schemas[name]["x-engine-schema-id"] = _OWNER["$id"]
             app.openapi_schema = api

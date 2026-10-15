@@ -173,9 +173,10 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
   (today the bundler's runtime modules), derived from the built module graph and reviewed against
   `release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES`. Release metadata carries
   `atlas.portable-third-party-notices/2` alongside `atlas.portable-toolchain-receipt/2` and
-  `atlas.portable-qualification/2`. A package carrying a `/1` document of any of these is refused as
-  superseded, with the stated reason, never migrated: verify it with the checkout that built it, or
-  rebuild it. Python/npm package license
+  `atlas.portable-qualification/3`, whose closed database census includes the versioned stored carriage
+  preparation tables. A package carrying a `/1` document of any of these, or a `/2` qualification
+  receipt, is refused as superseded, with the stated reason, never migrated: verify it with the
+  checkout that built it, or rebuild it. Python/npm package license
   texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
   OUI and Cisco-fact public redistribution authority remains an explicit legal-review gate; a draft
   candidate does not close it.

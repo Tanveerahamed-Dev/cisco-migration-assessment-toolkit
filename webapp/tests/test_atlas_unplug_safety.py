@@ -353,6 +353,86 @@ def test_serve_main_corrupt_db_exits_1_with_friendly_message(tmp_path, capsys):
     assert "Traceback" not in err
 
 
+def test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot(
+    tmp_path, monkeypatch, capsys,
+):
+    """Exercise the production entry and genuine migration/preparer, including recovery after refusal."""
+    db = tmp_path / "data" / "legacy.db"
+    store = Store(db)
+    try:
+        campaign = store.create_campaign("Synthetic upgrade recovery")
+        sid = store.add_snapshot(campaign["id"], "Original evidence", {"devices": {}}, {})["id"]
+        original_raw, original_binding = store.get_snapshot_blob(sid)
+        # A raw-only legacy schema: these are upgrade fields/artifacts, never the original evidence.
+        store._conn.execute("DROP TRIGGER carriage_projection_requirement_no_update")
+        store._conn.execute("DROP TRIGGER carriage_projection_version_no_update")
+        store._conn.execute("DROP TABLE carriage_projection_v2_parts")
+        store._conn.execute("DROP TABLE carriage_projection_role_presence")
+        store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_required")
+        store._conn.execute("ALTER TABLE snapshots DROP COLUMN carriage_projection_version")
+        store._conn.commit()
+    finally:
+        store.close()
+
+    def forbidden_server(*_args, **_kwargs):
+        pytest.fail("refused upgrade reached the server or browser")
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=forbidden_server))
+    monkeypatch.setattr(serve, "_schedule_browser_open", forbidden_server)
+    argv = ["--db", str(db), "--dist", str(_dist(tmp_path)), "--no-browser"]
+    with monkeypatch.context() as capped:
+        capped.setattr(storage_module, "CARRIAGE_PROJECTION_PAYLOAD_LIMIT", 1)
+        assert serve.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "refusing to start" in err and "supported preparation limit" in err
+    assert "upgrade is incomplete" in err and "original snapshots are preserved" in err
+    assert "assessment scope" in err and "start Atlas again to retry" in err
+    assert "Traceback" not in err and "corrupt" not in err.lower()
+    connection = _orig_connect(db)
+    try:
+        rows = connection.execute("SELECT id,snapshot_json FROM snapshots").fetchall()
+        assert len(rows) == 1 and rows[0][0] == sid
+        raw = rows[0][1].encode("utf-8") if isinstance(rows[0][1], str) else bytes(rows[0][1])
+        assert raw == original_raw
+    finally:
+        connection.close()
+
+    served = []
+
+    def recovered_server(app, **_kwargs):
+        recovered = app.state.store
+        assert recovered.get_snapshot_blob(sid) == (original_raw, original_binding)
+        document, binding = recovered.get_carriage_document(sid)
+        assert binding == original_binding
+        assert document["engine"]["snapshot_sha256"]["value"] == original_binding["sha256"]
+        assert document["engine"]["snapshot_bytes"]["value"] == len(original_raw)
+        assert [row["id"] for row in recovered.list_snapshots(campaign["id"])] == [sid]
+        served.append(True)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=recovered_server))
+    assert serve.main(argv) == 0
+    assert served == [True]
+
+
+def test_serve_main_does_not_misreport_other_value_errors_as_a_preparation_limit(tmp_path, monkeypatch, capsys):
+    import backend.app as app_module
+
+    declared = ValueError("synthetic unrelated startup failure")
+
+    def failed_create_app(**_kwargs):
+        raise declared
+
+    def forbidden_server(*_args, **_kwargs):
+        pytest.fail("failed startup reached the server")
+
+    monkeypatch.setattr(app_module, "create_app", failed_create_app)
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=forbidden_server))
+    with pytest.raises(ValueError) as caught:
+        serve.main(["--db", str(tmp_path / "other.db"), "--dist", str(_dist(tmp_path)), "--no-browser"])
+    assert caught.value is declared
+    assert "preparation limit" not in capsys.readouterr().err
+
+
 def test_serve_main_unwritable_data_dir_exits_1_with_friendly_message(tmp_path, capsys):
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where a directory must go", encoding="utf-8")

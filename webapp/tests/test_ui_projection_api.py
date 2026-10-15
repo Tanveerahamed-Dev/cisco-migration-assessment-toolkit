@@ -35,8 +35,46 @@ def seed(client, snapshot=None):
     return store.add_snapshot(campaign["id"], "Fixture", snapshot or {}, {})["id"]
 
 
+def _provide_document(client, monkeypatch, provider):
+    """Inject at the real persisted-document request boundary, retaining its actual source binding.
+
+    The helper never invokes a projection or prepares a snapshot. It leaves every HTTP JSON/schema/source
+    guard in place and intentionally preserves provider aliases so the cache's ownership controls can test them.
+    """
+    store = client.app.state.store
+    original = store.get_carriage_document
+
+    def provided(snapshot_id):
+        result = original(snapshot_id)
+        if result is None:
+            return None
+        document, binding = result
+        return provider(document, snapshot_id), binding
+
+    monkeypatch.setattr(store, "get_carriage_document", provided)
+
+
 def url(sid, view="overview"):
     return f"/api/snapshots/{sid}/ui-projection/{view}"
+
+
+def test_carriage_storage_limit_refuses_upload_without_storing_a_partial_snapshot(client, monkeypatch):
+    from backend import storage
+
+    store = client.app.state.store
+    campaign = store.create_campaign("Bounded carriage storage")
+    # A small fixture reaches the real cap/rollback path; the production bound is not changed.
+    monkeypatch.setattr(storage, "CARRIAGE_PROJECTION_PAYLOAD_LIMIT", 1)
+    response = client.post(
+        f"/api/campaigns/{campaign['id']}/snapshots",
+        files={"file": ("synthetic.json", b'{"devices":{}}', "application/json")},
+    )
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Snapshot carriage detail exceeds the supported storage limit. "
+                                       "Reduce the collection scope and try again."}
+    assert store.list_snapshots(campaign["id"]) == []
+    with store._lock:
+        assert store._conn.execute("SELECT COUNT(*) FROM carriage_projection_v2_parts").fetchone()[0] == 0
 
 
 def test_unknown_snapshot_and_selectors(client):
@@ -51,14 +89,15 @@ def test_guard_runs_before_snapshot_or_projection(client, monkeypatch):
         pytest.fail("guard must precede source read")
     monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", forbidden)
     for path in (url(991), url(991, "inventory") + "/lists?pointer=/devices/rows",
-                 url(991, "topology") + "/path?src_ip=192.0.2.1&dst_ip=198.51.100.1"):
+                 url(991, "topology") + "/path?src_ip=192.0.2.1&dst_ip=198.51.100.1",
+                 url(991, "inventory") + "/carriage?vlan_index=0"):
         assert client.get(path, headers={"sec-fetch-site": "cross-site"}).status_code == 403
         assert client.get(path, headers={"host": "evil.example"}).status_code == 403
 
 
 def test_routes_declare_response_models(client):
     paths = [r for r in client.app.routes if "ui-projection" in getattr(r, "path", "")]
-    assert len(paths) == 3
+    assert len(paths) == 4  # view, lists, the path query and (G14 v2) the lazy carriage page
     assert all(r.response_model is not None for r in paths)
 
 
@@ -120,7 +159,8 @@ def test_view_preserves_owner_data_and_exact_store_identity(client, sample, view
     # The owner document is projected from the same exact-byte binding the transport uses; a bare json.loads of
     # the blob would name no file (G41), so its engine block could not equal the served one.
     snapshot = engine.bind_ui_projection_snapshot(blob)
-    document = owner.project_device(snapshot, params["host"]) if view == "device" else owner.project(snapshot)
+    document = (owner.project_device(snapshot, params["host"]) if view == "device"
+                else owner.prepare_carriage_projection(snapshot)["document"])
     assert body["projection_schema"] == document["schema"]
     assert body["engine"] == document["engine"]
     # G41: the engine block names the very bytes the store served, in the owner's exact-parsed-bytes form.
@@ -200,7 +240,7 @@ def test_all_six_states_and_withheld_nonempty_lists_survive(client, sample, monk
     else:
         rows["reason"] = "Explicit synthetic owner state"
     Draft202012Validator(owner.ui_projection_schema()).validate(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     response = client.get(url(sid, "findings") + "/lists", params={"pointer": "/rows", "limit": 1})
     assert response.status_code == 200, response.text[:200]
     part = response.json()["list"]
@@ -213,7 +253,7 @@ def test_source_document_is_validated_before_paging_even_outside_selected_view(c
     sid = seed(client)
     document = owner.project(sample)
     del document["findings"]["rows"]["items"][-1]["severity"]["basis"]
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     with pytest.raises(SchemaValidationError, match="is not valid under any of the given schemas"):
         client.get(url(sid, "overview"), params={"limit": 1})
     with pytest.raises(SchemaValidationError, match="is not valid under any of the given schemas"):
@@ -320,34 +360,44 @@ def test_http_boundary_really_validates_response(client, monkeypatch):
 
 def test_projection_reads_one_bound_source_and_no_legacy_backfill(client, monkeypatch):
     from cisco_toolkit.protocol_assurance import bound_snapshot_source
-    sid = seed(client)
     store = client.app.state.store
     calls = []
     parsed = []
     produced = []
     real = store.get_snapshot_blob
-    bind = engine.bind_ui_projection_snapshot
-    project = engine.ui_projection
+    prepare, prepare_owner = engine.prepare_carriage_projection, owner.prepare_carriage_projection
+
+    def prepared_bytes(raw):
+        parsed.append(raw)
+        return prepare(raw)
+
+    def prepared_owner(snapshot):
+        produced.append(bound_snapshot_source(snapshot))
+        return prepare_owner(snapshot)
+
+    monkeypatch.setattr(engine, "prepare_carriage_projection", prepared_bytes)
+    monkeypatch.setattr(owner, "prepare_carriage_projection", prepared_owner)
+    sid = seed(client)
+
     def bound(snapshot_id):
         result = real(snapshot_id)
         calls.append(result)
         return result
-    def bound_bytes(raw):
-        parsed.append(raw)
-        assert raw is calls[-1][0]
-        return bind(raw)
-    def projection(snapshot, host=None):
-        produced.append(bound_snapshot_source(snapshot))
-        return project(snapshot, host)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("fleet document rebound or recomputed its raw snapshot during a request")
+
     monkeypatch.setattr(store, "get_snapshot_blob", bound)
-    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", bound_bytes)
-    monkeypatch.setattr(engine, "ui_projection", projection)
+    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", forbidden)
+    monkeypatch.setattr(engine, "ui_projection", forbidden)
+    monkeypatch.setattr(engine, "prepare_carriage_projection", forbidden)
     for name in ("get_bound_snapshot", "get_snapshot", "get_section", "get_snapshot_meta"):
         if hasattr(store, name):
             monkeypatch.setattr(store, name, lambda *args: pytest.fail("projection used a legacy backfill seam"))
     assert client.get(url(sid)).status_code == 200
     assert client.get(url(sid, "trust")).status_code == 200
     assert len(calls) == 2 and len(parsed) == len(produced) == 1
+    assert parsed[0] == calls[0][0] == calls[1][0]  # The one binding is produced at ingest, before either GET.
     assert produced[0]["source_bound"] is True
     assert produced[0]["sha256"] == "sha256:" + hashlib.sha256(parsed[0]).hexdigest() == calls[0][1]["sha256"]
     assert produced[0]["bytes"] == len(parsed[0])
@@ -401,7 +451,7 @@ def test_nonfinite_producer_score_is_rejected_before_any_selection(client, sampl
     # Python's JSON Schema number checks accept NaN. HTTP must still refuse the complete
     # invalid JSON source, including a row not visible on this requested view/page.
     Draft202012Validator(owner.ui_projection_schema()).validate(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     path, params = (url(sid), {"limit": 1}) if selection == "other_view" else (
         url(sid, "inventory") + "/lists",
         {"pointer": "/devices/rows", "limit": 1, "offset": final_index if selection == "selected_page" else 0},
@@ -453,7 +503,7 @@ def test_json_native_boundary_rejects_invalid_python_values(client, sample, monk
     if boundary == "producer":
         document = owner.project(sample)
         corrupt(document["overview"])
-        monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+        _provide_document(client, monkeypatch, lambda *_args: document)
         # The malformed overview must also block a different requested view.
         path = url(sid, "trust")
     else:
@@ -488,14 +538,17 @@ def test_json_native_check_preserves_native_values_and_shared_aliases():
 def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(client, monkeypatch):
     from backend import ui_projection_api as api
     sid = seed(client, {"devices": {"edge": {}, " edge ": {}}})
-    projected, bound, validated = [], [], []
+    projected, bound, validated, prepared_reads = [], [], [], []
     project, bind = engine.ui_projection, engine.bind_ui_projection_snapshot
-    def projection(snapshot, host=None):
+    def projection(snapshot, host=None, carriage=None):
         projected.append(host)
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     def binding(raw):
         bound.append(raw)
         return bind(raw)
+    def prepared(document, snapshot_id):
+        prepared_reads.append(snapshot_id)
+        return document
     class Validator:
         def __init__(self, source, name):
             self.source, self.name = source, name
@@ -504,6 +557,7 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
             self.source.validate(value)
     monkeypatch.setattr(engine, "ui_projection", projection)
     monkeypatch.setattr(engine, "bind_ui_projection_snapshot", binding)
+    _provide_document(client, monkeypatch, prepared)
     monkeypatch.setattr(api, "_DOCUMENT_VALIDATOR", Validator(api._DOCUMENT_VALIDATOR, "document"))
     monkeypatch.setattr(api, "_DEVICE_VALIDATOR", Validator(api._DEVICE_VALIDATOR, "device"))
     for view in ("overview", "trust", "inventory", "findings", "topology", "overview"):
@@ -521,29 +575,30 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
             assert client.get(url(sid, "device") + "/lists", params={
                 "host": host, "pointer": pointer, "offset": 1, "limit": 1,
             }).status_code == 200
-    assert projected == [None, "edge", " edge ", ""]
+    # The fleet document is read once from ingest; only the three exact device selectors invoke a producer.
+    assert prepared_reads == [sid]
+    assert projected == ["edge", " edge ", ""]
     assert len(bound) == 1
     assert validated == ["document", "device", "device", "device"]
 
 
 def test_cache_single_flight_on_concurrent_views(client, monkeypatch):
     sid = seed(client)
-    project = engine.ui_projection
     entered, release = Event(), Event()
     calls = []
-    def slow(snapshot, host=None):
-        calls.append(host)
+    def slow(document, snapshot_id):
+        calls.append(snapshot_id)
         entered.set()
         assert release.wait(10)
-        return project(snapshot, host)
-    monkeypatch.setattr(engine, "ui_projection", slow)
+        return document
+    _provide_document(client, monkeypatch, slow)
     with ThreadPoolExecutor(max_workers=4) as pool:
         first = pool.submit(client.get, url(sid))
         assert entered.wait(10)
         rest = [pool.submit(client.get, url(sid, view)) for view in ("trust", "inventory", "findings")]
         release.set()
         assert all(result.result().status_code == 200 for result in [first, *rest])
-    assert calls == [None]
+    assert calls == [sid]  # Concurrent views share one persisted-document admission.
 
 
 def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_held(client, monkeypatch):
@@ -553,12 +608,12 @@ def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_
     project = engine.ui_projection
     entered, release = Event(), Event()
     calls = []
-    def held(snapshot, host=None):
+    def held(snapshot, host=None, carriage=None):
         calls.append(host)
         assert host == "cold", "already-cached documents must not be recomputed"
         entered.set()
         assert release.wait(30), "test must release the held producer"
-        return project(snapshot, host)
+        return project(snapshot, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", held)
     with ThreadPoolExecutor(max_workers=3) as pool:
         cold = pool.submit(client.get, url(sid, "device"), params={"host": "cold"})
@@ -581,11 +636,10 @@ def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_
 def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch):
     from backend import ui_projection_api as api
     calls = []
-    project = engine.ui_projection
-    def counted(snapshot, host=None):
-        calls.append(snapshot.get("generated_at"))
-        return project(snapshot, host)
-    monkeypatch.setattr(engine, "ui_projection", counted)
+    def counted(document, snapshot_id):
+        calls.append(snapshot_id)
+        return document
+    _provide_document(client, monkeypatch, counted)
     snapshots = [seed(client, {"generated_at": str(index)}) for index in range(12)]
     for sid in [*snapshots, *reversed(snapshots)]:
         assert client.get(url(sid)).status_code == 200
@@ -596,12 +650,13 @@ def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch)
 
 
 def test_cache_reuses_equal_bytes_but_identity_and_store_lifetime_are_separate(client, tmp_path, monkeypatch):
+    from backend.storage import Store
     calls = []
-    project = engine.ui_projection
-    def counted(snapshot, host=None):
-        calls.append(host)
-        return project(snapshot, host)
-    monkeypatch.setattr(engine, "ui_projection", counted)
+    original = Store.get_carriage_document
+    def counted(store, snapshot_id):
+        calls.append((id(store), snapshot_id))
+        return original(store, snapshot_id)
+    monkeypatch.setattr(Store, "get_carriage_document", counted)
     first, duplicate, different = seed(client), seed(client), seed(client, {"devices": {"other": {}}})
     bodies = [client.get(url(sid)).json() for sid in (first, duplicate, different)]
     assert [body["identity"]["snapshot_id"] for body in bodies] == [first, duplicate, different]
@@ -634,29 +689,63 @@ def test_warm_cache_still_checks_live_store_authority(client, failure):
     assert "payload" not in response.json()
 
 
+@pytest.mark.parametrize("damage", ["deleted", "bytes_changed"])
+def test_warm_document_cache_refuses_missing_or_modified_prepared_document(client, damage):
+    sid = seed(client)
+    assert client.get(url(sid)).status_code == 200
+    store = client.app.state.store
+    source_before = store.get_snapshot_blob(sid)
+    with store._lock:
+        row = store._conn.execute(
+            "SELECT rowid,payload FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+        ).fetchone()
+        assert row is not None
+        if damage == "deleted":
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_delete")
+            store._conn.execute(
+                "DELETE FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind='document'", (sid,),
+            )
+        elif hasattr(store._conn, "blobopen"):
+            # SQLite's incremental BLOB API bypasses UPDATE triggers; warm cache authority must still see it.
+            with store._conn.blobopen("carriage_projection_v2_parts", "payload", row["rowid"], readonly=False) as blob:
+                blob.write(b"[")
+        else:
+            # Python 3.10 lacks blobopen. Author the same changed bytes outside the trigger guard and require
+            # the identical digest refusal; the missing API does not skip this adversarial condition.
+            store._conn.execute("DROP TRIGGER carriage_projection_v2_parts_no_update")
+            store._conn.execute(
+                "UPDATE carriage_projection_v2_parts SET payload=? WHERE snapshot_id=? AND kind='document'",
+                (b"[" + bytes(row["payload"])[1:], sid),
+            )
+        store._conn.commit()
+    assert store.get_snapshot_blob(sid) == source_before
+    for path in (url(sid), url(sid, "findings") + "/lists?pointer=/rows"):
+        response = client.get(path)
+        assert response.status_code == 409
+        assert "payload" not in response.json() and "list" not in response.json()
+
+
 def test_failed_cache_admission_is_retried_and_does_not_poison_other_hosts(client, monkeypatch):
     sid = seed(client)
-    project = engine.ui_projection
     calls = []
-    def initially_broken(snapshot, host=None):
-        calls.append(host)
-        result = project(snapshot, host)
+    def initially_broken(result, snapshot_id):
+        calls.append(snapshot_id)
         if len(calls) == 1:
             result["overview"]["posture_statement"]["state"] = "invented"
         return result
-    monkeypatch.setattr(engine, "ui_projection", initially_broken)
+    _provide_document(client, monkeypatch, initially_broken)
     with pytest.raises(SchemaValidationError):
         client.get(url(sid))
     assert client.get(url(sid)).status_code == 200
     assert client.get(url(sid, "trust")).status_code == 200
-    assert calls == [None, None]
+    assert calls == [sid, sid]
 
 
 def test_cache_owns_producer_values_and_copies_only_selected_rows(client, sample, monkeypatch):
     from backend import ui_projection_api as api
     document = owner.project(sample)
     original = deepcopy(document)
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     sid = seed(client)
     assert client.get(url(sid)).status_code == 200
     document["engine"].clear()
@@ -683,16 +772,18 @@ def test_cache_owns_producer_values_and_copies_only_selected_rows(client, sample
 
 def test_cache_owns_bound_source_when_producer_retains_and_mutates_its_input(client, monkeypatch):
     from backend.ui_projection_api import LIST_CATALOG
-    sid = seed(client, {"devices": {"edge": {}}})
+    sid = seed(client, {"devices": {"edge": {}, "other": {}}})
     snapshot, _binding = client.app.state.store.get_bound_snapshot(sid)
     expected = owner.project_device(snapshot, "edge")
     retained = []
     project = engine.ui_projection
-    def retaining(source, host=None):
+    def retaining(source, host=None, carriage=None):
         retained.append(source)
-        return project(source, host)
+        return project(source, host, carriage)
     monkeypatch.setattr(engine, "ui_projection", retaining)
     assert client.get(url(sid)).status_code == 200
+    assert retained == []  # Fleet documents do not call a request-time producer.
+    assert client.get(url(sid, "device"), params={"host": "other"}).status_code == 200
     retained[0]["devices"].clear()
     response = client.get(url(sid, "device"), params={"host": "edge", "limit": 200})
     assert response.status_code == 200
@@ -880,12 +971,12 @@ def test_compiled_source_and_transport_match_canonical_owner(client):
                 assert compiled.is_valid(bad) == stock.is_valid(bad) is False
 
 
-def _validation_errors(validator, value):
+def _validation_errors(validator, value, *context):
     def record(error):
         return {"message": error.message, "validator": error.validator,
                 "path": list(error.absolute_path), "schema_path": list(error.absolute_schema_path),
                 "context": [record(child) for child in error.context]}
-    return [record(error) for error in validator.iter_errors(value)]
+    return [record(error) for error in validator.iter_errors(value, *context)]
 
 
 @pytest.mark.parametrize("flavor", ["properties", "unique_oneof"])
@@ -967,8 +1058,21 @@ def test_compiled_invalid_depth_does_not_multiply_validation_work(flavor, monkey
       "contains": {"type": "string", "minLength": 2}, "minContains": 1, "maxContains": 2,
       "unevaluatedItems": False},
      [[1, "ok"], [1, "ok", "yes"]], [[1, "x"], [1, "ok", True], [1, "ok", "yes", "more"]]),
+    ({"type": "object", "properties": {"": {"type": "integer"}, "é": {"type": "boolean"},
+                                        "type": True, "never": False},
+      "required": ["", "é"], "additionalProperties": False},
+     [{"": 1, "é": True}, {"": 0, "é": False, "type": [None]}],
+     [{"": True, "é": True}, {"": 1, "é": 1}, {"": 1, "é": True, "never": None},
+      {"": 1, "é": True, "extra": 0}, {"é": True}, []]),
+    ({"type": "object", "properties": {"fixed": {"type": "integer"}},
+      "patternProperties": {"^fixed$": {"minimum": 2}, "^item": {"type": "string", "minLength": 2}},
+      "additionalProperties": {"type": "null"}, "propertyNames": {"minLength": 1},
+      "dependentRequired": {"item0": ["fixed"]}},
+     [{"fixed": 2, "item0": "ok", "other": None}, {}],
+     [{"fixed": 1}, {"fixed": 2, "item0": "x"}, {"item0": "ok"}, {"": None},
+      {"fixed": 2, "other": 3}]),
 ], ids=["boolean-children", "conditional-dependencies", "ref-evaluated-properties",
-        "composed-branches", "contains-evaluated-items"])
+        "composed-branches", "contains-evaluated-items", "literal-property-names", "overlapping-property-keywords"])
 def test_compiled_private_descents_preserve_composed_validity_and_public_diagnostics(schema, valid, invalid):
     from backend.ui_projection_api import _compiled_validator
 
@@ -1175,8 +1279,86 @@ def test_native_transport_pins_provider_schema_and_preserves_public_errors(nativ
     error = next(validator.iter_errors(bad))
     assert error.schema is schema
     assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
-    assert not hasattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native")
+    assert api._DOCUMENT_VALIDATOR._NativeTransportValidator__native is not None
+    assert api._native_schema_hash(api._OWNER) == api._NATIVE_SCHEMA_HASHES["document"]
     assert not hasattr(api._DEVICE_VALIDATOR, "_NativeTransportValidator__native")
+
+
+def test_document_missing_pin_has_no_provider_admission_and_keeps_whole_python(client, sample, monkeypatch):
+    from backend import ui_projection_api as api
+
+    def forbidden():
+        pytest.fail("Unreviewed document candidate reached a native provider")
+
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e"
+    monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES",
+                        {key: value for key, value in api._NATIVE_SCHEMA_HASHES.items() if key != "document"})
+    monkeypatch.setattr(api, "_native_provider", forbidden)
+    candidate = api._NativeTransportValidator(api._OWNER, "document")
+    assert candidate._NativeTransportValidator__native is None
+    # The already admitted original instance remains separate from this deliberately unpinned constructor.
+    assert api._DOCUMENT_VALIDATOR._NativeTransportValidator__native is not None
+    sid = seed(client, sample)
+    raw, binding = client.app.state.store.get_snapshot_blob(sid)
+    produced = api._ProjectionCache(client.app.state.store).document(raw, binding["sha256"], None, snapshot_id=sid)
+    api._require_json_native(produced)
+    candidate.validate(produced)
+    api._stock_validator(api._OWNER).validate(produced)
+    for value in ({}, {"schema": "not-a-document"}, [True], None):
+        assert _validation_errors(candidate, value) == _validation_errors(api._stock_validator(api._OWNER), value)
+
+
+def test_internal_native_validation_cannot_mark_a_transport_proof(native_body):
+    from backend import ui_projection_api as api
+
+    validator = api._NativeTransportValidator(api._VIEW_SCHEMA, "view", transport_proof=False)
+    native = validator._NativeTransportValidator__native
+    assert native is not None  # Existing reviewed literal/provider; not the unqualified document candidate.
+    calls = []
+    exceptions = []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(type(error).__name__)
+                raise
+            calls.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        validator.validate(native_body)
+        assert trace == {"native": False}
+        bad = deepcopy(native_body)
+        bad["view"] = "invented"
+        assert validator.is_valid(bad) is False
+        assert trace == {"native": False}
+        assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._VIEW_SCHEMA), bad)
+        assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+        assert exceptions == []
+        # The same genuine complete transport retains the existing positive smoke behavior.
+        api._NativeTransportValidator(api._VIEW_SCHEMA, "view").validate(native_body)
+        assert trace["native"] is True
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
+@pytest.mark.parametrize("flag", [False, None, 1, "true"])
+def test_transport_proof_opt_out_is_exact_without_changing_stock_results(native_body, flag):
+    from backend import ui_projection_api as api
+    validator = api._NativeTransportValidator(api._VIEW_SCHEMA, "view", transport_proof=flag)
+    assert validator._NativeTransportValidator__native is not None
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        assert validator.is_valid(native_body) == api._stock_validator(api._VIEW_SCHEMA).is_valid(native_body)
+        assert trace == {"native": False}
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
 
 
 def test_native_refuses_unsupported_instances_before_acceptance(native_body):
@@ -1320,6 +1502,1048 @@ def test_native_stp_nested_facts_match_stock_on_valid_and_hostile_bodies(client,
     assert len(results) == 3 and results[2] is False
 
 
+def _carriage_snapshot(tmp_path, relation="one_end", vlans=({"vlan": 10}, {"vlan": 20}), trunks=1):
+    """A stored snapshot whose interfaces come from the real producer (tests/test_vlan_carriage.py capture helpers:
+    build_interfaces over synthetic capture text), then compute_cable_map and compute_vlan_carriage."""
+    from cisco_toolkit.analyze import compute_cable_map
+    from cisco_toolkit.vlan_carriage import compute_vlan_carriage
+    from test_vlan_carriage import A, B, _built, _cdp, _ios_trunk, _observation, _stored
+    ports = [f"Gi1/0/{i + 1}" for i in range(trunks)]
+    allowed = {"one_end": ("10", None), "forwarding": ("10", "10"), "not_carried": ("none", "none"),
+               "stp_blocked": (None, None)}[relation]
+    interfaces = {host: _built(tmp_path, host, {
+        "show interfaces trunk": _ios_trunk([(port, value, "1", True) for port in ports]),
+        "show cdp neighbors detail": _cdp([(port, peer, port) for port in ports])})
+        for host, peer, value in ((A, B, allowed[0]), (B, A, allowed[1]))}
+    observations = {A: _observation("BLK"), B: _observation()} if relation == "stp_blocked" else None
+    cables, rows = compute_cable_map(interfaces), [dict(row) for row in vlans]
+    stored = compute_vlan_carriage(cables, _stored(interfaces), observations, rows)
+    return {"interfaces": _stored(interfaces), "cable_map": cables, "stp_topology_observations": observations,
+            "vlan_cutover": rows, "vlan_carriage": stored}
+
+
+def _carriage_url(sid):
+    return url(sid, "inventory") + "/carriage"
+
+
+def test_the_carriage_summary_travels_whole_in_the_existing_vlan_page(client, tmp_path):
+    from backend import ui_projection_api as api
+    snapshot = _carriage_snapshot(tmp_path)
+    before = deepcopy(snapshot)
+    sid = seed(client, snapshot)
+    expected = owner.project_inventory(snapshot)["vlans"]["rows"]["items"]
+    view = client.get(url(sid, "inventory"), params={"limit": 1})
+    assert view.status_code == 200
+    assert view.json()["payload"]["vlans"]["rows"]["page"]["items"] == expected[:1]
+    for offset in (0, 1):
+        response = client.get(url(sid, "inventory") + "/lists",
+                              params={"pointer": "/vlans/rows", "limit": 1, "offset": offset})
+        assert response.status_code == 200
+        assert response.json()["list"]["page"]["items"] == expected[offset:offset + 1]
+        summary = response.json()["list"]["page"]["items"][0]["selections"]["carriage"]
+        assert summary["vlan_index"] == offset and "items" not in summary
+        assert summary["state"] == "not_collected" and summary["held"]["value"] == 1
+        assert [ref["pointer"] for ref in summary["refs"]] == [f"/vlan_carriage/rows/{offset}", "/vlan_carriage/coverage"]
+    assert not any("carriage" in pointer for pointer in api.LIST_CATALOG["inventory"])
+    for pointer in ("/vlans/rows/0/selections/carriage", "/vlans/rows/items/0/selections/carriage"):
+        assert client.get(url(sid, "inventory") + "/lists", params={"pointer": pointer}).status_code == 422
+    assert snapshot == before
+
+
+def _native_observed(api, schema, surface):
+    validator = api._NativeTransportValidator(schema, surface)
+    native = validator._NativeTransportValidator__native
+    assert native is not None  # Only literal pins computed from the reviewed schema material.
+    calls, exceptions = [], []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                result = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(repr(error))
+                raise
+            calls.append(result)
+            return result
+
+    validator._NativeTransportValidator__native = Observed()
+    return validator, calls, exceptions
+
+
+def test_carriage_candidate_without_a_literal_pin_keeps_complete_python_validation(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 1})
+    assert response.status_code == 200
+    body = response.json()
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    pins = dict(api._NATIVE_SCHEMA_HASHES)
+    pins.pop("carriage", None)
+    monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+
+    def unadmitted_provider():
+        raise AssertionError("An absent literal pin must refuse native construction")
+
+    monkeypatch.setattr(api, "_native_provider", unadmitted_provider)
+    candidate = api._NativeTransportValidator(schema, "carriage")
+    assert candidate._NativeTransportValidator__native is None
+    stock = api._stock_validator(schema)
+    assert candidate.is_valid(body) and stock.is_valid(body)
+    bad = deepcopy(body)
+    bad["payload"]["page"]["unadmitted"] = True
+    assert not candidate.is_valid(bad) and not stock.is_valid(bad)
+    assert _validation_errors(candidate, bad) == _validation_errors(stock, bad)
+    assert dict(api._NATIVE_SCHEMA_HASHES) == pins
+
+
+@pytest.mark.parametrize("surface", ["view", "list"])
+@pytest.mark.parametrize("mutation", ["missing_count", "extra_field", "withheld_value", "string_count",
+                                      "missing_reason", "boolean_index", "negative_count", "missing_vlan_index"])
+def test_native_carriage_summaries_have_direct_true_false_false_proof(client, tmp_path, surface, mutation):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path))
+    endpoint = url(sid, "inventory") + ("/lists" if surface == "list" else "")
+    response = client.get(endpoint, params={"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})})
+    assert response.status_code == 200
+    body = response.json()
+    schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
+    validator, calls, exceptions = _native_observed(api, schema, surface)
+    stock = api._stock_validator(schema)
+    assert validator.is_valid(body) and stock.is_valid(body)
+    assert exceptions == [] and len(calls) == 1 and calls[0] is True
+    bad = deepcopy(body)
+    parent = bad["list"] if surface == "list" else bad["payload"]["vlans"]["rows"]
+    summary = parent["page"]["items"][0]["selections"]["carriage"]
+    assert summary["state"] == "not_collected" and summary["forwarding"]["state"] == "published"
+    if mutation == "missing_count":
+        del summary["forwarding"]
+    elif mutation == "extra_field":
+        summary["inferred_safe"] = True
+    elif mutation == "withheld_value":
+        summary["edge_not_collected"] = {**summary["edge_not_collected"], "state": "not_collected",
+                                         "reason": "forged", "value": 0}
+    elif mutation == "string_count":
+        summary["forwarding"]["value"] = "1"
+    elif mutation == "missing_reason":
+        del summary["reason"]
+    elif mutation == "boolean_index":
+        summary["vlan_index"] = True
+    elif mutation == "negative_count":
+        summary["held"]["value"] = -1
+    else:
+        del summary["vlan_index"]
+    assert not validator.is_valid(bad) and not stock.is_valid(bad)
+    assert exceptions == [] and len(calls) == 2 and calls[1] is False
+    assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
+    assert exceptions == [] and len(calls) == 3 and calls[2] is False
+
+
+@pytest.mark.parametrize("surface", ["view", "list"])
+@pytest.mark.parametrize("relation", ["forwarding", "not_carried", "stp_blocked"])
+def test_native_accepts_each_real_published_carriage_summary_without_fallback(client, tmp_path, surface, relation):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path, relation, vlans=({"vlan": 10},)))
+    response = client.get(url(sid, "inventory") + ("/lists" if surface == "list" else ""),
+                          params={"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})})
+    assert response.status_code == 200
+    body = response.json()
+    parent = body["list"] if surface == "list" else body["payload"]["vlans"]["rows"]
+    summary = parent["page"]["items"][0]["selections"]["carriage"]
+    assert summary["state"] == "published" and (summary[relation]["state"], summary[relation]["value"]) == ("published", 1)
+    schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
+    validator, calls, exceptions = _native_observed(api, schema, surface)
+    assert api._native_instance_allowed(body)
+    assert validator.is_valid(body) and api._stock_validator(schema).is_valid(body)
+    assert exceptions == [] and len(calls) == 1 and calls[0] is True
+
+
+def test_the_lazy_carriage_page_echoes_the_row_summary_and_pages_the_assessed_cables(client, tmp_path):
+    snapshot = _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=3)
+    sid = seed(client, snapshot)
+    view = client.get(url(sid, "inventory")).json()
+    summary = view["payload"]["vlans"]["rows"]["page"]["items"][0]["selections"]["carriage"]
+    first = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 2})
+    assert first.status_code == 200, first.text[:300]
+    assert first.headers["cache-control"] == "no-store"
+    body = first.json()
+    assert (body["schema"], body["projection_schema"], body["view"]) == ("ui_projection_transport/1", "ui_projection/1",
+                                                                         "carriage")
+    assert body["identity"] == view["identity"] and body["engine"] == view["engine"]
+    assert body["limitations"] == view["limitations"]
+    assert body["payload"]["summary"] == summary and body["payload"]["vlan_index"] == 0
+    assert body["payload"]["pointer"] == "/vlan_carriage/rows/0"
+    page = body["payload"]["page"]
+    assert (page["offset"], page["limit"], page["returned"], page["total"], page["has_more"]) == (0, 2, 2, 3, True)
+    assert [item["index"] for item in page["items"]] == [0, 1]
+    assert all(item["relation"]["value"] == "forwarding" for item in page["items"])
+    rest = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 2, "limit": 2}).json()["payload"]
+    assert rest["summary"] == summary and [item["index"] for item in rest["page"]["items"]] == [2]
+    assert rest["page"]["has_more"] is False
+    owner_page = owner.project_vlan_carriage(snapshot, 0, 0, 2)["carriage"]
+    assert body["payload"] == owner_page
+
+
+@pytest.mark.parametrize("params,status", [({"vlan_index": 0, "limit": 201}, 422), ({}, 422),
+                                           ({"vlan_index": -1}, 422), ({"vlan_index": 0, "offset": -1}, 422),
+                                           ({"vlan_index": 0, "limit": 0}, 422), ({"vlan_index": 1}, 404)])
+def test_carriage_page_bounds_and_unknown_rows_are_refused(client, tmp_path, params, status):
+    sid = seed(client, _carriage_snapshot(tmp_path, vlans=({"vlan": 10},)))
+    assert client.get(_carriage_url(sid), params=params).status_code == status
+    assert client.get(_carriage_url(991), params={"vlan_index": 0}).status_code == 404
+
+
+def test_carriage_pages_read_the_cached_snapshot_read_only_and_admit_it_once(client, tmp_path, monkeypatch):
+    from cisco_toolkit import protocol_assurance
+    prepare, admit, page = engine.prepare_carriage_projection, owner._carriage_source, engine.ui_projection_carriage
+    preparations, admissions, sources, gap_checks = [], [], [], []
+    gaps = owner._carriage_gaps
+
+    def counted_preparation(raw):
+        preparations.append(raw)
+        return prepare(raw)
+
+    def counted_gaps(ctx, section):
+        gap_checks.append(section)
+        return gaps(ctx, section)
+
+    def counted_admission(ctx):
+        admissions.append(ctx.s)
+        return admit(ctx)
+
+    def checked_page(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
+        assert type(snapshot) is engine.PreparedCarriagePage and admission is None
+        before = deepcopy(snapshot.pack)
+        sources.append(snapshot)
+        assert set(snapshot.pack) == {"schema", "context", "rows", "vlans"}
+        assert len(snapshot.pack["vlans"]) == len(snapshot.pack["rows"]) == 1
+        assert snapshot.pack["vlans"][0]["vlan_index"] == vlan_index
+        assert snapshot.pack["rows"][0]["ordinal"] == offset
+        assert sum(row["member_count"] for row in snapshot.pack["rows"]) <= 400
+        result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
+        assert snapshot.pack == before  # Only the selected server-owned fragments are read, never written.
+        return result
+
+    monkeypatch.setattr(engine, "prepare_carriage_projection", counted_preparation)
+    monkeypatch.setattr(owner, "_carriage_source", counted_admission)
+    monkeypatch.setattr(owner, "_carriage_gaps", counted_gaps)
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}), trunks=2))
+    original = client.app.state.store.get_snapshot_blob(sid)
+    assert len(preparations) == len(admissions) == len(gap_checks) == 1
+    assert preparations[0] == original[0]
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("first document or carriage page rebound/recounted/reprojected the full raw snapshot")
+
+    for name in ("bind_ui_projection_snapshot", "prepare_carriage_projection", "ui_projection",
+                 "ui_projection_carriage_admission"):
+        monkeypatch.setattr(engine, name, forbidden)
+    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts", "project",
+                 "carriage_row_cables", "_carriage_page_item", "_carriage_refs", "_carriage_role_query"):
+        monkeypatch.setattr(owner, name, forbidden)
+    monkeypatch.setattr(protocol_assurance, "bind_snapshot_json_bytes", forbidden)
+    monkeypatch.setattr(engine, "ui_projection_carriage", checked_page)
+    assert client.get(url(sid, "inventory")).status_code == 200  # The first document has no raw-snapshot work.
+    for vlan_index, offset in ((0, 0), (0, 1), (1, 0)):
+        response = client.get(_carriage_url(sid), params={"vlan_index": vlan_index, "offset": offset, "limit": 1})
+        assert response.status_code == 200, response.text[:300]
+    assert len(admissions) == 1 and len(sources) == 3
+    assert len(preparations) == len(gap_checks) == 1  # The full basis join happened only at ingest.
+    assert all(type(source) is engine.PreparedCarriagePage for source in sources)
+    assert client.app.state.store.get_snapshot_blob(sid) == original
+
+
+def test_cold_carriage_pages_read_only_materialized_rows_without_a_fleet_document(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=2))
+    store = client.app.state.store
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a materialized page read a fleet document or recomputed a relation")
+
+    monkeypatch.setattr(api._ProjectionCache, "document", forbidden)
+    for name in ("get_snapshot_blob", "get_carriage_document", "verify_carriage_document"):
+        monkeypatch.setattr(store, name, forbidden)
+    for name in ("prepare_carriage_projection", "_carriage_source", "_carriage_gaps", "carriage_row_counts",
+                 "carriage_row_cables", "_carriage_page_item", "_carriage_refs", "_carriage_role_query"):
+        monkeypatch.setattr(owner, name, forbidden)
+    cache = api._ProjectionCache(store)
+    first = api.carriage_page(cache, None, None, sid, 0, 0, 1)
+    api.UiProjectionCarriageResponse.model_validate(first)
+    assert first["payload"]["page"]["returned"] == 1
+    assert cache.entries == {}
+    assert api.carriage_page(cache, None, None, sid, 0, 0, 1) == first
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 1})
+    assert response.status_code == 200
+    assert response.json() == first
+
+
+@pytest.mark.parametrize("forgery", ["summary", "engine", "vlan_index", "input_summary", "input_engine"])
+def test_a_carriage_page_that_drifts_from_its_inventory_row_is_refused(client, tmp_path, monkeypatch, forgery):
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},)))
+    page = engine.ui_projection_carriage
+
+    def forged(snapshot, vlan_index, offset, limit, admission=None, *, transport_overhead=0):
+        result = page(snapshot, vlan_index, offset, limit, admission, transport_overhead=transport_overhead)
+        if forgery in ("summary", "input_summary"):
+            result["carriage"]["summary"]["forwarding"]["value"] += 1
+            if forgery == "input_summary":
+                snapshot.pack["vlans"][0]["summary"] = deepcopy(result["carriage"]["summary"])
+        elif forgery in ("engine", "input_engine"):
+            result["engine"]["script_version"] = {**result["engine"]["script_version"], "value": "forged"}
+            if forgery == "input_engine":
+                snapshot.pack["context"]["engine"] = deepcopy(result["engine"])
+        else:
+            result["carriage"]["vlan_index"] += 1
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", forged)
+    with pytest.raises(ValueError, match="changed its source, VLAN row or summary"):
+        client.get(_carriage_url(sid), params={"vlan_index": 0})
+
+
+@pytest.mark.parametrize("change", ["returned", "has_more", "total", "limit"])
+def test_the_carriage_response_model_rejects_forged_page_metadata(client, tmp_path, change):
+    from backend.ui_projection_api import UiProjectionCarriageResponse
+    from pydantic import ValidationError
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=2))
+    body = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1}).json()
+    UiProjectionCarriageResponse.model_validate(body)
+    page = body["payload"]["page"]
+    if change == "has_more":
+        page[change] = not page[change]
+    elif change == "limit":
+        page[change] = 201
+    else:
+        page[change] += 1
+    with pytest.raises(ValidationError):
+        UiProjectionCarriageResponse.model_validate(body)
+
+
+def test_the_carriage_route_is_published_with_its_owner_schema(client):
+    from backend import ui_projection_api as api
+    spec = client.app.openapi()
+    path = spec["paths"]["/api/snapshots/{snapshot_id}/ui-projection/inventory/carriage"]["get"]
+    assert path["operationId"] == "get_ui_projection_carriage"
+    assert path["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/UiProjectionCarriageResponse"}
+    schema = spec["components"]["schemas"]["UiProjectionCarriageResponse"]
+    assert schema["x-engine-schema-id"] == owner.SCHEMA_ID
+    assert schema["properties"]["payload"] == {"$ref": "#/components/schemas/UiProjection1_Carriage"}
+    assert "UiProjection1_CarriageList" not in spec["components"]["schemas"]
+    assert api.MAX_PAGE_SIZE == 200
+
+
+def _whole_native_carriage_snapshot(tmp_path, case):
+    if case != "two_member_bundle":
+        return _carriage_snapshot(tmp_path, "forwarding" if case == "empty_universe" else case,
+                                  vlans=({"vlan": 10},), trunks=0 if case == "empty_universe" else 1)
+    from cisco_toolkit.analyze import compute_cable_map
+    from cisco_toolkit.vlan_carriage import compute_vlan_carriage
+    from test_vlan_carriage import A, B, _bundle, _stored, _stp
+    interfaces = _bundle(tmp_path, allowed=(None, None))
+    observations = {A: _stp({10: [("Po1", "Desg", "FWD")]}),
+                    B: _stp({10: [("Po20", "Root", "FWD")]})}
+    cables, rows = compute_cable_map(interfaces), [{"vlan": 10}]
+    return {"interfaces": _stored(interfaces), "cable_map": cables,
+            "stp_topology_observations": observations, "vlan_cutover": rows,
+            "vlan_carriage": compute_vlan_carriage(cables, _stored(interfaces), observations, rows)}
+
+
+def _whole_native_carriage_body(client, tmp_path, case="one_end"):
+    sid = seed(client, _whole_native_carriage_snapshot(tmp_path, case))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "offset": 0, "limit": 200})
+    assert response.status_code == 200, response.text[:300]
+    return response.json()
+
+
+def _whole_native_document(client, snapshot):
+    from backend import ui_projection_api as api
+    sid = seed(client, snapshot)
+    raw, binding = client.app.state.store.get_snapshot_blob(sid)
+    document = api._ProjectionCache(client.app.state.store).document(raw, binding["sha256"], None, snapshot_id=sid)
+    api._require_json_native(document)
+    return document
+
+
+@pytest.mark.parametrize("case", ["forwarding", "not_carried", "stp_blocked", "one_end",
+                                "empty_universe", "two_member_bundle"])
+def test_native_full_document_real_producers_have_direct_true_false_false_stock_proof(client, tmp_path, case):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, case))
+    assert api._native_instance_allowed(document)
+    schema = deepcopy(api._OWNER)
+    assert api._native_schema_hash(schema) == api._NATIVE_SCHEMA_HASHES["document"]
+    validator = api._NativeTransportValidator(schema, "document")
+    native = validator._NativeTransportValidator__native
+    assert native is not None
+    calls, exceptions = [], []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(type(error).__name__)
+                raise
+            calls.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    trace = {"native": False}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        assert validator.is_valid(document) is True
+        api._stock_validator(schema).validate(document)
+        bad = deepcopy(document)
+        del bad["vocab"]
+        assert validator.is_valid(bad) is False
+        assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+        assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+        assert exceptions == []
+        assert trace == {"native": False}  # Internal acceptance is never complete transport proof.
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
+@pytest.mark.parametrize("damage", ["missing_root", "extra_root", "missing_nested", "extra_nested",
+                                    "wrong_count", "wrong_state", "lost_pointer", "unknown_vocab"])
+def test_native_full_document_root_and_nested_refusals_match_whole_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    assert api._native_instance_allowed(document)
+    bad = deepcopy(document)
+    summary = bad["inventory"]["vlans"]["rows"]["items"][0]["selections"]["carriage"]
+    if damage == "missing_root":
+        del bad["topology"]
+    elif damage == "extra_root":
+        bad["unexpected"] = True
+    elif damage == "missing_nested":
+        del summary["forwarding"]
+    elif damage == "extra_nested":
+        summary["unexpected"] = True
+    elif damage == "wrong_count":
+        summary["assessed"]["value"] = True
+    elif damage == "wrong_state":
+        summary["state"] = "invented"
+    elif damage == "lost_pointer":
+        summary["refs"][0]["pointer"] = "not-a-pointer"
+    else:
+        bad["vocab"]["unexpected"] = ["invented"]
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    native = validator._NativeTransportValidator__native
+    assert native is not None
+    observed = []
+
+    class Observed:
+        def is_valid(self, value):
+            accepted = native.is_valid(value)
+            observed.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    assert validator.is_valid(document) is True
+    assert validator.is_valid(bad) is False
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._OWNER), bad)
+    assert len(observed) == 3 and observed[0] is True and observed[1] is False and observed[2] is False
+
+
+@pytest.mark.parametrize("damage", ["last_count", "last_ref"])
+def test_native_full_document_rejects_the_last_nested_row_of_a_real_multivlan_multicable_document(
+        client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    snapshot = _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10}, {"vlan": 20}, {"vlan": 30}), trunks=3)
+    document = _whole_native_document(client, snapshot)
+    rows = document["inventory"]["vlans"]["rows"]["items"]
+    assert len(rows) == 3 and len(document["topology"]["cables"]["items"]) == 3
+    last_index = len(rows) - 1
+    summary = rows[last_index]["selections"]["carriage"]
+    assert summary["vlan_index"] == last_index
+    assert summary["assessed"]["value"] == 3 and type(summary["assessed"]["value"]) is int
+    assert summary["not_carried"]["value"] == 3 and type(summary["not_carried"]["value"]) is int
+    assert len(summary["refs"]) >= 2
+    assert summary["refs"][0]["pointer"] == f"/vlan_carriage/rows/{last_index}"
+    bad = deepcopy(document)
+    last = bad["inventory"]["vlans"]["rows"]["items"][last_index]["selections"]["carriage"]
+    if damage == "last_count":
+        last["not_carried"]["value"] = True
+        tail = ["not_carried", "value"]
+    else:
+        last["refs"][-1]["pointer"] = "not-a-pointer"
+        tail = ["refs", len(last["refs"]) - 1, "pointer"]
+    assert api._native_instance_allowed(document) and api._native_instance_allowed(bad)
+    validator, calls, exceptions = _native_observed(api, api._OWNER, "document")
+    stock = api._stock_validator(api._OWNER)
+    assert validator.is_valid(document) is True and stock.is_valid(document) is True
+    assert validator.is_valid(bad) is False and stock.is_valid(bad) is False
+    errors = _validation_errors(validator, bad)
+    assert errors == _validation_errors(stock, bad)
+    expected_path = ["inventory", "vlans", "rows", "items", last_index, "selections", "carriage", *tail]
+
+    def nested_errors(records):
+        for error in records:
+            yield error
+            yield from nested_errors(error["context"])
+
+    expected_validator = "type" if damage == "last_count" else "pattern"
+    assert any(error["path"] == expected_path and error["validator"] == expected_validator
+               for error in nested_errors(errors))
+    assert len(calls) == 3 and calls[0] is True and calls[1] is False and calls[2] is False
+    assert exceptions == []
+
+
+@pytest.mark.parametrize("damage", ["float", "large_integer", "newline", "surrogate", "tuple",
+                                    "foreign_dict", "nonstring_key", "nan", "cycle", "deep"])
+def test_native_full_document_unsupported_instances_preserve_complete_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _value):
+            pytest.fail("Unsupported document reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    if damage == "float":
+        document["engine"]["snapshot_bytes"]["value"] = 1.0
+    elif damage == "large_integer":
+        document["engine"]["snapshot_bytes"]["value"] = 2**53
+    elif damage == "newline":
+        document["engine"]["code_schema_version"] = "line\n"
+    elif damage == "surrogate":
+        document["engine"]["code_schema_version"] = "\ud800"
+    elif damage == "tuple":
+        document = tuple(document)
+    elif damage == "foreign_dict":
+        document = type("ForeignDocument", (dict,), {})(document)
+    elif damage == "nonstring_key":
+        document[1] = True
+    elif damage == "nan":
+        document["engine"]["snapshot_bytes"]["value"] = float("nan")
+    elif damage == "cycle":
+        document["unexpected"] = document
+    else:
+        nested = True
+        for _ in range(130):
+            nested = [nested]
+        document["unexpected"] = nested
+    assert not api._native_instance_allowed(document)
+    assert _validation_errors(validator, document) == _validation_errors(api._stock_validator(api._OWNER), document)
+
+
+@pytest.mark.parametrize("outcome", [False, 1, "true", "exception"])
+def test_native_full_document_declines_and_exceptions_replay_original_stock(client, tmp_path, outcome):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    validator = api._NativeTransportValidator(api._OWNER, "document", transport_proof=False)
+    assert validator._NativeTransportValidator__native is not None
+    calls = []
+
+    class Declined:
+        def is_valid(self, value):
+            calls.append(value)
+            if outcome == "exception":
+                raise RuntimeError("Native document provider refused")
+            return outcome
+
+    validator._NativeTransportValidator__native = Declined()
+    assert validator.is_valid(document) is True
+    bad = deepcopy(document)
+    del bad["schema"]
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(api._OWNER), bad)
+    assert calls == [document, bad]
+
+
+def test_native_full_document_requires_literal_version_private_copy_and_full_schema(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    assert api.version("jsonschema-rs") == "0.58.6"
+    assert api._NATIVE_SCHEMA_HASHES["document"] == "2b8f96d67afef4a24d1f2e26865fd087dc82b6d4258477b94fd452692a7bd13e"
+    for replacement in (None, "0" * 64, api._NATIVE_SCHEMA_HASHES["carriage"]):
+        with monkeypatch.context() as changed:
+            pins = dict(api._NATIVE_SCHEMA_HASHES)
+            if replacement is None:
+                del pins["document"]
+            else:
+                pins["document"] = replacement
+            changed.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+            candidate = api._NativeTransportValidator(api._OWNER, "document")
+            assert candidate._NativeTransportValidator__native is None
+            candidate.validate(document)
+    actual_version = api.version
+    with monkeypatch.context() as changed:
+        changed.setattr(api, "version", lambda name: "0.0.0" if name == "jsonschema-rs" else actual_version(name))
+        assert api._NativeTransportValidator(api._OWNER, "document")._NativeTransportValidator__native is None
+    public = deepcopy(api._OWNER)
+    original_copy = api.deepcopy
+
+    def corrupt_copy(value, *args, **kwargs):
+        copied = original_copy(value, *args, **kwargs)
+        if value is public:
+            copied["required"].remove("vocab")
+        return copied
+
+    with monkeypatch.context() as changed:
+        changed.setattr(api, "deepcopy", corrupt_copy)
+        candidate = api._NativeTransportValidator(public, "document")
+        assert candidate._NativeTransportValidator__native is None
+        candidate.validate(document)
+        assert _validation_errors(candidate, document) == _validation_errors(api._stock_validator(public), document) == []
+        bad = original_copy(document)
+        del bad["vocab"]
+        errors = _validation_errors(candidate, bad)
+        assert errors == _validation_errors(api._stock_validator(public), bad)
+        assert errors and any(error["validator"] == "required" and "vocab" in error["message"] for error in errors)
+        assert candidate.is_valid(bad) is False
+    assert api._NativeTransportValidator(api._OWNER, "carriage")._NativeTransportValidator__native is None
+
+
+@pytest.mark.parametrize("mutation", ["nested", "reassignment"])
+def test_native_full_document_current_schema_and_explicit_context_remain_stock(client, tmp_path, mutation):
+    from backend import ui_projection_api as api
+    document = _whole_native_document(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+    schema = deepcopy(api._OWNER)
+    validator = api._NativeTransportValidator(schema, "document")
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _value):
+            pytest.fail("Changed document schema or context reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    assert _validation_errors(validator, document, {}) == _validation_errors(api._stock_validator(schema), document, {})
+    evolved = validator.evolve(schema={"type": "integer"})
+    assert evolved.is_valid(1) and not evolved.is_valid("1")
+    if mutation == "nested":
+        schema["properties"]["schema"] = {"const": "changed"}
+    else:
+        validator.schema = {"type": "string"}
+    assert _validation_errors(validator, document) == _validation_errors(api._stock_validator(validator.schema), document)
+
+
+@pytest.mark.parametrize("surface", ["view", "list", "carriage"])
+@pytest.mark.parametrize("outcome", ["absent", False, "nonboolean", "exception"])
+def test_native_document_success_never_certifies_a_nonnative_transport(tmp_path, monkeypatch, surface, outcome):
+    from backend import ui_projection_api as api
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "document-transport-boundary")
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    app = create_app(db_path=str(tmp_path / "doc-transport.db"), scope_dist_dir=None)
+    original_doc = api._DOCUMENT_VALIDATOR._NativeTransportValidator__native
+    assert original_doc is not None
+    document_results = []
+
+    class ActualDocument:
+        def is_valid(self, value):
+            accepted = original_doc.is_valid(value)
+            document_results.append(accepted)
+            return accepted
+
+    class Declined:
+        def is_valid(self, _value):
+            if outcome == "exception":
+                raise RuntimeError("Transport provider refused")
+            return 1 if outcome == "nonboolean" else False
+
+    headers = {"X-Atlas-Native-Smoke-Nonce": "document-transport-boundary"}
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
+        sid = seed(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+        if surface == "carriage":
+            validator, path, params = api._CARRIAGE_VALIDATOR, _carriage_url(sid), {"vlan_index": 0}
+        elif surface == "list":
+            validator, path, params = api._VALIDATORS["list"], url(sid, "inventory") + "/lists", {"pointer": "/vlans/rows"}
+        else:
+            validator, path, params = api._VALIDATORS["view"], url(sid, "inventory"), {}
+        with monkeypatch.context() as changed:
+            changed.setattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native", ActualDocument())
+            changed.setattr(validator, "_NativeTransportValidator__native", None if outcome == "absent" else Declined())
+            if surface == "carriage":
+                # Materialized pages never admit the full document. Establish genuine document AND
+                # complete transport success in a preceding request, then require that neither proof
+                # leaks into a page whose own transport provider is absent/declines/faults.
+                admitted = client.get(url(sid, "inventory"), headers=headers)
+                assert admitted.status_code == 200, admitted.text[:300]
+                assert document_results == [True]
+                assert admitted.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.6"
+            response = client.get(path, params=params, headers=headers)
+            assert response.status_code == 200, response.text[:300]
+            assert len(document_results) == 1 and document_results[0] is True  # Genuine provider, exact boolean.
+            assert "X-Atlas-Native-Validation" not in response.headers
+        positive = client.get(path, params=params, headers=headers)
+        assert positive.status_code == 200
+        assert positive.headers["X-Atlas-Native-Validation"] == "jsonschema-rs/0.58.6"
+        assert "X-Atlas-Native-Validation" not in client.get(path, params=params).headers
+
+
+def _carriage_native_triplet(api, body, bad):
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator, calls, exceptions = _native_observed(api, schema, "carriage")
+    stock = api._stock_validator(schema)
+    assert api.version("jsonschema-rs") == "0.58.6"
+    assert api._native_instance_allowed(body) and api._native_instance_allowed(bad)
+    assert validator.is_valid(body) and stock.is_valid(body)
+    assert calls == [True] and exceptions == []
+    assert not validator.is_valid(bad) and not stock.is_valid(bad)
+    assert calls == [True, False] and exceptions == []
+    assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
+    assert calls == [True, False, False] and exceptions == []
+
+
+@pytest.mark.parametrize("case", ["forwarding", "not_carried", "stp_blocked", "one_end",
+                                 "empty_universe", "two_member_bundle"])
+def test_native_lazy_carriage_has_whole_body_true_false_false_proof_from_real_producers(client, tmp_path, case):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, case)
+    page = body["payload"]["page"]
+    if case == "empty_universe":
+        assert page["items"] == [] and page["total"] == 0
+        assert body["payload"]["summary"]["assessed"]["value"] == 0
+    elif case == "one_end":
+        assert page["items"][0]["relation"]["value"] is None
+        assert body["payload"]["summary"]["held"]["value"] == 1
+    else:
+        expected = "forwarding" if case == "two_member_bundle" else case
+        assert page["items"][0]["relation"]["value"] == expected
+        if case == "two_member_bundle":
+            members = page["items"][0]["members"]["items"]
+            assert len(members) == 2 and all(member["basis"]["value"] == "typed_pvst" for member in members)
+    bad = deepcopy(body)
+    bad["view"] = "unqualified_carriage"
+    _carriage_native_triplet(api, body, bad)
+
+
+@pytest.mark.parametrize("mutation", [
+    "extra_envelope", "missing_engine", "identity_boolean_bytes", "missing_summary", "missing_count",
+    "unknown_summary_state", "boolean_vlan_index", "negative_count", "extra_page", "missing_page_items",
+    "boolean_offset", "extra_row", "missing_relation", "unknown_relation_state", "withheld_relation_value",
+    "unknown_relation_enum", "missing_member_end", "boolean_member_index", "missing_end_basis",
+    "unknown_signal", "boolean_host", "unknown_ref_role", "integer_pointer", "extra_ends",
+    "missing_member_items", "missing_withheld_reason", "engine_digest_form",
+])
+def test_native_lazy_carriage_refutes_complete_nested_shapes_without_exception_fallback(client, tmp_path, mutation):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path)
+    bad = deepcopy(body)
+    payload = bad["payload"]
+    summary, page = payload["summary"], payload["page"]
+    row = page["items"][0]
+    member = row["members"]["items"][0]
+    if mutation == "extra_envelope":
+        bad["unowned"] = True
+    elif mutation == "missing_engine":
+        del bad["engine"]
+    elif mutation == "identity_boolean_bytes":
+        bad["identity"]["bytes"] = True
+    elif mutation == "missing_summary":
+        del payload["summary"]
+    elif mutation == "missing_count":
+        del summary["forwarding"]
+    elif mutation == "unknown_summary_state":
+        summary["state"] = "assumed"
+    elif mutation == "boolean_vlan_index":
+        payload["vlan_index"] = True
+    elif mutation == "negative_count":
+        summary["held"]["value"] = -1
+    elif mutation == "extra_page":
+        page["inferred_safe"] = True
+    elif mutation == "missing_page_items":
+        del page["items"]
+    elif mutation == "boolean_offset":
+        page["offset"] = True
+    elif mutation == "extra_row":
+        row["unowned"] = True
+    elif mutation == "missing_relation":
+        del row["relation"]
+    elif mutation == "unknown_relation_state":
+        row["relation"]["state"] = "assumed"
+    elif mutation == "withheld_relation_value":
+        assert row["relation"]["value"] is None
+        row["relation"]["value"] = "forwarding"
+    elif mutation == "unknown_relation_enum":
+        row["relation"].update(state="published", value="inferred_forwarding")
+        row["relation"].pop("reason", None)
+    elif mutation == "missing_member_end":
+        del member["b"]
+    elif mutation == "boolean_member_index":
+        member["index"] = True
+    elif mutation == "missing_end_basis":
+        del member["a"]["basis"]
+    elif mutation == "unknown_signal":
+        member["a"]["signal"]["value"] = "inferred_allowance"
+    elif mutation == "boolean_host":
+        member["a"]["host"]["value"] = True
+    elif mutation == "unknown_ref_role":
+        member["a"]["signal"]["refs"][0]["role"] = "assumed"
+    elif mutation == "integer_pointer":
+        row["pointer"] = 1
+    elif mutation == "extra_ends":
+        row["ends"]["value"]["unowned"] = True
+    elif mutation == "missing_member_items":
+        del row["members"]["items"]
+    elif mutation == "missing_withheld_reason":
+        assert row["relation"]["state"] != "published"
+        del row["relation"]["reason"]
+    else:
+        bad["engine"]["snapshot_digest_form"] = "other-byte-form"
+    _carriage_native_triplet(api, body, bad)
+
+
+def test_native_lazy_carriage_validates_all_two_hundred_rows_and_the_last_end(client, tmp_path):
+    from backend import ui_projection_api as api
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding", vlans=({"vlan": 10},), trunks=200))
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 200})
+    assert response.status_code == 200, response.text[:300]
+    body = response.json()
+    assert body["payload"]["page"]["returned"] == len(body["payload"]["page"]["items"]) == 200
+    bad = deepcopy(body)
+    last = bad["payload"]["page"]["items"][-1]["members"]["items"][-1]["b"]
+    del last["signal"]
+    _carriage_native_triplet(api, body, bad)
+
+
+@pytest.mark.parametrize("damage", ["float", "large_integer", "newline", "surrogate", "tuple",
+                                    "foreign_dict", "nonstring_key", "nan", "cycle", "deep"])
+def test_native_lazy_carriage_unsupported_domain_stays_entirely_stock(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+
+    class Forbidden:
+        def is_valid(self, _body):
+            pytest.fail("Unsupported lazy Carriage input reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    if damage == "float":
+        body["identity"]["snapshot_id"] = 1.0
+    elif damage == "large_integer":
+        body["identity"]["snapshot_id"] = 2**53
+    elif damage == "newline":
+        body["engine"]["code_schema_version"] = "line\n"
+    elif damage == "surrogate":
+        body["engine"]["code_schema_version"] = "\ud800"
+    elif damage == "tuple":
+        body["payload"]["page"]["items"] = tuple(body["payload"]["page"]["items"])
+    elif damage == "foreign_dict":
+        body = type("ForeignBody", (dict,), {})(body)
+    elif damage == "nonstring_key":
+        body[1] = "unowned"
+    elif damage == "nan":
+        body["payload"]["summary"]["held"]["value"] = float("nan")
+    elif damage == "cycle":
+        cyclic = []
+        cyclic.append(cyclic)
+        body["payload"]["summary"]["refs"] = cyclic
+    else:
+        deep = "x"
+        for _ in range(129):
+            deep = [deep]
+        body["engine"]["code_schema_version"] = deep
+    assert not api._native_instance_allowed(body)
+    stock = api._stock_validator(schema)
+    assert validator.is_valid(body) == stock.is_valid(body)
+    assert _validation_errors(validator, body) == _validation_errors(stock, body)
+
+
+def test_native_lazy_carriage_requires_the_reviewed_literal_version_and_owned_whole_schema(client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    provider = api._native_provider()
+    assert provider is not None and api.version("jsonschema-rs") == "0.58.6"
+    real, constructions = provider.Draft202012Validator, []
+
+    def observed(schema, **options):
+        constructions.append(options)
+        assert options == {"offline": True, "validate_formats": False, "ignore_unknown_formats": True}
+        return real(schema, **options)
+
+    monkeypatch.setattr(provider, "Draft202012Validator", observed)
+    changed = deepcopy(api._CARRIAGE_SCHEMA)
+    changed["title"] = "unreviewed changed whole schema"
+    assert api._NativeTransportValidator(changed, "carriage")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "view")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._VIEW_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    for pin in (None, "0" * 64):
+        with monkeypatch.context() as altered:
+            pins = dict(api._NATIVE_SCHEMA_HASHES)
+            if pin is None:
+                pins.pop("carriage", None)
+            else:
+                pins["carriage"] = pin
+            altered.setattr(api, "_NATIVE_SCHEMA_HASHES", pins)
+            assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    original_version = api.version
+    for rejected in ("0.58.3", "0.58.4", "0.58.5", "0.58.7", None):
+        def version(name):
+            if name != "jsonschema-rs":
+                return original_version(name)
+            if rejected is None:
+                raise api.PackageNotFoundError(name)
+            return rejected
+        with monkeypatch.context() as altered:
+            altered.setattr(api, "version", version)
+            assert api._NativeTransportValidator(api._CARRIAGE_SCHEMA, "carriage")._NativeTransportValidator__native is None
+    copied, schema = api.deepcopy, deepcopy(api._CARRIAGE_SCHEMA)
+    def changed_copy(value):
+        result = copied(value)
+        if value is schema:
+            result["title"] = "changed during private copy"
+        return result
+    with monkeypatch.context() as altered:
+        altered.setattr(api, "deepcopy", changed_copy)
+        assert api._NativeTransportValidator(schema, "carriage")._NativeTransportValidator__native is None
+    assert constructions == []
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None and len(constructions) == 1
+    assert validator.is_valid(body)
+
+
+@pytest.mark.parametrize("outcome", [False, None, 1, "true", "exception"])
+def test_native_lazy_carriage_declines_and_private_exceptions_replay_complete_stock(client, tmp_path, outcome):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Declined:
+        def is_valid(self, _body):
+            if outcome == "exception":
+                raise ValueError("private Carriage native sentinel")
+            return outcome
+    validator._NativeTransportValidator__native = Declined()
+    assert validator.is_valid(body) and api._stock_validator(schema).is_valid(body)
+    bad = deepcopy(body)
+    bad["view"] = "unqualified_carriage"
+    error = next(validator.iter_errors(bad))
+    assert error.__context__ is None and "private Carriage native sentinel" not in str(error)
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+
+
+def test_native_lazy_carriage_schema_mutation_reassignment_and_evolved_context_remain_stock(client, tmp_path):
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    schema = deepcopy(api._CARRIAGE_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Mutating:
+        def is_valid(self, _body):
+            schema["required"] = ["new_required"]
+            return True
+    validator._NativeTransportValidator__native = Mutating()
+    assert not validator.is_valid(body)
+    assert _validation_errors(validator, body) == _validation_errors(api._stock_validator(schema), body)
+    validator.schema = {"type": "integer"}
+    assert validator.is_valid(1) and not validator.is_valid("1")
+    assert type(validator.evolve()) is Draft202012Validator
+
+
+
+
+def test_admitted_lazy_carriage_alternate_and_evolved_contexts_never_inherit_native_or_retrieval(client, tmp_path):
+    from referencing import Registry, Resource
+    from backend import ui_projection_api as api
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    validator = api._NativeTransportValidator(deepcopy(api._CARRIAGE_SCHEMA), "carriage")
+    assert validator._NativeTransportValidator__native is not None
+    class Forbidden:
+        def is_valid(self, _body):
+            pytest.fail("Alternate/evolved context inherited a native acceptance plan")
+    validator._NativeTransportValidator__native = Forbidden()
+    assert validator.is_valid(1, {"type": "integer"})
+    assert not validator.is_valid("1", {"type": "integer"})
+    calls = []
+    def retrieve(uri):
+        calls.append(uri)
+        pytest.fail("Carriage evolved context performed external retrieval")
+    registry = Registry(retrieve=retrieve)
+    for context in ({"registry":
+        registry, "_resolver": None}, {"_resolver": registry.resolver()}):
+        evolved = validator.evolve(schema={"$ref": "https://unqualified.invalid/carriage"}, **context)
+        assert type(evolved) is Draft202012Validator
+        with pytest.raises(Exception, match="Unresolvable"):
+            evolved.validate(body)
+    resource = Resource.from_contents({"$schema": Draft202012Validator.META_SCHEMA["$id"], "type": "integer"})
+    local = validator.evolve(schema={"$ref": "urn:carriage-local"},
+                             registry=Registry().with_resource("urn:carriage-local", resource), _resolver=None)
+    assert local.is_valid(1) and not local.is_valid("1")
+    assert calls == []
+@pytest.mark.parametrize("damage", ["returned", "has_more", "total", "limit", "overfull"])
+def test_native_lazy_carriage_schema_success_never_waives_post_schema_metadata(client, tmp_path, damage):
+    from backend import ui_projection_api as api
+    from pydantic import ValidationError as ModelValidationError
+    body = _whole_native_carriage_body(client, tmp_path, "forwarding")
+    bad = deepcopy(body)
+    page = bad["payload"]["page"]
+    if damage == "has_more":
+        page["has_more"] = not page["has_more"]
+    elif damage == "limit":
+        page["limit"] = 201
+    elif damage == "overfull":
+        page["items"] = [deepcopy(page["items"][0]) for _ in range(201)]
+        page.update(returned=201, total=201, limit=201, has_more=False)
+    else:
+        page[damage] += 1
+    validator, calls, exceptions = _native_observed(api, deepcopy(api._CARRIAGE_SCHEMA), "carriage")
+    assert validator.is_valid(bad) and api._stock_validator(api._CARRIAGE_SCHEMA).is_valid(bad)
+    assert calls == [True] and exceptions == []  # Relational/max200 guards are not the raw JSON schema.
+    with pytest.raises(ValueError, match="metadata disagrees"):
+        api._require_carriage_page(bad["payload"])
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionCarriageResponse.model_validate(bad)
+
+
+def test_lazy_carriage_native_nonce_proof_requires_request_local_complete_guards(tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "carriage-native-smoke")
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    app = create_app(db_path=str(tmp_path / "carriage-native-smoke.db"), scope_dist_dir=None)
+    headers, proof = {"X-Atlas-Native-Smoke-Nonce": "carriage-native-smoke"}, "x-atlas-native-validation"
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000),
+                    raise_server_exceptions=False) as client:
+        sid = seed(client, _whole_native_carriage_snapshot(tmp_path, "forwarding"))
+        endpoint, params = _carriage_url(sid), {"vlan_index": 0, "limit": 1}
+        accepted = client.get(endpoint, params=params, headers=headers)
+        assert accepted.status_code == 200 and accepted.headers[proof] == "jsonschema-rs/0.58.6"
+        assert proof not in client.get(endpoint, params=params).headers
+        assert proof not in client.get(endpoint, params=params, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
+        assert proof not in client.get(endpoint, params=params, headers=[*headers.items(), *headers.items()]).headers
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            modes = [True, False] * 6
+            responses = list(pool.map(lambda mode: client.get(endpoint, params=params, headers=headers if mode else {}), modes))
+        assert [proof in response.headers for response in responses] == modes
+        class Declined:
+            def is_valid(self, _body):
+                return False
+        with monkeypatch.context() as altered:
+            altered.setattr(api._CARRIAGE_VALIDATOR, "_NativeTransportValidator__native", Declined())
+            fallback = client.get(endpoint, params=params, headers=headers)
+            assert fallback.status_code == 200 and proof not in fallback.headers
+        original = api.carriage_page
+        def malformed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result["payload"]["page"]["has_more"] = not result["payload"]["page"]["has_more"]
+            return result
+        with monkeypatch.context() as altered:
+            altered.setattr(api, "carriage_page", malformed)
+            refused = client.get(endpoint, params=params, headers=headers)
+            assert refused.status_code == 500 and proof not in refused.headers
+        owner_page = engine.ui_projection_carriage
+        def foreign_source(*args, **kwargs):
+            result = owner_page(*args, **kwargs)
+            assert result["engine"]["snapshot_bytes"]["state"] == "published"
+            result["engine"]["snapshot_bytes"]["value"] += 1
+            return result
+        with monkeypatch.context() as altered:
+            altered.setattr(engine, "ui_projection_carriage", foreign_source)
+            refused = client.get(endpoint, params=params, headers=headers)
+            assert refused.status_code == 500 and proof not in refused.headers
+        restored = client.get(endpoint, params=params, headers=headers)
+        assert restored.status_code == 200 and restored.headers[proof] == "jsonschema-rs/0.58.6"
+
+
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
                                      "extra_group_field", "unknown_check_status", "missing_check_phase"])
 def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(native_body, mutation):
@@ -1416,10 +2640,12 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
-                   "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058"}
+    # W52 / G14 v2: all three values are literal observations from independently reviewed hosted schema material.
+    prospective = {"view": "2f70b393a3d682063a34a930026e3b4cf145278dbb387037fbaf6b30aff28714",
+                   "list": "82ca31f0505c3c30ee8f97503d0b1396a8d45d0f16ae9f7123f129720cd72bb7",
+                   "carriage": "55d75f4efeb2eb627071cffb29a64a7756618da00480a50edbe06730310cd95b"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
-            (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
+            (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA), ("carriage", api._CARRIAGE_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
 
     def fact(value):
@@ -1896,7 +3122,9 @@ def test_all_python_fallbacks_and_evolved_contexts_refuse_external_retrieval(tmp
     thread.start()
     try:
         for reference in (f"http://127.0.0.1:{server.server_port}/schema", fixture.as_uri()):
-            for factory in (api._compiled_validator, lambda schema: api._NativeTransportValidator(schema, "view")):
+            for factory in (api._compiled_validator, lambda schema:
+                api._NativeTransportValidator(schema, "view"),
+                            lambda schema: api._NativeTransportValidator(schema, "carriage")):
                 unknown = factory({"$ref": reference})
                 with pytest.raises(Exception, match="Unresolvable"):
                     unknown.validate(1)
@@ -2150,7 +3378,7 @@ def test_path_admits_complete_source_before_query_selection(client, monkeypatch)
     sid = seed(client)
     document = owner.project({})
     document["overview"]["facts"]["avg_health"]["fact"]["value"] = float("nan")
-    monkeypatch.setattr(engine, "ui_projection", lambda *_args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     def forbidden(*_args):
         pytest.fail("Path ran before invalid source admission was refused")
     monkeypatch.setattr(engine, "ui_projection_path", forbidden)
@@ -2311,14 +3539,13 @@ def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(cli
     blob, _binding = client.app.state.store.get_snapshot_blob(sid)
     other_bytes = blob + b"\n"                        # valid JSON, equal content, a different byte string
     assert json.loads(other_bytes) == json.loads(blob) and other_bytes != blob
-    project = engine.ui_projection
+    other_document = owner.project(engine.bind_ui_projection_snapshot(other_bytes))
     produced = []
 
-    def forged(snapshot, host=None):
+    def forged(document, _snapshot_id):
         if forgery == "equal_content_other_bytes":
-            document = project(engine.bind_ui_projection_snapshot(other_bytes), host)
+            document = deepcopy(other_document)
         else:
-            document = project(snapshot, host)
             if forgery == "digest":
                 document["engine"]["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
             else:
@@ -2327,7 +3554,7 @@ def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(cli
         return document
 
     with monkeypatch.context() as changed:
-        changed.setattr(engine, "ui_projection", forged)
+        _provide_document(client, changed, forged)
         with pytest.raises(ValueError, match="names other source bytes than the store read"):
             client.get(url(sid))
     # The refused document was schema-valid and published; only its source binding was wrong.
@@ -2347,10 +3574,182 @@ def test_transport_serves_a_withheld_engine_identity_exactly_as_the_owner_wrote_
     sid = seed(client)
     document = owner.project(sample)                  # handed over already parsed: the owner names no file
     assert [document["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")] == ["not_collected"] * 2
-    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    _provide_document(client, monkeypatch, lambda *_args: document)
     response = client.get(url(sid))
     assert response.status_code == 200, response.text[:200]
     body = response.json()
     assert body["engine"] == document["engine"]
     assert body["engine"]["snapshot_sha256"]["value"] is None and body["engine"]["snapshot_bytes"]["value"] is None
     assert body["identity"]["bytes"] > 0
+
+
+def test_carriage_output_copy_preserves_all_values_aliases_and_mutable_isolation(monkeypatch):
+    from backend import ui_projection_api as api
+
+    shared = [{"value": [False, 0, 0.0, -0.0, None, "\ud800", "\U0001f600", 2**100]}]
+    source = {"engine": {"nested": shared}, "carriage": {"first": shared, "second": shared},
+              "vocab": ["preserve", {"all": "fields"}]}
+    expected = deepcopy(source)
+
+    def generic_copy_forbidden(*_args):
+        raise AssertionError("Native page leaves reached generic copy dispatch")
+
+    monkeypatch.setattr(api, "deepcopy", generic_copy_forbidden)
+    copied = api._copy_carriage_document(source)
+    assert copied == expected and copied is not source
+    assert copied["carriage"]["first"] is copied["carriage"]["second"] is copied["engine"]["nested"]
+    assert copied["carriage"]["first"] is not shared
+    assert copied["carriage"]["first"][0]["value"][3].hex() == (-0.0).hex()
+    copied["carriage"]["first"][0]["value"].append("copy mutation")
+    assert shared == expected["carriage"]["first"]
+    source["vocab"][1]["all"] = "source mutation"
+    assert copied["vocab"][1] == expected["vocab"][1]
+
+
+@pytest.mark.parametrize("shape", ["list", "dict"])
+def test_carriage_output_copy_keeps_cycles_in_the_memo_without_admitting_them(shape):
+    from backend import ui_projection_api as api
+
+    source = [] if shape == "list" else {}
+    if shape == "list":
+        source.append(source)
+    else:
+        source["self"] = source
+    with pytest.raises(ValueError, match="cyclic"):
+        api._require_json_native(source)
+    expected, copied = deepcopy(source), api._copy_carriage_document(source)
+    slot = 0 if shape == "list" else "self"
+    assert type(copied) is type(expected) and copied is not source
+    assert copied[slot] is copied and expected[slot] is expected
+
+
+def test_carriage_output_copy_preserves_foreign_hooks_order_and_shared_memo():
+    from backend import ui_projection_api as api
+
+    events = []
+    shared = [{"mutable": True}]
+
+    class ForeignKey(str):
+        def __deepcopy__(self, memo):
+            events.append("key")
+            return str(self)
+
+    class ForeignList(list):
+        def __deepcopy__(self, memo):
+            events.append("value")
+            assert any(kept is shared for kept in memo[id(memo)])
+            return deepcopy(list(self), memo)
+
+    source = {"shared": shared, ForeignKey("foreign"): ForeignList([shared])}
+    expected = deepcopy(source)
+    expected_events = list(events)
+    events.clear()
+    copied = api._copy_carriage_document(source)
+    assert events == expected_events == ["value", "key"]
+    assert copied == expected
+    assert copied["shared"] is copied["foreign"][0] and copied["shared"] is not shared
+    assert expected["shared"] is expected["foreign"][0]
+
+
+@pytest.mark.parametrize("damage", ["scalar", "key", "delete-container", "replace-container"])
+def test_carriage_output_copy_keeps_native_memo_semantics_after_a_foreign_hook(damage):
+    from backend import ui_projection_api as api
+
+    later = "".join(("later", " scalar memo subject"))
+    later_key = "".join(("later", " key memo subject"))
+    shared, calls = [], []
+
+    class Hook:
+        def __deepcopy__(self, memo):
+            calls.append(True)
+            if damage == "scalar":
+                memo[id(later)] = {"from_memo": True}
+            elif damage == "key":
+                memo[id(later_key)] = "foreign replacement key"
+            elif damage == "delete-container":
+                del memo[id(shared)]
+            else:
+                memo[id(shared)] = ["foreign replacement"]
+            return "copied hook"
+
+    shared.append(Hook())
+    source = {"first": shared, "again": shared, "later": later, later_key: "value"}
+    expected = deepcopy(source)
+    assert calls == [True]
+    calls.clear()
+    copied = api._copy_carriage_document(source)
+    assert calls == [True] and copied == expected
+    assert copied["first"] is copied["again"] and copied["first"] is not shared
+    assert expected["first"] is expected["again"]
+    assert type(copied["later"]) is type(expected["later"])
+
+
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_carriage_output_copy_preserves_original_error_before_key_hook(error_type):
+    from backend import ui_projection_api as api
+
+    error = error_type("declared copy refusal")
+    events = []
+
+    class ForeignValue:
+        def __deepcopy__(self, _memo):
+            events.append("value")
+            raise error
+
+    class ForeignKey(str):
+        def __deepcopy__(self, _memo):
+            events.append("key")
+            raise AssertionError("Key copied before the failing value")
+
+    source = {ForeignKey("foreign"): ForeignValue()}
+    for copier in (deepcopy, api._copy_carriage_document):
+        events.clear()
+        with pytest.raises(error_type) as caught:
+            copier(source)
+        assert caught.value is error and events == ["value"]
+
+
+def test_carriage_route_owns_the_complete_producer_page_and_refuses_non_native_before_copy(
+        client, tmp_path, monkeypatch):
+    from backend import ui_projection_api as api
+
+    sid = seed(client, _carriage_snapshot(tmp_path, "forwarding"))
+    original, retained, copies = engine.ui_projection_carriage, [], []
+    copy_page = api._copy_carriage_document
+
+    def producer(*args, **kwargs):
+        result = original(*args, **kwargs)
+        retained.append(result)
+        return result
+
+    def observed(value):
+        result = copy_page(value)
+        assert result == value and result is not value
+        assert result["engine"] is not value["engine"]
+        assert result["carriage"] is not value["carriage"]
+        assert result["vocab"] is not value["vocab"]
+        copies.append(result)
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", producer)
+    monkeypatch.setattr(api, "_copy_carriage_document", observed)
+    response = client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1})
+    assert response.status_code == 200 and len(copies) == len(retained) == 1
+    before = deepcopy(copies[0])
+    retained[0]["carriage"]["page"]["items"].clear()
+    retained[0]["engine"].clear()
+    retained[0]["vocab"].clear()
+    assert copies[0] == before and response.json()["payload"] == before["carriage"]
+
+    class ForeignList(list):
+        pass
+
+    def malformed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result["carriage"]["page"]["items"] = ForeignList(result["carriage"]["page"]["items"])
+        return result
+
+    monkeypatch.setattr(engine, "ui_projection_carriage", malformed)
+    with pytest.raises(ValueError, match="non-JSON-native"):
+        client.get(_carriage_url(sid), params={"vlan_index": 0, "limit": 1})
+    assert len(copies) == 1

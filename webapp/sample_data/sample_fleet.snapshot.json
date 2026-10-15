@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-10-09T03:58:02.808315",
+  "generated_at": "2026-10-11T08:59:30.509234",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -59168,7 +59168,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-10-09T03:58:02.650218+00:00",
+    "generated_at": "2026-10-11T08:59:30.279851+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -59180,7 +59180,7 @@
         "id": "no_egress_import_graph",
         "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
         "result": "HOLDS",
-        "detail": "0 unexplained network-library imports across 101 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+        "detail": "0 unexplained network-library imports across 102 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
       },
       {
         "id": "rest_collect_get_only",
@@ -59192,7 +59192,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 103 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 104 modules (analysis package + collector entry)"
       }
     ]
   },
@@ -70545,6 +70545,2010 @@
       "rollback_owner": ""
     }
   ],
+  "vlan_carriage": {
+    "schema": "vlan_carriage/2",
+    "state": "unverified",
+    "reason": "unverified: a stored neighbor identity contradicts this cable member",
+    "basis": "cisco_toolkit.vlan_carriage:compute_vlan_carriage",
+    "limitations": [
+      "Relations concern the supplied stored cable/member and VLAN-row universe, not every possible cable or VLAN.",
+      "PVST port states are observations from separate captures, not simultaneous forwarding or data-plane delivery.",
+      "Mutual stored trunk allowance is a configured-carriage model, not observed STP forwarding or traffic.",
+      "MST instances have no admitted VLAN mapping here; legacy namespace-free interface STP ranges are never used.",
+      "Bundle relations require agreement of every member; no first member represents an incomplete or mixed bundle.",
+      "Source pointers and closed-shape validation are not authenticated capture custody or collection completeness.",
+      "A bundled member's PVST state, allowance and mode are read from its logical port channel; a member row beside a channel row, or a missing or ambiguous channel record, is held rather than replaced by member allowance.",
+      "A cable whose end host is not a scanned interfaces device is an edge blind spot: it is counted and never published, and no VLAN's state is derived from it."
+    ],
+    "code_tables": {
+      "verdict": [
+        "forwarding:typed_pvst",
+        "forwarding:stored_trunk_allowance",
+        "forwarding:member_consensus",
+        "stp_blocked:typed_pvst",
+        "stp_blocked:member_consensus",
+        "not_carried:stored_trunk_allowance",
+        "not_carried:member_consensus",
+        "one_end_only",
+        "both_ends_missing",
+        "mixed_basis",
+        "mixed_members",
+        "lag_ambiguous",
+        "member_unreadable",
+        "member_duplicate",
+        "failed_source",
+        "malformed_source",
+        "host_collision",
+        "port_collision",
+        "interface_unreadable",
+        "endpoint_mismatch",
+        "range_unreadable",
+        "stp_unreadable",
+        "stp_failed",
+        "mst_unmapped",
+        "bundle_orientation",
+        "role_ambiguous",
+        "role_unstable",
+        "evidence_conflict",
+        "trunk_mode_conflict"
+      ],
+      "end": [
+        "forwarding",
+        "blocked",
+        "allowed",
+        "excluded",
+        "failed_source",
+        "malformed_source",
+        "member_unreadable",
+        "missing_interface",
+        "host_collision",
+        "port_collision",
+        "interface_unreadable",
+        "endpoint_mismatch",
+        "range_unreadable",
+        "stp_unreadable",
+        "stp_failed",
+        "mst_unmapped",
+        "bundle_orientation",
+        "role_ambiguous",
+        "role_unstable",
+        "evidence_conflict",
+        "trunk_mode_missing",
+        "trunk_mode_conflict",
+        "no_evidence"
+      ]
+    },
+    "coverage": {
+      "vlan_rows": 5,
+      "cable_rows": 44,
+      "assessed_cables": 25,
+      "edge_cables": 19,
+      "unreadable_cables": 0,
+      "requested_pairs": 125,
+      "emitted_pairs": 125,
+      "by_state": {
+        "published": 33,
+        "collected_but_empty": 0,
+        "not_collected": 79,
+        "unverified": 13,
+        "analysis_unavailable": 0
+      },
+      "input_census_complete": true,
+      "capture_completeness_claim": false
+    },
+    "issues": [],
+    "cables": [
+      {
+        "index": 0,
+        "pointer": "/cable_map/cables/0",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access1",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/0/members/0",
+            "a": {
+              "host": "access1",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access1/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access1",
+              "allowance_pointer": "/interfaces/access1/Gi0~12",
+              "refs": [
+                "/interfaces/access1/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "pointer": "/cable_map/cables/1",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access10",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/1/members/0",
+            "a": {
+              "host": "access10",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access10/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access10",
+              "allowance_pointer": "/interfaces/access10/Gi0~12",
+              "refs": [
+                "/interfaces/access10/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "pointer": "/cable_map/cables/2",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access11",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/2/members/0",
+            "a": {
+              "host": "access11",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access11/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access11",
+              "allowance_pointer": "/interfaces/access11/Gi0~12",
+              "refs": [
+                "/interfaces/access11/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "pointer": "/cable_map/cables/3",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access12",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/3/members/0",
+            "a": {
+              "host": "access12",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access12/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access12",
+              "allowance_pointer": "/interfaces/access12/Gi0~12",
+              "refs": [
+                "/interfaces/access12/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "pointer": "/cable_map/cables/4",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access13",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/4/members/0",
+            "a": {
+              "host": "access13",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access13/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access13",
+              "allowance_pointer": "/interfaces/access13/Gi0~12",
+              "refs": [
+                "/interfaces/access13/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "pointer": "/cable_map/cables/5",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access14",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/5/members/0",
+            "a": {
+              "host": "access14",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access14/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access14",
+              "allowance_pointer": "/interfaces/access14/Gi0~12",
+              "refs": [
+                "/interfaces/access14/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "pointer": "/cable_map/cables/6",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access15",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/6/members/0",
+            "a": {
+              "host": "access15",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access15/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access15",
+              "allowance_pointer": "/interfaces/access15/Gi0~12",
+              "refs": [
+                "/interfaces/access15/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 7,
+        "pointer": "/cable_map/cables/7",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "access16",
+          "a_port": "Gi0/1",
+          "b": "core1",
+          "b_port": "Gi1/0/40",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/7/members/0",
+            "a": {
+              "host": "access16",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access16/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access16",
+              "allowance_pointer": "/interfaces/access16/Gi0~11",
+              "refs": [
+                "/interfaces/access16/Gi0~11"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "core1",
+              "port": "Gi1/0/40",
+              "interface_pointer": "/interfaces/core1/Gi1~10~140",
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [
+                "/interfaces/core1/Gi1~10~140"
+              ],
+              "hold": "endpoint_mismatch"
+            }
+          }
+        ]
+      },
+      {
+        "index": 8,
+        "pointer": "/cable_map/cables/8",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access16",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/8/members/0",
+            "a": {
+              "host": "access16",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access16/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access16",
+              "allowance_pointer": "/interfaces/access16/Gi0~12",
+              "refs": [
+                "/interfaces/access16/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 9,
+        "pointer": "/cable_map/cables/9",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access17",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/9/members/0",
+            "a": {
+              "host": "access17",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access17/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access17",
+              "allowance_pointer": "/interfaces/access17/Gi0~12",
+              "refs": [
+                "/interfaces/access17/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 10,
+        "pointer": "/cable_map/cables/10",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access2",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/10/members/0",
+            "a": {
+              "host": "access2",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access2/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access2",
+              "allowance_pointer": "/interfaces/access2/Gi0~12",
+              "refs": [
+                "/interfaces/access2/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 11,
+        "pointer": "/cable_map/cables/11",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access3",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/11/members/0",
+            "a": {
+              "host": "access3",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access3/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access3",
+              "allowance_pointer": "/interfaces/access3/Gi0~12",
+              "refs": [
+                "/interfaces/access3/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 12,
+        "pointer": "/cable_map/cables/12",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access4",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/12/members/0",
+            "a": {
+              "host": "access4",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access4/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access4",
+              "allowance_pointer": "/interfaces/access4/Gi0~12",
+              "refs": [
+                "/interfaces/access4/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 13,
+        "pointer": "/cable_map/cables/13",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access5",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/13/members/0",
+            "a": {
+              "host": "access5",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access5/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access5",
+              "allowance_pointer": "/interfaces/access5/Gi0~12",
+              "refs": [
+                "/interfaces/access5/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 14,
+        "pointer": "/cable_map/cables/14",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access6",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/14/members/0",
+            "a": {
+              "host": "access6",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access6/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access6",
+              "allowance_pointer": "/interfaces/access6/Gi0~12",
+              "refs": [
+                "/interfaces/access6/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 15,
+        "pointer": "/cable_map/cables/15",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access7",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/15/members/0",
+            "a": {
+              "host": "access7",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access7/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access7",
+              "allowance_pointer": "/interfaces/access7/Gi0~12",
+              "refs": [
+                "/interfaces/access7/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 16,
+        "pointer": "/cable_map/cables/16",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access8",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/16/members/0",
+            "a": {
+              "host": "access8",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access8/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access8",
+              "allowance_pointer": "/interfaces/access8/Gi0~12",
+              "refs": [
+                "/interfaces/access8/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 17,
+        "pointer": "/cable_map/cables/17",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "access9",
+          "a_port": "Gi0/2",
+          "b": "AP-floor1",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/17/members/0",
+            "a": {
+              "host": "access9",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/access9/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/access9",
+              "allowance_pointer": "/interfaces/access9/Gi0~12",
+              "refs": [
+                "/interfaces/access9/Gi0~12"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor1",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 18,
+        "pointer": "/cable_map/cables/18",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/24",
+          "b": "access1",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/18/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/24",
+              "interface_pointer": "/interfaces/core1/Gi1~10~124",
+              "stp_interface": "Gi1/0/24",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~124",
+              "refs": [
+                "/interfaces/core1/Gi1~10~124"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access1",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access1/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access1",
+              "allowance_pointer": "/interfaces/access1/Gi0~11",
+              "refs": [
+                "/interfaces/access1/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 19,
+        "pointer": "/cable_map/cables/19",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/26",
+          "b": "access2",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/19/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/26",
+              "interface_pointer": "/interfaces/core1/Gi1~10~126",
+              "stp_interface": "Gi1/0/26",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~126",
+              "refs": [
+                "/interfaces/core1/Gi1~10~126"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access2",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access2/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access2",
+              "allowance_pointer": "/interfaces/access2/Gi0~11",
+              "refs": [
+                "/interfaces/access2/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 20,
+        "pointer": "/cable_map/cables/20",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/28",
+          "b": "access4",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/20/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/28",
+              "interface_pointer": "/interfaces/core1/Gi1~10~128",
+              "stp_interface": "Gi1/0/28",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~128",
+              "refs": [
+                "/interfaces/core1/Gi1~10~128"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access4",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access4/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access4",
+              "allowance_pointer": "/interfaces/access4/Gi0~11",
+              "refs": [
+                "/interfaces/access4/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 21,
+        "pointer": "/cable_map/cables/21",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/30",
+          "b": "access6",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/21/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/30",
+              "interface_pointer": "/interfaces/core1/Gi1~10~130",
+              "stp_interface": "Gi1/0/30",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~130",
+              "refs": [
+                "/interfaces/core1/Gi1~10~130"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access6",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access6/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access6",
+              "allowance_pointer": "/interfaces/access6/Gi0~11",
+              "refs": [
+                "/interfaces/access6/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 22,
+        "pointer": "/cable_map/cables/22",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/32",
+          "b": "access8",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/22/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/32",
+              "interface_pointer": "/interfaces/core1/Gi1~10~132",
+              "stp_interface": "Gi1/0/32",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~132",
+              "refs": [
+                "/interfaces/core1/Gi1~10~132"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access8",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access8/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access8",
+              "allowance_pointer": "/interfaces/access8/Gi0~11",
+              "refs": [
+                "/interfaces/access8/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 23,
+        "pointer": "/cable_map/cables/23",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/34",
+          "b": "access10",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/23/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/34",
+              "interface_pointer": "/interfaces/core1/Gi1~10~134",
+              "stp_interface": "Gi1/0/34",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~134",
+              "refs": [
+                "/interfaces/core1/Gi1~10~134"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access10",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access10/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access10",
+              "allowance_pointer": "/interfaces/access10/Gi0~11",
+              "refs": [
+                "/interfaces/access10/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 24,
+        "pointer": "/cable_map/cables/24",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/36",
+          "b": "access12",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/24/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/36",
+              "interface_pointer": "/interfaces/core1/Gi1~10~136",
+              "stp_interface": "Gi1/0/36",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~136",
+              "refs": [
+                "/interfaces/core1/Gi1~10~136"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access12",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access12/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access12",
+              "allowance_pointer": "/interfaces/access12/Gi0~11",
+              "refs": [
+                "/interfaces/access12/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 25,
+        "pointer": "/cable_map/cables/25",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/38",
+          "b": "access14",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/25/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/38",
+              "interface_pointer": "/interfaces/core1/Gi1~10~138",
+              "stp_interface": "Gi1/0/38",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~138",
+              "refs": [
+                "/interfaces/core1/Gi1~10~138"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access14",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access14/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access14",
+              "allowance_pointer": "/interfaces/access14/Gi0~11",
+              "refs": [
+                "/interfaces/access14/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 26,
+        "pointer": "/cable_map/cables/26",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Gi1/0/40",
+          "b": "dist1",
+          "b_port": "Gi1/0/3",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/26/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Gi1/0/40",
+              "interface_pointer": "/interfaces/core1/Gi1~10~140",
+              "stp_interface": "Gi1/0/40",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Gi1~10~140",
+              "refs": [
+                "/interfaces/core1/Gi1~10~140"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "dist1",
+              "port": "Gi1/0/3",
+              "interface_pointer": "/interfaces/dist1/Gi1~10~13",
+              "stp_interface": "Gi1/0/3",
+              "stp_pointer": "/stp_topology_observations/dist1",
+              "allowance_pointer": "/interfaces/dist1/Gi1~10~13",
+              "refs": [
+                "/interfaces/dist1/Gi1~10~13"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 27,
+        "pointer": "/cable_map/cables/27",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core1",
+          "a_port": "Po1",
+          "b": "core2",
+          "b_port": "Po1",
+          "is_pc": true
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/27/members/0",
+            "a": {
+              "host": "core1",
+              "port": "Po1",
+              "interface_pointer": "/interfaces/core1/Po1",
+              "stp_interface": "Po1",
+              "stp_pointer": "/stp_topology_observations/core1",
+              "allowance_pointer": "/interfaces/core1/Po1",
+              "refs": [
+                "/interfaces/core1/Po1",
+                "/interfaces/core1/Po1/cdp_neighbor",
+                "/interfaces/core1/Po1/neighbor_port"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "core2",
+              "port": "Po1",
+              "interface_pointer": "/interfaces/core2/Po1",
+              "stp_interface": "Po1",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Po1",
+              "refs": [
+                "/interfaces/core2/Po1",
+                "/interfaces/core2/Po1/cdp_neighbor",
+                "/interfaces/core2/Po1/neighbor_port"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 28,
+        "pointer": "/cable_map/cables/28",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/11",
+          "b": "access11",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/28/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/11",
+              "interface_pointer": "/interfaces/core2/Eth1~111",
+              "stp_interface": "Eth1/11",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~111",
+              "refs": [
+                "/interfaces/core2/Eth1~111"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access11",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access11/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access11",
+              "allowance_pointer": "/interfaces/access11/Gi0~11",
+              "refs": [
+                "/interfaces/access11/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 29,
+        "pointer": "/cable_map/cables/29",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/13",
+          "b": "access13",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/29/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/13",
+              "interface_pointer": "/interfaces/core2/Eth1~113",
+              "stp_interface": "Eth1/13",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~113",
+              "refs": [
+                "/interfaces/core2/Eth1~113"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access13",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access13/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access13",
+              "allowance_pointer": "/interfaces/access13/Gi0~11",
+              "refs": [
+                "/interfaces/access13/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 30,
+        "pointer": "/cable_map/cables/30",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/15",
+          "b": "access15",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/30/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/15",
+              "interface_pointer": "/interfaces/core2/Eth1~115",
+              "stp_interface": "Eth1/15",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~115",
+              "refs": [
+                "/interfaces/core2/Eth1~115"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access15",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access15/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access15",
+              "allowance_pointer": "/interfaces/access15/Gi0~11",
+              "refs": [
+                "/interfaces/access15/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 31,
+        "pointer": "/cable_map/cables/31",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/17",
+          "b": "access17",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/31/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/17",
+              "interface_pointer": "/interfaces/core2/Eth1~117",
+              "stp_interface": "Eth1/17",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~117",
+              "refs": [
+                "/interfaces/core2/Eth1~117"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access17",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access17/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access17",
+              "allowance_pointer": "/interfaces/access17/Gi0~11",
+              "refs": [
+                "/interfaces/access17/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 32,
+        "pointer": "/cable_map/cables/32",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/20",
+          "b": "dist2",
+          "b_port": "Gi1/0/3",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/32/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/20",
+              "interface_pointer": "/interfaces/core2/Eth1~120",
+              "stp_interface": "Eth1/20",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~120",
+              "refs": [
+                "/interfaces/core2/Eth1~120"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "dist2",
+              "port": "Gi1/0/3",
+              "interface_pointer": "/interfaces/dist2/Gi1~10~13",
+              "stp_interface": "Gi1/0/3",
+              "stp_pointer": "/stp_topology_observations/dist2",
+              "allowance_pointer": "/interfaces/dist2/Gi1~10~13",
+              "refs": [
+                "/interfaces/dist2/Gi1~10~13"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 33,
+        "pointer": "/cable_map/cables/33",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/3",
+          "b": "access3",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/33/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/3",
+              "interface_pointer": "/interfaces/core2/Eth1~13",
+              "stp_interface": "Eth1/3",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~13",
+              "refs": [
+                "/interfaces/core2/Eth1~13"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access3",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access3/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access3",
+              "allowance_pointer": "/interfaces/access3/Gi0~11",
+              "refs": [
+                "/interfaces/access3/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 34,
+        "pointer": "/cable_map/cables/34",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/30",
+          "b": "AP-floor3-01",
+          "b_port": "Gi0",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/34/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/30",
+              "interface_pointer": "/interfaces/core2/Eth1~130",
+              "stp_interface": "Eth1/30",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~130",
+              "refs": [
+                "/interfaces/core2/Eth1~130"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "AP-floor3-01",
+              "port": "Gi0",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 35,
+        "pointer": "/cable_map/cables/35",
+        "scope": "edge",
+        "hold": "edge_uncollected",
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/47",
+          "b": "wan-edge-rtr1.lab",
+          "b_port": "Gi0/0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/35/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/47",
+              "interface_pointer": "/interfaces/core2/Eth1~147",
+              "stp_interface": "Eth1/47",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~147",
+              "refs": [
+                "/interfaces/core2/Eth1~147"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "wan-edge-rtr1.lab",
+              "port": "Gi0/0/1",
+              "interface_pointer": null,
+              "stp_interface": null,
+              "stp_pointer": null,
+              "allowance_pointer": null,
+              "refs": [],
+              "hold": "missing_interface"
+            }
+          }
+        ]
+      },
+      {
+        "index": 36,
+        "pointer": "/cable_map/cables/36",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/5",
+          "b": "access5",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/36/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/5",
+              "interface_pointer": "/interfaces/core2/Eth1~15",
+              "stp_interface": "Eth1/5",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~15",
+              "refs": [
+                "/interfaces/core2/Eth1~15"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access5",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access5/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access5",
+              "allowance_pointer": "/interfaces/access5/Gi0~11",
+              "refs": [
+                "/interfaces/access5/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 37,
+        "pointer": "/cable_map/cables/37",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/7",
+          "b": "access7",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/37/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/7",
+              "interface_pointer": "/interfaces/core2/Eth1~17",
+              "stp_interface": "Eth1/7",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~17",
+              "refs": [
+                "/interfaces/core2/Eth1~17"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access7",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access7/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access7",
+              "allowance_pointer": "/interfaces/access7/Gi0~11",
+              "refs": [
+                "/interfaces/access7/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 38,
+        "pointer": "/cable_map/cables/38",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "core2",
+          "a_port": "Eth1/9",
+          "b": "access9",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/38/members/0",
+            "a": {
+              "host": "core2",
+              "port": "Eth1/9",
+              "interface_pointer": "/interfaces/core2/Eth1~19",
+              "stp_interface": "Eth1/9",
+              "stp_pointer": "/stp_topology_observations/core2",
+              "allowance_pointer": "/interfaces/core2/Eth1~19",
+              "refs": [
+                "/interfaces/core2/Eth1~19"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "access9",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/access9/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/access9",
+              "allowance_pointer": "/interfaces/access9/Gi0~11",
+              "refs": [
+                "/interfaces/access9/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 39,
+        "pointer": "/cable_map/cables/39",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "dist1",
+          "a_port": "Gi1/0/10",
+          "b": "podacc1",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/39/members/0",
+            "a": {
+              "host": "dist1",
+              "port": "Gi1/0/10",
+              "interface_pointer": "/interfaces/dist1/Gi1~10~110",
+              "stp_interface": "Gi1/0/10",
+              "stp_pointer": "/stp_topology_observations/dist1",
+              "allowance_pointer": "/interfaces/dist1/Gi1~10~110",
+              "refs": [
+                "/interfaces/dist1/Gi1~10~110"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "podacc1",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/podacc1/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/podacc1",
+              "allowance_pointer": "/interfaces/podacc1/Gi0~11",
+              "refs": [
+                "/interfaces/podacc1/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 40,
+        "pointer": "/cable_map/cables/40",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "dist1",
+          "a_port": "Gi1/0/11",
+          "b": "podacc2",
+          "b_port": "Gi0/1",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/40/members/0",
+            "a": {
+              "host": "dist1",
+              "port": "Gi1/0/11",
+              "interface_pointer": "/interfaces/dist1/Gi1~10~111",
+              "stp_interface": "Gi1/0/11",
+              "stp_pointer": "/stp_topology_observations/dist1",
+              "allowance_pointer": "/interfaces/dist1/Gi1~10~111",
+              "refs": [
+                "/interfaces/dist1/Gi1~10~111"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "podacc2",
+              "port": "Gi0/1",
+              "interface_pointer": "/interfaces/podacc2/Gi0~11",
+              "stp_interface": "Gi0/1",
+              "stp_pointer": "/stp_topology_observations/podacc2",
+              "allowance_pointer": "/interfaces/podacc2/Gi0~11",
+              "refs": [
+                "/interfaces/podacc2/Gi0~11"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 41,
+        "pointer": "/cable_map/cables/41",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "dist1",
+          "a_port": "Po1",
+          "b": "dist2",
+          "b_port": "Po1",
+          "is_pc": true
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/41/members/0",
+            "a": {
+              "host": "dist1",
+              "port": "Po1",
+              "interface_pointer": "/interfaces/dist1/Po1",
+              "stp_interface": "Po1",
+              "stp_pointer": "/stp_topology_observations/dist1",
+              "allowance_pointer": "/interfaces/dist1/Po1",
+              "refs": [
+                "/interfaces/dist1/Po1",
+                "/interfaces/dist1/Po1/cdp_neighbor",
+                "/interfaces/dist1/Po1/neighbor_port"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "dist2",
+              "port": "Po1",
+              "interface_pointer": "/interfaces/dist2/Po1",
+              "stp_interface": "Po1",
+              "stp_pointer": "/stp_topology_observations/dist2",
+              "allowance_pointer": "/interfaces/dist2/Po1",
+              "refs": [
+                "/interfaces/dist2/Po1",
+                "/interfaces/dist2/Po1/cdp_neighbor",
+                "/interfaces/dist2/Po1/neighbor_port"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 42,
+        "pointer": "/cable_map/cables/42",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "dist2",
+          "a_port": "Gi1/0/10",
+          "b": "podacc1",
+          "b_port": "Gi0/2",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/42/members/0",
+            "a": {
+              "host": "dist2",
+              "port": "Gi1/0/10",
+              "interface_pointer": "/interfaces/dist2/Gi1~10~110",
+              "stp_interface": "Gi1/0/10",
+              "stp_pointer": "/stp_topology_observations/dist2",
+              "allowance_pointer": "/interfaces/dist2/Gi1~10~110",
+              "refs": [
+                "/interfaces/dist2/Gi1~10~110"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "podacc1",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/podacc1/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/podacc1",
+              "allowance_pointer": "/interfaces/podacc1/Gi0~12",
+              "refs": [
+                "/interfaces/podacc1/Gi0~12"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      },
+      {
+        "index": 43,
+        "pointer": "/cable_map/cables/43",
+        "scope": "assessed",
+        "hold": null,
+        "ends": {
+          "a": "dist2",
+          "a_port": "Gi1/0/11",
+          "b": "podacc2",
+          "b_port": "Gi0/2",
+          "is_pc": false
+        },
+        "members": [
+          {
+            "index": 0,
+            "pointer": "/cable_map/cables/43/members/0",
+            "a": {
+              "host": "dist2",
+              "port": "Gi1/0/11",
+              "interface_pointer": "/interfaces/dist2/Gi1~10~111",
+              "stp_interface": "Gi1/0/11",
+              "stp_pointer": "/stp_topology_observations/dist2",
+              "allowance_pointer": "/interfaces/dist2/Gi1~10~111",
+              "refs": [
+                "/interfaces/dist2/Gi1~10~111"
+              ],
+              "hold": null
+            },
+            "b": {
+              "host": "podacc2",
+              "port": "Gi0/2",
+              "interface_pointer": "/interfaces/podacc2/Gi0~12",
+              "stp_interface": "Gi0/2",
+              "stp_pointer": "/stp_topology_observations/podacc2",
+              "allowance_pointer": "/interfaces/podacc2/Gi0~12",
+              "refs": [
+                "/interfaces/podacc2/Gi0~12"
+              ],
+              "hold": null
+            }
+          }
+        ]
+      }
+    ],
+    "rows": [
+      {
+        "vlan_index": 0,
+        "vlan": 10,
+        "vlan_pointer": "/vlan_cutover/0",
+        "hold": null,
+        "state": "unverified",
+        "reason": "unverified: a stored neighbor identity contradicts this cable member",
+        "codes": "JJ0B000077M077M077M077M077M077M077M088MM000077M077M077M077M077M377M077M077M077M055335533553355335533"
+      },
+      {
+        "vlan_index": 1,
+        "vlan": 20,
+        "vlan_pointer": "/vlan_cutover/1",
+        "hold": null,
+        "state": "unverified",
+        "reason": "unverified: a stored neighbor identity contradicts this cable member",
+        "codes": "JJ2B112277M277M277M277M277M277M277M288MM992077M277M277M277M277M377M277M277M277M255335533553355335533"
+      },
+      {
+        "vlan_index": 2,
+        "vlan": 30,
+        "vlan_pointer": "/vlan_cutover/2",
+        "hold": null,
+        "state": "unverified",
+        "reason": "unverified: a stored neighbor identity contradicts this cable member",
+        "codes": "JJ0B000077M077M077M0RRMJRRMJRRMJ77M088MM9902RRMJ77M077M077M077M377M077M0RRMJRRMJ55335533553355335533"
+      },
+      {
+        "vlan_index": 3,
+        "vlan": 40,
+        "vlan_pointer": "/vlan_cutover/3",
+        "hold": null,
+        "state": "unverified",
+        "reason": "unverified: a stored neighbor identity contradicts this cable member",
+        "codes": "JJ3B553377M377M377M377M377M377M377M388MM553377M377M377M377M377M277M377M377M377M311221122112211221122"
+      },
+      {
+        "vlan_index": 4,
+        "vlan": 41,
+        "vlan_pointer": "/vlan_cutover/4",
+        "hold": null,
+        "state": "unverified",
+        "reason": "unverified: a stored neighbor identity contradicts this cable member",
+        "codes": "JJ3B553377M377M377M377M377M377M377M388MM553377M377M377M377M377M277M377M377M377M311221122112211221122"
+      }
+    ]
+  },
   "executive_brief": {
     "scale": {
       "n_devices": 23,
@@ -83638,6 +85642,13 @@
         "note": "seen \u2014 collected and non-empty"
       },
       {
+        "key": "vlan_carriage",
+        "state": "published",
+        "count": 10,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
         "key": "executive_brief",
         "state": "published",
         "count": 6,
@@ -83716,10 +85727,10 @@
       }
     ],
     "summary": {
-      "n_published": 113,
+      "n_published": 114,
       "n_collected_but_empty": 5,
       "n_not_collected": 0,
-      "n_sections": 118
+      "n_sections": 119
     }
   },
   "fact_lineage": {

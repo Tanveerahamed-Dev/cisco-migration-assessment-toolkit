@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
+from functools import lru_cache
 import hashlib
 import json
 import re
@@ -97,6 +98,17 @@ _FINDING_CODES = {
     "observation_malformed", "invalid_role_state", "transitional_port_state",
     "no_forwarding_path", "root_path_missing", "unexpected_root_path",
 }
+#: The observation findings that leave its PVST role rows unable to stand for each observed port and instance: a
+#: missing or duplicated instance header, a mixed PVST/MST namespace, a malformed or duplicated role row, or an
+#: observed instance with no role row at all. A consumer that joins role rows by (namespace, instance, port) --
+#: G14's ``vlan_carriage`` -- holds the whole observation on any of them rather than reading a missing row as
+#: absence. Every other finding (capture states, root, detail-counter and steady-state findings) is classified
+#: elsewhere and does not by itself make the role census unreadable; ``tests/test_vlan_carriage.py`` classifies
+#: each ``_FINDING_CODES`` member.
+ROLE_EVIDENCE_INTEGRITY_CODES = (
+    "state_instance_missing", "state_instance_duplicate", "mixed_namespace", "role_row_malformed",
+    "role_subject_duplicate", "role_evidence_missing",
+)
 
 _INSTANCE_HEADER = re.compile(r"^(?:#+\s*)?(VLAN|MST)0*(\d+)\b", re.IGNORECASE)
 _ROLE_LINE = re.compile(
@@ -411,11 +423,18 @@ def _valid_root(row: Any) -> bool:
     )
 
 
+@lru_cache(maxsize=65536)
+def _interface_admitted(name: str) -> bool:
+    """``is_valid_iface`` of one role-row interface name, computed once per distinct name (a pure function of the
+    text): a large observation repeats each port once per instance, and the admission rule is unchanged."""
+    return is_valid_iface(name)
+
+
 def _valid_role(row: Any) -> bool:
     return bool(
         isinstance(row, dict) and set(row) == _ROLE_KEYS
         and _instance_valid(row.get("namespace"), row.get("instance"))
-        and _safe_string(row.get("interface"), 128) and is_valid_iface(row["interface"])
+        and _safe_string(row.get("interface"), 128) and _interface_admitted(row["interface"])
         and row.get("role") in _ROLES and row.get("state") in _STATES
     )
 
@@ -1137,6 +1156,7 @@ def published_stp_roots(stp_roots: Any) -> Dict[str, str]:
 
 
 __all__ = [
+    "ROLE_EVIDENCE_INTEGRITY_CODES",
     "STP_ROOT_ELECTION_REASONS",
     "STP_ROOT_ELECTION_STATES",
     "STP_TOPOLOGY_BASELINE_SCHEMA",

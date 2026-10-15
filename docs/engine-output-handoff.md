@@ -25,6 +25,15 @@ are a new field in a stored section, a changed value, or a red `test_snapshot_ma
 `test_excel_sheet_schema_matches_golden` on hosted CI. Commit the engine change first: the handoff
 regenerates outputs for one exact commit.
 
+## Review-data route
+
+The producer artifact is admitted only by the hosted receipt (steps 4 to 6). Before W54 landed, G14
+(#631) reviewed producer artifacts through one ordinary bounded `gh run download` of inert data,
+because the legacy local `receive --run-id` command (and its dry run) was not admitted; W54 removed
+that local command. A producer artifact is still never imported on its own say-so: the receipt's
+admission and `verify_import` decide what was imported, and hosted CI on the committed result
+decides whether it is right.
+
 ## Steps
 
 The commands below suit Windows PowerShell 5.1 as well as other shells: one command per block, with
@@ -54,7 +63,11 @@ and `git`.
    gh run watch <run-id> --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit
    ```
 
-4. Dispatch the hosted receipt on the same branch, naming that producer run and its source:
+4. Require the producer run's complete attempt to succeed, including every mandatory step: the
+   refutation controls (`Refute source and policy admission defects before generation`, both
+   handoff test files without `UPDATE_GOLDEN`, before the source is bound) come first. A failed
+   control or partial run supplies no admissible artifact; diagnose the source before another run.
+   Then dispatch the hosted receipt on the same branch, naming that producer run and its source:
 
    ```
    gh workflow run engine-output-receipt.yml --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit --ref <branch> -f producer_run_id=<producer run id> -f source_commit=<full source SHA>
@@ -93,7 +106,10 @@ and `git`.
    complete one: `receipt.json` records each output's `at_import` as `admitted` or `source`, and the
    log names each and adds the line `import: every output carries the admitted bytes` or
    `import: partial; held at the source: <paths>`. Then the ordinary hosted gates on that commit
-   decide: golden, sample and, when the sample changed, Atlas Scope.
+   decide: unchanged golden comparisons, full CI and the actual
+   `python webapp/sample_data/build_sample.py --check` invocation under `TZ=UTC` in Linux 3.12 CI
+   (it rebuilds the complete sample and compares its owner-defined nonvolatile content; the
+   lightweight sample tests alone do not), and, when the sample changed, Atlas Scope.
 
 7. If the sample changed, Atlas Scope's tracked compiled outputs are stale. These are the files
    `atlas-scope/tools/compile-all.mjs` writes, plus `GOLDEN_SHA` in
@@ -112,12 +128,39 @@ The hosted producer (`before` / `after`):
   no assume-unchanged or skip-worktree flag, and every tracked file's bytes and mode are re-read and
   must equal the tree, before regeneration and again (twice) after it. `git status` alone trusts the
   index. Untracked compiled Python in the checkout, which could shadow the source, is refused.
+- Requires every tree/index entry to be an ordinary file with identical mode/blob identity,
+  stage zero and no hidden flags or content filters. Physically reads every non-output tracked
+  file and checks its Git blob and executable mode, before regeneration and after capture.
+- The complete untracked census includes ignored files. Only six fixed non-executable,
+  ordinary, singly linked setuptools metadata files under
+  `cisco_migration_assessment_toolkit.egg-info/` are admitted: `PKG-INFO`, `SOURCES.txt`,
+  `dependency_links.txt`, `entry_points.txt`, `requires.txt`, `top_level.txt`. Their actual subset,
+  bytes and modes must remain identical. These are bounded installer data, not Git-authenticated
+  program source. The profile is source-derived until an exact hosted census confirms it;
+  unexpected installation output refuses and is not automatically added to the profile.
+- Refuses stage-nonzero entries, hidden index flags and any content `filter` attribute before
+  `git status` runs, so no configured clean or process filter is ever selected.
+- Records the before-phase producer run, attempt and interpreter and refuses an after phase that
+  differs.
+- Records the sorted resolved third-party distribution set through `importlib.metadata`: each
+  normalized name, version and SHA-256 of its exact ordinary wheel `RECORD` file. The repository's
+  editable distribution remains in the Git/installer ledgers. A missing RECORD, unreadable metadata
+  or duplicate normalized provider name refuses admission. The complete set must remain equal at
+  both post-generation observations and at manifest capture; a changed version, provider or RECORD
+  refuses even when the source and output bytes are otherwise unchanged.
+- Executes the canonical marker policy only from the admitted Git bytes of its four-file closure
+  in a fresh private namespace, without project module-cache or bytecode fallback (see the
+  receiver). Unadmitted relative project imports refuse; the owner's unused `import tomllib`
+  receives a capability-denial object, so no TOML parser, backport, cached or project module ever
+  runs, on Python 3.10 too. This bounded loader is not a Python sandbox.
 - Runs under the GitHub-hosted Linux image, Python 3.12 and `TZ=UTC`.
 - Refuses any effect outside the closed set: a changed tracked file, a staged change, or an
   untracked file that appeared or vanished.
 - Refuses CR bytes, non-strict JSON (duplicate keys, non-finite numbers, BOM) and the canonical
   client-marker scan. The repository privacy verifier also runs over the regenerated tree.
-- Writes `manifest.json` (`source_commit`, `tree`, `files` with `path`, `sha256` and `bytes`,
+- Writes closed `engine_output_handoff/3` `manifest.json` (`source_commit`, `tree`, complete
+  `source_inputs` and `installer_inputs` ledgers, `files` with `path`, `sha256` and `bytes`,
+  the closed `resolved_distributions` before/after ledgers and their canonical-list SHA-256,
   `changed_from_source`, the producer run, `allow_golden_shrink`, a nonpromoting status) plus
   `files/<path>`. The workflow uploads them as one artifact, only on success, named
   `engine-output-handoff-<sha>-<run>-<attempt>`.
@@ -160,12 +203,20 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
   the frontend receiver: a well-formed extra field with another tag is admitted, and its payload is
   opaque bytes inside a declared field. No reader takes such a payload as an end structure, because
   the locator slot is refused, and the real upload-artifact layout carries no extra field.
-- Requires the manifest's commit and tree to match the source, the closed file list, and every
-  member's size and SHA-256. It recomputes `changed_from_source` from the source commit.
+- Requires the manifest's commit and tree to match the source, its `source_inputs` ledger to equal
+  the source commit's own committed non-output files (mode, blob, size, SHA-256), a closed
+  `installer_inputs` ledger inside the fixed profile, the closed file list, and every member's size
+  and SHA-256. It recomputes `changed_from_source` from the source commit. Like the producer, it
+  refuses a content filter or hidden index flag before `git status` runs.
+- Validates the producer's closed distribution binding, requiring sorted unique normalized names,
+  version/RECORD digests, equal before/after ledgers and their matching canonical-list digest. The
+  receipt copies that exact record and reports every provider and the ledger digest. The receiver
+  does not compare it to its own stdlib-only environment, which intentionally differs from the
+  installed regeneration environment.
 - Applies the same content policy. The canonical marker policy executes only from the admitted Git
   bytes of its four-file closure in a private namespace. No `sys.path` entry, already-imported
-  module, working-tree file or bytecode cache can supply it.
-- Writes `receipt.json` and `files/<path>` into a fresh directory under the runner's temporary
+  module, working-tree file or bytecode cache can supply it, and it holds no TOML capability.
+- Writes closed-version `engine_output_receipt/2` `receipt.json` and `files/<path>` into a fresh directory under the runner's temporary
   directory, outside the checkout, and never writes the checkout. The receipt records each output's
   size, SHA-256 and Git blob name, and carries `acceptance` and `release_authority` false.
 - With `verify_import`, it writes `receipt.json` only, after proving that every output at the
@@ -175,6 +226,13 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
   (step 6).
 
 ## Known properties
+
+- **Observation limits.** Physical before/after ledgers do not measure transient changes restored
+  between observations. A wheel RECORD digest binds the recorded installed provider metadata,
+  rather than independently re-hashing every installed provider file or authenticating a wheel.
+  The distribution record is producer evidence, not a signature, independent archive custody or
+  a guarantee that a later dispatch resolves the same versions. New source
+  controls require execution on the published candidate; source review alone is not a hosted pass.
 
 - **Goldens.** Regenerating the current goldens should be byte-identical: the harness pins its
   clocks and strips wall-clock stamps.
@@ -273,8 +331,9 @@ GitHub-only rule; hosted CI is their first execution.
    a private namespace. Relative imports must be the reviewed table; absolute imports must be
    standard library. It is the reviewed frontend receiver's approach and table (the tests compare
    the two). Tests: the same-path, cached, working-tree, closure-escape and pre-loaded-policy
-   producer and receiver tests. They are skipped below Python 3.11, where the closure's `tomllib`
-   is not standard library; the hosted ends run 3.12.
+   producer and receiver tests. They run on every supported Python: since the reconciliation with
+   G14 (below) the closure's `import tomllib` receives a capability-denial object, so the loader
+   needs no TOML module on 3.10, and G14 v2 removed the earlier below-3.11 skip.
 
 Still open: the first hosted dispatch of the receipt workflow (it needs default-branch
 registration), the first hosted execution of every new test, and an independent re-review of the
@@ -287,6 +346,75 @@ receiver's `.github/scripts/frontend_artifact_receive.py :: zip_members` has the
 checks only the classic end record's arithmetic and the ZIP64 extra field. A probe of it on a
 synthetic archive admitted 1000 unexplained bytes behind a ZIP64 end record and locator. W54 does
 not change it either; it is a follow-up for that receiver's own row.
+
+## Reconciliation with G14's producer hardening (2026-10-10)
+
+G14 (#631, Codex) hardened the same producer before W54 merged; the Claude takeover branch
+`claude/g14-cable-vlan-carriage` merged both. Where they overlapped, both checks run; where they
+differed, the stricter fail-closed behaviour was kept:
+
+- **Manifest and source schemas at that reconciliation** were `engine_output_handoff/2` and `engine_output_source/2`, carrying
+  G14's `source_inputs` and `installer_inputs` ledgers. The hosted receiver joins `source_inputs` to the
+  source commit's committed files (G14's receiver check, moved into W54's hosted `receive`).
+- **Refutation controls** (G14) run as a required producer step before the source is bound; W54's
+  receiver requires that step to have succeeded like every other.
+- **Git invocation** keeps G14's `--no-replace-objects`, disabled untracked cache, stripped ambient
+  `GIT_*` variables and stdin input, under W54's callers.
+- **Source binding:** G14's `source_index` (stage zero, no hidden flag, no content filter) now runs
+  first, before any `git status`, in the producer and the receiver; W54's `bind_checkout` then re-reads
+  every tracked byte and mode; G14's physical ledger is recorded and compared after regeneration. The
+  hidden-flag refusal states both prior wordings.
+- **Untracked files:** W54 refused untracked compiled Python; G14 admits only the six fixed
+  installer-data files. Both apply, compiled Python first (its message names both rules).
+- **Marker policy:** W54's Git-bytes execution (`bound_marker_policy`) with G14's capability-denial
+  answer to `import tomllib`, so the loader works on Python 3.10 without any TOML code. G14's
+  `marker_patterns_for` stays as a checkout-level entry that also requires the physical closure to
+  equal Git.
+- **Outputs** are read through G14's `read_output`, which refuses an executable output.
+- **Receiver:** W54's hosted-only receipt supersedes G14's relabelled legacy `receive`.
+
+Tests from both sides are kept. Base tests W54 removed stay removed because a stronger test
+replaces each: the local-write and dry-run tests (the receipt never writes the checkout and refuses
+`--dry-run`), and `test_marker_policy_loads_from_this_checkout_and_restores_sys_path` (replaced by
+`test_marker_policy_ignores_a_cached_same_path_impostor` and
+`test_bound_policy_loads_this_repository_closure_from_git`). G14's tests now check W54's private
+namespace prefix, so their cleanup assertions are not empty.
+
+## G14 v2 route follow-ups (2026-10-11)
+
+The #646 refutation's route findings are addressed in source on `codex/g14-carriage-v2`;
+the partial inherited changes and the new distribution binding still require fresh hosted controls
+and the real producer, receipt and import-verification runs:
+
+- **Skip.** The `BOUND_POLICY` skip in `tests/test_engine_output_handoff.py` is removed; the seven
+  bound-policy controls now run on Python 3.10 too (see disposition 4 above).
+- **Filter ordering.** Two tests configure a clean filter that writes a sentinel and leave its
+  tracked file stat-dirty, so any `git status` would run it. The producer (`phase_before`) and the
+  receiver (`receive`) each refuse with `unsupported filter`, the sentinel never appears, and the
+  receiver makes no API call (`api.calls == []`). `source_index` already ran before the first status.
+- **Replacement refs.** A test plants `git replace <HEAD> <other>`, so an ordinary Git view reads
+  another tree for HEAD; `phase_before` still binds the real commit and its real tree, because
+  every Git call passes `--no-replace-objects`.
+- **Closing status.** `receive` now calls `source_index` before its closing `git status`, as the
+  producer's `_closed_effect` does, so the index, flags and filter attributes are admitted again
+  before the last status. A test records the call order.
+- **Escapes.** `check_output_bytes` also scans `json.dumps(value, ensure_ascii=False)`, the parsed
+  JSON text, so a marker written with `\uXXXX` escapes is refused. The repository privacy
+  verifier (`.github/scripts/verify_repository_privacy.py :: _escape_decoded`) adds a
+  `\uXXXX`-decoded pass to both its worktree and its index scans, with tests in
+  `tests/test_repository_privacy.py`.
+- **Resolved providers.** The before record is now `engine_output_source/3`; the manifest is
+  `engine_output_handoff/3` and the receipt is `engine_output_receipt/2`. Their new closed provider
+  binding records normalized names, versions and physical RECORD SHA-256 digests, requires an
+  unchanged sorted set before/after regeneration and capture, and reports the producer ledger at
+  receipt/import verification. Real metadata fixtures exercise the producer and receiver round
+  trip, version/RECORD/census/capture drift, duplicate names, missing RECORD and malformed ledger
+  refusals. The receiver is explicitly tested without querying its different installed environment.
+- **Sample and import execution.** This v2 task must import the newly admitted receipt sample,
+  re-bind Atlas Scope from its fresh producer family, and execute `verify_import` on the committed
+  imported bytes. The older pre-W54 sample custody note and first-use `verify_import` gap remain
+  historical until the actual new hosted runs and outcomes are recorded. Source controls alone do
+  not close either finding.
 
 ## What it is not
 

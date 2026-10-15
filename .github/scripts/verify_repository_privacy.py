@@ -802,6 +802,20 @@ def _marker_patterns_for(
     return marker_patterns
 
 
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _escape_decoded(text: str) -> str:
+    """The text with every JSON/Python ``\\uXXXX`` escape decoded and case-folded again.
+
+    A marker written with escapes is invisible to a scan of the raw text but is the same string once a JSON or
+    Python reader parses it, so both forms are scanned.
+    """
+    if "\\u" not in text:
+        return text
+    return _UNICODE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)), text).casefold()
+
+
 def _client_marker_patterns() -> tuple[re.Pattern[str], ...]:
     # Constructed from fragments so the guard does not trip over its own source.
     legacy_brand = "al" + "jazeera"
@@ -1471,7 +1485,8 @@ def _inspect_index_blobs(
             violations.append(f"indexed binary file is not allowlisted: {relative}")
             continue
         if any(
-            pattern.search(text)
+            pattern.search(candidate)
+            for candidate in (text, _escape_decoded(text))
             for pattern in _marker_patterns_for(relative, marker_patterns)
         ):
             violations.append(
@@ -1646,7 +1661,8 @@ def inspect_tracked_tree(
             violations.append(f"binary file is not allowlisted: {relative}")
             continue
         if any(
-            pattern.search(text)
+            pattern.search(candidate)
+            for candidate in (text, _escape_decoded(text))
             for pattern in _marker_patterns_for(relative, marker_patterns)
         ):
             violations.append(

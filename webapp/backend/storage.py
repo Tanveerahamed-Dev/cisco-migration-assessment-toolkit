@@ -16,16 +16,21 @@ left byte-identical for a human restore (README-FIELD).
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
 import sqlite3
+import struct
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
+
+from .engine import carriage_derivative_byte_limit
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -59,6 +64,104 @@ CREATE TABLE IF NOT EXISTS snapshot_authority (
     digest_2    INTEGER NOT NULL,
     digest_3    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS carriage_projection_parts (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    projection_version INTEGER NOT NULL CHECK (projection_version = 1),
+    kind TEXT NOT NULL,
+    part_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, kind, part_key)
+);
+CREATE INDEX IF NOT EXISTS ix_carriage_projection_window
+    ON carriage_projection_parts(snapshot_id, kind, ordinal);
+CREATE TABLE IF NOT EXISTS carriage_projection_v2_parts (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    projection_version INTEGER NOT NULL CHECK (projection_version = 2),
+    kind TEXT NOT NULL,
+    part_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, kind, part_key)
+);
+CREATE INDEX IF NOT EXISTS ix_carriage_projection_v2_window
+    ON carriage_projection_v2_parts(snapshot_id, kind, ordinal);
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_update
+BEFORE UPDATE ON carriage_projection_v2_parts
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_replace
+BEFORE INSERT ON carriage_projection_v2_parts
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_v2_parts
+    WHERE snapshot_id=NEW.snapshot_id AND kind=NEW.kind AND part_key=NEW.part_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_v2_parts_no_delete
+BEFORE DELETE ON carriage_projection_v2_parts
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TABLE IF NOT EXISTS carriage_projection_role_presence (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    key_0 INTEGER NOT NULL,
+    key_1 INTEGER NOT NULL,
+    key_2 INTEGER NOT NULL,
+    key_3 INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id,key_0,key_1,key_2,key_3)
+);
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_update
+BEFORE UPDATE ON carriage_projection_role_presence
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_replace
+BEFORE INSERT ON carriage_projection_role_presence
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_role_presence WHERE snapshot_id=NEW.snapshot_id
+      AND key_0=NEW.key_0 AND key_1=NEW.key_1 AND key_2=NEW.key_2 AND key_3=NEW.key_3
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_role_presence_no_delete
+BEFORE DELETE ON carriage_projection_role_presence
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage role presence is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_update
+BEFORE UPDATE ON carriage_projection_parts
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_replace
+BEFORE INSERT ON carriage_projection_parts
+WHEN EXISTS (
+    SELECT 1 FROM carriage_projection_parts
+    WHERE snapshot_id=NEW.snapshot_id AND kind=NEW.kind AND part_key=NEW.part_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS carriage_projection_parts_no_delete
+BEFORE DELETE ON carriage_projection_parts
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id)
+BEGIN
+    SELECT RAISE(ABORT, 'carriage projection is immutable');
+END;
 CREATE TABLE IF NOT EXISTS executions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -557,10 +660,14 @@ def _snapshot_blob_bytes(value: Any) -> bytes:
 
 def _snapshot_binding_from_row(row: sqlite3.Row) -> tuple[bytes, Dict[str, Any]]:
     raw = _snapshot_blob_bytes(row["snapshot_blob"])
-    return raw, {
+    return raw, _snapshot_binding_with_identity(row, _blob_identity(raw))
+
+
+def _snapshot_binding_with_identity(row: sqlite3.Row, identity: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "source": _SNAPSHOT_BINDING_SOURCE,
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        "bytes": len(raw),
+        "sha256": "sha256:" + identity["sha256"],
+        "bytes": identity["bytes"],
         "snapshot_id": int(row["snapshot_id"]),
         "campaign_id": int(row["campaign_id"]),
         "engagement_id": str(row["engagement_id"]),
@@ -639,6 +746,41 @@ _CUTOVER_VERDICT_CODES = {
     "REGRESSED": 6,
 }
 _TRIAL_SOURCE_CODE = 1
+# This version owns the derivative behavior, not just its shape. A future preparer change
+# needs a new version and explicit migration; an engine release string cannot silently
+# re-authorize documents produced under different projection semantics.
+CARRIAGE_PROJECTION_PAYLOAD_LIMIT = carriage_derivative_byte_limit()
+_CARRIAGE_STAGING_METADATA_LIMIT = carriage_derivative_byte_limit()
+_CARRIAGE_STAGE_HEADER = struct.Struct(">IIqQ")
+_CARRIAGE_PROJECTION_SCHEMA = "carriage_projection_preparation/2"
+
+
+def _close_carriage_resources(*resources: Any, preserve_error: bool = False) -> None:
+    """Attempt every close; retain a primary failure or surface the first cleanup failure."""
+    first_error = None
+    for resource in resources:
+        try:
+            close = getattr(resource, "close", None)
+            if close is not None:
+                close()
+        except BaseException as exc:
+            if not preserve_error and first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
+def _carriage_part_limbs(
+        snapshot_id: int, source_limbs: tuple[int, ...], kind: str,
+        part_key: str, ordinal: int, payload: bytes) -> tuple[int, int, int, int]:
+    """Bind every independently loaded part to its source, identity and exact bytes."""
+    return _authority_limbs({
+        "schema": _CARRIAGE_PROJECTION_SCHEMA,
+        "snapshot_id": snapshot_id,
+        "source_authority": list(source_limbs),
+        "kind": kind, "part_key": part_key, "ordinal": ordinal,
+        "payload": _blob_identity(payload),
+    })
 
 
 def _authority_limbs(value: Dict[str, Any]) -> tuple[int, int, int, int]:
@@ -662,6 +804,17 @@ def _snapshot_authority_limbs(
         *, snapshot_id: int, campaign_id: int, engagement_id: str,
         label: str, uploaded_at: str, script_version: str,
         snapshot_blob: Any) -> tuple[int, int, int, int]:
+    return _snapshot_authority_limbs_with_identity(
+        snapshot_id=snapshot_id, campaign_id=campaign_id, engagement_id=engagement_id,
+        label=label, uploaded_at=uploaded_at, script_version=script_version,
+        identity=_blob_identity(snapshot_blob),
+    )
+
+
+def _snapshot_authority_limbs_with_identity(
+        *, snapshot_id: int, campaign_id: int, engagement_id: str,
+        label: str, uploaded_at: str, script_version: str,
+        identity: Dict[str, Any]) -> tuple[int, int, int, int]:
     return _authority_limbs({
         "schema": "snapshot_source_authority/1",
         "source": _SNAPSHOT_BINDING_SOURCE,
@@ -671,7 +824,7 @@ def _snapshot_authority_limbs(
         "label": str(label),
         "uploaded_at": str(uploaded_at),
         "script_version": str(script_version),
-        "snapshot_blob": _blob_identity(snapshot_blob),
+        "snapshot_blob": identity,
     })
 
 
@@ -721,7 +874,8 @@ def _authority_row_matches(
     )
 
 
-def _snapshot_authority_row_valid(row: sqlite3.Row) -> bool:
+def _snapshot_authority_row_valid(
+        row: sqlite3.Row, *, identity: Optional[Dict[str, Any]] = None) -> bool:
     if (
         "authority_snapshot_id" not in row.keys()
         or type(row["authority_snapshot_id"]) is not int
@@ -731,14 +885,14 @@ def _snapshot_authority_row_valid(row: sqlite3.Row) -> bool:
         or int(row["authority_version"]) != 1
     ):
         return False
-    expected = _snapshot_authority_limbs(
+    expected = _snapshot_authority_limbs_with_identity(
         snapshot_id=row["snapshot_id"],
         campaign_id=row["campaign_id"],
         engagement_id=row["engagement_id"],
         label=row["label"],
         uploaded_at=row["uploaded_at"],
         script_version=row["script_version"],
-        snapshot_blob=row["snapshot_blob"],
+        identity=_blob_identity(row["snapshot_blob"]) if identity is None else identity,
     )
     return _authority_row_matches(row, expected)
 
@@ -749,6 +903,33 @@ class StoreCorruptError(RuntimeError):
 
 class ExecutionReceiptAuthorityError(RuntimeError):
     """Persisted execution decision rows cannot be re-authorized from their exact sources."""
+
+
+class CarriagePreparationLimitError(ValueError):
+    """One snapshot's materialized derivative exceeds the closed ingest payload limit."""
+
+
+class CarriagePreparationBusyError(RuntimeError):
+    """Preparation capacity is occupied; the caller must refuse rather than wait."""
+
+
+class _SnapshotPreparation:
+    """One Store-bound, same-thread insertion under an active preparation reservation."""
+
+    def __init__(self, store: Store):
+        self._store = store
+        self._owner = threading.current_thread()
+        self._active = True
+        self._used = False
+
+    def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
+                     summary: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._active or self._used or threading.current_thread() is not self._owner:
+            raise CarriagePreparationBusyError("snapshot preparation reservation is not available to this call")
+        # Consume before entering caller-controlled input access, producer or observer hooks.
+        # A reentrant call must not start another stage under the same reservation.
+        self._used = True
+        return self._store._add_snapshot_prepared(campaign_id, label, snapshot, summary)
 
 
 def _our_backups(backups: Path) -> List[Path]:
@@ -794,6 +975,25 @@ class Store:
     """Thin, thread-safe SQLite wrapper. One connection guarded by a lock — fine for a single-process
     dev/demo server; swap for a pool or Postgres if this ever needs real concurrency."""
 
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        if self._connection_poisoned:
+            raise ExecutionReceiptAuthorityError("store connection is unusable after failed publication rollback")
+        return self._connection
+
+    @_conn.setter
+    def _conn(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def _rollback_carriage_publication(self) -> None:
+        try:
+            self._connection.rollback()
+        except BaseException:
+            # A failed rollback cannot leave a connection exposing its own partial writes.
+            # Even if close also fails, every subsequent Store operation must refuse it.
+            self._connection_poisoned = True
+            _close_carriage_resources(self._connection, preserve_error=True)
+
     def __init__(self, db_path: str | Path, *, boot_hardening: bool = False):
         self.db_path = str(db_path)
         dbfile = Path(self.db_path)
@@ -801,287 +1001,441 @@ class Store:
         # mtime BEFORE we connect: it decides backup freshness, and opening may recover a journal.
         db_mtime = dbfile.stat().st_mtime if dbfile.is_file() else None
         self._lock = threading.Lock()
+        self._preparation_lock = threading.Lock()
         # Observers of the persisted snapshot-blob digest, called by add_snapshot — the ONE insert
         # into `snapshots` — before its commit (see add_snapshot_digest_observer).
         self._snapshot_digest_observers: List[Callable[[str], None]] = []
+        self._connection_poisoned = False
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         if boot_hardening:
             self._boot_hardening(dbfile, db_mtime)  # BEFORE the schema touches a corrupt file
-        with self._lock:
-            existing_tables = {
-                str(row["name"])
-                for row in self._conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+        try:
+            with self._lock:
+                existing_schema = self._conn.execute(
+                    "SELECT name, type FROM sqlite_master"
                 ).fetchall()
-            }
-            backfill_snapshot_authority = "snapshot_authority" not in existing_tables
-            backfill_comparison_authority = (
-                "execution_comparison_authority" not in existing_tables
-            )
-            backfill_trial_authority = (
-                "execution_l2_failure_trial_authority" not in existing_tables
-            )
-            self._conn.executescript(_SCHEMA)
-            # v2/legacy classification is decision-bearing even before the first comparison exists.
-            # Keep it in INTEGER columns (sqlite blobopen can incrementally rewrite TEXT/BLOB
-            # without firing row triggers) and migrate older stores once from their historical
-            # state plus any already-appended canonical receipt rows.
-            execution_columns = {
-                str(row["name"])
-                for row in self._conn.execute("PRAGMA table_info(executions)").fetchall()
-            }
-            migrate_execution_authority = (
-                "comparison_required" not in execution_columns
-                or "snapshot_id_high_watermark" not in execution_columns
-                or "lifecycle_state" not in execution_columns
-                or "started_at_epoch_us" not in execution_columns
-                or "ended_at_epoch_us" not in execution_columns
-            )
-            if migrate_execution_authority:
-                # The current schema's immutability triggers may already have been created above;
-                # suspend only the two policy-column guards while those columns are initialized.
-                self._conn.execute(
-                    "DROP TRIGGER IF EXISTS execution_comparison_owner_no_rebind"
+                existing_tables = {
+                    str(row["name"])
+                    for row in existing_schema if row["type"] == "table"
+                }
+                fresh_schema = not existing_schema
+                existing_snapshot_columns = {
+                    row["name"] for row in self._conn.execute("PRAGMA table_info(snapshots)")
+                } if "snapshots" in existing_tables else set()
+                raw_only_upgrade = ("snapshots" in existing_tables
+                                    and "carriage_projection_required" not in existing_snapshot_columns)
+                pending_upgrade = ("carriage_projection_version" in existing_snapshot_columns
+                                   and self._conn.execute(
+                                       "SELECT 1 FROM snapshots WHERE carriage_projection_version=-2 LIMIT 1"
+                                   ).fetchone() is not None)
+                if pending_upgrade and not {
+                        "snapshot_authority", "execution_comparison_authority",
+                        "execution_l2_failure_trial_authority"} <= existing_tables:
+                    raise ExecutionReceiptAuthorityError("pending carriage upgrade lost its source-authority epoch")
+                backfill_snapshot_authority = "snapshot_authority" not in existing_tables
+                backfill_comparison_authority = (
+                    "execution_comparison_authority" not in existing_tables
                 )
-                self._conn.execute(
-                    "DROP TRIGGER IF EXISTS execution_comparison_policy_no_rebind"
+                backfill_trial_authority = (
+                    "execution_l2_failure_trial_authority" not in existing_tables
                 )
-            if "comparison_required" not in execution_columns:
-                self._conn.execute(
-                    "ALTER TABLE executions ADD COLUMN comparison_required "
-                    "INTEGER NOT NULL DEFAULT 0 CHECK (comparison_required IN (0,1))"
-                )
-            if "snapshot_id_high_watermark" not in execution_columns:
-                self._conn.execute(
-                    "ALTER TABLE executions ADD COLUMN snapshot_id_high_watermark "
-                    "INTEGER NOT NULL DEFAULT 0"
-                )
-            if "lifecycle_state" not in execution_columns:
-                self._conn.execute(
-                    "ALTER TABLE executions ADD COLUMN lifecycle_state "
-                    "INTEGER NOT NULL DEFAULT 0 CHECK (lifecycle_state IN (0,1,2))"
-                )
-            if "started_at_epoch_us" not in execution_columns:
-                self._conn.execute(
-                    "ALTER TABLE executions ADD COLUMN started_at_epoch_us "
-                    "INTEGER NOT NULL DEFAULT 0"
-                )
-            if "ended_at_epoch_us" not in execution_columns:
-                self._conn.execute(
-                    "ALTER TABLE executions ADD COLUMN ended_at_epoch_us INTEGER"
-                )
-            execution_rows = self._conn.execute(
-                """SELECT e.id, e.snapshot_id, e.status, e.started_at, e.ended_at,
-                          e.state_json,
-                          EXISTS(SELECT 1 FROM execution_comparisons ec
-                                 WHERE ec.execution_id=e.id) AS has_receipt,
-                          e.comparison_required, e.snapshot_id_high_watermark,
-                          e.lifecycle_state, e.started_at_epoch_us, e.ended_at_epoch_us
-                   FROM executions e"""
-            ).fetchall() if migrate_execution_authority else []
-            for execution_row in execution_rows:
-                required = bool(execution_row["has_receipt"])
-                high_watermark = int(execution_row["snapshot_id"])
-                lifecycle_state = {
-                    "completed": 1,
-                    "aborted": 2,
-                }.get(str(execution_row["status"]), 0)
-                started_at_epoch_us = _timestamp_epoch_us(execution_row["started_at"]) or 0
-                ended_at_epoch_us = _timestamp_epoch_us(execution_row["ended_at"])
-                try:
-                    prior_state = _strict_json_loads(execution_row["state_json"])
-                except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                    prior_state = None
-                policy = prior_state.get("comparison_policy") \
-                    if isinstance(prior_state, dict) else None
-                if (
-                    isinstance(policy, dict)
-                    and policy.get("schema") == "execution_comparison_policy/1"
-                    and policy.get("canonical_gate_required") is True
-                ):
-                    required = True
-                    candidate = policy.get("snapshot_id_high_watermark")
-                    if type(candidate) is int and candidate >= high_watermark:
-                        high_watermark = candidate
-                if (
-                    int(execution_row["comparison_required"]) != int(required)
-                    or int(execution_row["snapshot_id_high_watermark"]) != high_watermark
-                    or int(execution_row["lifecycle_state"]) != lifecycle_state
-                    or int(execution_row["started_at_epoch_us"]) != started_at_epoch_us
-                    or execution_row["ended_at_epoch_us"] != ended_at_epoch_us
-                ):
+                # A schema-empty database otherwise commits each CREATE separately. Ordinary
+                # existing/partial/view-only stores retain their original script. The raw-only
+                # legacy upgrade separately initializes its source-authority epoch atomically.
+                # BEGIN belongs inside the script because executescript commits an earlier transaction.
+                schema_script = ("BEGIN IMMEDIATE;\n" + _SCHEMA + "\nCOMMIT;"
+                                 if fresh_schema else
+                                 "BEGIN IMMEDIATE;\n" + _SCHEMA if raw_only_upgrade else _SCHEMA)
+                # The raw-only upgrade keeps this transaction through marker/source-anchor
+                # initialization. Expensive derivative preparation starts only after commit.
+                self._conn.executescript(schema_script)
+                snapshot_columns = {
+                    str(row["name"])
+                    for row in self._conn.execute("PRAGMA table_info(snapshots)").fetchall()
+                }
+                # The INTEGER column is the durable migration marker. Removing a sidecar table or
+                # row after first upgrade must never turn the next startup into a trust reseal.
+                migrate_carriage_projection = "carriage_projection_required" not in snapshot_columns
+                if migrate_carriage_projection:
                     self._conn.execute(
-                        """UPDATE executions
-                           SET comparison_required=?, snapshot_id_high_watermark=?,
-                               lifecycle_state=?, started_at_epoch_us=?, ended_at_epoch_us=?
-                           WHERE id=?""",
-                        (int(required), high_watermark, lifecycle_state,
-                         started_at_epoch_us, ended_at_epoch_us,
-                         int(execution_row["id"])),
+                        "ALTER TABLE snapshots ADD COLUMN carriage_projection_required "
+                        "INTEGER NOT NULL DEFAULT 1 CHECK (carriage_projection_required IN (0,1))"
                     )
-            if migrate_execution_authority:
-                self._conn.executescript("""
-                    CREATE TRIGGER execution_comparison_owner_no_rebind
-                    BEFORE UPDATE OF id, snapshot_id, started_at, started_at_epoch_us,
-                                     comparison_required, snapshot_id_high_watermark ON executions
-                    WHEN EXISTS (
-                        SELECT 1 FROM execution_comparisons WHERE execution_id = OLD.id
+                if "carriage_projection_version" not in snapshot_columns:
+                    # /1 derivatives are deliberately superseded, never silently resealed. Only
+                    # the original raw-only database receives the one-time /2 preparation.
+                    version_default = -2 if raw_only_upgrade else (2 if migrate_carriage_projection else 0)
+                    self._conn.execute(
+                        "ALTER TABLE snapshots ADD COLUMN carriage_projection_version "
+                        f"INTEGER NOT NULL DEFAULT {version_default} "
+                        "CHECK (carriage_projection_version IN (-2,0,2))"
                     )
-                    BEGIN
-                        SELECT RAISE(ABORT, 'receipted execution source identity is immutable');
-                    END;
-                    CREATE TRIGGER execution_comparison_policy_no_rebind
-                    BEFORE UPDATE OF comparison_required, snapshot_id_high_watermark ON executions
-                    WHEN EXISTS (
-                        SELECT 1 FROM execution_comparisons WHERE execution_id = OLD.id
-                    )
-                    BEGIN
-                        SELECT RAISE(ABORT, 'receipted execution comparison policy is immutable');
-                    END;
-                """)
-            # Older stores predate an explicit engagement identity. Give each existing campaign a
-            # durable opaque identity exactly once; it is stored beside the campaign and survives
-            # a copied/moved USB database. Campaign names/paths are never inferred as identity.
-            missing = self._conn.execute(
-                """SELECT c.id FROM campaigns c
-                   LEFT JOIN campaign_identities i ON i.campaign_id=c.id
-                   WHERE i.campaign_id IS NULL ORDER BY c.id"""
-            ).fetchall()
-            for row in missing:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO campaign_identities(campaign_id, engagement_id) VALUES (?,?)",
-                    (row["id"], "urn:uuid:" + str(uuid.uuid4())),
+                # v2/legacy classification is decision-bearing even before the first comparison exists.
+                # Keep it in INTEGER columns (sqlite blobopen can incrementally rewrite TEXT/BLOB
+                # without firing row triggers) and migrate older stores once from their historical
+                # state plus any already-appended canonical receipt rows.
+                execution_columns = {
+                    str(row["name"])
+                    for row in self._conn.execute("PRAGMA table_info(executions)").fetchall()
+                }
+                migrate_execution_authority = (
+                    "comparison_required" not in execution_columns
+                    or "snapshot_id_high_watermark" not in execution_columns
+                    or "lifecycle_state" not in execution_columns
+                    or "started_at_epoch_us" not in execution_columns
+                    or "ended_at_epoch_us" not in execution_columns
                 )
-            # One-time trust migration: anchor the exact rows present when this release first opens
-            # an older database. After the INTEGER-only tables exist, missing rows are never
-            # backfilled on later boots; a torn/deleted anchor therefore fails closed.
-            if backfill_snapshot_authority:
-                rows = self._conn.execute(
-                    """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
-                              s.label, s.uploaded_at, s.script_version,
-                              CAST(s.snapshot_json AS BLOB) AS snapshot_blob
-                       FROM snapshots s
-                       JOIN campaign_identities i ON i.campaign_id=s.campaign_id
-                       ORDER BY s.id"""
-                ).fetchall()
-                for row in rows:
-                    limbs = _snapshot_authority_limbs(
-                        snapshot_id=row["snapshot_id"],
-                        campaign_id=row["campaign_id"],
-                        engagement_id=row["engagement_id"],
-                        label=row["label"],
-                        uploaded_at=row["uploaded_at"],
-                        script_version=row["script_version"],
-                        snapshot_blob=row["snapshot_blob"],
+                if migrate_execution_authority:
+                    # The current schema's immutability triggers may already have been created above;
+                    # suspend only the two policy-column guards while those columns are initialized.
+                    self._conn.execute(
+                        "DROP TRIGGER IF EXISTS execution_comparison_owner_no_rebind"
                     )
                     self._conn.execute(
-                        """INSERT INTO snapshot_authority(
-                               snapshot_id,authority_version,digest_0,digest_1,digest_2,digest_3)
-                           VALUES (?,?,?,?,?,?)""",
-                        (int(row["snapshot_id"]), 1, *limbs),
+                        "DROP TRIGGER IF EXISTS execution_comparison_policy_no_rebind"
                     )
-            if backfill_comparison_authority:
-                rows = self._conn.execute(
-                    """SELECT id, execution_id, before_snapshot_id, after_snapshot_id,
-                              receipt_sha256, cutover_verdict, created_at,
-                              CAST(receipt_json AS BLOB) AS receipt_blob
-                       FROM execution_comparisons ORDER BY id"""
-                ).fetchall()
-                for row in rows:
-                    verdict_code = _CUTOVER_VERDICT_CODES.get(str(row["cutover_verdict"]))
-                    if verdict_code is None:
-                        raise ExecutionReceiptAuthorityError(
-                            f"cannot migrate comparison {row['id']}: invalid cutover verdict"
-                        )
-                    limbs = _comparison_authority_limbs(
-                        comparison_id=row["id"],
-                        execution_id=row["execution_id"],
-                        before_snapshot_id=row["before_snapshot_id"],
-                        after_snapshot_id=row["after_snapshot_id"],
-                        receipt_sha256=row["receipt_sha256"],
-                        cutover_verdict=row["cutover_verdict"],
-                        created_at=row["created_at"],
-                        receipt_blob=row["receipt_blob"],
-                    )
+                if "comparison_required" not in execution_columns:
                     self._conn.execute(
-                        """INSERT INTO execution_comparison_authority(
-                               comparison_id,authority_version,verdict_code,
-                               digest_0,digest_1,digest_2,digest_3)
-                           VALUES (?,?,?,?,?,?,?)""",
-                        (int(row["id"]), 1, verdict_code, *limbs),
+                        "ALTER TABLE executions ADD COLUMN comparison_required "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK (comparison_required IN (0,1))"
                     )
-            if backfill_trial_authority:
-                rows = self._conn.execute(
-                    """SELECT comparison_id, pre_failure_snapshot_id,
-                              post_failure_snapshot_id, recovery_snapshot_id,
-                              CAST(witness_blob AS BLOB) AS witness_blob,
-                              witness_sha256, source, campaign_id, engagement_id
-                       FROM execution_l2_failure_trial_sources ORDER BY comparison_id"""
-                ).fetchall()
-                for row in rows:
-                    if row["source"] != _SNAPSHOT_BINDING_SOURCE:
-                        raise ExecutionReceiptAuthorityError(
-                            f"cannot migrate trial {row['comparison_id']}: invalid source owner"
-                        )
-                    limbs = _trial_authority_limbs(
-                        comparison_id=row["comparison_id"],
-                        pre_failure_snapshot_id=row["pre_failure_snapshot_id"],
-                        post_failure_snapshot_id=row["post_failure_snapshot_id"],
-                        recovery_snapshot_id=row["recovery_snapshot_id"],
-                        witness_blob=row["witness_blob"],
-                        witness_sha256=row["witness_sha256"],
-                        source=row["source"],
-                        campaign_id=row["campaign_id"],
-                        engagement_id=row["engagement_id"],
-                    )
+                if "snapshot_id_high_watermark" not in execution_columns:
                     self._conn.execute(
-                        """INSERT INTO execution_l2_failure_trial_authority(
-                               comparison_id,authority_version,source_code,
-                               digest_0,digest_1,digest_2,digest_3)
-                           VALUES (?,?,?,?,?,?,?)""",
-                        (int(row["comparison_id"]), 1, _TRIAL_SOURCE_CODE, *limbs),
+                        "ALTER TABLE executions ADD COLUMN snapshot_id_high_watermark "
+                        "INTEGER NOT NULL DEFAULT 0"
                     )
-            if (
-                backfill_snapshot_authority
-                or backfill_comparison_authority
-                or backfill_trial_authority
-            ):
-                # A one-time upgrade seals the exact bytes that are present, but only after the
-                # pre-anchor history has passed the same semantic replay used by every live read.
-                # Thus a malformed/torn old receipt cannot become authoritative merely because the
-                # new tables were absent. Subsequent opens never reseal a missing or mismatched row.
+                if "lifecycle_state" not in execution_columns:
+                    self._conn.execute(
+                        "ALTER TABLE executions ADD COLUMN lifecycle_state "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK (lifecycle_state IN (0,1,2))"
+                    )
+                if "started_at_epoch_us" not in execution_columns:
+                    self._conn.execute(
+                        "ALTER TABLE executions ADD COLUMN started_at_epoch_us "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "ended_at_epoch_us" not in execution_columns:
+                    self._conn.execute(
+                        "ALTER TABLE executions ADD COLUMN ended_at_epoch_us INTEGER"
+                    )
                 execution_rows = self._conn.execute(
-                    """SELECT e.id, e.snapshot_id, e.label, e.status, e.started_at,
-                              e.ended_at, e.state_json, e.comparison_required,
-                              e.snapshot_id_high_watermark, e.lifecycle_state,
-                              e.started_at_epoch_us, e.ended_at_epoch_us
-                       FROM executions e
-                       WHERE EXISTS (
-                           SELECT 1 FROM execution_comparisons ec
-                           WHERE ec.execution_id=e.id
-                       )
-                       ORDER BY e.id"""
-                ).fetchall()
+                    """SELECT e.id, e.snapshot_id, e.status, e.started_at, e.ended_at,
+                              e.state_json,
+                              EXISTS(SELECT 1 FROM execution_comparisons ec
+                                     WHERE ec.execution_id=e.id) AS has_receipt,
+                              e.comparison_required, e.snapshot_id_high_watermark,
+                              e.lifecycle_state, e.started_at_epoch_us, e.ended_at_epoch_us
+                       FROM executions e"""
+                ).fetchall() if migrate_execution_authority else []
                 for execution_row in execution_rows:
+                    required = bool(execution_row["has_receipt"])
+                    high_watermark = int(execution_row["snapshot_id"])
+                    lifecycle_state = {
+                        "completed": 1,
+                        "aborted": 2,
+                    }.get(str(execution_row["status"]), 0)
+                    started_at_epoch_us = _timestamp_epoch_us(execution_row["started_at"]) or 0
+                    ended_at_epoch_us = _timestamp_epoch_us(execution_row["ended_at"])
                     try:
-                        state = _strict_json_loads(execution_row["state_json"])
-                    except (TypeError, ValueError, UnicodeDecodeError,
-                            json.JSONDecodeError) as exc:
-                        raise ExecutionReceiptAuthorityError(
-                            "cannot migrate execution comparison authority: "
-                            "execution state JSON is invalid"
-                        ) from exc
-                    if not isinstance(state, dict):
-                        raise ExecutionReceiptAuthorityError(
-                            "cannot migrate execution comparison authority: "
-                            "execution state is not an object"
+                        prior_state = _strict_json_loads(execution_row["state_json"])
+                    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                        prior_state = None
+                    policy = prior_state.get("comparison_policy") \
+                        if isinstance(prior_state, dict) else None
+                    if (
+                        isinstance(policy, dict)
+                        and policy.get("schema") == "execution_comparison_policy/1"
+                        and policy.get("canonical_gate_required") is True
+                    ):
+                        required = True
+                        candidate = policy.get("snapshot_id_high_watermark")
+                        if type(candidate) is int and candidate >= high_watermark:
+                            high_watermark = candidate
+                    if (
+                        int(execution_row["comparison_required"]) != int(required)
+                        or int(execution_row["snapshot_id_high_watermark"]) != high_watermark
+                        or int(execution_row["lifecycle_state"]) != lifecycle_state
+                        or int(execution_row["started_at_epoch_us"]) != started_at_epoch_us
+                        or execution_row["ended_at_epoch_us"] != ended_at_epoch_us
+                    ):
+                        self._conn.execute(
+                            """UPDATE executions
+                               SET comparison_required=?, snapshot_id_high_watermark=?,
+                                   lifecycle_state=?, started_at_epoch_us=?, ended_at_epoch_us=?
+                               WHERE id=?""",
+                            (int(required), high_watermark, lifecycle_state,
+                             started_at_epoch_us, ended_at_epoch_us,
+                             int(execution_row["id"])),
                         )
-                    self._execution_receipt_authority_locked(
-                        int(execution_row["id"]), execution_row, state
+                if migrate_execution_authority:
+                    self._conn.execute("""
+                        CREATE TRIGGER execution_comparison_owner_no_rebind
+                        BEFORE UPDATE OF id, snapshot_id, started_at, started_at_epoch_us,
+                                         comparison_required, snapshot_id_high_watermark ON executions
+                        WHEN EXISTS (
+                            SELECT 1 FROM execution_comparisons WHERE execution_id = OLD.id
+                        )
+                        BEGIN
+                            SELECT RAISE(ABORT, 'receipted execution source identity is immutable');
+                        END;
+                    """)
+                    self._conn.execute("""
+                        CREATE TRIGGER execution_comparison_policy_no_rebind
+                        BEFORE UPDATE OF comparison_required, snapshot_id_high_watermark ON executions
+                        WHEN EXISTS (
+                            SELECT 1 FROM execution_comparisons WHERE execution_id = OLD.id
+                        )
+                        BEGIN
+                            SELECT RAISE(ABORT, 'receipted execution comparison policy is immutable');
+                        END;
+                    """)
+                # Older stores predate an explicit engagement identity. Give each existing campaign a
+                # durable opaque identity exactly once; it is stored beside the campaign and survives
+                # a copied/moved USB database. Campaign names/paths are never inferred as identity.
+                missing = self._conn.execute(
+                    """SELECT c.id FROM campaigns c
+                       LEFT JOIN campaign_identities i ON i.campaign_id=c.id
+                       WHERE i.campaign_id IS NULL ORDER BY c.id"""
+                ).fetchall()
+                for row in missing:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO campaign_identities(campaign_id, engagement_id) VALUES (?,?)",
+                        (row["id"], "urn:uuid:" + str(uuid.uuid4())),
                     )
-            self._conn.commit()
+                # One-time trust migration: anchor the exact rows present when this release first opens
+                # an older database. After the INTEGER-only tables exist, missing rows are never
+                # backfilled on later boots; a torn/deleted anchor therefore fails closed.
+                if backfill_snapshot_authority:
+                    rows = self._conn.execute(
+                        """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
+                                  s.label, s.uploaded_at, s.script_version,
+                                  CAST(s.snapshot_json AS BLOB) AS snapshot_blob
+                           FROM snapshots s
+                           JOIN campaign_identities i ON i.campaign_id=s.campaign_id
+                           ORDER BY s.id"""
+                    )
+                    for row in rows:
+                        limbs = _snapshot_authority_limbs(
+                            snapshot_id=row["snapshot_id"],
+                            campaign_id=row["campaign_id"],
+                            engagement_id=row["engagement_id"],
+                            label=row["label"],
+                            uploaded_at=row["uploaded_at"],
+                            script_version=row["script_version"],
+                            snapshot_blob=row["snapshot_blob"],
+                        )
+                        self._conn.execute(
+                            """INSERT INTO snapshot_authority(
+                                   snapshot_id,authority_version,digest_0,digest_1,digest_2,digest_3)
+                               VALUES (?,?,?,?,?,?)""",
+                            (int(row["snapshot_id"]), 1, *limbs),
+                        )
+                if backfill_comparison_authority:
+                    rows = self._conn.execute(
+                        """SELECT id, execution_id, before_snapshot_id, after_snapshot_id,
+                                  receipt_sha256, cutover_verdict, created_at,
+                                  CAST(receipt_json AS BLOB) AS receipt_blob
+                           FROM execution_comparisons ORDER BY id"""
+                    ).fetchall()
+                    for row in rows:
+                        verdict_code = _CUTOVER_VERDICT_CODES.get(str(row["cutover_verdict"]))
+                        if verdict_code is None:
+                            raise ExecutionReceiptAuthorityError(
+                                f"cannot migrate comparison {row['id']}: invalid cutover verdict"
+                            )
+                        limbs = _comparison_authority_limbs(
+                            comparison_id=row["id"],
+                            execution_id=row["execution_id"],
+                            before_snapshot_id=row["before_snapshot_id"],
+                            after_snapshot_id=row["after_snapshot_id"],
+                            receipt_sha256=row["receipt_sha256"],
+                            cutover_verdict=row["cutover_verdict"],
+                            created_at=row["created_at"],
+                            receipt_blob=row["receipt_blob"],
+                        )
+                        self._conn.execute(
+                            """INSERT INTO execution_comparison_authority(
+                                   comparison_id,authority_version,verdict_code,
+                                   digest_0,digest_1,digest_2,digest_3)
+                               VALUES (?,?,?,?,?,?,?)""",
+                            (int(row["id"]), 1, verdict_code, *limbs),
+                        )
+                if backfill_trial_authority:
+                    rows = self._conn.execute(
+                        """SELECT comparison_id, pre_failure_snapshot_id,
+                                  post_failure_snapshot_id, recovery_snapshot_id,
+                                  CAST(witness_blob AS BLOB) AS witness_blob,
+                                  witness_sha256, source, campaign_id, engagement_id
+                           FROM execution_l2_failure_trial_sources ORDER BY comparison_id"""
+                    ).fetchall()
+                    for row in rows:
+                        if row["source"] != _SNAPSHOT_BINDING_SOURCE:
+                            raise ExecutionReceiptAuthorityError(
+                                f"cannot migrate trial {row['comparison_id']}: invalid source owner"
+                            )
+                        limbs = _trial_authority_limbs(
+                            comparison_id=row["comparison_id"],
+                            pre_failure_snapshot_id=row["pre_failure_snapshot_id"],
+                            post_failure_snapshot_id=row["post_failure_snapshot_id"],
+                            recovery_snapshot_id=row["recovery_snapshot_id"],
+                            witness_blob=row["witness_blob"],
+                            witness_sha256=row["witness_sha256"],
+                            source=row["source"],
+                            campaign_id=row["campaign_id"],
+                            engagement_id=row["engagement_id"],
+                        )
+                        self._conn.execute(
+                            """INSERT INTO execution_l2_failure_trial_authority(
+                                   comparison_id,authority_version,source_code,
+                                   digest_0,digest_1,digest_2,digest_3)
+                               VALUES (?,?,?,?,?,?,?)""",
+                            (int(row["comparison_id"]), 1, _TRIAL_SOURCE_CODE, *limbs),
+                        )
+                if (
+                    backfill_snapshot_authority
+                    or backfill_comparison_authority
+                    or backfill_trial_authority
+                ):
+                    # A one-time upgrade seals the exact bytes that are present, but only after the
+                    # pre-anchor history has passed the same semantic replay used by every live read.
+                    # Thus a malformed/torn old receipt cannot become authoritative merely because the
+                    # new tables were absent. Subsequent opens never reseal a missing or mismatched row.
+                    execution_rows = self._conn.execute(
+                        """SELECT e.id, e.snapshot_id, e.label, e.status, e.started_at,
+                                  e.ended_at, e.state_json, e.comparison_required,
+                                  e.snapshot_id_high_watermark, e.lifecycle_state,
+                                  e.started_at_epoch_us, e.ended_at_epoch_us
+                           FROM executions e
+                           WHERE EXISTS (
+                               SELECT 1 FROM execution_comparisons ec
+                               WHERE ec.execution_id=e.id
+                           )
+                           ORDER BY e.id"""
+                    ).fetchall()
+                    for execution_row in execution_rows:
+                        try:
+                            state = _strict_json_loads(execution_row["state_json"])
+                        except (TypeError, ValueError, UnicodeDecodeError,
+                                json.JSONDecodeError) as exc:
+                            raise ExecutionReceiptAuthorityError(
+                                "cannot migrate execution comparison authority: "
+                                "execution state JSON is invalid"
+                            ) from exc
+                        if not isinstance(state, dict):
+                            raise ExecutionReceiptAuthorityError(
+                                "cannot migrate execution comparison authority: "
+                                "execution state is not an object"
+                            )
+                        self._execution_receipt_authority_locked(
+                            int(execution_row["id"]), execution_row, state
+                        )
+                self._conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS carriage_projection_requirement_no_update
+                    BEFORE UPDATE OF carriage_projection_required ON snapshots
+                    BEGIN
+                        SELECT RAISE(ABORT, 'carriage projection requirement is immutable');
+                    END
+                """)
+                self._conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS carriage_projection_version_no_update
+                    BEFORE UPDATE OF carriage_projection_version ON snapshots
+                    WHEN NOT (
+                        OLD.carriage_projection_version=-2 AND NEW.carriage_projection_version=2
+                        AND OLD.carriage_projection_required=1 AND NEW.carriage_projection_required=1
+                        AND NEW.id=OLD.id
+                        AND EXISTS (SELECT 1 FROM carriage_projection_v2_parts
+                                    WHERE snapshot_id=OLD.id AND projection_version=2
+                                      AND kind='manifest' AND part_key='')
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT, 'carriage projection version is immutable');
+                    END
+                """)
+                self._conn.commit()
+            self._resume_pending_carriage_upgrades()
+        except BaseException:
+            # Preserve the initiating failure/control exception, releasing every failed
+            # initialization connection even when rollback or close itself also fails.
+            try:
+                self._connection.rollback()
+            except BaseException:
+                pass
+            try:
+                self._connection.close()
+            except BaseException:
+                pass
+            raise
+
+    def _resume_pending_carriage_upgrades(self) -> None:
+        """Stage/publish one source-bound unfinished upgrade at a time, never resealing /1 or /2."""
+        from .engine import prepare_carriage_projection
+
+        after_id = None
+        with self.snapshot_preparation():
+            while True:
+                with self._lock:
+                    pending = self._conn.execute(
+                        ("SELECT id FROM snapshots WHERE carriage_projection_version=-2 ORDER BY id LIMIT 1"
+                         if after_id is None else
+                         "SELECT id FROM snapshots WHERE carriage_projection_version=-2 AND id>? ORDER BY id LIMIT 1"),
+                        () if after_id is None else (after_id,),
+                    ).fetchone()
+                    if pending is None:
+                        return
+                    sid = after_id = int(pending["id"])
+                    source = self._carriage_bound_source_locked(sid)
+                    if source is None:
+                        raise ExecutionReceiptAuthorityError("pending carriage source is missing")
+                    source_row, raw, _binding = source
+                    initial_limbs = tuple(source_row[f"authority_digest_{i}"] for i in range(4))
+                    if self._conn.execute(
+                            "SELECT 1 FROM carriage_projection_v2_parts WHERE snapshot_id=? LIMIT 1", (sid,),
+                    ).fetchone() is not None:
+                        raise ExecutionReceiptAuthorityError("pending carriage upgrade has uncommitted parts")
+                # Malformed historical sources remain explicitly pending/unavailable. They
+                # cannot self-certify a derivative and do not block independent valid rows.
+                try:
+                    snapshot = _strict_json_loads(raw)
+                except (TypeError, ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(snapshot, dict):
+                    continue
+                del snapshot
+                staged = self._stage_carriage_projection(prepare_carriage_projection(raw))
+                with self._lock:
+                    try:
+                        self._conn.execute("BEGIN IMMEDIATE")
+                        current = self._carriage_bound_source_locked(sid)
+                        if current is None:
+                            raise ExecutionReceiptAuthorityError("pending carriage source disappeared")
+                        current_row, current_raw, _binding = current
+                        if (current_raw != raw or initial_limbs != tuple(
+                                current_row[f"authority_digest_{i}"] for i in range(4))):
+                            raise ExecutionReceiptAuthorityError("pending carriage source changed during staging")
+                        if current_row["carriage_projection_version"] == 2:
+                            self._conn.commit()
+                        else:
+                            if (current_row["carriage_projection_version"] != -2
+                                    or self._conn.execute(
+                                        "SELECT 1 FROM carriage_projection_v2_parts WHERE snapshot_id=? LIMIT 1",
+                                        (sid,),
+                                    ).fetchone() is not None):
+                                raise ExecutionReceiptAuthorityError("pending carriage upgrade cannot be republished")
+                            self._write_carriage_projection_locked(sid, staged, current_row)
+                            changed = self._conn.execute(
+                                """UPDATE snapshots SET carriage_projection_version=2
+                                   WHERE id=? AND carriage_projection_version=-2""", (sid,),
+                            )
+                            if changed.rowcount != 1:
+                                raise ExecutionReceiptAuthorityError("pending carriage completion lost its source")
+                            self._conn.commit()
+                    except BaseException:
+                        self._rollback_carriage_publication()
+                        raise
+                # Release this complete encoded stage before reading/preparing the next source.
+                del staged, source, source_row, raw, current, current_row, current_raw
 
     def _boot_hardening(self, dbfile: Path, db_mtime: float | None) -> None:
         """Unplug-safety (ADR-0004 P3): integrity-check, back up, pin durability.
@@ -1197,7 +1551,7 @@ class Store:
 
     def close(self) -> None:
         with self._lock:
-            self._conn.close()
+            self._connection.close()
 
     # -- campaigns ---------------------------------------------------------
     def create_campaign(self, name: str, description: str = "",
@@ -1287,8 +1641,34 @@ class Store:
         return self.delete_campaign_if_unreceipted(campaign_id) == "deleted"
 
     # -- snapshots ---------------------------------------------------------
+    @contextmanager
+    def snapshot_preparation(self) -> Iterator[_SnapshotPreparation]:
+        """Reserve preparation without waiting, before parsing or creating route-owned records.
+
+        Public ingestion routes hold their heavy-work admission too. A reservation permits
+        exactly one insertion on its owning worker; it cannot be reused after the context,
+        moved to another thread, or used for a reentrant stage. No shared read lock or database
+        transaction is held while the caller prepares its input or the derivative is staged.
+        """
+        if not self._preparation_lock.acquire(blocking=False):
+            raise CarriagePreparationBusyError("snapshot preparation is busy; retry after the current request")
+        preparation = None
+        try:
+            preparation = _SnapshotPreparation(self)
+            yield preparation
+        finally:
+            if preparation is not None:
+                preparation._active = False
+            self._preparation_lock.release()
+
     def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
                      summary: Dict[str, Any]) -> Dict[str, Any]:
+        # Refuse before accessing/serializing caller inputs, not after retaining another raw copy.
+        with self.snapshot_preparation() as preparation:
+            return preparation.add_snapshot(campaign_id, label, snapshot, summary)
+
+    def _add_snapshot_prepared(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
+                               summary: Dict[str, Any]) -> Dict[str, Any]:
         # SSOT: the canonical inventoried count (executive_brief.scale.n_devices), falling back to
         # len(devices) ONLY when the canonical field is ABSENT. isinstance-guarded so a truthy non-dict
         # executive_brief/scale on a malformed upload degrades instead of raising AttributeError (-> a 500
@@ -1304,7 +1684,13 @@ class Store:
         uploaded_at = _now()
         script_version = str(snapshot.get("script_version", ""))
         summary_json = json.dumps(summary, separators=(",", ":"))
-        snapshot_json = json.dumps(snapshot, separators=(",", ":"))
+        snapshot_json = json.dumps(snapshot, separators=(",", ":"), allow_nan=False)
+        snapshot_raw = snapshot_json.encode("utf-8")
+        # Preparation sees the FINAL bytes: every ingestion route stamps its provenance
+        # before add_snapshot. Missing carriage is prepared as unavailable too, so no
+        # first-document request falls back to source parsing or semantic projection.
+        from .engine import prepare_carriage_projection
+        staged = self._stage_carriage_projection(prepare_carriage_projection(snapshot_raw))
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -1316,10 +1702,11 @@ class Store:
                     raise ValueError("snapshot campaign has no durable engagement identity")
                 cur = self._conn.execute(
                     """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
-                                             n_devices, summary_json, snapshot_json)
-                       VALUES (?,?,?,?,?,?,?)""",
+                                                 n_devices, summary_json, snapshot_json,
+                                                 carriage_projection_required,carriage_projection_version)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
                     (campaign_id, stored_label, uploaded_at, script_version,
-                     _n, summary_json, snapshot_json),
+                     _n, summary_json, snapshot_json, 1, 2),
                 )
                 sid = int(cur.lastrowid or 0)
                 limbs = _snapshot_authority_limbs(
@@ -1329,24 +1716,28 @@ class Store:
                     label=stored_label,
                     uploaded_at=uploaded_at,
                     script_version=script_version,
-                    snapshot_blob=snapshot_json.encode("utf-8"),
+                    snapshot_blob=snapshot_raw,
                 )
                 self._conn.execute(
                     """INSERT INTO snapshot_authority(
-                           snapshot_id,authority_version,digest_0,digest_1,digest_2,digest_3)
-                       VALUES (?,?,?,?,?,?)""",
+                               snapshot_id,authority_version,digest_0,digest_1,digest_2,digest_3)
+                           VALUES (?,?,?,?,?,?)""",
                     (sid, 1, *limbs),
                 )
+                source_row = self._bound_snapshot_row_locked(sid)
+                if source_row is None:
+                    raise ExecutionReceiptAuthorityError("carriage source is missing")
+                self._write_carriage_projection_locked(sid, staged, source_row)
                 if self._snapshot_digest_observers:
                     # BEFORE the commit, so an observer that must react to this digest (the
                     # /scope privacy withdrawal) has reacted before the row is readable; an
                     # observer that raises rolls the insert back (fail closed).
-                    blob_digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+                    blob_digest = hashlib.sha256(snapshot_raw).hexdigest()
                     for observer in tuple(self._snapshot_digest_observers):
                         observer(blob_digest)
                 self._conn.commit()
-            except Exception:
-                self._conn.rollback()
+            except BaseException:
+                self._rollback_carriage_publication()
                 raise
         return self.get_snapshot_meta(sid)  # type: ignore[return-value]
 
@@ -1427,9 +1818,23 @@ class Store:
 
     def _bound_snapshot_row(self, snapshot_id: int) -> Optional[sqlite3.Row]:
         with self._lock:
-            row = self._conn.execute(
+            return self._bound_snapshot_row_locked(snapshot_id)
+
+    def _bound_snapshot_row_locked(self, snapshot_id: int) -> Optional[sqlite3.Row]:
+        """Read and verify source inside a caller-owned coherent SQLite transaction."""
+        row = self._snapshot_source_row_locked(snapshot_id)
+        if row is not None and not _snapshot_authority_row_valid(row):
+            raise ExecutionReceiptAuthorityError(
+                "snapshot source authority does not reconcile with exact persisted bytes"
+            )
+        return row
+
+    def _snapshot_source_row_locked(self, snapshot_id: int) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
                 """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
                           s.label, s.uploaded_at, s.script_version,
+                          s.carriage_projection_required,
+                          s.carriage_projection_version,
                            CAST(s.snapshot_json AS BLOB) AS snapshot_blob,
                            sa.snapshot_id AS authority_snapshot_id,
                            sa.authority_version AS authority_version,
@@ -1441,12 +1846,357 @@ class Store:
                    JOIN campaign_identities i ON i.campaign_id=s.campaign_id
                    LEFT JOIN snapshot_authority sa ON sa.snapshot_id=s.id
                    WHERE s.id = ?""", (snapshot_id,)
-            ).fetchone()
-        if row is not None and not _snapshot_authority_row_valid(row):
+        ).fetchone()
+
+    def _carriage_bound_source_locked(
+            self, snapshot_id: int) -> Optional[tuple[sqlite3.Row, bytes, Dict[str, Any]]]:
+        """Hash this transaction's exact source once for both authority and public binding."""
+        row = self._snapshot_source_row_locked(snapshot_id)
+        if row is None:
+            return None
+        raw = _snapshot_blob_bytes(row["snapshot_blob"])
+        identity = _blob_identity(raw)
+        if not _snapshot_authority_row_valid(row, identity=identity):
             raise ExecutionReceiptAuthorityError(
                 "snapshot source authority does not reconcile with exact persisted bytes"
             )
-        return row
+        return row, raw, _snapshot_binding_with_identity(row, identity)
+
+    def _stage_carriage_projection(self, preparation: Dict[str, Any]) -> bytes:
+        """Own all encoded parts before publication, without holding the shared DB lock.
+
+        The private immutable frame stream contains at most 64 MB of payload and 64 MB of
+        framing/key metadata. It retains no producer callback, decoded row, or external buffer.
+        Only one stage may be active per Store under its separate preparation lock.
+        """
+        if not isinstance(preparation, dict) or preparation.get("schema") != _CARRIAGE_PROJECTION_SCHEMA:
+            raise ValueError("unsupported carriage projection preparation")
+        payload_bytes = 0
+        metadata_bytes = 0
+        staged = io.BytesIO()
+
+        def put(kind: str, key: str, value: Any, ordinal: int = 0, *, binary: bool = False) -> None:
+            nonlocal payload_bytes, metadata_bytes
+            raw = value if binary else _canonical_json_bytes(value)
+            if type(raw) is not bytes:
+                raise ValueError("carriage projection binary part must be bytes")
+            if payload_bytes + len(raw) > CARRIAGE_PROJECTION_PAYLOAD_LIMIT:
+                raise CarriagePreparationLimitError(
+                    f"carriage derivative payload exceeds {CARRIAGE_PROJECTION_PAYLOAD_LIMIT}-byte limit"
+                )
+            kind_bytes, key_bytes = kind.encode("ascii"), key.encode("ascii")
+            framing = _CARRIAGE_STAGE_HEADER.size + len(kind_bytes) + len(key_bytes)
+            if metadata_bytes + framing > _CARRIAGE_STAGING_METADATA_LIMIT:
+                raise CarriagePreparationLimitError("carriage staging metadata exceeds its bounded capacity")
+            staged.write(_CARRIAGE_STAGE_HEADER.pack(len(kind_bytes), len(key_bytes), ordinal, len(raw)))
+            staged.write(kind_bytes)
+            staged.write(key_bytes)
+            staged.write(raw)
+            payload_bytes += len(raw)
+            metadata_bytes += framing
+
+        stream = None
+        failed = False
+        try:
+            stream = preparation["rows"]
+            from .engine import carriage_page_byte_limit, carriage_page_limits
+            member_limit, _cable_limit = carriage_page_limits()
+            byte_limit = carriage_page_byte_limit()
+            put("document", "", preparation["document"])
+            put("context", "", preparation["context"])
+            cables = preparation["cables"]
+            vlans = preparation["vlans"]
+            readable = set()
+            for vi, vlan in enumerate(vlans):
+                if (type(vlan["vlan_index"]) is not int or vlan["vlan_index"] != vi
+                        or vlan["total"] != (len(cables) if vlan["readable"] else 0)):
+                    raise ValueError("invalid carriage VLAN census")
+                if vlan["readable"]:
+                    readable.add(vi)
+                put("vlan", str(vi), vlan)
+            rows_written = 0
+            for ordinal, row in enumerate(stream):
+                if (ordinal >= len(cables) or type(row["ordinal"]) is not int or row["ordinal"] != ordinal
+                        or type(row["index"]) is not int or row["index"] < 0
+                        or any(row[name] != cables[ordinal][name]
+                               for name in ("ordinal", "index", "member_count"))
+                        or type(row["member_count"]) is not int or row["member_count"] < 0
+                        or type(row["dictionary"]) is not bytes or len(row["dictionary"]) > 32768):
+                    raise ValueError("invalid carriage materialization census")
+                put("dictionary", str(ordinal), row["dictionary"], ordinal, binary=True)
+                seen = set()
+                variants = row["variants"]
+                variant_failed = False
+                try:
+                    for variant in variants:
+                        vi = variant["vlan_index"]
+                        size, payload = variant["bytes"], variant["payload"]
+                        if type(vi) is not int or vi not in readable or vi in seen:
+                            raise ValueError("invalid carriage materialization VLAN")
+                        seen.add(vi)
+                        if (size is None and row["member_count"] <= member_limit
+                                or size is not None and (type(size) is not int or size <= 0)
+                                or payload is not None and type(payload) is not bytes
+                                or size is None and payload is not None
+                                or size is not None and size <= byte_limit and payload is None
+                                or size is not None and size > byte_limit and payload is not None):
+                            raise ValueError("invalid carriage materialization payload")
+                        meta = {name: row[name] for name in ("ordinal", "index", "member_count")}
+                        meta.update(bytes=size, payload_present=payload is not None)
+                        put(f"row_meta:{vi}", str(ordinal), meta, ordinal)
+                        if payload is not None:
+                            put(f"row:{vi}", str(ordinal), payload, ordinal, binary=True)
+                except BaseException:
+                    variant_failed = True
+                    raise
+                finally:
+                    _close_carriage_resources(variants, preserve_error=variant_failed)
+                if seen != readable:
+                    raise ValueError("incomplete carriage materialization VLAN census")
+                rows_written += 1
+            if rows_written != len(cables):
+                raise ValueError("incomplete carriage materialization cable census")
+            manifest = {"schema": _CARRIAGE_PROJECTION_SCHEMA, "cable_count": len(cables),
+                        "vlan_count": len(vlans), "payload_bytes": 0}
+            # Include the anchored manifest itself in the exact payload denominator.
+            while True:
+                total = payload_bytes + len(_canonical_json_bytes(manifest))
+                if manifest["payload_bytes"] == total:
+                    break
+                manifest["payload_bytes"] = total
+            put("manifest", "", manifest)
+            return staged.getvalue()
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            _close_carriage_resources(stream, staged, preserve_error=failed)
+
+    def _write_carriage_projection_locked(
+            self, snapshot_id: int, staged: bytes, source: sqlite3.Row) -> None:
+        """Publish private immutable encoded parts; no producer/row codec runs here."""
+        if type(staged) is not bytes:
+            raise ValueError("carriage publication requires an owned immutable stage")
+        source_limbs = tuple(source[f"authority_digest_{i}"] for i in range(4))
+        position = 0
+        while position < len(staged):
+            if len(staged) - position < _CARRIAGE_STAGE_HEADER.size:
+                raise ValueError("carriage stage has a truncated frame")
+            kind_size, key_size, ordinal, payload_size = _CARRIAGE_STAGE_HEADER.unpack_from(staged, position)
+            position += _CARRIAGE_STAGE_HEADER.size
+            end = position + kind_size + key_size + payload_size
+            if ordinal < 0 or end > len(staged):
+                raise ValueError("carriage stage has invalid frame bounds")
+            kind = staged[position:position + kind_size].decode("ascii")
+            position += kind_size
+            key = staged[position:position + key_size].decode("ascii")
+            position += key_size
+            raw = staged[position:end]
+            position = end
+            limbs = _carriage_part_limbs(snapshot_id, source_limbs, kind, key, ordinal, raw)
+            self._conn.execute(
+                """INSERT INTO carriage_projection_v2_parts
+                   (snapshot_id,projection_version,kind,part_key,ordinal,payload,
+                    digest_0,digest_1,digest_2,digest_3) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (snapshot_id, 2, kind, key, ordinal, sqlite3.Binary(raw), *limbs),
+            )
+
+    def _read_carriage_part_locked(
+            self, snapshot_id: int, source: sqlite3.Row, kind: str, key: str,
+            *, optional: bool = False, decode: bool = True) -> Any:
+        row = self._conn.execute(
+            """SELECT projection_version,kind,part_key,ordinal,payload,
+                      digest_0,digest_1,digest_2,digest_3
+               FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=? AND part_key=?""",
+            (snapshot_id, kind, key),
+        ).fetchone()
+        if row is None:
+            if optional:
+                return None
+            raise ExecutionReceiptAuthorityError(f"carriage projection {kind} part is missing")
+        if decode:
+            return self._decode_carriage_part(snapshot_id, source, row, kind, key)
+        return self._verified_carriage_part_bytes(snapshot_id, source, row, kind, key)
+
+    def _verified_carriage_part_bytes(
+            self, snapshot_id: int, source: sqlite3.Row, row: sqlite3.Row,
+            kind: str, key: str) -> bytes:
+        try:
+            if (type(row["projection_version"]) is not int or row["projection_version"] != 2
+                    or row["kind"] != kind or row["part_key"] != key
+                    or type(row["ordinal"]) is not int):
+                raise ValueError("projection identity mismatch")
+            raw = _snapshot_blob_bytes(row["payload"])
+            expected = _carriage_part_limbs(
+                snapshot_id, tuple(source[f"authority_digest_{i}"] for i in range(4)),
+                kind, key, row["ordinal"], raw,
+            )
+            if not _authority_row_matches(row, expected, prefix="digest"):
+                raise ValueError("projection content authority mismatch")
+            return raw
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ExecutionReceiptAuthorityError("carriage projection part is invalid") from exc
+
+    def _decode_carriage_part(
+            self, snapshot_id: int, source: sqlite3.Row, row: sqlite3.Row,
+            kind: str, key: str) -> Any:
+        raw = self._verified_carriage_part_bytes(snapshot_id, source, row, kind, key)
+        try:
+            return _strict_json_loads(raw)
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ExecutionReceiptAuthorityError("carriage projection part JSON is invalid") from exc
+
+    def get_carriage_document(
+            self, snapshot_id: int) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Read only the prepared document, retaining exact raw-byte source custody.
+
+        Source bytes are integrity-scanned without decoding. No cable, member, STP, VLAN code
+        stream or page-context part is read, parsed or projected on this first-document path.
+        """
+        return self._carriage_document_read(snapshot_id, decode=True)
+
+    def verify_carriage_document(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
+        """Revalidate a cached document's exact persisted authority without JSON decoding.
+
+        A warm DTO is usable only while the current source AND its document fragment still
+        reconcile. Other projection fragments are outside this independently bounded check.
+        """
+        result = self._carriage_document_read(snapshot_id, decode=False)
+        return result[1] if result is not None else None
+
+    def _carriage_document_read(
+            self, snapshot_id: int, *, decode: bool) -> Optional[tuple[Any, Dict[str, Any]]]:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
+                    self._conn.commit()
+                    return None
+                source, _raw, binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                document = self._read_carriage_part_locked(
+                    snapshot_id, source, "document", "", decode=decode
+                )
+                self._conn.commit()
+                return document, binding
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_carriage_page_source(
+            self, snapshot_id: int, vlan_index: int, offset: int = 0,
+            limit: int = 100) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Compatibility reader for the selected page fragments and their exact binding."""
+        result = self.get_carriage_page_bundle(snapshot_id, vlan_index, offset, limit)
+        return (result[2], result[1]) if result is not None else None
+
+    def get_carriage_page_bundle(
+            self, snapshot_id: int, vlan_index: int, offset: int = 0, limit: int = 100,
+    ) -> Optional[tuple[bytes, Dict[str, Any], Dict[str, Any]]]:
+        """Verify source and selected precomputed rows in one bounded coherent read.
+
+        The exact source is read and hashed once. The page's stored context/summary and
+        compressed rows have independent anchors; neither source JSON nor the global document
+        is decoded or loaded here. Unrequested fragments are not certified by this read.
+        """
+        from .engine import carriage_page_byte_limit, carriage_page_limits
+
+        member_limit, cable_limit = carriage_page_limits()
+        byte_limit = carriage_page_byte_limit()
+
+        if (type(vlan_index) is not int or vlan_index < 0
+                or type(offset) is not int or offset < 0
+                or type(limit) is not int or not 1 <= limit <= cable_limit):
+            raise ValueError("invalid carriage page window")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
+                    self._conn.commit()
+                    return None
+                source, raw, binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                manifest = self._read_carriage_part_locked(snapshot_id, source, "manifest", "")
+                context = self._read_carriage_part_locked(snapshot_id, source, "context", "")
+                if vlan_index >= manifest["vlan_count"]:
+                    raise IndexError("VLAN is not in the prepared carriage selector")
+                key = str(vlan_index)
+                vlan = self._read_carriage_part_locked(snapshot_id, source, "vlan", key)
+                expected_count = min(limit, max(0, vlan["total"] - offset))
+                kind = f"row_meta:{vlan_index}"
+                rows = self._conn.execute(
+                    """SELECT projection_version,kind,part_key,ordinal,payload,
+                              digest_0,digest_1,digest_2,digest_3
+                       FROM carriage_projection_v2_parts WHERE snapshot_id=? AND kind=?
+                         AND ordinal>=? ORDER BY ordinal LIMIT ?""",
+                    (snapshot_id, kind, offset, expected_count),
+                ).fetchall()
+                if len(rows) != expected_count:
+                    raise ExecutionReceiptAuthorityError("carriage cable window is incomplete")
+                selected = []
+                member_count = 0
+                row_bytes = 0
+                for position, row in enumerate(rows, offset):
+                    meta = self._decode_carriage_part(snapshot_id, source, row, kind, str(position))
+                    if meta["ordinal"] != position or meta["member_count"] < 0:
+                        raise ExecutionReceiptAuthorityError("carriage cable window is invalid")
+                    output = {name: meta[name] for name in ("ordinal", "index", "member_count", "bytes")}
+                    if member_count + meta["member_count"] > member_limit:
+                        selected.append(output)
+                        break
+                    size = meta["bytes"]
+                    if type(size) is not int or size < 0:
+                        raise ExecutionReceiptAuthorityError("carriage row byte census is invalid")
+                    if row_bytes + size > byte_limit:
+                        selected.append(output)
+                        break
+                    if meta["payload_present"] is not True:
+                        raise ExecutionReceiptAuthorityError("carriage row payload is missing")
+                    output["dictionary"] = self._read_carriage_part_locked(
+                        snapshot_id, source, "dictionary", str(position), decode=False
+                    )
+                    output["payload"] = self._read_carriage_part_locked(
+                        snapshot_id, source, f"row:{vlan_index}", str(position), decode=False
+                    )
+                    selected.append(output)
+                    member_count += meta["member_count"]
+                    row_bytes += size
+                pack = {"schema": _CARRIAGE_PROJECTION_SCHEMA, "context": context,
+                        "vlans": [vlan], "rows": selected}
+                self._conn.commit()
+                return raw, binding, pack
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def get_carriage_projection_payload_bytes(self, snapshot_id: int) -> Optional[int]:
+        """Read the exact ingest-time payload census from its source-bound INTEGER anchor."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                verified = self._carriage_bound_source_locked(snapshot_id)
+                if verified is None:
+                    self._conn.commit()
+                    return None
+                source, _raw, _binding = verified
+                if (source["carriage_projection_required"] != 1
+                        or source["carriage_projection_version"] != 2):
+                    raise ExecutionReceiptAuthorityError("snapshot projection preparation is unavailable")
+                manifest = self._read_carriage_part_locked(snapshot_id, source, "manifest", "")
+                size = manifest["payload_bytes"]
+                if type(size) is not int or not 0 <= size <= CARRIAGE_PROJECTION_PAYLOAD_LIMIT:
+                    raise ExecutionReceiptAuthorityError("carriage derivative byte census is invalid")
+                self._conn.commit()
+                return size
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_snapshot_blob(self, snapshot_id: int) -> Optional[tuple[bytes, Dict[str, Any]]]:
         """The exact persisted snapshot bytes and their binding, unparsed (or None).

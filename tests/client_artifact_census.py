@@ -1382,7 +1382,9 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    "webapp/backend/app.py": "f3ee6dbca5e74fb7e3daa39fe0b26d25a115741a",
+    # Multipart cleanup shields spool closure and unconditionally releases its heavy-work token.
+    # The complete download caller/route/catalogue/_send_file chain retains its same name owners.
+    "webapp/backend/app.py": "d6c905f222cc8baeb9d1e70b1772180b4d894226",
     "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
     "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
 }
@@ -2963,6 +2965,14 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/app.py::create_app.ingest_collection_folder": (
         1, PRIVATE_TEMP, ("devices-inventory", "workbook"),
         "a collection folder copied into custody and assessed " + _WORKDIR),
+    # Same two operations now enter their admitted worker helpers; both callback and worker sites
+    # remain in the discovered census, with unchanged artifact families and private temp custody.
+    "webapp/backend/app.py::create_app._ingest_zip_work": (
+        1, PRIVATE_TEMP, ("devices-inventory", "workbook"),
+        "an uploaded collection ZIP, extracted and assessed " + _WORKDIR),
+    "webapp/backend/app.py::create_app._ingest_folder_work": (
+        1, PRIVATE_TEMP, ("devices-inventory", "workbook"),
+        "a collection folder copied into custody and assessed " + _WORKDIR),
     "webapp/backend/deliverables.py::generate": (
         3, PRIVATE_TEMP, ("word-document", "presentation"),
         "a snapshot deliverable download assesshub_*.<ext>, stamped in place; " + _SYSTEM_TEMP),
@@ -3041,7 +3051,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/observe_ui_projection_contract.py::emit": (
         1, NON_CLIENT, (), "UI projection schema observations generated from code"),
     "webapp/backend/observe_ui_projection_contract.py::main": (
-        5, NON_CLIENT, (), "UI projection schema observations generated from code"),
+        6, NON_CLIENT, (), "UI projection schema observations generated from code, including the full document root"),
     "webapp/sample_data/build_sample.py::_write_collection": (
         1, NON_CLIENT, (), "the synthetic sample collection; " + _SYNTHETIC),
     "webapp/sample_data/build_sample.py::_make_template": (

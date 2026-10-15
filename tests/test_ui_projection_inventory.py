@@ -38,6 +38,7 @@ from jsonschema import Draft202012Validator
 from cisco_toolkit import analyze, coverage_matrix, nrfu_export, ssot, stp_topology
 from cisco_toolkit import parse as parse_mod
 from cisco_toolkit import ui_projection as uip
+from cisco_toolkit.vlan_carriage import CODE_ALPHABET
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -1689,6 +1690,21 @@ def _independent_coverage_abstention_count(snap, host):
     return count
 
 
+def _independent_carriage_count(snap, vi, name):
+    """Count the stored cable verdict characters independently; never call the projection's count/join."""
+    section = snap["vlan_carriage"]
+    codes = section["rows"][vi]["codes"]
+    tokens, offset = [], 0
+    for cable in section["cables"]:
+        if cable["scope"] != "assessed":
+            continue
+        tokens.append(section["code_tables"]["verdict"][CODE_ALPHABET.index(codes[offset])])
+        offset += 1 + 3 * len(cable["members"])
+    assert offset == len(codes)
+    assert name in ("forwarding", "stp_blocked", "not_carried", "held")
+    return sum(":" not in token if name == "held" else token.startswith(name + ":") for token in tokens)
+
+
 @pytest.mark.parametrize("name", ("a", "bl", "mg", "real", "g_phys_bad", "g_poison_str"))
 def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
     snap = snaps[name] if isinstance(snaps[name], dict) else {}
@@ -1732,6 +1748,13 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
                 expected_rows = [index for index, row in enumerate(snap["coverage_matrix"]["rows"])
                                  if isinstance(row, dict) and row.get("device") == host]
                 assert {_ptr("coverage_matrix", "rows", index) for index in expected_rows} <= set(witnesses)
+            elif fact["basis"] == "vlan_carriage.carriage_row_counts:vlan_carriage.rows[].codes":
+                tokens = fact["subject"].split("/")
+                assert len(tokens) == 5 and tokens[:3] == ["", "vlan_carriage", "rows"] and tokens[-1] == "codes"
+                vi, measure = int(tokens[3]), where.rsplit("/", 1)[-1]
+                assert type(value) is int and value == _independent_carriage_count(snap, vi, measure), (where, value)
+                assert {"pointer": f"/vlan_carriage/rows/{vi}", "role": "witness"} in fact["refs"]
+                assert {"pointer": "/vlan_carriage/coverage", "role": "witness"} in fact["refs"]
             elif fact["subject"] is not None:
                 assert _resolve(snap, fact["subject"]) == value, (where, fact["subject"], value)
             else:
@@ -2286,10 +2309,22 @@ def test_i19_ambiguous_headline_and_unreadable_peer_flags(snaps, payloads):
 # --------------------------------------------------------------------------------------------------
 def test_i20_selections_carry_their_source_state(snaps, payloads):
     p = payloads["a"]["inventory"]
+    assert snaps["a"]["vlan_carriage"]["state"] == UV  # Reviewed generated sample retains incomplete evidence.
     assert {k: v["state"] for k, v in p["vlans"]["selection_sources"].items()} == \
-        {"stp_roots": PUB, "gateways": PUB, "endpoints": PUB}
+        {"stp_roots": PUB, "carriage": UV, "gateways": PUB, "endpoints": PUB}
     assert {k: v["state"] for k, v in p["endpoints"]["selection_sources"].items()} == \
         {"interfaces": PUB, "vlan_rows": PUB, "shared_ip": PUB, "dual_homed": PUB}
+    legacy = copy.deepcopy(snaps["a"])
+    del legacy["vlan_carriage"]
+    old_vlans = uip.project_inventory(legacy)["vlans"]
+    assert old_vlans["selection_sources"]["carriage"]["state"] == NC
+    for row in old_vlans["rows"]["items"]:
+        assert row["selections"]["carriage"]["state"] == NC
+        # G14 v2: a summary carries counts, never cable rows; an absent section withholds each count, never zero.
+        assert "items" not in row["selections"]["carriage"]
+        assert all(row["selections"]["carriage"][name]["state"] == NC
+                   and row["selections"]["carriage"][name]["value"] is None for name in uip.CARRIAGE_SUMMARY_COUNTS)
+        assert row["selections"]["carriage"]["reason"]
     snap = copy.deepcopy(snaps["a"])
     del snap["stp_roots"], snap["l3_forwarding"]
     vl = uip.project_inventory(snap)["vlans"]

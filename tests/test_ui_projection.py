@@ -1311,11 +1311,20 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # tests/test_impact_assessability.py). Trust inputs (G08) admit the dossier's public per-axis input
     # registry by its exact name, so the input list is imported, never copied. G41: the source identity is read
     # from its one owner, the exact-byte marker class and its public receipt reader; the projection itself
-    # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place. The G21
+    # never hashes (no hashlib); json below measures response bytes only, never source identity. The G21
     # finding facets admit the owner's public category vocabulary, its read-only category-to-source-section map
     # (what a category count was computed over) and its stored-row facet fold, by exact name, beside the
     # severity owner.
-    allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    # Stored carriage adds only its public vocabulary, selectors, validators and identity joins, and (G14 v2) the
+    # owner's read-only code decoders, its interface-field tuple and its PVST role join (carriage_role_rows).
+    # Its compute function and whole module remain outside this exact read-only import boundary.
+    # marshal writes fresh same-process complete observation keys after the unchanged JSON eligibility walk;
+    # no deserialization, persistent cache, hashing or project producer import is admitted.
+    # json encodes complete carriage page bytes for the unchanged transport resource bound; no file I/O.
+    # zlib losslessly compresses ingest-rendered rows and expands only authenticated bounded page rows;
+    # it does not encode snapshot identity, deserialize Python objects or introduce a candidate codec.
+    # deepcopy owns prepared carriage fragments/context; persistence remains solely in the backend Store.
+    allowed = {"math", "re", "ipaddress", "json", "marshal", "zlib", "copy:deepcopy", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",
@@ -1326,6 +1335,19 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",
                "cisco_toolkit.coverage_matrix:compute_device_coverage", "cisco_toolkit.coverage_matrix:COVERAGE_STATE_ORDER",
                "cisco_toolkit.coverage_matrix:COVERAGE_DIMENSIONS", "cisco_toolkit.coverage_matrix:COVERAGE_VERDICT_SOURCES",
+               "cisco_toolkit.vlan_carriage:RELATIONS", "cisco_toolkit.vlan_carriage:END_SIGNALS",
+               "cisco_toolkit.vlan_carriage:BASES", "cisco_toolkit.vlan_carriage:EVIDENCE_SHAPES",
+               "cisco_toolkit.vlan_carriage:validate_vlan_carriage", "cisco_toolkit.vlan_carriage:vlan_row_identity",
+               "cisco_toolkit.vlan_carriage:carriage_observation_admission",
+               "cisco_toolkit.vlan_carriage:carriage_host_identity", "cisco_toolkit.vlan_carriage:carriage_port_identity",
+               "cisco_toolkit.vlan_carriage:CARRIAGE_INTERFACE_FIELDS", "cisco_toolkit.vlan_carriage:carriage_join_interface",
+               "cisco_toolkit.vlan_carriage:carriage_role_index", "cisco_toolkit.vlan_carriage:carriage_role_rows",
+               "cisco_toolkit.vlan_carriage:carriage_code_offsets", "cisco_toolkit.vlan_carriage:carriage_row_cables",
+               "cisco_toolkit.vlan_carriage:carriage_row_counts", "cisco_toolkit.vlan_carriage:carriage_end_char",
+               "cisco_toolkit.vlan_carriage:decode_end",
+               "cisco_toolkit.vlan_carriage:carriage_role_compatible", "cisco_toolkit.vlan_carriage:carriage_cable_binding",
+               "cisco_toolkit.vlan_carriage:carriage_allowance_admission",
+               "cisco_toolkit.vlan_carriage:carriage_allowance_matches",
                "cisco_toolkit.protocol_assurance:BoundSnapshot",
                "cisco_toolkit.protocol_assurance:bound_snapshot_source"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}

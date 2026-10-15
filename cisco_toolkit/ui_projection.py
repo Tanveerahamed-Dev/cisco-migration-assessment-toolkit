@@ -127,11 +127,15 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import ipaddress
+import json
 import math
+import marshal
 import re
+import zlib
 from types import MappingProxyType
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
@@ -143,6 +147,16 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
     compute_device_coverage, index_coverage_rows, match_coverage_cell,
+)
+from cisco_toolkit.vlan_carriage import (
+    RELATIONS as CARRIAGE_RELATIONS, END_SIGNALS as CARRIAGE_END_SIGNALS,
+    BASES as CARRIAGE_BASES, EVIDENCE_SHAPES as CARRIAGE_EVIDENCE_SHAPES,
+    CARRIAGE_INTERFACE_FIELDS, validate_vlan_carriage, vlan_row_identity, carriage_observation_admission,
+    carriage_host_identity, carriage_port_identity, carriage_join_interface, carriage_role_index,
+    carriage_role_rows, carriage_role_compatible, carriage_cable_binding, carriage_code_offsets,
+    carriage_allowance_admission, carriage_allowance_matches,
+    carriage_row_cables, carriage_row_counts, carriage_end_char,
+    decode_end as decode_carriage_end,
 )
 from cisco_toolkit.protocol_assurance import BoundSnapshot, bound_snapshot_source
 
@@ -667,6 +681,14 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "withhold READY rather than replacing it with another verdict.",
         ["/inventory/vlans/rows"]),
     _limitation(
+        "stored_vlan_carriage_scope", "vlan_carriage.compute_vlan_carriage",
+        "Carriage is the stored relation for the supplied cable/member and VLAN-row universe. Typed PVST "
+        "observations are separate captures; mutual trunk allowance is a configured model, not observed STP or "
+        "traffic delivery. One missing end stays not collected. MST has no admitted VLAN mapping here; "
+        "incomplete, misoriented or mixed bundles remain withheld. Neither pointers nor stored-shape validation "
+        "authenticate capture completeness, simultaneous forwarding or data-plane delivery.",
+        ["/inventory/vlans/rows"]),
+    _limitation(
         "vlan_gateway_rows", "excel.write_l3_forwarding_sheet; cisco_toolkit.ui_projection",
         "A VLAN row's selections.gateways lists the stored l3_forwarding rows that name its VLAN id: one per scanned "
         "device SVI named VlanN with an address, an FHRP group or a connected route. The producer counts no other "
@@ -691,7 +713,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "collection never reached that could route, every collected device's interface running-config captured, no "
         "other collected interface holding an address in the gateway's subnet, and no stored FHRP evidence of another "
         "router in its group (its own role, or the HSRP detail's standby router or state). The fleet-wide parts are "
-        "fleet-wide because VLAN carriage per cable is not stored. A gateway that neither the collection nor CDP/LLDP "
+        "fleet-wide because this gateway reader does not use stored per-cable carriage to narrow them. A gateway that neither the collection nor CDP/LLDP "
         "discovered, and that no stored FHRP record names, is outside every scan. A flag that contradicts the stored "
         "rows' gateway count is unverified. The row's fhrp text naming a sole gateway is published only where that "
         "gateway's sole-gateway risk is published true. A published gateway list under a coverage gap may be "
@@ -1174,6 +1196,7 @@ class _Ctx:
 
     def __init__(self, snap: Any) -> None:
         self.s: Dict[str, Any] = snap if isinstance(snap, dict) else {}
+        self.carriage: Optional[_CarriageAdmission] = None
         self.faults: Dict[str, str] = {}
         direct, unattributed = self._call("ssot.failed_sections", ssot.failed_sections, (frozenset(), True))
         self.direct = frozenset(k for k in direct if _is_text(k))
@@ -1894,7 +1917,8 @@ def _envelope(state: str, value: Any, subject: Optional[str], refs: List[Dict[st
     if owner_token is not None and owner_token != _FAULT and owner_token != state:
         fact["engine_state"] = owner_token
         fact["engine_state_owner"] = token_owner
-    cav = [c for c in _ALL_LIMITATION_IDS if c in set(caveats)]
+    caveat_set = set(caveats)
+    cav = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
     if cav:
         fact["caveats"] = cav
     return fact
@@ -2074,7 +2098,8 @@ def _factlist(ctx: _Ctx, path: Optional[str], basis: str, items: List[Any], base
     if owner is not None and owner != _FAULT and owner != state:
         out["engine_state"] = owner
         out["engine_state_owner"] = "ssot.abstention_reason"
-    cav = [c for c in _LIMITATION_IDS if c in set(caveats)]
+    caveat_set = set(caveats)
+    cav = [c for c in _LIMITATION_IDS if c in caveat_set]
     if cav:
         out["caveats"] = cav
     out["items"] = items
@@ -3514,7 +3539,10 @@ def _listing(ctx: _Ctx, state: str, reason: Optional[str], toks: Optional[Tuple[
         out["reason"] = reason
     cav += _one_hop(ctx, state, all_secs)
     # a withheld list still qualifies the rows it carries (an incomplete list shows what it has)
-    kept = [c for c in _ALL_LIMITATION_IDS if c in set(cav)] if (state in (_PUB, _CBE) or items) else []
+    kept = []
+    if state in (_PUB, _CBE) or items:
+        caveat_set = set(cav)
+        kept = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
     if kept:
         out["caveats"] = kept
     out["items"] = items
@@ -4735,6 +4763,1452 @@ def _vlan_wave_pre(ctx: _Ctx) -> _Pre:
     return pre
 
 
+_B_CARRIAGE = "vlan_carriage.compute_vlan_carriage:vlan_carriage"
+_CARRIAGE_SECTIONS = ("vlan_carriage", "cable_map", "interfaces", "stp_topology_observations", "vlan_cutover")
+_CARRIAGE_CAVEATS = ("stored_vlan_carriage_scope",)
+#: The counts a VLAN row's carriage summary publishes, in schema order (G14 v2): the assessed cable universe, its
+#: published relations, the cables without one, and the edge cables that are counted blind spots.
+CARRIAGE_SUMMARY_COUNTS: Tuple[str, ...] = ("assessed", "forwarding", "stp_blocked", "not_carried", "held",
+                                            "edge_not_collected")
+_R_CARRIAGE_SELECTOR = "unverified: this VLAN row has no readable carriage selector"
+_R_CARRIAGE_GAP = ("unverified: stored carriage basis references no longer resolve to unique typed end evidence; "
+                   "no relation is reconstructed")
+_R_CARRIAGE_END = "unverified: this cable member has no complete readable endpoint identity"
+# One HTTP page's unchanged wire ceiling; the schema exposes this owner to the transport.
+CARRIAGE_PAGE_BYTE_LIMIT = 3_000_000
+CARRIAGE_PAGE_STATES = (_PUB, _UV)
+_CARRIAGE_PAGE_MEMBER_LIMIT = 400
+
+
+def _stored_pointer_tokens(ctx: _Ctx, pointer: str) -> Optional[Tuple[Any, ...]]:
+    """Resolve a validated stored pointer without guessing a missing list/dict namespace."""
+    if pointer == "":
+        return ()
+    if not _is_text(pointer) or not pointer.startswith("/") or re.search(r"~(?![01])", pointer):
+        return None
+    current: Any = ctx.s
+    tokens: List[Any] = []
+    for segment in pointer[1:].split("/"):
+        key = segment.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, list):
+            if not re.fullmatch(r"0|[1-9][0-9]{0,15}", key):
+                return None
+            token: Any = int(key)
+            if token >= len(current):
+                return None
+        elif isinstance(current, dict) and key in current:
+            token = key
+        else:
+            return None
+        tokens.append(token)
+        current = current[token]
+    return tuple(tokens)
+
+
+def _carriage_refs(ctx: _Ctx, pointers: Sequence[Any]) -> List[Tuple[str, Sequence[Any]]]:
+    return [("witness", tokens) for pointer in pointers
+            if (tokens := _stored_pointer_tokens(ctx, pointer)) is not None]
+
+
+class _CarriageAdmission:
+    """One stored ``vlan_carriage/2`` section admitted once per snapshot: the selection-source envelope, the
+    validated and joined section (``None`` when it cannot be read), the source failure, and the VLAN rows whose
+    published end claims no longer resolve to their stored basis. It never recomputes carriage, and it is read-only
+    once built, so a cache may share it between the inventory document and every lazy page of one snapshot."""
+    __slots__ = ("source", "section", "failed", "gaps", "offsets", "observations")
+
+    def __init__(self, source: Dict[str, Any], section: Optional[Dict[str, Any]],
+                 failed: Optional[Tuple[str, str]], gaps: Mapping[int, Tuple[Tuple[Any, ...], ...]],
+                 offsets: Sequence[Tuple[int, int, int]],
+                 observations: Optional[Mapping[str, Tuple[Any, Any]]] = None) -> None:
+        self.source = source
+        self.section = section
+        self.failed = failed
+        self.gaps = MappingProxyType(dict(gaps))
+        self.offsets = tuple(offsets)
+        # host -> (admitted observation or None, its role index or None): the owner admission each typed claim was
+        # checked against, so a lazy page joins role rows without validating the same observation again.
+        self.observations = MappingProxyType(dict(observations or {}))
+
+
+def _carriage_record_values(record: Any) -> Optional[Dict[str, str]]:
+    """The carriage owner's interface fields of one stored record (a sparse record's absent field is ''), or ``None``
+    when the record or one of its fields cannot be read as text."""
+    if not isinstance(record, dict):
+        return None
+    values = {key: record.get(key, "") for key in CARRIAGE_INTERFACE_FIELDS}
+    return values if all(_is_text(value) for value in values.values()) else None
+
+
+def _carriage_observation_key(record: Any) -> Optional[bytes]:
+    """Optional complete current value key, never an observation-validity claim or a persistent receipt.
+
+    Keep the original exact finite plain-JSON eligibility/count/depth/codepoint limits. Lazy iterator frames
+    count every value/container occurrence (including repeated aliases), never bulk-enqueue a wide container.
+    Full fresh same-process marshal-v2 bytes distinguish value types; dictionary order changes conservatively
+    miss reuse. Every noneligible/encoding/resource case retains the unchanged owner-admission path.
+    """
+    if type(record) is not dict:
+        return None
+    nodes, characters = 0, 0
+    frame = (iter((record,)), 0)
+    parents = []
+    try:
+        while True:
+            iterator, depth = frame
+            for node in iterator:
+                nodes += 1
+                if nodes > 65_536 or depth > 32:
+                    return None
+                kind = type(node)
+                if kind is str:
+                    characters += len(node)
+                    if characters > 1_000_000:
+                        return None
+                    continue
+                if kind is dict:
+                    for key in node:
+                        if type(key) is not str:
+                            return None
+                        characters += len(key)
+                        if characters > 1_000_000:
+                            return None
+                    child = (iter(node.values()), depth + 1)
+                elif kind is list:
+                    child = (iter(node), depth + 1)
+                elif node is None or kind in (bool, int):
+                    continue
+                elif kind is float and math.isfinite(node):
+                    continue
+                else:
+                    return None
+                # The child becomes active directly; only the SAME advanced parent is suspended.
+                # Resume it AFTER the child, without a redundant child-stack append/pop or any pre-read.
+                parents.append(frame)
+                frame = child
+                break
+            else:
+                if not parents:
+                    break
+                frame = parents.pop()
+    except (TypeError, ValueError, RuntimeError, RecursionError, OverflowError, MemoryError):
+        return None
+    try:
+        encoded = marshal.dumps(record, 2)
+    except Exception:
+        # An optional stdlib encoder/audit refusal (e.g. OSError) cannot replace full owner admission.
+        # Process-control BaseExceptions intentionally propagate rather than being hidden as a cache miss.
+        return None
+    # This only bounds optional retained data. It never limits a source the full owner may admit.
+    return encoded if type(encoded) is bytes and len(encoded) <= 8 * 1024 * 1024 else None
+
+
+# Ordinary private dispatch coherence, not secret authority or a mutable-snapshot sandbox.
+_CARRIAGE_ROLE_ROWS_OWNER = carriage_role_rows
+_CARRIAGE_SHARED_EMPTY_LIMIT = 16_384
+_CARRIAGE_CPU_ROUTING_ENABLED = True
+_CARRIAGE_ROUTING_TOKEN_ENABLED = True
+_CARRIAGE_ROUTING_TOKEN_LIMIT = 16_384
+_CARRIAGE_LOOP_DISPATCH_ENABLED = False
+_CARRIAGE_ROLE_CELLS_ENABLED = True
+_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED = False
+_CARRIAGE_PREFIX_TYPE_OWNER, _CARRIAGE_PREFIX_STR_OWNER, _CARRIAGE_PREFIX_INT_OWNER = type, str, int
+
+
+class _CarriageRoutingToken(NamedTuple):
+    """Immutable joins of private append-only maps, never a snapshot or end-verdict certificate."""
+    host: str
+    identity: int
+    observation: Any
+    index: Any
+
+
+def _carriage_routing_token(host: str, identity: int, observation: Any, index: Any) -> _CarriageRoutingToken:
+    return _CarriageRoutingToken(host, identity, observation, index)
+
+
+_CARRIAGE_ROUTING_TOKEN_TYPE = _CarriageRoutingToken
+_CARRIAGE_ROUTING_TOKEN_OWNER = _carriage_routing_token
+
+
+def _carriage_role_cell(tag: Any, position: Optional[int], row: Any) -> Tuple[Any, ...]:
+    """Private immutable answer representation; an empty cell has None/None, not an end verdict."""
+    return tag, position, row
+
+
+_CARRIAGE_ROLE_CELL_OWNER = _carriage_role_cell
+
+
+def _carriage_role_query(observation: Any, interface: str, vid: int, *, index: Any) -> Any:
+    """One original owner query; hosted coarse timing can wrap this without changing owner identity."""
+    return carriage_role_rows(observation, interface, vid, index=index)
+
+
+class _CarriageRoutingPlan:
+    """Optional per-position dispatch to answers already retained by this ONE checked admission.
+
+    Only a published observation and its existing per-host index are retained, never a role row or end/VLAN
+    decision. Host reads are exact-type guarded at both original dispatch points; logical/physical fields
+    remain fresh reads at the original joins. This does not make a mutable snapshot atomic.
+    """
+    __slots__ = ("host", "observation", "index")
+
+    def __init__(self) -> None:
+        self.host: Optional[str] = None
+        self.observation: Any = None
+        self.index: Any = None
+
+
+def _carriage_routing_plan() -> Optional[_CarriageRoutingPlan]:
+    """The original dispatch remains a conservative fallback when optional planning is disabled."""
+    return _CarriageRoutingPlan()
+
+
+def _carriage_extend_gap_fallback(found: List[Tuple[Any, ...]], gaps: Any) -> None:
+    """Preserve ordinary extend/iteration/length-hint effects for every nonempty or foreign value."""
+    found.extend(gaps)
+
+
+def _carriage_bf33_rows(ctx: _Ctx, section: Dict[str, Any], positions: Any, typed_chars: Any,
+                       configured_chars: Any, signals: Any, admitted: Any, role_index: Any,
+                       joined_roles: Any, compatible_role: Any, allowance_agrees: Any, *,
+                       role_cell_tag: Any = None) -> Dict[int, Tuple[Tuple[Any, ...], ...]]:
+    """BF33 read/short-circuit domains, with native private answer decoding and unchanged raw consumers."""
+    gaps: Dict[int, Tuple[Tuple[Any, ...], ...]] = {}
+    for row in section["rows"]:
+        codes = row["codes"]
+        if not codes:
+            continue
+        found: List[Tuple[Any, ...]] = []
+        for position, key, end, static_gaps, stp_gap, allowance_gap, plan in positions:
+            char = codes[position]
+            if char in typed_chars:
+                # Read at the same points as the original dispatch, including after an owner callback. A
+                # changed/nonplain host falls back; the plan never freezes the logical or physical route.
+                host = end["host"]
+                if plan is not None and type(host) is str and host == plan.host:
+                    observation, ok = plan.observation, True
+                else:
+                    state, _why, observation = admitted(host)
+                    ok = state == _PUB and observation is not None
+                if ok:
+                    index_host = end["host"]
+                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation, tokenize=plan is not None)
+                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
+                                        share_empty=plan is not None)
+                    beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
+                                           share_empty=plan is not None)
+                              if end["stp_interface"] != end["port"] else [])
+                    cell = (role_cell_tag is not None and type(rows) is tuple and len(rows) == 3
+                            and rows[0] is role_cell_tag)
+                    beside_cell = (role_cell_tag is not None and type(beside) is tuple and len(beside) == 3
+                                   and beside[0] is role_cell_tag)
+                    ok = ((rows[1] is not None if cell else len(rows) == 1)
+                          and (beside[1] is None if beside_cell else not beside)
+                          and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                               else compatible_role(end["host"], *rows[0], observation))
+                          and (rows[2]["state"] if cell else rows[0][1]["state"]) == signals[char])
+                    ok = ok and allowance_agrees(key, row["vlan"], signals[char])
+                if not ok:
+                    found.append(stp_gap)
+            elif char in configured_chars:
+                # A configured code is eligible only while the CURRENT owner has no relevant logical PVST
+                # row. A newly supplied row (even an agreeing one), malformed record or error capture makes
+                # this stored basis stale; withhold it instead of computing a replacement relation.
+                host = end["host"]
+                if plan is not None and type(host) is str and host == plan.host:
+                    state, observation = _PUB, plan.observation
+                else:
+                    state, _why, observation = admitted(host)
+                eligible = state == _NC or (state == _PUB and observation is not None)
+                if eligible and state == _PUB:
+                    index_host = end["host"]
+                    if (plan is not None and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation, tokenize=plan is not None)
+                        if plan is not None and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"],
+                                        observation, index, share_empty=plan is not None)
+                    cell = (role_cell_tag is not None and type(rows) is tuple and len(rows) == 3
+                            and rows[0] is role_cell_tag)
+                    eligible = rows[1] is None if cell else len(rows) == 0
+                if not eligible:
+                    found.append(stp_gap)
+                    current = ("stp_topology_observations", end["host"])
+                    if _get(ctx.s, current) is not _MISSING:
+                        found.append(current)
+                    elif _get(ctx.s, current[:1]) is not _MISSING:
+                        found.append(current[:1])
+                if not allowance_agrees(key, row["vlan"], signals[char]):
+                    found.append(allowance_gap)
+            else:
+                continue
+            found.extend(static_gaps)
+        if found:
+            gaps[row["vlan_index"]] = tuple(dict.fromkeys(found))
+    return gaps
+
+
+def _carriage_gaps(ctx: _Ctx, section: Dict[str, Any]) -> Tuple[Dict[int, Tuple[Tuple[Any, ...], ...]],
+                                                                    Dict[str, Tuple[Any, Any]]]:
+    """Check each published end claim's declared witnesses once per snapshot, without re-evaluating an allowance or
+    a relation: the record identity, its channel, its allowance record and observation, and, per VLAN, the one typed
+    role row the owner join (``vlan_carriage.carriage_role_rows``) names. A gap is witnessed by the stored declaration
+    that no longer resolves; it is never emitted as a resolving source ref or silently dropped."""
+    interfaces = ctx.s.get("interfaces")
+    host_keys: Dict[str, List[str]] = {}
+    port_keys: Dict[str, Dict[str, List[str]]] = {}
+    logical_keys: Dict[str, Dict[str, List[str]]] = {}
+    for host, records in (interfaces.items() if isinstance(interfaces, dict) else ()):
+        if not _is_text(host):
+            continue
+        host_keys.setdefault(carriage_host_identity(host), []).append(host)
+        port_keys[host] = {}
+        logical_keys[host] = {}
+        for key in records if isinstance(records, dict) else ():
+            if _is_text(key):
+                port_keys[host].setdefault(carriage_port_identity(key), []).append(key)
+                logical = carriage_join_interface(key)
+                if logical is not None:
+                    logical_keys[host].setdefault(logical, []).append(key)
+    observations: Dict[str, Any] = {}
+    indexes: Dict[str, Any] = {}
+    observation_answers: Dict[bytes, Tuple[str, Optional[str], bool, int]] = {}
+    observation_ids: Dict[str, int] = {}
+    shared_indexes: Dict[int, Mapping[Any, Tuple[int, ...]]] = {}
+    shared_hosts: Dict[str, int] = {}
+    routing_tokens: Dict[str, _CarriageRoutingToken] = {}
+    ordinary_host_history = True
+    ordinary_role_history = True
+    missing_roles = object()  # A foreign owner may return global _MISSING, None or a falsey answer.
+    cpu_routing = _CARRIAGE_CPU_ROUTING_ENABLED is True
+    token_routing = cpu_routing and _CARRIAGE_ROUTING_TOKEN_ENABLED is True
+    loop_dispatch = _CARRIAGE_LOOP_DISPATCH_ENABLED is True
+    role_cells = cpu_routing and _CARRIAGE_ROLE_CELLS_ENABLED is True
+    role_cell_tag = object()
+    empty_cell: Optional[Tuple[Any, ...]] = None  # One valid shape, not an empty-query outcome/cache.
+
+    def admitted(host: str) -> Any:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
+        if host not in observations:
+            supplied = ctx.s.get("stp_topology_observations")
+            # The owner's absent-section/absent-host case is distinct from a supplied malformed record.
+            # Configured claims must recheck CURRENT eligibility even when no STP pointer was stored.
+            if supplied is None or (type(supplied) is dict and host not in supplied):
+                observations[host] = (_NC, None, None)
+                return observations[host]
+            if type(supplied) is not dict:
+                observations[host] = (_UV, "stp_unreadable", None)
+                return observations[host]
+            record = _get(ctx.s, ("stp_topology_observations", host))
+            key = _carriage_observation_key(record)
+            answer = observation_answers.get(key) if key is not None else None
+            if answer is None:
+                result = carriage_observation_admission(record)
+                # Never substitute another host's observation object or a foreign owner return object.
+                if key is not None and len(observation_answers) < 32 and (result[2] is None or result[2] is record):
+                    identity = len(observation_answers)
+                    observation_answers[key] = (result[0], result[1], result[2] is record, identity)
+                    observation_ids[host] = identity
+            else:
+                state, reason, present, identity = answer
+                result = (state, reason, record if present else None)
+                observation_ids[host] = identity
+            observations[host] = result
+        return observations[host]
+
+    def resolve(pointer: Any) -> Tuple[Optional[Tuple[Any, ...]], Any]:
+        toks = _stored_pointer_tokens(ctx, pointer) if pointer is not None else None
+        return (toks, _get(ctx.s, toks)) if toks is not None else (None, _MISSING)
+
+    static: Dict[Tuple[int, int, str], List[Tuple[Any, ...]]] = {}
+    configured: Dict[Tuple[int, int, str], int] = {}
+    allowance_ids: Dict[Optional[Tuple[Any, ...]], int] = {}
+    allowances: List[Optional[Tuple[Any, ...]]] = []
+    ordinary_static_history = True
+    missing_hint = object()
+    missing_signal = object()
+
+    def static_key_history(key: Tuple[Any, ...]) -> None:
+        nonlocal ordinary_static_history
+        if (type(key) is not tuple or len(key) != 3 or type(key[0]) is not int
+                or type(key[1]) is not int or type(key[2]) is not str):
+            ordinary_static_history = False
+
+    def allowance_id(record: Any) -> int:
+        # The owner's admission is an immutable tuple of exact kind/ranges/native/mode values (or None).
+        # Intern it once per static end, never hash a long range tuple for every end of every VLAN row.
+        admission = carriage_allowance_admission(record)
+        identity = allowance_ids.get(admission)
+        if identity is None:
+            identity = len(allowances)
+            allowance_ids[admission] = identity
+            allowances.append(admission)
+        return identity
+
+    for cable in section["cables"]:
+        if cable["scope"] != "assessed":
+            continue
+        ci = cable["index"]
+        for member in cable["members"]:
+            mi = member["index"]
+            for side, other in (("a", "b"), ("b", "a")):
+                end, peer = member[side], member[other]
+                if end["hold"] is not None:
+                    continue
+                toks = ("vlan_carriage", "cables", ci, "members", mi, side)
+                bad: List[Tuple[Any, ...]] = []
+                host, port = end["host"], end["port"]
+                if (len(host_keys.get(carriage_host_identity(host), [])) != 1
+                        or len(port_keys.get(host, {}).get(carriage_port_identity(port), [])) != 1):
+                    bad.append(toks + ("interface_pointer",))
+                values = _carriage_record_values(resolve(end["interface_pointer"])[1])
+                if (values is None
+                        or (values["port"] and carriage_port_identity(values["port"]) != carriage_port_identity(port))
+                        or (values["cdp_neighbor"] and carriage_host_identity(values["cdp_neighbor"])
+                            != carriage_host_identity(peer["host"]))
+                        or (values["neighbor_port"] and (not _is_text(peer["port"]) or carriage_port_identity(
+                            values["neighbor_port"]) != carriage_port_identity(peer["port"])))):
+                    bad.append(toks + ("interface_pointer",))
+                # The stored join key is the end's own port, or the cited record's channel (never another name).
+                channel = (carriage_join_interface(values["port_channel"])
+                           if values is not None and values["port_channel"].strip() else None)
+                bundled = end["stp_interface"] != port
+                own = carriage_join_interface(port)
+                if (bundled and (channel is None or channel != end["stp_interface"])) or (
+                        not bundled and channel is not None and channel != own):
+                    bad.append(toks + ("stp_interface",))
+                source_toks, source = resolve(end["allowance_pointer"])
+                source_values = _carriage_record_values(source)
+                if source_values is None or source_toks is None or (bundled and (
+                        end["allowance_pointer"] == end["interface_pointer"]
+                        or len(logical_keys.get(host, {}).get(end["stp_interface"], ())) != 1
+                        or carriage_join_interface(source_toks[-1]) != end["stp_interface"]
+                        or (source_values["port"].strip()
+                            and carriage_join_interface(source_values["port"]) != end["stp_interface"]))):
+                    bad.append(toks + ("allowance_pointer",))
+                if loop_dispatch:
+                    identity = allowance_id(source)  # Original RHS-owner call BEFORE the key write.
+                    configured_key = (ci, mi, side)
+                    static_key_history(configured_key)
+                    configured[configured_key] = identity
+                else:
+                    configured[(ci, mi, side)] = allowance_id(source)
+                for ri, pointer in enumerate(end["refs"]):
+                    resolved, value = resolve(pointer)
+                    valid = False
+                    if resolved is not None and len(resolved) >= 3 and resolved[:2] == ("interfaces", host):
+                        valid = ((len(resolved) == 3 and isinstance(value, dict)) or
+                                 (len(resolved) == 4 and _is_text(value) and bool(value.strip())))
+                        valid = valid and (carriage_port_identity(resolved[2]) == carriage_port_identity(port) or (
+                            bundled and carriage_join_interface(resolved[2]) == end["stp_interface"]))
+                    if not valid:
+                        bad.append(toks + ("refs", ri))
+                if end["stp_pointer"] is not None:
+                    resolved, value = resolve(end["stp_pointer"])
+                    state, _why, record = admitted(host)
+                    if resolved is None or not isinstance(value, dict) or record is None or state in (_UV, AU):
+                        bad.append(toks + ("stp_pointer",))
+                if loop_dispatch:
+                    static_key = (ci, mi, side)
+                    static_key_history(static_key)
+                    static[static_key] = bad
+                else:
+                    static[(ci, mi, side)] = bad
+    typed_chars = {carriage_end_char("forwarding"), carriage_end_char("blocked")}
+    configured_chars = {carriage_end_char("allowed"), carriage_end_char("excluded")}
+    # Owner-derived immutable signals and exact role joins are shared only within this admission of one
+    # read-only snapshot. Every end still checks its own static witnesses and configured allowance below.
+    signals = {char: decode_carriage_end(char)["signal"] for char in typed_chars | configured_chars}
+    # Inspect only native stored keys BEFORE any extra set/dict probe. Foreign/colliding owner enums keep
+    # the literal old branches; this optional table never calls an owner again or supplies a new signal.
+    kinds = None
+    if (loop_dispatch and all(type(char) is str and len(char) == 1 for char in typed_chars)
+            and all(type(char) is str and len(char) == 1 for char in configured_chars)
+            and all(type(char) is str and len(char) == 1 for char in signals)
+            and all(type(signal) is str for signal in signals.values())
+            and len(typed_chars) == 2 and len(configured_chars) == 2 and len(signals) == 4
+            and typed_chars.isdisjoint(configured_chars)
+            and set(signals) == typed_chars | configured_chars):
+        kinds = {char: 1 if char in typed_chars else 2 for char in signals}
+    role_rows: Dict[Tuple[str, str, int], Any] = {}
+    allowance_matches: Dict[Tuple[int, int, str], bool] = {}
+    shared_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
+    shared_empty_positions: Dict[Tuple[int, str, int], Tuple[int, ...]] = {}
+    shared_compatibility: Dict[Tuple[int, int], bool] = {}
+
+    def candidate_allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str, hint: Any = missing_hint) -> bool:
+        if hint is missing_hint or not ordinary_static_history:
+            static_key_history(key)
+            identity = configured[key]  # Missing/foreign history retains the ORIGINAL LATE lookup/error point.
+        else:
+            identity = hint
+        query = (identity, vid, signal)
+        if query not in allowance_matches:
+            allowance_matches[query] = carriage_allowance_matches(allowances[identity], vid, signal)
+        return allowance_matches[query]
+
+    def allowance_agrees(key: Tuple[int, int, str], vid: int, signal: str) -> bool:
+        # Literal BF33 mechanism; default withdrawal must not retain per-end candidate history branches.
+        identity = configured[key]
+        query = (identity, vid, signal)
+        if query not in allowance_matches:
+            allowance_matches[query] = carriage_allowance_matches(allowances[identity], vid, signal)
+        return allowance_matches[query]
+
+    def empty_identity(host: str, interface: str, vid: int, observation: Any, index: Any,
+                       share_empty: bool) -> Optional[int]:
+        nonlocal ordinary_host_history
+        host_classified, native_host = False, False
+        if (_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+                and type is _CARRIAGE_PREFIX_TYPE_OWNER and str is _CARRIAGE_PREFIX_STR_OWNER
+                and int is _CARRIAGE_PREFIX_INT_OWNER):
+            native_host, host_classified = type(host) is str, True
+            if not native_host:
+                ordinary_host_history = False
+        elif type(host) is not str:
+            ordinary_host_history = False
+        # Keep THIS original helper frame, every proof lookup and every callback boundary. A share_empty
+        # truth callback may change classifiers, so recheck owners at the original second-host operand.
+        if (not share_empty
+                or (not native_host if (host_classified and type is _CARRIAGE_PREFIX_TYPE_OWNER
+                                        and str is _CARRIAGE_PREFIX_STR_OWNER and int is _CARRIAGE_PREFIX_INT_OWNER)
+                    else type(host) is not str)
+                or type(interface) is not str or type(vid) is not int
+                or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
+                or type(_CARRIAGE_SHARED_EMPTY_LIMIT) is not int
+                or len(shared_empty_positions) >= _CARRIAGE_SHARED_EMPTY_LIMIT):
+            return None
+        if (token_routing and ordinary_host_history
+                and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+            token = routing_tokens.get(host)
+            if (token is not None and type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and token.host == host
+                    and token.observation is observation and token.index is index):
+                return token.identity
+        identity, current = shared_hosts.get(host), observations.get(host)
+        if (type(identity) is not int or type(current) is not tuple or len(current) != 3
+                or type(current[0]) is not str or current[0] != _PUB or current[2] is not observation
+                or observation_ids.get(host) != identity or indexes.get(host) is not index
+                or shared_indexes.get(identity) is not index):
+            return None
+        return identity
+
+    def new_cell(host: str, interface: str, vid: int, observation: Any, index: Any,
+                 position: int, captured: Any, query_identity: Any) -> Any:
+        # This checks ONLY unexposed native map joins. Source row reads occur at the original comprehension
+        # point outside the allocation catch; no cell enters a public owner, index, source or admission slot.
+        if (not role_cells or not ordinary_role_history or not ordinary_host_history
+                or type(host) is not str or type(interface) is not str or type(vid) is not int
+                or type(observation) is not dict or type(index) is not MappingProxyType
+                or carriage_role_rows is not _CARRIAGE_ROLE_ROWS_OWNER
+                or _carriage_role_cell is not _CARRIAGE_ROLE_CELL_OWNER):
+            return None
+        if type(query_identity) is not int or type(position) is not int or type(captured) is not dict:
+            return None
+        joined = False
+        if (token_routing and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+            token = routing_tokens.get(host)
+            joined = (type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and type(token.host) is str
+                      and token.host == host and type(token.identity) is int and token.identity == query_identity
+                      and token.observation is observation and token.index is index)
+        if not joined:
+            # Missing/noncanonical/saturated tokens keep the original complete current six-map proof.
+            identity, current = shared_hosts.get(host), observations.get(host)
+            if (type(identity) is not int or identity != query_identity
+                    or type(current) is not tuple or len(current) != 3
+                    or type(current[0]) is not str or current[0] != _PUB or current[2] is not observation
+                    or observation_ids.get(host) != identity or indexes.get(host) is not index
+                    or shared_indexes.get(identity) is not index):
+                return None
+        try:
+            cell = _carriage_role_cell(role_cell_tag, position, captured)
+        except Exception:
+            return None  # Optional representation allocation, never an actual owner/source-read error.
+        if (_carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER and type(cell) is tuple and len(cell) == 3
+                and cell[0] is role_cell_tag and cell[1] is position and cell[2] is captured):
+            return cell
+        return None
+
+    def joined_roles(host: str, interface: str, vid: int, observation: Any, index: Any,
+                     *, share_empty: bool = False) -> Any:
+        nonlocal ordinary_role_history, ordinary_host_history, empty_cell
+        native_query = False
+        if (_CARRIAGE_NATIVE_ROLE_PREFIX_ENABLED is True
+                and type is _CARRIAGE_PREFIX_TYPE_OWNER and str is _CARRIAGE_PREFIX_STR_OWNER
+                and int is _CARRIAGE_PREFIX_INT_OWNER):
+            native_host = type(host) is str
+            if not native_host:
+                ordinary_host_history = False
+            native_query = native_host and type(interface) is str and type(vid) is int
+            if not native_query:
+                ordinary_role_history = False
+        else:
+            # Patched classifiers retain the literal original call/callback/exception sequence.
+            if type(host) is not str:
+                ordinary_host_history = False
+            if type(host) is not str or type(interface) is not str or type(vid) is not int:
+                ordinary_role_history = False
+        key = (host, interface, vid)
+        one_probe = cpu_routing and share_empty and ordinary_role_history
+        if one_probe:
+            retained = role_rows.get(key, missing_roles)
+            if retained is not missing_roles:
+                return retained
+        if one_probe or key not in role_rows:
+            identity = shared_hosts.get(host)
+            query = (identity, interface, vid) if identity is not None else None
+            if query is not None and query in shared_positions:
+                # Only immutable positions cross hosts; each row object comes from THIS host's current record.
+                if (role_cells and share_empty and ordinary_role_history and ordinary_host_history
+                        and ((native_query and type is _CARRIAGE_PREFIX_TYPE_OWNER
+                              and str is _CARRIAGE_PREFIX_STR_OWNER and int is _CARRIAGE_PREFIX_INT_OWNER)
+                             or (type(host) is str and type(interface) is str and type(vid) is int))
+                        and carriage_role_rows is _CARRIAGE_ROLE_ROWS_OWNER
+                        and _carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER):
+                    positions = shared_positions[query]
+                    if type(positions) is tuple and len(positions) == 1 and type(positions[0]) is int:
+                        position = positions[0]
+                        captured = observation["roles"][position]  # ORIGINAL read, BEFORE the physical query.
+                        cell = new_cell(host, interface, vid, observation, index, position, captured, identity)
+                        rows = cell if cell is not None else [(position, captured)]
+                    else:
+                        rows = [(i, observation["roles"][i]) for i in positions]
+                else:
+                    rows = [(i, observation["roles"][i]) for i in shared_positions[query]]
+                role_rows[key] = rows
+            else:
+                empty_id = empty_identity(host, interface, vid, observation, index, share_empty)
+                empty_query = (empty_id, interface, vid) if empty_id is not None else None
+                if empty_query is not None and empty_query in shared_empty_positions:
+                    # Genuine immutable absence, applied to THIS host; no end/VLAN verdict or row alias.
+                    # The FRESH original empty_identity call proved joins/types/caps immediately before this
+                    # native-key membership. Keep both extra native checks; reuse no earlier query's proof.
+                    cell = None
+                    if (role_cells and share_empty and ordinary_role_history and ordinary_host_history
+                            and type(empty_id) is int and type(observation) is dict and type(index) is MappingProxyType
+                            and carriage_role_rows is _CARRIAGE_ROLE_ROWS_OWNER
+                            and _carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER):
+                        if empty_cell is None:
+                            try:
+                                candidate = _carriage_role_cell(role_cell_tag, None, None)
+                            except Exception:
+                                candidate = None  # Optional allocation only; failed construction stays uncached.
+                            if (_carriage_role_cell is _CARRIAGE_ROLE_CELL_OWNER and type(candidate) is tuple
+                                    and len(candidate) == 3 and candidate[0] is role_cell_tag
+                                    and candidate[1] is None and candidate[2] is None):
+                                empty_cell = candidate
+                        cell = empty_cell
+                    rows = cell if cell is not None else []
+                    role_rows[key] = rows
+                    return rows if one_probe else role_rows[key]
+                rows = _carriage_role_query(observation, interface, vid, index=index)
+                if query is not None and type(rows) is list and rows and all(
+                        type(pair) is tuple and len(pair) == 2 and type(pair[0]) is int
+                        and 0 <= pair[0] < len(observation["roles"])
+                        and pair[1] is observation["roles"][pair[0]] for pair in rows):
+                    shared_positions[query] = tuple(pair[0] for pair in rows)
+                elif (empty_query is not None and type(rows) is list and not rows
+                      and empty_identity(host, interface, vid, observation, index, share_empty) == empty_id):
+                    # Recheck binding/host/index after the actual query: a callback cannot seed stale reuse.
+                    shared_empty_positions[empty_query] = ()
+                role_rows[key] = rows
+            if one_probe:
+                return rows if ordinary_role_history else role_rows[key]
+        return role_rows[key]
+
+    def role_index(host: str, observation: Any, *, tokenize: bool = False) -> Any:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
+        if host not in indexes:
+            identity = observation_ids.get(host)
+            if identity is not None and identity in shared_indexes:
+                index = shared_indexes[identity]
+            else:
+                index = carriage_role_index(observation)
+                # Optional reuse never constrains the owner's fallback. Freeze only its ordinary immutable
+                # position shape, with no role-record alias; a foreign/nonstandard return remains per host.
+                if identity is not None and type(index) is dict and all(
+                        type(key) is tuple and len(key) == 3
+                        and type(key[0]) is str and type(key[1]) is int and type(key[2]) is str
+                        and type(value) is tuple
+                        and all(type(i) is int and 0 <= i < len(observation["roles"]) for i in value)
+                        for key, value in index.items()):
+                    index = MappingProxyType({key: tuple(value) for key, value in index.items()})
+                    shared_indexes[identity] = index
+            indexes[host] = index
+            if identity is not None and shared_indexes.get(identity) is index:
+                shared_hosts[host] = identity
+            if (tokenize and token_routing and ordinary_host_history
+                    and _carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                    and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE
+                    and type(_CARRIAGE_ROUTING_TOKEN_LIMIT) is int
+                    and len(routing_tokens) < _CARRIAGE_ROUTING_TOKEN_LIMIT):
+                current, shared_id = observations.get(host), shared_hosts.get(host)
+                if (type(shared_id) is int and type(current) is tuple and len(current) == 3
+                        and type(current[0]) is str and current[0] == _PUB and current[2] is observation
+                        and observation_ids.get(host) == shared_id and indexes.get(host) is index
+                        and shared_indexes.get(shared_id) is index):
+                    try:
+                        token = _carriage_routing_token(host, shared_id, observation, index)
+                    except Exception:
+                        # Optional immutable allocation only; never catch an actual observation/index/query fault.
+                        token = None
+                    if (_carriage_routing_token is _CARRIAGE_ROUTING_TOKEN_OWNER
+                            and _CarriageRoutingToken is _CARRIAGE_ROUTING_TOKEN_TYPE and token is not None
+                            and type(token) is _CARRIAGE_ROUTING_TOKEN_TYPE and type(token.host) is str
+                            and token.host == host and type(token.identity) is int and token.identity == shared_id
+                            and token.observation is observation and token.index is index):
+                        routing_tokens[host] = token
+        return indexes[host]
+
+    def compatible_role(host: str, position: int, row: Any, observation: Any) -> bool:
+        nonlocal ordinary_host_history
+        if type(host) is not str:
+            ordinary_host_history = False
+        identity = shared_hosts.get(host)
+        if (identity is None or type(position) is not int or not 0 <= position < len(observation["roles"])
+                or row is not observation["roles"][position]):
+            return carriage_role_compatible(row)
+        query = (identity, position)
+        if query not in shared_compatibility:
+            shared_compatibility[query] = carriage_role_compatible(row)
+        return shared_compatibility[query]
+
+    positions = []
+    for ci, offset, _count in carriage_code_offsets(section):
+        for member in section["cables"][ci]["members"]:
+            base = offset + 1 + 3 * member["index"]
+            for side, shift in (("a", 1), ("b", 2)):
+                key = (ci, member["index"], side)
+                if loop_dispatch:
+                    static_key_history(key)
+                if key in static:
+                    ci, mi, side = key
+                    witness = ("vlan_carriage", "cables", ci, "members", mi, side)
+                    if not loop_dispatch:
+                        positions.append((base + shift, key, member[side], static[key], witness + ("stp_pointer",),
+                                          witness + ("allowance_pointer",), _carriage_routing_plan()))
+                        continue
+                    static_key_history(key)
+                    original = (base + shift, key, member[side], static[key], witness + ("stp_pointer",),
+                                witness + ("allowance_pointer",), _carriage_routing_plan())
+                    # Every original argument/probe/factory above finishes BEFORE optional native hints.
+                    hint = missing_hint
+                    if loop_dispatch and ordinary_static_history:
+                        static_key_history(key)
+                        if ordinary_static_history:
+                            hint = configured.get(key, missing_hint)
+                    if type(hint) is not int:
+                        hint = missing_hint
+                    positions.append(original + (original[-1] is not None, hint))
+    if not loop_dispatch:
+        gaps = _carriage_bf33_rows(ctx, section, positions, typed_chars, configured_chars, signals,
+                                  admitted, role_index, joined_roles, compatible_role, allowance_agrees,
+                                  role_cell_tag=role_cell_tag)
+        admitted_roles = {host: (record if state == _PUB else None, indexes.get(host))
+                          for host, (state, _why, record) in observations.items()}
+        return gaps, admitted_roles
+    gaps: Dict[int, Tuple[Tuple[Any, ...], ...]] = {}
+    for row in section["rows"]:
+        codes = row["codes"]
+        if not codes:
+            continue
+        row_kinds = kinds if type(codes) is str else None
+        found: List[Tuple[Any, ...]] = []
+        for position, key, end, static_gaps, stp_gap, allowance_gap, plan, present, hint in positions:
+            captured_signal = missing_signal  # NEVER reuse a prior end after a foreign short-circuit truth value.
+            char = codes[position]
+            kind = row_kinds.get(char, 0) if row_kinds is not None else 0
+            if (kind == 1 if row_kinds is not None else char in typed_chars):
+                # Read at the same points as the original dispatch, including after an owner callback. A
+                # changed/nonplain host falls back; the plan never freezes the logical or physical route.
+                host = end["host"]
+                if (present if loop_dispatch else plan is not None) and type(host) is str and host == plan.host:
+                    observation, ok = plan.observation, True
+                else:
+                    state, _why, observation = admitted(host)
+                    ok = state == _PUB and observation is not None
+                if ok:
+                    index_host = end["host"]
+                    if ((present if loop_dispatch else plan is not None) and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation, tokenize=present if loop_dispatch else plan is not None)
+                        if (present if loop_dispatch else plan is not None) and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
+                                        share_empty=present if loop_dispatch else plan is not None)
+                    beside = (joined_roles(end["host"], end["port"], row["vlan"], observation, index,
+                                           share_empty=present if loop_dispatch else plan is not None)
+                              if end["stp_interface"] != end["port"] else [])
+                    cell = type(rows) is tuple and len(rows) == 3 and rows[0] is role_cell_tag
+                    beside_cell = type(beside) is tuple and len(beside) == 3 and beside[0] is role_cell_tag
+                    if row_kinds is not None:
+                        ok = ((rows[1] is not None if cell else len(rows) == 1)
+                              and (beside[1] is None if beside_cell else not beside)
+                              and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                                   else compatible_role(end["host"], *rows[0], observation))
+                              and (rows[2]["state"] if cell else rows[0][1]["state"]) == (captured_signal := signals[char]))
+                        ok = ok and candidate_allowance_agrees(key, row["vlan"],
+                                                   captured_signal if captured_signal is not missing_signal else signals[char], hint)
+                    else:
+                        ok = ((rows[1] is not None if cell else len(rows) == 1)
+                              and (beside[1] is None if beside_cell else not beside)
+                              and (compatible_role(end["host"], rows[1], rows[2], observation) if cell
+                                   else compatible_role(end["host"], *rows[0], observation))
+                              and (rows[2]["state"] if cell else rows[0][1]["state"]) == signals[char])
+                        ok = ok and candidate_allowance_agrees(key, row["vlan"], signals[char], hint)
+                if not ok:
+                    found.append(stp_gap)
+            elif (kind == 2 if row_kinds is not None else char in configured_chars):
+                # A configured code is eligible only while the CURRENT owner has no relevant logical PVST
+                # row. A newly supplied row (even an agreeing one), malformed record or error capture makes
+                # this stored basis stale; withhold it instead of computing a replacement relation.
+                host = end["host"]
+                if (present if loop_dispatch else plan is not None) and type(host) is str and host == plan.host:
+                    state, observation = _PUB, plan.observation
+                else:
+                    state, _why, observation = admitted(host)
+                eligible = state == _NC or (state == _PUB and observation is not None)
+                if eligible and state == _PUB:
+                    index_host = end["host"]
+                    if ((present if loop_dispatch else plan is not None) and type(index_host) is str and index_host == plan.host
+                            and observation is plan.observation):
+                        index = plan.index
+                    else:
+                        index = role_index(index_host, observation, tokenize=present if loop_dispatch else plan is not None)
+                        if (present if loop_dispatch else plan is not None) and type(host) is str and type(index_host) is str and index_host == host:
+                            plan.host, plan.observation, plan.index = host, observation, index
+                    rows = joined_roles(end["host"], end["stp_interface"], row["vlan"], observation, index,
+                                        share_empty=present if loop_dispatch else plan is not None)
+                    cell = type(rows) is tuple and len(rows) == 3 and rows[0] is role_cell_tag
+                    eligible = rows[1] is None if cell else len(rows) == 0
+                if not eligible:
+                    found.append(stp_gap)
+                    current = ("stp_topology_observations", end["host"])
+                    if _get(ctx.s, current) is not _MISSING:
+                        found.append(current)
+                    elif _get(ctx.s, current[:1]) is not _MISSING:
+                        found.append(current[:1])
+                if not candidate_allowance_agrees(key, row["vlan"], signals[char], hint):
+                    found.append(allowance_gap)
+            else:
+                continue
+            if not loop_dispatch:
+                found.extend(static_gaps)
+            elif type(static_gaps) is not list or len(static_gaps) != 0:
+                _carriage_extend_gap_fallback(found, static_gaps)
+        if found:
+            gaps[row["vlan_index"]] = tuple(dict.fromkeys(found))
+    admitted_roles = {host: (record if state == _PUB else None, indexes.get(host))
+                      for host, (state, _why, record) in observations.items()}
+    return gaps, admitted_roles
+
+
+def _carriage_source(ctx: _Ctx) -> _CarriageAdmission:
+    """Validate one stored section and its selected universe once; never recompute carriage."""
+    source, readable = _source(ctx, ("vlan_carriage",), _CARRIAGE_SECTIONS, _B_CARRIAGE, want=dict)
+    raw = ctx.s.get("vlan_carriage")
+    failed = _secs_fail(ctx, _CARRIAGE_SECTIONS)
+    if failed:
+        source.update(state=failed[0], reason=failed[1])
+    if not isinstance(raw, dict):
+        return _CarriageAdmission(source, None, failed, {}, ())
+    valid, why = ctx._call("vlan_carriage.validate_vlan_carriage",
+                           lambda _snap: validate_vlan_carriage(raw), (False, "owner validation raised"))
+    if not valid:
+        if not failed:
+            source.update(state=_UV, reason="unverified: the stored carriage section failed its closed owner contract: "
+                          + _safe_text(str(why)))
+        return _CarriageAdmission(source, None, failed, {}, ())
+    vlans, cables = ctx.s.get("vlan_cutover"), _get(ctx.s, ("cable_map", "cables"))
+    cov = raw["coverage"]
+    joined = (isinstance(vlans, list) and isinstance(cables, list)
+              and cov["vlan_rows"] == len(vlans) and cov["cable_rows"] == len(cables)
+              # Stored selector consistency, not a root election or a new VLAN universe.
+              and all(vlan_row_identity(vlans[row["vlan_index"]]) == row["vlan"] for row in raw["rows"]))
+    for cable in (raw["cables"] if joined else ()):
+        # Compare stored identities only. Do not orient, repair, range-parse or
+        # derive a replacement relation from current raw interface evidence.
+        current = cables[cable["index"]]
+        ends, members, scope = carriage_cable_binding(current, ctx.s.get("interfaces"))
+        if (cable["ends"] != ends or cable["scope"] != scope or len(members) != len(cable["members"])
+                or any(member["a"]["port"] != original["a"] or member["b"]["port"] != original["b"]
+                       for member, original in zip(cable["members"], members))):
+            joined = False
+            break
+    if not joined:
+        if raw["state"] in (_NC, AU) and (cov["vlan_rows"] is None or cov["cable_rows"] is None) and all(
+                not row["codes"] for row in raw["rows"]):
+            if not failed:
+                source.update(state=raw["state"], reason=_safe_text(raw["reason"]))
+            return _CarriageAdmission(source, None, failed, {}, ())
+        if not failed:
+            source.update(state=_UV, reason="unverified: the stored carriage census or VLAN selector does not join "
+                          "the current cable and VLAN rows")
+        return _CarriageAdmission(source, None, failed, {}, ())
+    if not failed and readable:
+        source["state"] = raw["state"]
+        if raw["state"] == _PUB:
+            source.pop("reason", None)
+        else:
+            source["reason"] = _safe_text(raw["reason"])
+    source["refs"].extend(ctx.refs(_carriage_refs(ctx, [issue["pointer"] for issue in raw["issues"]])))
+    checked = ctx._call("ui_projection._carriage_gaps", lambda _snap: _carriage_gaps(ctx, raw), None)
+    if checked is None:
+        # An owner join raised: no end claim can be checked, so every coded row is withheld rather than trusted.
+        gaps, admitted = {row["vlan_index"]: (("vlan_carriage", "rows", row["vlan_index"]),)
+                          for row in raw["rows"] if row["codes"]}, {}
+    else:
+        gaps, admitted = checked
+    if gaps:
+        if not failed:
+            source.update(state=_UV, reason=_R_CARRIAGE_GAP)
+        source["refs"].extend(ctx.refs([("witness", toks) for witnesses in gaps.values() for toks in witnesses]))
+    return _CarriageAdmission(source, raw, failed, gaps, carriage_code_offsets(raw), admitted)
+
+
+def _carriage_summary(ctx: _Ctx, adm: _CarriageAdmission, vi: int, valid_vlan: bool) -> Dict[str, Any]:
+    """One VLAN row's carriage summary: the row's own stored state (never another cable's or VLAN's), its O(1)
+    refs and its counts. Counts publish only when the section validates and joins and the row is neither held nor
+    gapped; otherwise each carries the governing state and reason, never a zero."""
+    row_toks, cov_toks = ("vlan_carriage", "rows", vi), ("vlan_carriage", "coverage")
+    section = adm.section
+    row = section["rows"][vi] if section is not None and 0 <= vi < len(section["rows"]) else None
+    if adm.failed:
+        state, reason = adm.failed
+    elif row is None:
+        state, reason = adm.source["state"], adm.source.get("reason")
+        if state in (_PUB, _CBE):
+            state, reason = _UV, "unverified: the stored carriage section has no row for this VLAN row"
+    elif vi in adm.gaps:
+        state, reason = _UV, _R_CARRIAGE_GAP
+    else:
+        state, reason = row["state"], (None if row["state"] == _PUB else _safe_text(row["reason"]))
+    if not valid_vlan and state != AU:
+        state, reason = _UV, _R_CARRIAGE_SELECTOR
+    caveats: List[str] = []
+    witness: List[Tuple[str, Sequence[Any]]] = []
+    if state in (_PUB, _CBE):
+        caveats.extend(_CARRIAGE_CAVEATS)
+        qualify = _fleet_qualify(ctx)
+        for cid, _why, wit in qualify:
+            caveats.append(cid)
+            witness += wit
+        if state == _CBE and qualify:
+            state, reason = _NC, "; ".join(why for _cid, why, _wit in qualify)
+    if state != _PUB and not reason:
+        reason = _state_reason(ctx, state, "list", _CARRIAGE_SECTIONS)
+    failure = ctx.failure_entries(_CARRIAGE_SECTIONS, state == AU)
+    o1: List[Tuple[str, Sequence[Any]]] = [("witness", row_toks), ("witness", cov_toks)]
+    out: Dict[str, Any] = {"state": state, "subject": json_pointer(*row_toks),
+                           "refs": ctx.refs([("subject", row_toks), o1[1]] + failure + witness),
+                           "basis": _B_CARRIAGE + ".rows[]"}
+    if state != _PUB:
+        out["reason"] = reason
+    caveat_set = set(caveats)
+    kept = [c for c in _ALL_LIMITATION_IDS if c in caveat_set]
+    if kept:
+        out["caveats"] = kept
+    out["vlan_index"] = vi
+    readable = section is not None and not adm.failed
+    counted = readable and row is not None and row["hold"] is None and vi not in adm.gaps and valid_vlan
+    counts = carriage_row_counts(section, vi, adm.offsets) if counted else None
+    count_cav = [c for c in kept if c not in _CARRIAGE_CAVEATS]
+    withheld = (state, reason) if state != _PUB else (
+        _UV, "unverified: this VLAN row's stored carriage codes cannot be counted")
+    for name in CARRIAGE_SUMMARY_COUNTS:
+        if name in ("assessed", "edge_not_collected"):
+            field = "assessed_cables" if name == "assessed" else "edge_cables"
+            toks: Tuple[Any, ...] = cov_toks + (field,)
+            value = section["coverage"][field] if readable else None
+            basis = f"{_B_CARRIAGE}.coverage.{field}"
+        else:
+            toks = row_toks + ("codes",)
+            value = counts[name] if counts is not None else None
+            basis = "vlan_carriage.carriage_row_counts:vlan_carriage.rows[].codes"
+        if type(value) is int:
+            out[name] = _envelope(_PUB, value, json_pointer(*toks), ctx.refs([("subject", toks)] + o1 + witness),
+                                  basis, "", caveats=count_cav)
+        else:
+            out[name] = _envelope(withheld[0], None, json_pointer(*toks), ctx.refs(o1 + failure), basis,
+                                  withheld[1] or _state_reason(ctx, withheld[0], "count", _CARRIAGE_SECTIONS))
+    return out
+
+
+def _carriage_page_item(ctx: _Ctx, adm: _CarriageAdmission, vi: int, cable: Dict[str, Any], verdict: Dict[str, Any],
+                        members: Sequence[Any], failed: Optional[Tuple[str, str]],
+                        roles: Callable[[str, str, int], List[Any]]) -> Dict[str, Any]:
+    """One assessed cable's carriage for one VLAN row, decoded from its stored characters; never recomputed."""
+    ci = cable["index"]
+    row_toks = ("vlan_carriage", "rows", vi)
+    codes_toks = row_toks + ("codes",)
+    cable_toks = ("vlan_carriage", "cables", ci)
+    vid = adm.section["rows"][vi]["vlan"] if adm.section is not None else None
+    anchor: List[Tuple[str, Sequence[Any]]] = [("witness", cable_toks), ("witness", row_toks)]
+    failure = ctx.failure_entries(_CARRIAGE_SECTIONS, bool(failed) and failed[0] == AU)
+    held = failed or ((verdict["state"], verdict["reason"]) if verdict["state"] != _PUB else None)
+    observed: Tuple[str, Optional[str]] = failed or (_PUB, None)
+
+    def fact(pair: Tuple[str, Optional[str]], value: Any, toks: Tuple[Any, ...], basis: str,
+             extra: List[Tuple[str, Sequence[Any]]], caveats: Sequence[str] = _CARRIAGE_CAVEATS) -> Dict[str, Any]:
+        state, reason = pair
+        # Like a row cell, a fact keeps its scope caveat whether it publishes or is withheld.
+        return _envelope(state, value if state == _PUB else None, json_pointer(*toks),
+                         ctx.refs([("subject", toks)] + extra + failure), basis,
+                         reason or _state_reason(ctx, state, "text", _CARRIAGE_SECTIONS), caveats=caveats)
+
+    item: Dict[str, Any] = {
+        "index": ci, "pointer": json_pointer(*cable_toks), "cable_pointer": json_pointer("cable_map", "cables", ci),
+        "relation": fact(held or (_PUB, None), verdict["relation"], codes_toks, _B_CARRIAGE + ".rows[].codes",
+                         anchor),
+        "evidence_shape": fact(observed, verdict["evidence_shape"], codes_toks, _B_CARRIAGE + ".rows[].codes", []),
+        "basis": fact(observed, verdict["basis"], codes_toks, _B_CARRIAGE + ".rows[].codes", []),
+        "ends": fact(observed, dict(cable["ends"]), cable_toks + ("ends",), _B_CARRIAGE + ".cables[].ends",
+                     [("witness", ("cable_map", "cables", ci))], ()),
+    }
+    items = []
+    for member, member_verdict, a_end, b_end in members:
+        member_toks = cable_toks + ("members", member["index"])
+        member_held = failed or ((member_verdict["state"], member_verdict["reason"])
+                                 if member_verdict["state"] != _PUB else None)
+        record: Dict[str, Any] = {
+            "index": member["index"], "pointer": json_pointer(*member_toks),
+            "relation": fact(member_held or (_PUB, None), member_verdict["relation"], codes_toks,
+                             _B_CARRIAGE + ".rows[].codes", [("witness", member_toks)]),
+            "evidence_shape": fact(observed, member_verdict["evidence_shape"], codes_toks,
+                                   _B_CARRIAGE + ".rows[].codes", []),
+            "basis": fact(observed, member_verdict["basis"], codes_toks, _B_CARRIAGE + ".rows[].codes", [])}
+        for side, decoded in (("a", a_end), ("b", b_end)):
+            end = member[side]
+            end_toks = member_toks + (side,)
+            witness = _carriage_refs(ctx, list(end["refs"]))
+            if decoded["state"] == _PUB and decoded["basis"] == "typed_pvst":
+                witness += _carriage_refs(ctx, [end["stp_pointer"]] + [
+                    json_pointer("stp_topology_observations", end["host"], "roles", i)
+                    for i, _row in roles(end["host"], end["stp_interface"], vid)])
+            elif decoded["state"] == _PUB:
+                # The configured basis: the allowance record's non-blank allowance and mode fields only.
+                witness += [(role, toks) for role, toks in _carriage_refs(ctx, [
+                    end["allowance_pointer"] + "/" + field for field in (
+                        "trunk_allowed_vlans", "trunk_allowed_none", "trunk_native_vlan", "switchport_mode")])
+                    if _is_text(_get(ctx.s, toks)) and _get(ctx.s, toks).strip()]
+            elif end["stp_pointer"] is not None:
+                witness += _carriage_refs(ctx, [end["stp_pointer"]])
+            signal = failed or ((decoded["state"], decoded["reason"]) if decoded["state"] != _PUB else None)
+            record[side] = {
+                "host": fact(observed if end["host"] is not None else (_UV, _R_CARRIAGE_END), end["host"],
+                             end_toks + ("host",), _B_CARRIAGE + ".cables[].members[].end.host", [], ()),
+                "port": fact(observed if end["port"] is not None else (_UV, _R_CARRIAGE_END), end["port"],
+                             end_toks + ("port",), _B_CARRIAGE + ".cables[].members[].end.port", [], ()),
+                "signal": fact(signal or (_PUB, None), decoded["signal"], codes_toks, _B_CARRIAGE + ".rows[].codes",
+                               witness),
+                # The end's witnesses travel once, on its signal; its basis names the same stored character.
+                "basis": fact(observed, decoded["basis"], codes_toks, _B_CARRIAGE + ".rows[].codes", [])}
+        items.append(record)
+    item["members"] = _listing(ctx, *(held or (_PUB, None)), cable_toks + ("members",),
+                               _B_CARRIAGE + ".cables[].members", items, extra=anchor, caveats=_CARRIAGE_CAVEATS)
+    return item
+
+
+def carriage_admission(snap: Any) -> _CarriageAdmission:
+    """Admit one snapshot's stored carriage once (validation, join, basis gaps), for a cache to share between the
+    inventory document and every lazy page of the same snapshot. Read-only once built."""
+    return _carriage_source(_Ctx(snap))
+
+
+def project_vlan_carriage(snap: Any, vlan_index: int, offset: int, limit: int, *,
+                          admission: Optional[_CarriageAdmission] = None,
+                          transport_overhead: int = 0) -> Dict[str, Any]:
+    """One VLAN row's carriage page (G14 v2): its summary, echoed exactly as the inventory document carries it, and
+    At most ``limit`` assessed cables from ``offset``, as a complete whole-cable prefix within the member and exact
+    UTF-8 byte bounds. The returned limit is the effective filled extent, never above the request. A cable that
+    cannot fit alone produces an explicit unsupported page hold, with its total and offset retained. No member
+    is truncated and no cable is skipped. Read-only over the snapshot: it never
+    recomputes carriage and joins only the owner's role rows. It pages beside :func:`project_path`."""
+    ctx = _Ctx(snap)
+    engine = _engine(ctx)
+    adm = admission if admission is not None else _carriage_source(ctx)
+    vlans = ctx.s.get("vlan_cutover")
+    rec = vlans[vlan_index] if isinstance(vlans, list) and 0 <= vlan_index < len(vlans) else None
+    valid_vlan = vlan_row_identity(rec) is not None
+    summary = _carriage_summary(ctx, adm, vlan_index, valid_vlan)
+    section = adm.section
+    row = section["rows"][vlan_index] if section is not None and 0 <= vlan_index < len(section["rows"]) else None
+    readable = row is not None and bool(row["codes"]) and valid_vlan
+    failed = adm.failed or ((_UV, _R_CARRIAGE_GAP) if vlan_index in adm.gaps else None)
+    total = len(adm.offsets) if readable else 0
+    observations: Dict[str, Any] = dict(adm.observations)
+
+    def roles(host: str, stp_interface: str, vid: int) -> List[Any]:
+        if host not in observations or (observations[host][0] is not None and observations[host][1] is None):
+            state, _why, observation = carriage_observation_admission(
+                _get(ctx.s, ("stp_topology_observations", host)))
+            observations[host] = ((observation, carriage_role_index(observation)) if state == _PUB
+                                  else (None, None))
+        observation, index = observations[host]
+        return carriage_role_rows(observation, stp_interface, vid, index=index) if index is not None else []
+
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]:
+        ci, _code_offset, count = adm.offsets[position]
+
+        def item() -> Dict[str, Any]:
+            cable, verdict, members = carriage_row_cables(
+                section, vlan_index, position, position + 1, offsets=adm.offsets)[0]
+            return _carriage_page_item(ctx, adm, vlan_index, cable, verdict, members, failed, roles)
+
+        return ci, count, item, None
+
+    return _carriage_page_document(engine, _vocab(), summary, vlan_index, total, offset, limit, load,
+                                   transport_overhead)
+
+
+def _carriage_page_document(engine: Dict[str, Any], vocab: Dict[str, Any], summary: Dict[str, Any],
+                            vlan_index: int, total: int, offset: int, limit: int,
+                            load: Callable[[int], Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]],
+                            transport_overhead: int) -> Dict[str, Any]:
+    """The same whole-cable member/UTF-8 bounds for snapshot and prepared lazy readers.
+
+    ``load`` reads only one cable's metadata. Its last value is the authenticated exact encoded size, when the
+    row was materialized at ingest. Such rows need no decoding until their whole member/byte prefix fits; the
+    original snapshot reader still renders and measures its item exactly once, as before.
+    """
+    if (type(transport_overhead) is not int or transport_overhead < 0
+            or transport_overhead >= CARRIAGE_PAGE_BYTE_LIMIT):
+        raise ValueError("unsupported: carriage transport context exceeds the page byte bound")
+    byte_budget = CARRIAGE_PAGE_BYTE_LIMIT - transport_overhead
+    page = {"state": _PUB, "reason": None, "byte_limit": CARRIAGE_PAGE_BYTE_LIMIT,
+            "offset": offset, "limit": limit, "returned": 0, "total": total,
+            "has_more": offset < total, "items": []}
+    carriage = {"vlan_index": vlan_index, "pointer": json_pointer("vlan_carriage", "rows", vlan_index),
+                "summary": summary, "page": page}
+    document = {"schema": SCHEMA, "engine": engine, "carriage": carriage, "vocab": vocab}
+
+    def size(value: Any) -> int:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+
+    context_bytes = size(document) - size(page)
+    if context_bytes + size(page) > byte_budget:
+        raise ValueError("unsupported: carriage page context exceeds the page byte bound")
+    items: List[Dict[str, Any]] = []
+    item_bytes, member_count = 0, 0
+    expected = min(max(total - offset, 0), limit)
+    for position in range(offset, offset + expected):
+        ci, count, render_item, encoded_size = load(position)
+        over_members = member_count + count > _CARRIAGE_PAGE_MEMBER_LIMIT
+        if not over_members:
+            if encoded_size is None:
+                item = render_item()
+                length = size(item)
+            else:
+                length = encoded_size
+            candidate_count = len(items) + 1
+            page.update(limit=limit if candidate_count == expected else candidate_count,
+                        returned=candidate_count, has_more=offset + candidate_count < total)
+            # The empty array is two bytes in the base. Complete item encodings replace its interior, including
+            # exactly n-1 separators; the metadata is measured with its actual digits and boolean value.
+            # The immutable outer context is encoded once. Only the small, still-empty page header changes
+            # while filling the prefix; item encodings are complete and measured exactly once each.
+            over_bytes = context_bytes + size(page) + item_bytes + length + candidate_count - 1 > byte_budget
+        else:
+            over_bytes = False
+        if over_members or over_bytes:
+            if not items:
+                page.update(state=_UV, reason=(f"unsupported: complete cable /vlan_carriage/cables/{ci} and all "
+                            "its members cannot fit within the carriage member/byte page bounds"))
+            break
+        if encoded_size is not None:
+            item = render_item()
+        items.append(item)
+        member_count += count
+        item_bytes += length
+    page.update(limit=limit if len(items) == expected or not items else len(items),
+                returned=len(items), has_more=offset + len(items) < total)
+    if context_bytes + size(page) + item_bytes + max(len(items) - 1, 0) > byte_budget:
+        raise ValueError("unsupported: carriage page hold exceeds the page byte bound")
+    page["items"] = items
+    return document
+
+
+CARRIAGE_PREPARATION_SCHEMA = "carriage_projection_preparation/2"
+#: A separate server derivative bound; the original compact snapshot's 6 MB/+600 KB gates do not change.
+CARRIAGE_DERIVATIVE_BYTE_LIMIT = 64_000_000
+_CARRIAGE_DICTIONARY_BYTES = 32_768
+_MATERIALIZED_JSON_DUMPS_OWNER = json.dumps
+_MATERIALIZED_JSON_ENCODER_OWNER = json.JSONEncoder
+_MATERIALIZED_JSON_ENCODER_METHODS = (json.JSONEncoder.__init__, json.JSONEncoder.encode, json.JSONEncoder.iterencode)
+_MATERIALIZED_JSON_NATIVE_ENCODER = json.encoder.c_make_encoder
+_MATERIALIZED_JSON_STRING_ENCODER = json.encoder.encode_basestring
+_MATERIALIZED_JSON_STREAM_ENCODER = json.encoder._make_iterencode
+
+
+def _materialized_carriage_small_tree(item: Any) -> Optional[Tuple[Any, int]]:
+    """Own a small ordinary tree while proving a conservative UTF-8 JSON bound, or use the original stream.
+
+    Six bytes cover every escaped ASCII character; quotes, separators and punctuation are counted as private
+    entries are appended, never from a borrowed container's possibly changing length. Small integers need at
+    most 20 bytes including their sign. Only exact builtins are inspected; no foreign hooks run. Every alias
+    occurrence is copied/counts separately and active ancestors detect cycles. Eligibility depth/node limits
+    bound this copy, never the input domain. Rejected inputs retain the original streaming encoder and errors.
+    """
+    total, nodes = 0, 0
+    active = set()
+    roots: List[Any] = []
+    stack = [(None, iter(((0, item),)), roots, False)]
+    while stack:
+        identity, entries, target, mapping = stack[-1]
+        try:
+            key, value = next(entries)
+        except StopIteration:
+            stack.pop()
+            if identity is not None:
+                active.remove(identity)
+            continue
+        nodes += 1
+        if nodes > 100_000:
+            return None
+        if identity is not None and target:
+            total += 1  # The comma before this owned entry.
+        if mapping:
+            nodes += 1
+            if nodes > 100_000 or type(key) is not str or not key.isascii():
+                return None
+            total += 3 + 6 * len(key)  # Key quotes and the key/value colon.
+        kind = type(value)
+        if kind is str:
+            if not value.isascii():
+                return None
+            total += 2 + 6 * len(value)
+            owned = value
+        elif value is None:
+            total += 4
+            owned = value
+        elif kind is bool:
+            total += 5
+            owned = value
+        elif kind is int:
+            if value.bit_length() > 63:
+                return None
+            total += 20
+            owned = value
+        elif kind is dict or kind is list:
+            identity = id(value)
+            if identity in active or len(stack) > 64:
+                return None
+            total += 2
+            owned = {} if kind is dict else []
+            active.add(identity)
+            stack.append((identity, iter(value.items()) if kind is dict else enumerate(value), owned, kind is dict))
+        else:
+            return None
+        if total > CARRIAGE_PAGE_BYTE_LIMIT:
+            return None
+        if mapping:
+            target[key] = owned
+        else:
+            target.append(owned)
+    return roots[0], total
+
+
+def _materialized_carriage_stream(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
+    """Original exact row encoder: stream/count every byte, retain no oversized payload."""
+    chunks: List[bytes] = []
+    length = 0
+    for part in json.JSONEncoder(separators=(",", ":"), ensure_ascii=False, allow_nan=False).iterencode(item):
+        encoded = part.encode("utf-8")
+        length += len(encoded)
+        if length <= CARRIAGE_PAGE_BYTE_LIMIT:
+            chunks.append(encoded)
+        elif chunks:
+            chunks.clear()
+    return (b"".join(chunks) if length <= CARRIAGE_PAGE_BYTE_LIMIT else None), length
+
+
+def _materialized_carriage_bytes(item: Dict[str, Any]) -> Tuple[Optional[bytes], int]:
+    """Encode one ingest row using the ordinary JSON encoder after proving its complete output is bounded.
+
+    Large, foreign, non-ASCII, floating, cyclic and deep inputs keep the exact original streaming path and its
+    errors. The fast path removes per-token Python encoding/allocation only; no relation or evidence changes.
+    """
+    try:
+        candidate = (_materialized_carriage_small_tree(item)
+                     if json.dumps is _MATERIALIZED_JSON_DUMPS_OWNER
+                     and json.JSONEncoder is _MATERIALIZED_JSON_ENCODER_OWNER
+                     and json.JSONEncoder.__init__ is _MATERIALIZED_JSON_ENCODER_METHODS[0]
+                     and json.JSONEncoder.encode is _MATERIALIZED_JSON_ENCODER_METHODS[1]
+                     and json.JSONEncoder.iterencode is _MATERIALIZED_JSON_ENCODER_METHODS[2]
+                     and json.encoder.c_make_encoder is _MATERIALIZED_JSON_NATIVE_ENCODER
+                     and json.encoder.encode_basestring is _MATERIALIZED_JSON_STRING_ENCODER
+                     and json.encoder._make_iterencode is _MATERIALIZED_JSON_STREAM_ENCODER
+                     else None)
+    except (MemoryError, RecursionError, RuntimeError):
+        # A failed private copy, including source mutation during iteration, keeps the original stream.
+        candidate = None
+    if candidate is not None:
+        owned, _upper_bound = candidate
+        try:
+            raw = json.dumps(owned, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (MemoryError, RecursionError):
+            # An optional contiguous allocation cannot replace the original streaming resource behavior.
+            candidate = owned = None
+        else:
+            return raw, len(raw)
+    return _materialized_carriage_stream(item)
+
+
+def prepare_carriage_projection(snap: Any) -> Dict[str, Any]:
+    """Produce the document and a one-shot stream of exact materialized carriage rows at ingest.
+
+    The original full-snapshot owner admits current STP, channel identity, aliases and stale bases once. It
+    renders each readable VLAN/cable row here, before a request. A cable's first encoded row supplies a <=32 KiB
+    preset dictionary; each VLAN variant is an independently lossless zlib stream over its exact complete JSON.
+    The stream retains only one rendered row, one cable dictionary and one variant at a time, never a Cartesian
+    tree of DTOs. Storage authenticates every binary/metadata fragment and bounds the entire derivative.
+
+    This is server-owned derived data, not a new snapshot codec or source-binding receipt. Only a genuinely
+    unchanged BoundSnapshot is accepted; mutation during consumption refuses the final ingest transaction.
+    """
+    ctx = _Ctx(snap)
+    if not isinstance(snap, BoundSnapshot) or ctx.source[0] != _PUB:
+        raise ValueError("carriage preparation requires an unchanged exact-byte BoundSnapshot")
+    adm = _carriage_source(ctx)
+    document = project(snap, carriage=adm)
+    source = dict(document["inventory"]["vlans"]["selection_sources"]["carriage"])
+    source["refs"] = ctx.refs(
+        [("subject", ("vlan_carriage",)), ("witness", ("vlan_carriage", "coverage")),
+         ("witness", ("vlan_carriage", "issues"))]
+        + [("witness", (section,)) for section in _CARRIAGE_SECTIONS if section != "vlan_carriage"]
+        + [("failure_record", ("assessment_integrity",))]
+        if adm.gaps or (adm.section is not None and adm.section["issues"]) or adm.failed
+        else [("subject", ("vlan_carriage",))])
+    document["inventory"]["vlans"]["selection_sources"]["carriage"] = source
+    context = {"schema": document["schema"], "engine": document["engine"], "vocab": document["vocab"],
+               "limitations": document["trust"]["limitations"]}
+    summaries = {row["index"]: row["selections"]["carriage"]
+                 for row in document["inventory"]["vlans"]["rows"]["items"]}
+    vlans = []
+    for vi, rec in enumerate(snap.get("vlan_cutover") if isinstance(snap.get("vlan_cutover"), list) else []):
+        row = adm.section["rows"][vi] if adm.section is not None and vi < len(adm.section["rows"]) else None
+        valid_vlan = vlan_row_identity(rec) is not None
+        readable = row is not None and bool(row["codes"]) and valid_vlan
+        failed = adm.failed or ((_UV, _R_CARRIAGE_GAP) if vi in adm.gaps else None)
+        vlans.append({"vlan_index": vi, "vlan": row["vlan"] if row is not None else vlan_row_identity(rec),
+                      "summary": summaries[vi], "failed": list(failed) if failed else None,
+                      "readable": readable, "total": len(adm.offsets) if readable else 0})
+    cables = [{"ordinal": ordinal, "index": ci, "member_count": count}
+              for ordinal, (ci, _code_offset, count) in enumerate(adm.offsets)]
+    readable_vlans = [row for row in vlans if row["readable"]]
+    observations: Dict[str, Any] = dict(adm.observations)
+
+    def roles(host: str, interface: str, vid: int) -> List[Any]:
+        if host not in observations or (observations[host][0] is not None and observations[host][1] is None):
+            state, _why, observation = carriage_observation_admission(
+                _get(ctx.s, ("stp_topology_observations", host)))
+            observations[host] = ((observation, carriage_role_index(observation)) if state == _PUB
+                                  else (None, None))
+        observation, index = observations[host]
+        return carriage_role_rows(observation, interface, vid, index=index) if index is not None else []
+
+    def render(ordinal: int, row: Dict[str, Any]) -> Tuple[Optional[bytes], Optional[int]]:
+        if adm.offsets[ordinal][2] > _CARRIAGE_PAGE_MEMBER_LIMIT:
+            return None, None
+        vi = row["vlan_index"]
+        cable, verdict, members = carriage_row_cables(adm.section, vi, ordinal, ordinal + 1, offsets=adm.offsets)[0]
+        failed = tuple(row["failed"]) if row["failed"] else None
+        item = _carriage_page_item(ctx, adm, vi, cable, verdict, members, failed, roles)
+        return _materialized_carriage_bytes(item)
+
+    def variants(ordinal: int, dictionary: bytes, first: Tuple[Optional[bytes], Optional[int]]) -> Iterable[Dict[str, Any]]:
+        for position, row in enumerate(readable_vlans):
+            raw, length = first if position == 0 else render(ordinal, row)
+            first = (None, None)
+            if raw is None:
+                payload = None
+            else:
+                compressor = zlib.compressobj(zdict=dictionary)
+                payload = compressor.compress(raw) + compressor.flush()
+                del compressor
+            raw = None  # Do not retain the complete encoded row while storage persists its compressed variant.
+            yield {"vlan_index": row["vlan_index"], "bytes": length, "payload": payload}
+
+    def materialized_rows() -> Iterable[Dict[str, Any]]:
+        if bound_snapshot_source(snap).get("source_bound") is not True:
+            raise ValueError("carriage preparation requires an unchanged exact-byte BoundSnapshot")
+        for meta in cables:
+            first = render(meta["ordinal"], readable_vlans[0]) if readable_vlans else (None, None)
+            dictionary = first[0][-_CARRIAGE_DICTIONARY_BYTES:] if first[0] is not None else b""
+            stream = variants(meta["ordinal"], dictionary, first)
+            del first
+            yield {**meta, "dictionary": dictionary, "variants": stream}
+        if bound_snapshot_source(snap).get("source_bound") is not True:
+            raise ValueError("carriage preparation changed its BoundSnapshot during materialization")
+
+    return {"schema": CARRIAGE_PREPARATION_SCHEMA, "document": document, "context": context,
+            "cables": cables, "vlans": vlans, "rows": materialized_rows()}
+
+
+def _decode_materialized_carriage_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Decode only a server-verified, already-computed complete row within its exact expansion bound."""
+    payload, dictionary, length = row.get("payload"), row.get("dictionary"), row.get("bytes")
+    if (type(payload) is not bytes or type(dictionary) is not bytes or len(dictionary) > _CARRIAGE_DICTIONARY_BYTES
+            or type(length) is not int or not 0 < length <= CARRIAGE_PAGE_BYTE_LIMIT):
+        raise ValueError("unverified: materialized carriage row has invalid binary metadata")
+    try:
+        decoder = zlib.decompressobj(zdict=dictionary)
+        raw = decoder.decompress(payload, length + 1)
+        if len(raw) != length or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+            raise ValueError("unverified: materialized carriage row is not one exact bounded zlib stream")
+        value = json.loads(raw)
+    except (zlib.error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("unverified: materialized carriage row cannot be decoded") from exc
+    if type(value) is not dict:
+        raise ValueError("unverified: materialized carriage row is not a complete object")
+    return value
+
+
+def project_prepared_vlan_carriage(context: Dict[str, Any], vlan: Dict[str, Any],
+                                   rows_window: Sequence[Dict[str, Any]], offset: int, limit: int, *,
+                                   transport_overhead: int = 0) -> Dict[str, Any]:
+    """Slice/decode complete ingest-produced rows; no snapshot, relation, role, or evidence recomputation.
+
+    Storage authenticates each selected fragment and its expanded byte/member census. The unchanged shared
+    whole-cable gate includes the exact outer context and transport overhead before decoding an accepted row.
+    Public JSON/schema/source/summary and complete HTTP-byte guards still run at the transport boundary.
+    """
+    def load(position: int) -> Tuple[int, int, Callable[[], Dict[str, Any]], Optional[int]]:
+        row = rows_window[position - offset]
+        if row["ordinal"] != position:
+            raise ValueError("unverified: prepared carriage window is not a complete consecutive cable prefix")
+        count = row["member_count"]
+        length = row.get("bytes")
+        if type(count) is not int or count < 0 or (length is not None and (type(length) is not int or length <= 0)):
+            raise ValueError("unverified: materialized carriage row has invalid member/byte census")
+        return row["index"], count, lambda: _decode_materialized_carriage_row(row), length
+
+    return _carriage_page_document(deepcopy(context["engine"]), deepcopy(context["vocab"]),
+                                   deepcopy(vlan["summary"]), vlan["vlan_index"], vlan["total"], offset, limit, load,
+                                   transport_overhead)
+
+
 # ---------------------------------------------------------------------------------------------------
 # inventory: VLAN gateway rows (G16) -- the stored l3_forwarding rows naming a VLAN, selected, never recomputed
 # ---------------------------------------------------------------------------------------------------
@@ -4906,7 +6380,7 @@ def _gap_unread(ctx: _Ctx, state: str, toks: Tuple[str, ...], section: str, clau
 
 def _gateway_coverage(ctx: _Ctx) -> List[_GatewayGap]:
     """Why the scan may not cover every possible gateway of a VLAN (empty: it covers every device the collection
-    discovered). Fleet-wide and fail-closed, because VLAN carriage per cable is not stored (G14), so no gap can be
+    discovered). Fleet-wide and fail-closed: this reader does not use stored VLAN carriage (G14), so no gap can be
     scoped to the VLANs it could reach: a collection blind spot, or any gap of the blind-spot record's one coverage
     verdict (:meth:`_Ctx.cc_coverage`: absent, failed, unreadable, or a summary that does not reconcile with its rows or
     the roster), a cable-map neighbour the collection never reached that could route (the
@@ -5571,6 +7045,7 @@ def _vlan_gateways(ctx: _Ctx, src: Tuple[str, Optional[str], Any], ok: bool, vid
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
+    carriage = ctx.carriage if ctx.carriage is not None else _carriage_source(ctx)
     src_roots, ok_roots = _source(ctx, ("stp_roots",), ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", want=dict)
     source_roots = ctx.s.get("stp_roots")
     root_pointers = [json_pointer("stp_roots", host, key)
@@ -5640,6 +7115,7 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                                   ctx, src_roots, roots.get(vid, ()) if ok else (), ok, toks + (i,),
                                   root_collision, unreadable_root_maps,
                                   sorted(uncertain_namespaces.get(vid, ())) if ok else ()),
+                              "carriage": _carriage_summary(ctx, carriage, i, vlan_row_identity(rec) is not None),
                               "gateways": gw_list,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
@@ -5651,7 +7127,8 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                    witness=[("witness", ("executive_brief", "scale", "n_vlans"))], caveats=("vlan_cutover_universe",),
                    qualify=qualify)
     return {"total": total, "rows": listing,
-            "selection_sources": {"stp_roots": src_roots, "gateways": src_gw, "endpoints": src_ep}}
+            "selection_sources": {"stp_roots": src_roots, "carriage": carriage.source,
+                                  "gateways": src_gw, "endpoints": src_ep}}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -8022,6 +9499,11 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
 #: level). Evidence states, reasons, roles, names and presentation tokens are not severities; naming each one
 #: here keeps the catalogue closed, so a vocabulary added to the schema cannot go unclassified.
 _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
+    ("carriage_page_state", CARRIAGE_PAGE_STATES, "the carriage page resource admission names published or unsupported/unverified, never a health level"),
+    ("carriage_relation", CARRIAGE_RELATIONS, "vlan_carriage.RELATIONS names modeled cable/VLAN relations, not severity or delivery assurance"),
+    ("carriage_end_signal", CARRIAGE_END_SIGNALS, "vlan_carriage.END_SIGNALS names the admitted observation at one cable end"),
+    ("carriage_basis", CARRIAGE_BASES, "vlan_carriage.BASES separates typed PVST, configured allowance and member consensus"),
+    ("carriage_evidence_shape", CARRIAGE_EVIDENCE_SHAPES, "vlan_carriage.EVIDENCE_SHAPES discloses end coverage, not a health grade"),
     ("evidence_state", STATES, "the projection's fact-state vocabulary (CensusEmbedded.state); the state "
                                "machinery types it and a page reads the withheld reason, never a level"),
     ("abstention_state", tuple(ssot.ABSTENTION_STATES), "ssot.abstention_reason's codomain (CensusRow.state, "
@@ -8086,10 +9568,11 @@ def _vocab() -> Dict[str, Any]:
     return {"schema": VOCAB_SCHEMA, "classes": list(VOCAB_CLASSES), "ranked": ranked, "unranked": unranked}
 
 
-def project(snap: Any) -> Dict[str, Any]:
+def project(snap: Any, *, carriage: Optional[_CarriageAdmission] = None) -> Dict[str, Any]:
     """The whole ``ui_projection/1`` payload for one snapshot (device pages are separate documents:
     :func:`project_device`). Pure and total."""
     ctx = _Ctx(snap)
+    ctx.carriage = carriage
     return {"schema": SCHEMA, "engine": _engine(ctx), "overview": _overview(ctx), "trust": _trust(ctx),
             "inventory": _inventory(ctx), "findings": _findings(ctx), "topology": _topology(ctx),
             "vocab": _vocab()}
@@ -8242,7 +9725,9 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                         ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES),
                         ("CoverageStateFact", COVERAGE_STATE_ORDER), ("CoverageDimensionFact", COVERAGE_DIMENSIONS),
                         ("CoverageVerdictSourceFact", COVERAGE_VERDICT_SOURCES),
-                        ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS)):
+                        ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS),
+                        ("CarriageRelationFact", CARRIAGE_RELATIONS), ("CarriageSignalFact", CARRIAGE_END_SIGNALS),
+                        ("CarriageBasisFact", CARRIAGE_BASES), ("CarriageShapeFact", CARRIAGE_EVIDENCE_SHAPES)):
         defs[name] = _fact_def(name, _enum(vocab))
     defs["EvidenceRefValue"] = _closed("EvidenceRefValue", ("kind", "host", "ref", "role", "cite"),
                                        {"kind": _enum(PUNCH_EVIDENCE_REF_KINDS), "host": _nullable(_str()),
@@ -8341,8 +9826,28 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                           (("is_root", "FlagFact"), ("root_address", "TextFact"),
                                            ("root_priority", "CountFact")))
     defs["StpRootObservationList"] = _list_def("StpRootObservationList", _ref("StpRootObservation"))
-    defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
+    defs["CarriageEnd"] = _row_def("CarriageEnd", {}, (("host", "TextFact"), ("port", "TextFact"),
+                                                      ("signal", "CarriageSignalFact"), ("basis", "CarriageBasisFact")))
+    carriage_cells = (("relation", "CarriageRelationFact"), ("evidence_shape", "CarriageShapeFact"),
+                      ("basis", "CarriageBasisFact"))
+    defs["CarriageMember"] = _row_def("CarriageMember", _indexed(), carriage_cells,
+                                     {"a": _ref("CarriageEnd"), "b": _ref("CarriageEnd")})
+    defs["CarriageMemberList"] = _list_def("CarriageMemberList", _ref("CarriageMember"))
+    defs["CarriageRow"] = _row_def("CarriageRow", {**_indexed(), "cable_pointer": _ref("Pointer")},
+                                  carriage_cells + (("ends", "CableEndsFact"),),
+                                  {"members": _ref("CarriageMemberList")})
+    # G14 v2: a VLAN row carries a closed summary with O(1) refs; its cable rows are paged lazily (CarriageDocument).
+    summary_props = {**_envelope_props(), "vlan_index": _nonneg_int(),
+                     **{name: _ref("CountFact") for name in CARRIAGE_SUMMARY_COUNTS}}
+    summary_required = ["state", "subject", "refs", "basis", "vlan_index", *CARRIAGE_SUMMARY_COUNTS]
+    defs["CarriageSummary"] = {"title": "CarriageSummary", "oneOf": [
+        _paired(_closed("CarriageSummaryPublished", summary_required, {"state": {"const": _PUB}, **summary_props})),
+        _paired(_closed("CarriageSummaryWithheld", summary_required + ["reason"],
+                        {"state": _ref("WithheldState"), "reason": {"type": "string", "minLength": 1},
+                         **summary_props}))]}
+    defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "carriage", "gateways", "endpoints"),
                                      {"stp_roots": _ref("StpRootObservationList"),
+                                      "carriage": _ref("CarriageSummary"),
                                       "gateways": _ref("VlanGatewayRowList"),
                                       "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),
@@ -8401,7 +9906,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         defs[title] = _list_def(title, _ref(item))
     defs["InventoryDevices"] = _closed("InventoryDevices", ("total", "rows"),
                                        {"total": _ref("CountFact"), "rows": _ref("DeviceRowList")})
-    vlan_sources = ("stp_roots", "gateways", "endpoints")
+    vlan_sources = ("stp_roots", "carriage", "gateways", "endpoints")
     defs["InventoryVlans"] = _closed("InventoryVlans", ("total", "rows", "selection_sources"),
                                      {"total": _ref("CountFact"), "rows": _ref("VlanRowList"),
                                       "selection_sources": _closed("VlanSelectionSources", vlan_sources,
@@ -8572,6 +10077,19 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
          "style": _ref("TopologyStyleFact"), "legend": _ref("TopologyLegend")})
     defs["PathDocument"] = _closed("PathDocument", ("schema", "engine", "path", "vocab"),
         {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"), "path": _ref("Path"),
+         "vocab": _ref("Vocab")})
+    # G14 v2: one VLAN row's lazy carriage page (project_vlan_carriage), echoing the row's summary exactly.
+    count = {"type": "integer", "minimum": 0, "maximum": JS_MAX_SAFE_INT}
+    defs["CarriagePage"] = _closed("CarriagePage", ("state", "reason", "byte_limit", "offset", "limit", "returned", "total", "has_more", "items"),
+        {"state": {"type": "string", "enum": list(CARRIAGE_PAGE_STATES)}, "reason": _nullable(_str()),
+         "byte_limit": {"type": "integer", "const": CARRIAGE_PAGE_BYTE_LIMIT},
+         "offset": dict(count), "limit": {**count, "minimum": 1}, "returned": dict(count), "total": dict(count),
+         "has_more": {"type": "boolean"}, "items": {"type": "array", "items": _ref("CarriageRow")}})
+    defs["Carriage"] = _closed("Carriage", ("vlan_index", "pointer", "summary", "page"),
+        {"vlan_index": _nonneg_int(), "pointer": _ref("Pointer"), "summary": _ref("CarriageSummary"),
+         "page": _ref("CarriagePage")})
+    defs["CarriageDocument"] = _closed("CarriageDocument", ("schema", "engine", "carriage", "vocab"),
+        {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"), "carriage": _ref("Carriage"),
          "vocab": _ref("Vocab")})
 
 
@@ -8799,7 +10317,9 @@ __all__ = [
     "UNKNOWN_EVIDENCE_STATES", "VLAN_FIELD_BASIS", "VLAN_READINESS", "WITHHELD_STATES", "json_pointer", "project",
     "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
-    "fleet_blind_spot_rows",
+    "fleet_blind_spot_rows", "project_vlan_carriage", "carriage_admission", "CARRIAGE_SUMMARY_COUNTS",
+    "prepare_carriage_projection", "project_prepared_vlan_carriage", "CARRIAGE_PREPARATION_SCHEMA",
+    "CARRIAGE_DERIVATIVE_BYTE_LIMIT",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
     "IMPACT_INDETERMINATE_PREFIX", "L3_RISK_CLEAR", "L3_RISK_FLAGS", "L3_RISK_JOINER", "L3_RISK_TRACKING_NOT_ASSESSED",
     "L3_NO_FHRP_FLAG", "L3_SOLE_GATEWAY_FLAG", "L3_TRACKED_DOWN_FLAG", "VLAN_SOLE_GATEWAY_FHRP",

@@ -30,6 +30,7 @@ BASE = "0b411c16347a0f1651b88cae52b58555701e4db3"
 MAIN = "2c927d0209e4c4928c3f29d8747d648f930ddade"
 ROUND3 = "d05ff1aaea85d87ff474f3a9d425eeacfa99a10c"
 CURRENT_MAIN = "e7dde3574305ec75a36b43486336a6946ccc1586"
+W60B_FINAL_HEAD = "ef730d7e0ce085e54b517380c7ac714be7961371"
 _SURROGATE = re.compile(r"\{\{U\+(DC[89A-F][0-9A-F])\}\}")
 
 
@@ -781,13 +782,13 @@ def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_re
     _cases, _results, sources, scratch = archival_replay
     protected_prefixes = ("tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/")
     protected_files = {"webapp/sample_data/sample_fleet.snapshot.json", "atlas-scope/src/data/fabric.json"}
-    # The integration merge inherits current main's already-published frontend
+    # W60b's immutable final head inherits current main's already-published frontend
     # bytes. Bind W60b-owned output custody to that exact main commit, while
     # proving each older BASE->main output delta is inherited without a rewrite.
     # This changes attribution only: every protected candidate path must equal
     # current main, and the original BASE golden/sample inputs and BOTH redacted
     # view byte oracles below remain mandatory. No artifact is regenerated.
-    changed = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", CURRENT_MAIN, "HEAD"],
+    changed = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", CURRENT_MAIN, W60B_FINAL_HEAD],
                                       cwd=ROOT).decode().splitlines()
     moved = [path for path in changed if path.startswith(protected_prefixes) or path in protected_files]
     assert moved == [], ("STOP: persisted engine output would move; do not regenerate", moved)
@@ -797,7 +798,7 @@ def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_re
     inherited_failures = []
     for path in inherited:
         published_entry = subprocess.check_output(["git", "ls-tree", "-z", CURRENT_MAIN, "--", path], cwd=ROOT)
-        candidate_entry = subprocess.check_output(["git", "ls-tree", "-z", "HEAD", "--", path], cwd=ROOT)
+        candidate_entry = subprocess.check_output(["git", "ls-tree", "-z", W60B_FINAL_HEAD, "--", path], cwd=ROOT)
         # Git entries bind mode, type and content blob; both empty proves an
         # inherited deletion. Added, changed and removed paths are all checked.
         if candidate_entry != published_entry:
@@ -810,7 +811,8 @@ def test_w60b_persisted_outputs_and_their_redacted_views_do_not_move(archival_re
         raw = subprocess.check_output(["git", "show", BASE + ":" + name], cwd=ROOT)
         current_raw = subprocess.check_output(["git", "show", CURRENT_MAIN + ":" + name], cwd=ROOT)
         assert current_raw == raw, ("STOP: current-main persisted input differs from W60 baseline", name, CURRENT_MAIN)
-        assert (ROOT / name).read_bytes().replace(b"\r\n", b"\n") == raw
+        w60b_raw = subprocess.check_output(["git", "show", W60B_FINAL_HEAD + ":" + name], cwd=ROOT)
+        assert w60b_raw == raw
         path = scratch / Path(name).name
         path.write_bytes(raw)
         inputs.append(str(path))

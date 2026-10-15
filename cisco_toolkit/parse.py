@@ -2813,7 +2813,7 @@ def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
             if len(parts) < 3: continue
             intf = normalize_ifname(parts[0])
             if not is_valid_iface(intf): continue
-            res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
+            res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":"","allowed_literal":""})
             if nxos_top:
                 res[intf]["native_vlan"] = parts[1] if parts[1].isdigit() else ""
                 res[intf]["status"]      = parts[2] if len(parts) > 2 else ""
@@ -2829,13 +2829,22 @@ def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
                 res[intf]["port_channel"] = ""
         if section == "allowed":
             parts = line.split(None, 1)
+            # W52 / G14: any later 'Port ...' table header (NX-OS 'Vlans Err-disabled on Trunk', 'STP Forwarding',
+            # ...) whose first token is not an interface closes the allowed section. Before, those rows kept
+            # writing allowed_vlans, so a literal 'none' was overwritten by the STP-forwarding list.
+            if parts[0].lower().startswith("port") and not is_valid_iface(normalize_ifname(parts[0])):
+                section = "other"; continue
             if len(parts) == 2:
                 intf  = normalize_ifname(parts[0])
                 if not is_valid_iface(intf): continue
                 vlans = parts[1].strip()
                 if "feature vtp is not enabled" in vlans.lower(): vlans = ""
-                res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
-                res[intf]["allowed_vlans"] = "" if vlans.lower() == "none" else vlans
+                res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":"","allowed_literal":""})
+                # A literal 'none' is an explicit exclusion of every VLAN, not a blank list: allowed_vlans stays ''
+                # (its long-standing meaning) and the literal travels separately as allowed_literal.
+                none = vlans.lower() == "none"
+                res[intf]["allowed_vlans"] = "" if none else vlans
+                res[intf]["allowed_literal"] = "none" if none else ""
     return res
 
 

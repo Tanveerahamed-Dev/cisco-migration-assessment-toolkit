@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -28,11 +29,11 @@ from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 sch
 from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
 from cisco_toolkit import ui_projection as _ui_projection  # noqa: E402
 
-def ui_projection(snapshot: Any, host: str | None = None) -> Dict[str, Any]:
+def ui_projection(snapshot: Any, host: str | None = None, carriage: Any = None) -> Dict[str, Any]:
     """Delegate a whole document to its engine owner; do not reconstruct view context."""
     if host is not None:
         return _ui_projection.project_device(snapshot, host)
-    return _ui_projection.project(snapshot)
+    return _ui_projection.project(snapshot, carriage=carriage)
 
 
 def ui_projection_schema() -> Dict[str, Any]:
@@ -43,6 +44,52 @@ def ui_projection_schema() -> Dict[str, Any]:
 def ui_projection_path(snapshot: Any, src_ip: str, dst_ip: str) -> Dict[str, Any]:
     """Delegate route investigation and every disclosed result to its engine owner."""
     return _ui_projection.project_path(snapshot, src_ip, dst_ip)
+
+
+def ui_projection_carriage_admission(snapshot: Any) -> Any:
+    """The engine's read-only admission of one snapshot's stored carriage (G14 v2), for the cache to share."""
+    return _ui_projection.carriage_admission(snapshot)
+
+
+def prepare_carriage_projection(raw: bytes) -> Dict[str, Any]:
+    """Prepare the server-owned projection derivative once at snapshot ingest, from exact stored bytes."""
+    return _ui_projection.prepare_carriage_projection(_protocol_assurance.bind_snapshot_json_bytes(raw))
+
+
+def carriage_page_limits() -> Tuple[int, int]:
+    """Member owner plus the transport's closed 200-cable cap, cross-checked at route installation."""
+    return _ui_projection._CARRIAGE_PAGE_MEMBER_LIMIT, 200
+
+
+def carriage_derivative_byte_limit() -> int:
+    """The separate total stored-derivative bound; raw-section and response bounds stay unchanged."""
+    return _ui_projection.CARRIAGE_DERIVATIVE_BYTE_LIMIT
+
+
+def carriage_page_byte_limit() -> int:
+    """The owner's unchanged complete-response ceiling, also bounding materialized row reads."""
+    return _ui_projection.CARRIAGE_PAGE_BYTE_LIMIT
+
+
+@dataclass(frozen=True)
+class PreparedCarriagePage:
+    """A Store-verified bounded derivative window, never a transformed BoundSnapshot or a wire receipt."""
+    pack: Dict[str, Any]
+
+
+def ui_projection_carriage(snapshot: Any, vlan_index: int, offset: int, limit: int,
+                           admission: Any = None, *, transport_overhead: int = 0) -> Dict[str, Any]:
+    """Delegate one VLAN row's lazy carriage page to its engine owner; nothing is recomputed here."""
+    if type(snapshot) is PreparedCarriagePage:
+        pack = snapshot.pack
+        rows = pack["vlans"]
+        if len(rows) != 1 or rows[0]["vlan_index"] != vlan_index:
+            raise ValueError("Prepared carriage window names another VLAN row")
+        return _ui_projection.project_prepared_vlan_carriage(
+            pack["context"], rows[0], pack["rows"], offset, limit,
+            transport_overhead=transport_overhead)
+    return _ui_projection.project_vlan_carriage(snapshot, vlan_index, offset, limit, admission=admission,
+                                               transport_overhead=transport_overhead)
 
 
 def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:

@@ -83,6 +83,31 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cp, "assess_flows", _counted_assess_flows)
 
+    # Observe real owners and finalization, without replacing the producer or its inputs.
+    # Identity catches a reordered/copied VLAN universe or a second carriage synthesis.
+    carriage_calls, selected_phases, final_snapshots = [], [], []
+    original_carriage, original_phase, original_finalize = (
+        cp.compute_vlan_carriage, cp._run_phase, cp._stage_finalize)
+
+    def _counted_carriage(*args, **kwargs):
+        result = original_carriage(*args, **kwargs)
+        carriage_calls.append((args, kwargs, result))
+        return result
+
+    def _observed_phase(label, fn, *args, **kwargs):
+        result = original_phase(label, fn, *args, **kwargs)
+        if label in {"Cable map", "VLAN cutover matrix", "VLAN carriage", "STP topology baseline"}:
+            selected_phases.append((label, args, result))
+        return result
+
+    def _observed_finalize(ctx):
+        final_snapshots.append(ctx.snap_dict)
+        return original_finalize(ctx)
+
+    monkeypatch.setattr(cp, "compute_vlan_carriage", _counted_carriage)
+    monkeypatch.setattr(cp, "_run_phase", _observed_phase)
+    monkeypatch.setattr(cp, "_stage_finalize", _observed_finalize)
+
     # Run from a clean working directory (main() writes its log file into cwd) with argv set as if
     # invoked from the command line. HTML is intentionally LEFT ON so write_html_explorer is exercised.
     monkeypatch.chdir(tmp_path)
@@ -100,6 +125,22 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # readiness consumer; its workbook sheet may remain later without recomputing the evidence.
     timings = json.loads((tmp_path / "out.phase_timings.json").read_text(encoding="utf-8"))
     phase_names = [row["phase"] for row in timings["phases"]]
+    assert phase_names.count("VLAN carriage") == 1
+    assert phase_names.index("Cable map") < phase_names.index("VLAN cutover matrix") < phase_names.index("VLAN carriage")
+    assert len(carriage_calls) == len(final_snapshots) == 1
+    assert len(selected_phases) == 4
+    phases = {label: (args, result) for label, args, result in selected_phases}
+    carriage_args, carriage_kwargs, carriage_result = carriage_calls[0]
+    assert len(carriage_args) == 4 and carriage_kwargs == {"failed_sources": ()}
+    assert carriage_args[0] is phases["Cable map"][1]
+    assert carriage_args[1] is phases["Cable map"][0][0]
+    assert carriage_args[2] is phases["STP topology baseline"][0][0]
+    assert carriage_args[3] is phases["VLAN cutover matrix"][1]
+    assert phases["VLAN carriage"][1] is carriage_result
+    assert final_snapshots[0]["vlan_carriage"] is carriage_result
+    assert final_snapshots[0]["vlan_cutover"] is carriage_args[3]
+    assert final_snapshots[0]["cable_map"] is carriage_args[0]
+    assert final_snapshots[0]["stp_topology_observations"] is carriage_args[2]
     assert phase_names.count("Capture integrity") == 1
     assert phase_names.index("Capture integrity") < phase_names.index("Protocol Health")
     assert phase_names.index("Protocol assessability") < phase_names.index(
@@ -135,6 +176,12 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert os.path.isfile(snap_path), "snapshot.json was not written"
     snapshot_bytes = open(snap_path, "rb").read()
     snap = json.loads(snapshot_bytes)
+    from cisco_toolkit.vlan_carriage import validate_vlan_carriage
+    assert validate_vlan_carriage(snap["vlan_carriage"]) == (True, "ok")
+    assert snap["vlan_carriage"] == carriage_result
+    assert snap["vlan_carriage"]["coverage"]["vlan_rows"] == len(snap["vlan_cutover"])
+    assert snap["vlan_carriage"]["coverage"]["cable_rows"] == len(snap["cable_map"]["cables"])
+    assert snap["vlan_carriage"]["coverage"]["capture_completeness_claim"] is False
     for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief",
                 "parse_yield", "unknown_evidence", "protocol_assessability",
                 "bgp_configured_peer_baseline", "fhrp_configured_group_baseline",

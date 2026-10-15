@@ -1065,7 +1065,7 @@ def _main_scoped(argv: list[str]) -> int:
         return 1
 
     from .app import create_app  # lazy: the engine-child path never pays the fastapi import
-    from .storage import StoreCorruptError
+    from .storage import CarriagePreparationLimitError, StoreCorruptError
     try:
         import uvicorn  # establish the server dependency before opening the owned SQLite store
     except ImportError as exc:
@@ -1079,6 +1079,12 @@ def _main_scoped(argv: list[str]) -> int:
     try:
         app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist), boot_hardening=True,
                          scope_dist_dir=str(_resolve_scope_dist()))
+    except CarriagePreparationLimitError:
+        print(f"{APP_TITLE}: refusing to start - a stored assessment exceeds the supported preparation limit.\n"
+              "  The upgrade is incomplete; original snapshots are preserved.\n"
+              "  Resolve the assessment scope or use a version that supports this stored assessment, then "
+              "start Atlas again to retry the upgrade.", file=sys.stderr)
+        return 1
     except StoreCorruptError as e:
         print(f"{APP_TITLE}: refusing to start - {e}", file=sys.stderr)
         return 1

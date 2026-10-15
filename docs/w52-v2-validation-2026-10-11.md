@@ -1,0 +1,1484 @@
+# W52 / G14 v2 validation
+
+This continuation supersedes PR #646 and #631. The owner requested `codex/g14-carriage-v2` from
+`origin/claude/g14-v2-wip` / `cd2a5af2`; the inherited snapshot is explicitly UNVERIFIED. The full
+independent findings are comment `6106912314` on #646, with the design in
+`w52-vlan-carriage-v2-design-2026-10-10.md`. Every prior failure, rejected source, interrupted build,
+skipped tail, old receipt and acceptance boundary in `w52-vlan-carriage-validation-2026-10-09.md`
+remains historical. No old receipt qualifies v2.
+
+Current main `0b411c16` is integrated with a merge commit. Only NOW conflicted: both handoff histories
+are retained and W52 names this Codex branch. Main's W60 redaction source, corpus and controls are
+retained. Claude branches are untouched.
+
+## Source review checkpoint
+
+The partial build already contains the compact `vlan_carriage/2` owner, logical-channel bundle
+joins, literal-none parser/build companion, summary/lazy route and UI, closed schemas and budget
+fixture. Independent source review found additional gaps. This continuation:
+
+- Uses the shared `textutils.is_trunk_mode` predicate.
+- Joins the known identity and current scanned-host scope of every stored cable, including edges
+  and unreadable rows; rejects stale same-count scope/identity changes.
+- Requires the owner's compatible role/state pair as well as matching state for typed witnesses.
+- Refutes a stored signal whose current allowance/mode basis contradicts it (changed range,
+  literal none, access mode, malformed/conflicting fields or typed/native exclusion). The owner
+  admits that basis once and the reader only holds contradictions; it never emits a replacement
+  carriage relation. The earlier applied-source clearance was withdrawn before publication when
+  this additional source-derived P2 was found. Its passing pre-push scans remain historical and
+  cannot qualify the corrected source.
+- Separates malformed off-scan cable shape from ordinary edge blind spots, preserving recognized
+  scanned-port aliases and verbatim far-port text.
+- Shares one admitted carriage source between the inventory and lazy pages for each digest. The
+  no-mutation/single-flight controls count the actual basis-gap pass; the budget measures and
+  asserts the first validated lazy page as well as a warm page under the same 300 ms ceiling.
+- Adds the full findings' resolved-provider binding omitted from design (g): sorted canonical
+  name/version/exact ordinary RECORD digest, equal producer before/after observations, closed
+  manifest and receipt report. The hosted stdlib-only receiver does not compare its different
+  installed environment. Source/3, handoff/3 and receipt/2 explicitly refuse old formats.
+
+The route's inherited stale-skip removal, filter-before-status, replacement-ref refusal,
+closing index order and decoded JSON marker scans remain. No local tests, builds, project
+imports, reproduction, installed metadata inventory, generation or receipt controller ran.
+Touched static Ruff/whitespace checks passed. Authored controls remain unexecuted until hosted.
+
+## Required actual closure
+
+1. Current hosted native/schema observation and canonical generated TypeScript adoption.
+2. Mandatory real producer controls, successful generation, then a hosted ADMITTED receipt.
+3. Review and import all admitted golden/sample outputs with Git; execute hosted verify_import.
+4. Derive W50/LF receipt changes only from current hosted evidence, without weakening guards.
+5. Review and adopt a new exact-source Scope compiler family and GOLDEN_SHA.
+6. Admit a new frontend artifact from its whole successful producer through the existing hosted
+   receiver and import its exact dist patch.
+7. All 15 protected instances under unchanged strict protection, CodeQL and every applicable
+   whole workflow, including Scope and webapp, on the final source. Independent closing review
+   joins the execution source/tree, head/base, body/title, evidence and all instances.
+
+Inherited hand-edited TypeScript/native literals and old golden/sample/Scope/dist are unqualified
+bootstraps. RECORD metadata binding is not recursive installed-file custody, package authentication
+or deterministic future dependency resolution. Before/after observations do not measure restored
+transient drift. Synthetic budget coverage is not a collected 300-device deployment or dataplane,
+capture, loop-freedom, field, screen-reader or release acceptance. Supervisor alone refutes and
+merges after the green-head handoff; no auto-merge.
+
+## First current hosted contract and admitted engine import
+
+Draft PR #652 starts at `b43d27b1`, actual tested merge `f1358987` with ordered
+`0b411c16 + b43d27b1` and equal tree `a4032110`. The current frontend job
+`114429448559` / run `38125667858` passed 37 files / 524 tests, canonical API/type/build
+and privacy/capture. Contract artifact `11697271583` was received once and independently
+reviewed: all 1,793 before/after source entries join Git, canonical TS matches committed bytes,
+and both native owners match the hosted view `fdb5e63881e41457b50a5ec205dca85086d94344a2f97dc556451cbae2966f2e`
+and list `5f4cab0392484de6baf0e11c9eaa2cbd58d7bd23e4882cb237aa6d71045a4758`.
+The 321 shared definitions and 344 API components, including the closed summary/lazy page,
+were reviewed. No artificial value edit is required to adopt those confirmed current pins.
+
+Producer `38126680464` / `114432384321` ran on exact `b43d27b1`: 365 mandatory route/workflow
+controls passed with no skips; both golden writers passed with shrink disabled, then the real
+UTC sample generator, privacy and capture/upload succeeded. Producer artifact `11696903379`
+remains metadata only, never locally received. Hosted receipt `38127395469` / `114434503013`
+admitted it through the real route as `ADMITTED_REVIEW_DATA_ONLY`. Receipt artifact
+`11697458803` was received once, four inert files; 76 sorted provider name/version/RECORD
+observations agree before/after. This is producer metadata binding, not package authentication.
+
+The independently reviewed full import copies all three admitted outputs:
+
+| Output | Bytes | Admitted Git blob | Delta |
+|---|---:|---|---|
+| tests/golden/sheet_schema.json | 19,398 | `272fd58b8eedcaa2be241526fe81ca857201d103` | unchanged |
+| tests/golden/snapshot.json | 531,430 | `34a08fc94b5bae94b1287136bf60f12b4473fd8d` | carriage and census |
+| webapp/sample_data/sample_fleet.snapshot.json | 3,401,409 | `9005c92a594e8ff7d65e57743498ad33b37d6a73` | carriage, census and two genuine generation clock leaves |
+
+Sample SHA from the admitted receipt is
+`a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5`.
+Protocol receipts, collection UTC offset and other facts are unchanged. Golden has 3 VLANs,
+2 assessed cables and 4 edge cables: 6 coded pairs, 4 published and 2 unverified. Sample has
+5 VLANs, 25 assessed and 19 edge cables: 125 coded pairs, 33 published / 79 not collected /
+13 unverified; 14 forwarding, 19 not carried, no published STP-blocked sample pair. Both sections
+remain unverified. Complete supplied-input census is distinct from capture/fleet completeness;
+capture claim stays false. The held endpoint mismatch and synthetic logical-channel fixture
+limitations remain; these samples are not the real physical-LAG control receipt.
+
+This commit is only output/docs so the first hosted `verify_import` can bind the full import
+before later test/workflow/Scope/dist corrections. No held output or old plain-gh sample is
+substituted. Actual default golden/sample checks, W50 live tuple re-binding, budgets, fresh
+Scope family and a new whole-success frontend producer remain required.
+
+## Preserved first-run findings
+
+The backend job `114429448454` had three actual TypeErrors in the identity-refusal test's
+`forged(snapshot, host=None)` wrapper: the cache now supplies a third carriage-admission
+argument. Its intended ValueError/retry assertions were not reached. The planned test-only
+correction accepts/forwards that argument and keeps every assertion, after import verification.
+The whole webapp run failed, so SPA artifact `11697860457` is permanently inadmissible and
+was never received, despite frontend/visual/E2E successes. Distribution `114429408350`
+passed frontend tests/type/build then refused the old committed SPA's three missing chunks
+and changed index; packaging tail and required Installed were skipped consequentially.
+
+Python 3.11 `114429408431` completed 7 failed / 16,432 passed / 279 skipped / 3 xfailed /
+1 warning / 26 subtests. Preserve two stale-golden assertions (the wall-clock test reports
+the old section comparison; this does not diagnose a genuine new clock dependency), the
+I13 derived-number ownership guard, the webapp helper-classification guard and the same
+three wrapper failures. The full early LF case passed. Its published budget measurements
+are non-timed-leg observations, not Linux 3.12 latency passes. Current held-old-sample
+Scope and CodeQL succeeded; this does not qualify the forthcoming sample/compiler family.
+
+## Full import verification and corrective source checkpoint
+
+The first real hosted `verify_import`, run `38129579632` / job `114440927725`, succeeded
+on exact import `58ae0389` / tree `c6b41be4`. All three outputs are admitted bytes,
+including the unchanged sheet schema; no held or partial substitution occurred. The disposition
+is `IMPORT_MATCHES_ADMITTED_BYTES_REVIEW_ONLY`. Its small verification artifact remains
+metadata only. Later test, projection-performance and derivative binding changes do not
+convert this receipt into final combined-source readiness.
+
+Eligible Python 3.12 job `114429408342` preserved 8 failed / 16,566 passed / 144 skipped /
+3 xfailed / 8 warnings / 26 subtests. In addition to the seven Python 3.11 failures, the API
+budget failed document growth at 3,909.8 ms against unchanged 2,000 ms. Its measured cold
+783.9 ms and warm 794.3 ms pages also exceed 300 ms; those later assertions were not reached.
+Stored bytes, VLAN doubling growth, inventory growth and page-byte bounds passed their
+preceding assertions. The primary latency cause remains unconfirmed.
+
+This correction forwards the carriage argument in the hostile transport test double, joins
+the four derived carriage counts to an independent stored-code oracle, and classifies the two
+actual helper paths in both existing webapp filters. Assertions remain intact. W50 reports its
+actual complete measured tuple on mismatch; frozen and live equality guards remain unchanged.
+An early eligible hosted Python 3.12 step runs the four existing carriage/operator control
+files before the unchanged complete default suite and real UTC sample check.
+
+Projection edits hoist per-call caveat sets, decode positive signals once and memoize logical
+role joins within one admission. Source identity, per-end current allowances/static witnesses,
+owned copies, complete Python validation and mutable-schema fallback remain load-bearing.
+Hosted-only inclusive stage diagnostics call each original exactly once and stay inside the
+unchanged outer 2,000/300 ms timers. Fresh budget recovery is unverified; no cap or guard changed.
+
+Fresh Scope producer `38129509119` / `114440714457`, actual tested `a671e8c2` with ordered
+`0b411c16 + 58ae0389` and equal tree `c6b41be4`, refused the stale d015 binding family:
+47 failed / 7,411 passed / 27 skipped, ten failed files plus four suite initialization headers.
+Export, capture, upload and typecheck completed; strict mutations, build, hub, B3, mount and
+browser tails were skipped. Diagnostic `11699111669` was received once as six inert files.
+This preserves the failure and supplies fresh sample-a22 compiler data for independent review;
+upload success is not late product execution or archive-custody proof.
+
+Independent review of that diagnostic joined all 460 current source inputs and four old
+outputs to exact Git, equal before/after records and all 28 new binding fields. The complete
+new four-file family is adopted with only `GOLDEN_SHA` changed to the admitted a22 sample.
+Every nonmetadata subtree matches: 26 compiled device records, 44 links, 140 findings,
+377 evidence records and all owner-impact holds/citations/caps remain unchanged. Fabric also
+updates its genuine sample generation clock; its compact bytes retain no final LF. No other
+golden expectation changes. The eight corrective source paths and owned records are outside
+the compiler input set; the changed test-support literal intentionally needs fresh final
+compilation and full late runtime proof. An initial copy path used `files/` instead of the
+actual `members/` and refused all four before any data overwrite; the actual inventory was
+then read and the exact four member paths copied. This is a local file-tool error, not a
+compiler or transport failure. No local compiler, digest, schema or receipt controller ran.
+
+## Actual eligible control findings and bounded performance correction
+
+Current f8 hosted Python 3.12 job `114449585329` / run `38132498779` executed the complete
+four-file selection: 8 failed / 323 passed in 71.92 seconds. Seven failures are the stale live
+W50 corpus pairs; every frozen control in that selection passed, with fixtures, pins and
+assertions unchanged. The real admitted corpus pairs were independently reviewed and adopted:
+
+| Corpus | Actual corpus SHA | Operator evidence | Complete comparison |
+|---|---|---|---|
+| golden | `6070729ee19d162d025bdbe3b9e16b7983348c775d1c86ddc1eb831d7c50846b` | `9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557` | `d9620f944bf03b700afbe969030fcf4a49844b46124334d92eb1eaef57db7ccf` |
+| sample | `a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5` | `ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32` | `13ec9b289d38df57ec1e7990cab3ccb07d64d10298d2ba9e6657f0264eedf14b` |
+
+Both operator digests remain unchanged; this receipt-first measured companion follows the
+real full import and verify_import, with no locally calculated digest or old qualification.
+Fresh current live/frozen controls must still pass after adoption.
+
+The eighth failure is still the unchanged API budget: document growth 2,707.4 ms against
+2,000 ms. Cold 745.0 / warm 745.2 ms page observations exceed 300 ms; the later page assertions
+were not reached. Full default suite and UTC sample steps were skipped. Inclusive diagnostics
+show basis checks 2,270 ms, admission 2,494 ms, per-page mutation-sensitive identity about
+303 ms and complete page validation about 334 ms. Engine compute 1,479.2 / section validation
+208.8 ms and the preceding byte/growth/page-size assertions passed; these are distinct controls.
+
+The correction interns exact immutable owner allowance tuples and memoizes only their
+VLAN/signal answers within one read-only admission. Every end still applies its own static
+and current evidence. Four real-producer hostile controls distinguish ranges, mode, literal
+none and native-VLAN cross-end contamination. Complete private Python property plans retain
+every child validator, exact root context, mutable-schema fingerprint and stock error replay;
+overlapping property keywords and literal property names extend the existing differential
+controls. No native Carriage profile or schema/literal change is introduced. The eligible
+early selection also includes the existing identity and complete API test files; the complete
+default suite, real UTC sample, whole backend and all other contexts remain mandatory.
+
+Source review is not timing recovery. The 2,000/300 ms limits and all caps remain unchanged;
+current final hosted measurements and complete semantic/negative controls decide closure.
+
+The identity owner adds an optional binder-minted, transitively immutable typed content proof
+after the unchanged exact-byte parse/hash. Its constructor defaults to no proof; the helper
+requires the existing private minting token. Every read examines the entire current key/type/value
+structure, array order, float bits and all three marker types/values. Complete equality keeps
+the original receipt; any mismatch, unsupported type, missing/foreign/incomplete proof or
+optional node/depth/allocation failure uses the original canonical guard and receipt behavior.
+Deepcopy shares only immutable proof data; mutable payload copies remain independent. This is
+a private capability boundary, not a Python namespace sandbox or an atomic concurrent-writer
+observation. Eligible proof content is finite builtins; the existing parser's exponent-overflow
+behavior is unchanged and nonfinite values use the original fallback. No new parser/input limit,
+canonical function, receipt format, schema, native pin, sample or compiler data change occurs.
+Comprehensive authored mutation, marker-type, authority, copy, unsupported/cycle and fallback
+controls remain unexecuted until the real hosted producers run them; source clearance alone
+cannot close identity correctness or the 300 ms page budget.
+
+## Owner-merged W64a/W65 main integration
+
+Main advanced during final review to owner merge `3f1d844c` / #651, ordered `0b411c16 +
+4db8e966`, tree `6b02baf5`, at 10:51:49Z. PR #638 is separately merged; #637 is closed
+without its own merge, with W65 source carried by #651. Root did not approve or merge them.
+The independently reviewed performance tree `11420ddb` passed canonical privacy before
+unpublished `250a664f`; that is exact old-policy evidence, not a merged-tree clearance.
+
+The incoming 37-path change contains client-name registry/verifier/census, Inspector download
+hygiene, app Content-Disposition filename, frontend source/dist and streamed Reference writers.
+No G14/parser/protocol/route generation owner changed. SSOT retains both new client-name and
+stored-carriage owners. The 13 registered synthetic fixture files are unchanged by this branch.
+No fixture pin or exemption is added. Automatic privacy merge must preserve the v2 decoded-text
+guards alongside the incoming registry and controls, under independently reviewed current policy.
+
+Only generated SPA chunks/index conflicted. Original unmerged stages/patches are preserved;
+the complete literal incoming-main dist is the chosen unqualified bootstrap, pending a fresh
+combined whole-success producer and hosted receipt. An initial restore refused five absent-source
+unmerged paths; each was verified absent in main, the five known tracked conflicts removed and
+the complete main tree restored. No unrelated content, compiler/build/hash/controller or intake
+ran. Both complete NOW histories and full retired W64a/W65 row records remain retained.
+
+The changed policy and Inspector/.gitignore ledger inputs invalidate prior current-main privacy
+and Scope qualification. Fresh combined canonical/every-parent history/text scans, actual Scope
+diagnostic/rebind/late execution, canonical API/native agreement, applicable LF receipts,
+default golden/real UTC sample and admissible new SPA/full workflows remain required. No engine
+generation dispatch is inferred from path census alone; actual default output checks decide drift.
+
+## Current merged-source result and revised performance source
+
+Published `857549f3` / actual tested `7084f6d0`, ordered `3f1d844c + 857549f3`, equal
+`c2481dd9`, has complete independent Scope success: 256 files / 7,633 passed / 27 skipped,
+all ten strict mutants restored with the full 16/6/9/9 census, B3 1-4-4-1-1, standalone/hub,
+all-three-flag quiet mount and eight pure/eight actual browser cases through cleanup. Current
+four-family raw-byte reproduction, source/binding/golden controls all pass. The existing a22
+family is current without another compiler intake or data edit. Artifact `11701471747` remains
+log metadata only. This neither erases prior failures nor expands field/browser acceptance.
+
+Whole webapp `38136767678` succeeded. Current frontend `114464893253` independently supports
+38 files / 527 tests, actual canonical types, both observed/declared fdb5/5f4 native owners,
+type/build/privacy/capture. Its SPA `11701937917` remains metadata only: subsequent processor
+source changes require an exact desired-source selector before any receipt/intake. No artifact
+qualification transfers merely because frontend schema bytes are unchanged.
+
+Eligible current `114462160573` executed the expanded six-file selection, 1 failed / 727
+passed / 1 warning in 537.26 seconds, with no skips. Every selected identity/stock/native/live/
+frozen producer control passed; the sole failure is document growth 2,624.4 ms > 2,000 ms.
+Observed cold 910.7 / warm 907.2 ms exceed 300 ms; those later assertion lines and the full
+default/UTC sample tail were not reached. Inclusive stages show basis 1,916.5 ms, source
+identity about 490 ms and page validation about 312 ms. Immutable per-scalar traversal was
+correct but slower than the original 303 ms canonical check; binding also rose to 2,263 ms.
+Preserve this regression and failure rather than declaring the earlier optimization recovered.
+
+Revised source reuses only complete typed observation values within one read-only admission;
+every host retains its current record, role refs and per-end/static/basis checks. Unsupported
+keys/records and optional cache bounds use the original owner. Identity replaces the expensive
+scalar tuple walk with a fresh complete same-stdlib unsorted serialization plus a complete
+immutable container/original-key identity/order scaffold. All current values are freshly
+encoded; unsafe/mutated/foreign/no-proof/marker/container/key/encoding paths retain the original
+canonical condition and result. Canonically equivalent value subclasses retain their original
+result/type oracle and fresh complete encoder controls; no case or semantic guard is discarded.
+
+Carriage native validation is an observer-only bootstrap: no literal pin exists, so its generic
+validator returns before native construction and validates completely through Python. The actual
+hosted observer will retain one additional complete raw schema and label its hash explicitly
+unqualified. No runtime autopin or schema/type change. Only independently reviewed actual hosted
+material can authorize a later literal, followed by real-provider True/False/False/no-exception,
+stock differential, mutable-schema/context/domain and metadata/source controls. Current source
+review and cheap syntax do not qualify native acceptance or unchanged 2,000/300 ms budgets.
+
+## Complete lazy Carriage native source admission and current latency findings
+
+Actual8c20/649/8719 eligible Python3.12 job114482080365 finished1FAIL747PASS1warning454.01s. Documentgrowth2,753.3ms exceeds unchanged2,000; measured firstpage691.7/warm693ms exceed300. Later page assertions and full default/UTC sample are unreached, not passes. Inclusive stages: identity340/343ms, basisgaps2,284.5/admission2,464.2, pagevalidation263/264ms. Native alone cannot erase identity cost. These measurements replace no older failures/regressions.
+
+Completed frontend114482123261/run38143516802 independently joins actual649/8719:16 observer controls, canonical generator10 controls,38files527tests/types/Vite/privacy pass. Its whole workflow was pending at diagnostic selection; SPA11703079528 stays metadata only, with future desired processing inputs changing. The reviewed contract diagnostic11703528498 was received ONCE13:42:22Z/exit0/no timeout/eightfiles/API-uploader429474bytes/SHA08d6462b3c6b61a166fe452f0a0ad451924568abba779e2a71c080ccc5357cbc. No archive authentication, local schema/custody hash/controller or duplicate intake.
+
+Independent full material joins ALL1,799 Gitpaths/modes/blobs/bytecounts to tested649/head8c20/tree8719; sourcebefore/after are identical. GeneratedTS530,470bytes exactly matches canonical source. Existing view/list fdb5/5f4 literals remain unchanged. Complete Carriage rawschema240,653bytes is observed54793865139609d6bce3c8c45306c5b1dff2ef6a75e8fe0c78e1954b829abea0:251 shared engine definitions,25reachable local definitions/refs,19 existing keywords,33closed reachable object branches; all hoisted definitions and complete transport root join actual OpenAPI. Only that actual literal is adopted in production/prospective owners; no publicschema/type/provider/domain widening or runtime autopin.
+
+The existing generic complete native profile retains exact public/private schema fingerprinting,0.58.5/offline options, original Python/stock diagnostics/context/evolve/unsupported-domain/mutable-schema fallback, source/summary/copy/meta/MAX200 guards and request-local proof. Authored controls require actualTrue/False/False/zeroexceptions on6realproducer families and27whole-shape structural refusals; complete200-row last-end rejection; numeric/Unicode/type/cycle/depth domains; missing/wrong/cross-kind pins/provider/privatecopy; mutation/nonboolean/exception/context/remote retrieval; semantic metadata deliberately rawnativeTrue/stockTrue but postguard refused; nonce/header/source-byte isolation. Authored source is not executed proof or nativeNone acceptance. The explicit absent-pin trap remains.
+
+A transparent eligible-only diagnostic retains every original outer timer/assertion/case/cap and logs full proof/text/canonical/observation-owner work and proof presence. It must decide whether current proof construction is eligible; no2M-node or depth128 broadening/redefinition is authorized. Exact-key role reuse is a separate conservative read-only optimization under applied review: current host row objects and all end/static/allowance/state/beside/witness checks must remain. The independently reviewed additive C observation is now authored: existing eligible authority-protected proof additionally retains optional immutable complete marshal version2 bytes with a stricter64MB retained-byte cap. Every read encodes ALL current keys/types/containers/values afresh in the same process; unequal/unsupported/exceptional/absent bytes retain the complete original JSON/scaffold/canonical behavior. Existing2M-node/depth128 freeze/caps/markers/minting are unchanged. No loads/persistence/portable/custody stamp; audit/buffer hooks and concurrent/private namespace boundaries remain disclosed. Original semantic cases remain, equal-new-key/alias mechanisms explicitly use original-result/type oracle plus two complete fresh binary spies, and subclass JSON fallback remains. Authored Unicode/signedzero/largeint/copy/late-node/optional-byte-cap/encoding-failure/buffer controls require hosted proof; current proof-present/latency benefit is unmeasured.
+
+Source adoption/performance/native runtime remains UNVERIFIED. Fresh actual provider/stock/current default/LF/golden/UTC/Scope/SPA/Reference/portable and every protected context instance/whole workflow are mandatory. Existing ADMITTED engine import/verify cycle remains source-bound history, never substitutes final current comparisons. Source-code comment patch mismatch was refused atomically then corrected from actual lines; report-path lookups while the review was being written were navigation errors, not product failures. All older negatives, cancellation unknowns, raw_scan_cleanFALSE versus policy_clearTRUE, native-license/unsigned/custody/field/external-release/O79 limits remain.
+
+Independent applied review found no P1/P2 but required supplemental controls for new optional foreign index/query/row-alias fallback branches. Four real-owner wrapped cases now preserve semantically identical inputs, require both current host calls/no shared foreign positions, retain copied-row compatibility calls, and compare complete checked projection/page/schema/refs/read-only behavior. These controls are authored and source-cleared, not executed. Canonical52883 was deliberately stopped before completion (exit1/NOqualification) when this gap required a different source tree; its intent/log/stopped result remain. A fresh canonical gate on the final controlled tree is required before commit/publication; no old-result substitution or runtime failure is implied.
+
+## Actual native/identity controls and complete observation-key correction
+
+Actual405c/491/55cb eligible job114498513300 finished1FAIL829PASS1warning579.04s. All unfiltered selected native/stock/direct-return/foreign-index/current-alias/C-encoding controls pass; no separately named receipt is invented. Only document growth3,160.1ms>2,000 fails. Firstpage290.5/warm288.4ms are below300 observations, but later assertions and full default/UTCsample are skipped after the first failure. All3bound proofs are present; complete fresh binary identity118–120ms and complete nativevalidation66ms execute. Observationowner14calls/28.9ms and roleindex14calls/6.6ms demonstrate actual reuse. Remaining basis2,593/admission2,811ms is inclusive and does not by itself prove key construction or allowance parsing is the cause.
+
+The authored key replacement retains exact original65,536 value/container occurrence count (dict keys are not added nodes), rootdepth0/max32,1M key+value Unicode codepoints per occurrence and32retained answers. Lazy iterator frames avoid bulk uncounted work/child allocation and do not deduplicate repeated aliases. Exact finite plain JSON is checked before freshly encoding the ENTIRE current observation with same-process marshal-v2; exact immutable bytes are the key, never a hash/partial tuple/metadata stamp. Dict-order changes conservatively miss sharing; an extra8MiB optional retained-key cap only returns to the original owner. Current host objects, immutable positions/compatibility and every end/state/beside/allowance/static/ref guard remain. No loads/persistence/custody or sandbox claim. New source/runtime benefit is UNVERIFIED.
+
+Controls retain the old recursive eligibility/count/type oracle and real producers/current aliases, plus whole encoding each host/fresh admission, bool/int/float/signedzero/key/array/order/finding/extra-field differences; exact node/depth/codepoint boundaries, repeated aliases/cycles/million-wide source refusal before encoder, resource/bytecap/nonexact return fallback. Independent source QA identified new marshal audit-OSError propagation; only the optional encoder now catches Exception (never BaseException) and invokes unchanged owner. OSError parity and explicit nonplain Buffer.__buffer__ plus full-encoder trap establish refusal before serialization; eligibility/readset/caps are unchanged. Two coarse original-once key/allowance-owner diagnostic wrappers retain every outer timer/assertion. Allowance parsing is unchanged; prior unverified200-singleton-span claim is corrected: the actual budget uses1-4094/2-120, not that shape.
+
+SPA source-map correction: root and earlier independent reviews incorrectly treated backend changes as frontend processing-input changes. The actual owner is all tracked frontend files excludingdist plus ONLYfive fixed handoff/privacy/classifier/workflow/distribution policy processors. Complete159paths/all100644/5,838,167bytes match selected649/8c→desired405/currentkeywork. Incoming3f→00647 changes no profile input; raw main retains eight preexisting ownedG14 frontend differences. All seven receiver policy owners are equal across these sources. This admits edit-data review from whole-success8c producer38143516802/job114482123261 without transferring its G14 runtime qualification. Exact13fieldselector for originalSPA11703079528/571730/a61fdec2990aad58f27ab3d2e5592f32541f3571b096212f3b8e3b915e494007 was reviewed. ONE HOSTEDreceiver38152154633/job114507767674 at405 completedADMITTED_EDIT_DATA_REVIEW_REQUIRED; newreceipt11706748100/1074378/f9679568c1c6a4ef8580b4e9cb6ade9c2bfe10e0c863740de4a9a7a0adb700db was pending at the pre-intake checkpoint; ONE bounded intake at15:54:53Z/exit0/no timeout subsequently received9inert files, and material/copy clearance remains pending. No originalSPA/localZIP/hash/receiver/controller, duplicate dispatch or fabricated readiness. Earlier profile deferral remains recorded as a review miss and is corrected in this necessary source checkpoint.
+
+Current Distribution and binary completed failures are actual stale committed SPA reproduction after successful current build; Installed is a required consequential skip. Fresh admitted exact dist import plus DEFAULT reproduction/package/installed/portable/allgates are required. New owner-merged main00647/#654 carries W70 synthetic scale harness/CIopt-in/docs/strictarchitecture/census/fixture/build_scale with raw3f+6c99 and equalhead/merged/clean2aa tree. No sharedG14/schema/native/profile/golden/sample/Scope-output overlap. AGENTS/CLAUDE/policy owners unchanged; integrate complete source/preserve both board histories and retire owner-mergedW70 under rule8 at that necessary board edit. The expensive scale job is explicitly opt-in/manual and never runs onPR; no invented extra dispatch/pass or real-fleet acceptance. Combined default owner controls and every current protected/whole gate need fresh exact-source proof.
+
+## Exact frontend edit-data adoption and complete main00647 integration
+
+Local88b307ac/805 checkpoint is unpublished, with canonical64777 FINISHED PASS before its commit. It retains the complete new observation-key source and additional original-once phase diagnostics; runtime benefit remains UNVERIFIED. This later combined stage requires its own actual prepublication static gates. Current405c document3160.1ms budget failure, selected829 passes, below300 page observations and skipped later/defaultUTC assertions remain unchanged historical facts.
+
+Owner-merged00647/#654 (raw3f+6c99/tree2aa) is merged in full. Thirteen incoming owners add the synthetic scale harness and default governance/census/supplychain controls; the expensive scale workflow is opt-in/manual and NEVER a PR gate. Only NOW conflicted. Its original conflict/parent copies are retained externally; both full parent handoff histories remain in order and multiplicity, and W70's retired row is preserved verbatim. No G14 engine, schema/native,159-input SPA profile, golden/sample or Scope-source/output overlap occurs in the incoming13-file delta. No real-fleet/capture/field acceptance transfers from synthetic qualification.
+
+Actual hostedfrontend receiver38152154633/frontend114507767674 at405c/55cb completed ADMITTED_EDIT_DATA_REVIEW_REQUIRED. Newreceipt11706748100/1074378bytes/API-uploaderSHAf9679568c1c6a4ef8580b4e9cb6ade9c2bfe10e0c863740de4a9a7a0adb700db was received ONCE15:54:53Z/exit0/no timeout into nine inert files. Independent material review joins seven JSONs, full1719725-byte patch, all13selector fields,159source input modes/blobs/bytecounts and sevenreceiver policy owners; opening/closing APIs identical and original wholeproducer38143516802 SUCCESS. OriginalSPA11703079528 remains HOSTED-selected only; nested subject.zip stays opaque. No local receiver/compiler/ZIP/hash/controller or duplicate intake ran.
+
+Applied exactly the admitted Gitpatch, with two99percent JS renames, oldindexJS deletion/newindexJS and indexHTML change; unchanged CSS remains a complete desired member. Five desired100644 files total2047721bytes. Backend identity/key work and incoming3f-to00647 do not change the actual SPA profile. Rawmain has eight preexisting G14 frontend differences; this is not a claim of rawmain equality. No engine/Scope/sample/pin/type edit or further dispatch is justified by this data import. Optional post-import-profile dispatch is not automatically required; fresh DEFAULT immutable reproduction/twine/package/Installed/final reverify/portable source+binary and all source-specific gates close the resulting source.
+
+New key/combined source latency, supported matrix/native/stock/direct-return/guard/LF/default/golden/realUTCsample, full Scope/type/unit/all10strictmutants/restoration/build/B3/hub/eightpure/eightactualbrowser, Reference, every15protectedapp15368 instance/CodeQL57789 and all applicable whole workflows remain mandatory. No readiness, approval, merge, old receipt transfer or threshold/cap/timeout/baseline relaxation follows source/data clearance. Preserve all historical source/refusal/runtime/transport/review negatives, raw_scan_cleanFALSE versus policy_clearTRUE and native/license/unsigned/custody/O79/field/external-release limits.
+
+## Current fdf failure and guarded routing/document observation checkpoint
+
+Actual tested1adbcab5 ordered00647+fdf41cde/equal678 executed eligiblepy312114519640759:1FAIL849PASS1warning596.20s. Sole assertion documentgrowth2094.6>2000; cold488.3 and warm285.1 are measured, but both page assertions follow that failure and were not reached. Full default/realUTC sample steps were skipped. All three complete binder proofs are present. Inclusive key300calls456ms/basis1761.9/admission1984.8 and allowance1500calls14.3ms do not prove a new rootcause. Allowance parsing is left unchanged. Firstpage originalownedcopies233.3ms versus warm36.8ms identify the measured difference; allocation/GC causality is unconfirmed.
+
+Current fdf Distribution114519640790 and binary114519640649 actual1adb/678 independently close1805-file immutability/currentSPA/default packaging/finalreverify and original+relocated13/13/nativeoverview+axes strictbody proof/865members12files producer selfconsistency. Frontend11452032126138files527tests/API10/canonicaltypes/all3observedpins/Vite/privacy and Installed114521173855 realpreinstallnegative/wheelonlyoutsidecheckout/sitepackages346files/runtime_matches_referenceTRUE are independently closed. One-read logs/intent/results retained. ScopehubNA, source-roster/unsigned/self-authored/external/native-license/partialTCB/INCONCLUSIVE/promotionfalse limits remain. No dedicated frozen hostileCarriage/nativewholeDocument acceptance or current green follows component success.
+
+Authored routing plans are invocation-local, preserve original static checks, and lazily obtain the SAME already memoized observation/index only at the first typed code. Guard current host at BOTH original dispatch points, preserving the original callback mutation/observation-index mix rather than repairing it. Logical/physical/currentrole cardinality/beside/compatibility/state/current allowance/static-gap transfer still run on every row; configured-only positions acquire no new STP owner calls. Current-host row aliases/foreign-index/query fallback and gap order remain. Twenty authored real-producer/full-document/pages/forced-original-fallback/callback/currenthost/mutation/fresh-scope/call-domain variants require actual hosted execution. No per-end verdict or crossrequest/crosshost result cache is introduced.
+
+Complete document validation2113.3ms with/2021.6ms without is a measured candidate optimization target, not a diagnosis of cold-copy GC. This checkpoint exports the complete existing OWNER root as document-schema.json via the unchanged hosted observer. Nine-member family/source-before-after/output closures stay bounded; status alwaysUNQUALIFIED_MATERIAL_REVIEW_REQUIRED and document literal remains ABSENT. Production DOCUMENT_VALIDATOR remains the original full Python validator; its old absence guard stays intact. Exact observed root/refs/keywords/source/domain and actual document-versus-transport/provider/stock/error/context/mutation/no-header controls are REQUIRED before any later literal admission. No public schema/type/fact change or runtimeautopin.
+
+Native acceptance can mark request-local complete smoke proof only for exact view/list/carriage kinds and exact transport_proofTrue. Internal admission optout retains existing reviewed nativeTrue/False/False/no-exception/stock results but cannot mark a transport proof. Source-authored genuine existing-profile optout tests do not qualify the future document profile. Missing-document-pin/provider trap plus real valid complete cached-document/stock-invalid-error controls keep bootstrap closed; current whole-document Python and device-Python guards remain.
+
+Eligible-only telemetry calls every original deepcopy ONCE within unchanged outer timers. It observes natural collection counts only, with no collect/disable/freeze/threshold change/prewarm/copier substitution. Diagnostic records are bounded32 and root classification64 exactkeys; unsupported/custom keys are classified before string membership. Independent source review found a custom collision key hook risk, corrected BEFOREpublication with complete bounded exactstr-key precheck and a genuine original-deepcopy/collision-hook baseline. Telemetry failures cannot replace the original result/exception, and inactive diagnostics touch no counters. Document native-domain probe executes AFTERboth measuredpages, not as cold prewarming. All telemetry/control results remain runtimeUNVERIFIED.
+
+All original accepted-source caps, complete provider/domain/schema/nonce/source/postmetadata guards, timing2000/300, data/golden/sample/a22Scope/TS/three literalpins/admitteddist and159SPAinputs/sevenreceiptpolicies remain unchanged. No allowance/pointer memo or proof/copy alteration; optionalproof already has immutable __deepcopy__self, so an unverified proof-copy hypothesis was discarded without implementation. Cheap touched Ruff/AST/whitespace only locally. Fresh final canonical/all12 actual source/text review BEFOREpublication and every exact-source supportedmatrix/native/stock/default/LF/golden/UTC/Scope/Reference/Distribution/Installed/portable/all15+CodeQL/allapplicablewhole workflows remain mandatory. Preserve all prior negatives, tool errors, raw_scan_cleanFALSE versuspolicy_clearTRUE and field/O79/external-release boundaries.
+
+## Actual346 failures and complete hosted document profile adoption
+
+Current346 actualfe8fc0ea ordered00647+346/equalcc eligible114537216361 completed2FAIL879PASS1warning486.07s. The owner-error control failed in its FIRST forced-original path: RuntimeError is outside the unchanged seven-type _OWNER_FAULTS. No planned-versus-original divergence was executed there. Earlier author/independent blanket held-error claims are withdrawn. The test-only correction retains RuntimeError and requires BOTH modes to execute the real original owner once on the current first typedhost then propagate exact class/args. Separate TypeError control computes a guarded held admission, restores the real callback before lazy rendering, supplies that actual admission and compares complete document/pages/gap ordering/empty retained answers. No product catch/skip/xfail/exception widening.
+
+The other failure is documentgrowth2177.7>2000 (with7454.8/without5277.1). Cold252.0/warm252.9ms remain observations because the first budget assertion prevented both page assertions and complete default/UTC sample. Actual complete document native-domain eligibility is TRUE for the WITH document; WITHOUT eligibility was not separately printed. Inclusive admission1901.5/basis1720.9/key300calls385.2, allowance1500calls8.7, documentvalidation1539.2/1458.9, copy1239.9/1137.9 and snapshotbind2219.5/2156.4 measurements do not promise any proposed native differential recovery. Natural collections during full copies are observed; a historical cold-copy cause is not proved. No allowance memo, forced collection/disable/freeze/prewarm or copy/proof substitution is introduced.
+
+One new completed current frontend114537251803 from38162161023/attempt1/actualfe8/cc produced nine-member diagnostic11710518611,449526bytes/API-uploaderSHAeb50a2746a489d91a07e58a45c17b29d7b86398fc93aa1d5585cf799a6e2ba3d. The whole workflow was pending at diagnostic selection and subsequently succeeded; no SPA intake was selected. The artifact was independently selected and received ONCE18:14:17.955Z/ordinary60sgh/exit0/no timeout into nine inert files. No local schema hashing/import/validator/controller/ZIP or authenticated custody claim. Full source-before/after ledgers are identical446778bytes and join all1805Git mode/blob/byte records. Actual full document-schema.json is240423bytes; its observed document fingerprint152a2e761ff49b3c1134d943d9a5fa87095d14711d9beb74b73b7f7937756cf7 came from the hosted observer, not a local calculation. Its original declared pin null and UNQUALIFIED status remain literal historical observations.
+
+Independent material review joins the complete closed eight-field document root and ALL251definitions to actual emitted OpenAPI and the corresponding full shared definitions in view/list/Carriage. All1752refs/248unique are local; all22keywords/412closedobjects/4601nodes and existing8192construction/instance caps are accounted for. No remote/dynamic resource/format admission. Canonical emitted TypeScript530470bytes remains exact trackedbebb1f4f;344OpenAPIcomponents and the three original transport pins remain unchanged. This review permits ONLY the exact observed fourth document literal and existing full OWNER generic native acceptance with fresh real-provider/stock controls. It is not actual nativeDocument performance/runtime/field/release qualification.
+
+Full DOCUMENT_VALIDATOR now uses the existing _NativeTransportValidator over ENTIRE _OWNER, explicit transport_prooffalse. Provider0.58.5/offline construction, exact public/private full schema hashes/fingerprints, domain/True-only admission, mutable-schema/context/evolve/unsupported-instance/exception/Python-stock errors and all current copies/source/metadata/nonce guards remain. Device/path stay Python. Document lies outside view/list/Carriage transport-proof kinds, so internal acceptance cannot certify a later nonnative transport. No instance/result cache/autopin/public schema/type/sample/golden/Scope/compiler/dist/otherthreepin/domain/provider/cap change.
+
+Authored controls require exact genuine native True/False/False identity/complete call count/zero exceptions across six real producer families. Eight root/nested structural mutations remain, plus a genuine three-VLAN/three-cable complete document mutates the LAST nested count and LAST reference and requires exact direct refusal/whole stock diagnostics at that actual last-row path. Ten unsupported domains never enter native; False/nonboolean/exception responses replay full stock. Missing/wrong/crosskind literal/version/private-copy guards remain; the deliberately corrupted private copy additionally validates real whole document and missing-vocab hostile with exact public stock errors/nativeNone. Public mutation/reassignment/explicit context/evolve remain stock. Twelve actual HTTP cases require genuine documentTrue followed by view/list/Carriage absent/False/nonboolean/exception to omit native header; restore real transport positive header and nonceless absence. The old absent-document-pin trap remains as a deliberately unpinned constructor; actual production profile now requires literal/hash/native presence. These controls are authored and source-reviewed, not executed proof.
+
+Current346 frontend38files527tests/API10/canonicaltypes/Vite/privacy/observer and Distribution1805-file immutable reproduction/full package/twine/source reverify plus Installed real preinstall ModuleNotFound/wheelonly outsidecheckout/sitepackages346/runtime_matches_referenceTRUE have one-read primary/independent records. Whole web/Scope/CodeQL success metadata does not erase current eligible failures, other matrix failures or pending CI/Reference/portable. Source-specific raw failures/cancellations/skipped tails and native/license/unsigned/self-authored/INCONCLUSIVE/roster/promotionfalse/partialTCB/field/O79/external-release limits remain.
+
+Require fresh complete nativeDocument/direct-return/stock/noFalseHeader/current-role/STP/default/LF/golden/realUTC sample and unchanged2000/300 budgets; all supported matrix, full Scope all10distinct strict mutants/restoration/census/build/B3/hub/eightpure/eightactualbrowser, immutableSPA/package/Installed/portable binary+source, Reference, every15protected context instance/CodeQL and all applicable whole workflows. Final exact currentmain/head/base/actualtestedexecutiontree/body/title/protection/allchecks must be independently closed before ONE green-head handoff; then stop for Claude refutation/merge. No old receipt/runtime qualification or new generation/SPA intake is inferred from this profile change.
+
+Later completed current346 Python3.13/3.14 default logs114537216374/114537216437 were received ONCE18:51:22-24Z/exit0/no timeout. Both have THREE actual failures: the same owner-error control, observer main write census5 versus actual6, and the exact projection import guard reporting marshal. Python3.13 has16927PASS155SKIP3XFAIL8warnings26subtests1795.08s;3.14 has16926PASS156SKIP3XFAIL8warnings26subtests1992.22s. Neither untimed leg executes eligible latency proof. The observer's complete document candidate adds one literal emit-call site (view/list and Carriage/document loops are distinct); its exact NON_CLIENT census is corrected5-to6 with classification and suffix rules unchanged. The projection exact read-only import guard adds ONLY standard-library marshal, already used for complete fresh same-process typed observation keys; no loads/persistence/hash/private/producer/module wildcard permission. No assertion is disabled or registry widened generically. These previously missed static owner reconciliations need fresh actual default verification and independent applied review before publication. Current backend completed quiet full100percent/all3Scopeflags/native0.58.5; no numerical/named nativeDocument proof is printed.
+
+## Round 2 — owner refutation and authored repairs (2026-10-12, Qatar)
+
+Owner [comment6113983469](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6113983469) at2026-10-11T21:29:42Z BLOCKS head29bf7885. Its historical31 records/27SUCCESS/four inapplicableSKIP, exact current15+CodeQL and all six whole workflows were real. They did not close these three broader semantic/resource counterexamples. The prior bounded handoff clearance is withdrawn; every raw pass/failure, source miss, cancellation, partial/skipped tail and review limit remains preserved.
+
+P1-1: configured stored end codes now re-admit CURRENT STP eligibility even when their stored stp_pointer is NULL. Any current relevant logical-interface/VLAN role, error capture, malformed/ambiguous observation or stale configured basis gaps the stored claim; relation state becomes unverified/valueNULL and forwarding counts are withheld. The reader does not calculate or emit a replacement relation. Exact absent/unrelated-to-FWD+BLK and error inputs, unchanged eligible absence, physical-only evidence and real producer setup controls are authored. The old configured-only control intentionally changes its present-source contract: present unrelated evidence must execute the exact current logical/VLAN absence query; truly absent evidence retains its no-owner-call trap.
+
+P2-2: bundled allowance source's nonblank port must normalize to its logical-channel key through the existing public identity owner, beside the pointer and physical endpoint checks. The exact Po10 source whose port changes to Po99 and malformed identity hold an allowance identity witness, unverified summary and NULL relation. Canonical aliases and producer-permitted sparse ports retain meaningful positive controls.
+
+P2-3: the unchanged3,000,000-byte page ceiling now bounds complete owner and HTTP documents. Select a deterministic filled prefix of whole assessed cables, stopping before400 members or exact compact UTF-8 bytes. The effective limit is never above the request; all members remain intact, and continuation uses offset+returned. One indivisible cable that cannot fit is an explicit page unverified/unsupported reason with zero items, original offset/total and truthful has_more; it is not silently skipped or declared empty. The client blocks Next on that hold and uses successful cursor history for Previous. The transport subtracts its actual positive empty-header overhead from the owner budget and independently guards the final full wire size; schema success never waives bytes. Page state/reason/byte_limit are a closed contract delta; no new relation vocabulary or data-plane fact is added.
+
+New controls are PURE synthetic in-memory functions for HOSTED execution only. Exact refuter300-device/200-VLAN/1500-cable construction is retained at2 and8 members,600 assessed/900 edge/150 bundles. First/last VLAN traversals at25/137/199/200 require all600 cables exactly once, complete member indices, deterministic pages, unchanged input and every full owner/HTTP response within the original3M ceiling. Tightened-byte,401-member indivisibility and unrepresentable context controls fail closed; frontend uneven-cursor and unsupported/forgery controls retain strict filled positive pages. All original size/timing/native/Stock/default/guard assertions remain; eight-member timing and RSS are not yet measured.
+
+Source changes require fresh HOSTED canonical generated TypeScript and all four literal native profiles, independently reviewed from actual emitted schemas. Current old literals/types and committed SPA are not asserted to qualify this source bootstrap. No locally calculated schema pin, runtime autopin, generator, compiler, test, engine CLI, hash/custody controller or browser execution occurred. Only cheap touched syntax/lint/whitespace checks are allowed locally, then the exact canonical Rule7 verifier and all12 every-parent/message/path/log/publication-text scans BEFORE each push. Engine stored section/golden/sample and Scope data are unchanged unless actual required evidence demonstrates a design-required delta. Frontend dist requires its new whole-success producer and existing HOSTED admitted receipt/import route.
+
+Fresh exact-head counterexamples, unchanged budgets, all required native/type/LF/default/golden/UTC/Scope/Reference/Distribution/Installed/portable gates and15/15+CodeQL/all applicable workflows must complete before one authorized round2 summary on652, one fix line per finding. Then stop for independent re-refutation. No formal approval, ready/auto-merge/human merge or other-owner work follows from source review or earlier green checks.
+
+Pre-publication independent source QA found further current logical-key alias ambiguity: adding a complete Po010/Port-channel10 beside cited Po10 can leave the cited record valid while the producer refuses multiple logical sources. Complete current alias census must use the shared public identity owner, hold ambiguity and retain meaningful single-source alias positives. This is source-derived/unexecuted, not a fabricated failed run. The pure HTTP query-limit control originally added1 to an effective short limit, which could remain below the actual200 request; the corrected attack is201, with positive filled effective limits unchanged. UV non-array items/clean-empty footer and strict JSON byte encoding were likewise corrected with hostile/disclosure controls before publication. No gate was skipped or weakened; prior source-control misses remain recorded.
+
+Logical-source identity addendum before publication: current logical keys are now censused with the same public carriage_join_interface owner and a bundled source requires exactly one normalized alias. Exact Po10+Po010/Port-channel10 duplicate records hold rather than choosing a source; single normalized aliases remain positive under the real producer. Current contradictory/error STP host/section citations accompany the original NULL/non-NULL basis declaration. Worker source controls now have55 new variants (the initial31 plus8 duplicates and16 single-key positives), all still authored/unexecuted. The current resource PUB/UV subset is classified once as carriage_page_state in G43's existing unranked registry; this is page-resource admission, never relation severity. No producer, snapshot/golden/sample, mutation guard or gate changed.
+
+Combined-source integration before round2 publication: supervisor directs merge of owner #653/e7dde357, raw00647+217758b6/tree4df29dd. Local corrective e8e03785/3f784 was canonical-PASS then committed UNPUBLISHED; its result is not the combined-source privacy gate. Only NOW/API conflicted; original text is retained externally. Resolve board as a union preserving both parents' rows and handoff order/multiplicity. Preserve main's native0.58.6/version header plus G14's transport-kind/document isolation, reader holds, complete paging and all guards. Reconcile every G14 real-version/header control to0.58.6 and refuse old/future/missing versions, including0.58.5/0.58.7. All48 incoming dependency/source/lock/workflow/doctrine owners remain; frontend plugin6.1.2/actual processor changes invalidate earlier SPA profile qualification. Actual combined four schema/TS materials, native/Stock/default/LF/golden/UTC, Scope and fresh admitted frontend/dist proof must qualify the final head. No new engine regeneration, schema hash, source waiver or old-tree proof is inferred. One fresh combined static gate and one normal push publish corrective+merge together.
+
+## Round2 actual 6f failures and reviewed material correction
+
+Current6f/actual8a3/equal8df automatic attempt1 has real failures: Distribution1FAIL536PASS and backend/Scope typecheck refuse missing page state/reason/byte_limit; backend tests and all later Scope/unit/mutation/browser gates skipped. Frontend16 observer controls and10 generator controls pass before actual api:check disagreement. Eligiblepy312114596120323 is291FAIL717PASS:283 native/pin/header families, seven authored bundle positives confuse aggregate member_consensus with each member/end stored_trunk_allowance, and actual warm347.4>unchanged300ms (cold346.1; documentgrowth1722.1<2000). Default and UTC skipped. None is erased by source correction.
+
+Diagnostic11717618714 receivedONCE22:58:59Z/450335B/ordinary60s exit0/no timeout/nine inert members. Independent review joins all1806 actual Git mode/blob/size entries, equal beforeafter and complete4schemas/OpenAPI/local refs/domains. The only30 inert schema paths are the three page-resource fields/required and G43 unranked entry/required; canonical TS has exactly10addedlines. Exact received TS and actual hosted4literals are adopted in BOTH existing owners: view2f70b393/list82ca31f0/Carriage55d75f4e/Document2b8f96d6. No local generator/schema hash/import/controller, runtimeautopin or provider0.58.6/stock/directreturn/NoFalseHeader/nonce/context/domain/cap relaxation.
+
+Positive controls now require aggregate member_consensus AND all actual members and both ends configured stored_trunk_allowance before original schema/ref/input-purity tail. The unchanged page budget failure motivates exact byte accounting that serializes immutable outer context once, measures each complete item once and only re-encodes the changing small empty page header. The final owner bound uses the exact empty-array replacement sum plus separators; full HTTP byte guard remains. Strict allow_nanFalse/ensure_asciiFalse UTF8, member400/byte3M and timing2000/300 assertions remain unchanged. This is a source optimization, not a promised speedup or actual recovery.
+
+Fresh current native/stock/counterexample55/2+8-member complete HTTP/default/golden/UTC/Scope and all15/full workflows are mandatory. A new SPA needs a whole-success producer plus existing HOSTED admitted frontend receipt/import; failed6f is inadmissible for SPA. No new engine generation or Scope member intake is indicated by this type/pin correction. All original failures, skipped tails and withdrawn29 clearance remain. Independent applied review and fresh Rule7/all12 precede the next necessary push; no ready/summary/merge claim.
+## Round2 current971 budget and exact admitted SPA / empty-query correction
+
+Actual971/ac8/3d2 eligiblepy312114602218453 has1FAIL1007PASS1warning/679.50s, sole documentgrowth2458>unchanged2000. Cold294.4/warm295.2 are observations below300 only; first document assertion blocked both later page assertions/default/UTC. All55 existing reader variants and selected native/stock controls pass in the unfiltered six-file selection, including corrected positive schema/ref/input-purity tails. Sixteen pure owner2/8-member traversals and two full HTTP600-cable traversals pass; actual maximum wire1620112/1849684 stays below3M. This does not close document latency, eight-member latency/RSS, supported defaults or final source qualification. Inclusive basis1880/admission2077/key300calls435 are observations, not additive cause; no cache shortcut/GC/prewarm/guard/timer/threshold relaxation.
+
+CurrentScope114602165344 wholeSUCCESS:256files7633PASS27SKIP/all10 distinct mutants/restored16-6-9-9/B3/mount/hub/8pure8actualbrowser/cleanup. No raw PNG/compiler intake. Wholewebapp38183944818 six jobsSUCCESS, frontend10APIpolicy/38files537tests/types/build/privacy/current4pins agree. Distribution/binary actual immutableSPA checks separately fail three old JS files and changedindex, after successful builds; package/install/portable tails remain skipped.
+
+One existing HOSTED frontendreceipt38185867393/frontend114607983679 on971 selected that complete producer and originalSPA11718692668 (never separately read locally). Actual45 refusal controls/ADMITTED_EDIT_DATA_REVIEW_REQUIRED; receipt11720015232/1015726B/API-uploaderSHA65aec2d8441bb76933f9715ca314e81e58df675b040d7d0705e1efbb63560617 receivedONCE00:04:24Z/ordinary60s/exit0/no timeout/nine inert files. Nested571970Bsubject.zip staysopaque, no local ZIP/hash/receiver/controller. Independent seven JSON/13selector/openclosing/159 exact Git mode-blob-byte inputs/seven policy/full1531454Bpatch review admits only exact3JSrenames+indexHTML/100644; CSS34982 unchanged. Root Gitapplies once; full desired5file/currentfuture159/policy and applied combined source proof remain mandatory. Receiver whole initiallypending preserved; no signing/field/release/custody acceptance.
+
+Measured repeated pure empty STP queries motivate invocation-local reuse of GENUINE empty public-owner answers. Independent design allows separate optional16384-entry ceiling, per-host existing answerFIRST, current canonical query binding and published host-record/full-key/same owned index checks before each hit/seed and after actual owner seed. Foreign/callback/mismatch/saturation falls through to original calls; forced-original routing disables it. Old nonempty sharing and every P1NULLpointer/identity/alias/currentrole/static/allowance/ref/error check remain. No final end/VLAN result, replacement relation or crossrequest cache. Twenty authored producer/full-output/foreign/currenthost/indexcallback/bindingswitch/cap/fresh-admission/error variants and original-once PRIVATE dispatch diagnostics require actual hosted execution. Whole current record keys still inspect each host; no new content receipt shortcut. No schema/TS/pin/engine/sample/Scope/data change inferred. New performance and exactdist source await independent applied source plus fresh Rule7/all12 before one combined push; all current and prior failures/skips/withdrawals remain.
+
+## Current-main c543 integration before publication
+
+Owner #656 W60b merged as c543f0a1/orderedE7+ef730/tree11bc1bd2 at00:11:50Z; root did not approve/merge. All10 incoming redaction/workflow/corpus/test/record paths are preserved, nine non-NOW files exact main. The merge was automatic; final board preserves every parent workstream row and ordered decision/handoff line, with superseded W60 and owner-mergedW60b full rows kept historically under rule8. DeferredW60c is unassigned. No AGENTS/CLAUDE/SSOT or current four marker-policy owner drift; frontend159/seven receiverpolicy inputs unchanged. Exact admitted SPA five-file state and all three reviewed performance/control blobs remain. Unpublishedc793/57a canonical41960 PASS is only pre-integration evidence. Fresh combined-source current-policy canonical/all12/every-parent/text gates are required before one normal source push; runtime redaction/default/LF/supplychain/native/golden/UTC/Scope/size+latency/all15/allwhole proof is fresh, never borrowed. No generation/re-pin/new receipt or old ready handoff is inferred from this integration.
+
+## Actual2dc budget and owner-approved historical custody correction
+
+Current2dc/actual61e714/equal26d eligible job114619708862 has1FAIL1027PASS1warning/574.05s. The sole failed node remains the document/page budget test: documentwithout3536.0ms, with5788.8ms, growth2252.8>unchanged2000. Cold251.6 is observed; warm466.5 is a separate over300 observation. The first assertion leaves both later latency assertions/default/UTC unreached. Inclusive basis1702.5/admission1870.4/currentkeys300calls361.6ms are not additive causes. Actual public-role queries14000/16.4ms are not dominant; warm ownedcopy244.3 versus cold30.4 has UNKNOWN deeper cause. No GC/prewarm/copy/proof/source guard or threshold changes are permitted. All20 new empty-query variants,55 reader variants and selected native/stock/complete2+8-member HTTP controls pass in that unfiltered selection; this does not close latency, eight-member latency/RSS or current defaults.
+
+Current Distribution114619708836 recovers1810 tracked immutable files,537frontend/type/build/SPA reproduction and the complete wheel/sdist/twine/source/privacy/install/final reverify tail. Linuxselftest10+1NA discloses absent Scopehub. Frontend114619755544 has38files537PASS/API10/canonicalTS/current4pins/types/build/privacy/capture. Current Scope114619669880 has256files7633PASS27SKIP/all10 distinct assertion kills/restored16-6-9-9/standalone/hub/B3/mountall3flags/eight pure/eight actual browsers. Each completed log was received once and independently cached-reviewed; no new SPA/compiler/binary/Reference intake. These successes are exact2dc evidence only, not a changed-head handoff.
+
+New inherited W60b38189722054/job114619669538 has1FAIL4476PASS2SKIP/48.00s. Its E7-to-HEAD protected-output assertion rejects approved G14 golden/sample/fabric/admittedSPA deltas; later inherited/input/redacted-view assertions were unreached. Three archival3251-case replay suites have zero secret regressions. The two skipped cases are historical nested-shell coherent-mask cases (sh/single-quote and bash/double-quote); no skip reason was printed. Do not relabel them depth skips or invent later byte-oracle success.
+
+The owner explicitly authorizes rebinding ONLY the moved-output and inherited-output comparisons to immutable W60b finalef730d7e0ce085e54b517380c7ac714be7961371. Independent source review then identifies another unchanged historical premise: current ROOT golden/sample must equal BASE; admitted G14 files are different. A separate direct owner reply, "Authorize historical input binding", authorizes that exact third comparison to the same immutable W60b head. The combined test patch is6+/4-, including one constant/comment: the original assert count, BASE/E7 raw inputs, scratch inputs, hashes, both redacted-view byte oracles, current candidate redactor and every other workflow/assertion remain unchanged. Exact BASE/E7/ef730 golden/sample Git entries agree; current G14 golden34a08fc9/531430B and sample9005c92a/3401409B remain their reviewed real producer outputs. No local test/replay/build/controller ran. Independent source clearance does not prove fresh hosted custody/view recovery.
+
+The next allocation proposal is independently HELD and withdrawn before implementation: reusing tuple objects does not cache tuple hashes on the enforced Python3.12 leg, per-position VLANs are unique, and extra handle tables/lookups/caps have no source-backed net saving. This rejected design and incorrect hashing premise stay in external reviews; no interner or speculative product optimization is adopted. Small immutable-ID/empty-extension ideas are not a claimed budget fix.
+
+A reviewed diagnostic profiles ONE additional pure current admission only AFTER the original document/cold/warm measured calls and reports. It pins existing cache objects, compares all six admission slots with complete ordering/host aliases/index content, and checks the original mutation-sensitive full-current source binding before/after. It prints only bounded normalized call statistics, with no payload/locals/absolute paths/digests and guaranteed profiler disable. Formatting cannot swallow admission/equivalence/purity failures or the original2000/300/3M assertions. Profile overhead is diagnostic and its cumulative times inclusive; it does not qualify latency, prewarm measured calls or replace results/copies/proofs. Fresh actual hosted evidence determines the coherent next optimization. No new engine/golden/sample/Scope/schema/native/SPA generation is indicated by this test-only diagnostic and historical custody-scope correction. Independent applied review and new canonical Rule7/all12 source/text scans precede publication; no ready or round2-summary claim.
+
+## Final diagnostic source and current-main0dc integration before publication
+
+Source QA corrected two diagnostic-premise misses BEFORE any execution: the interim small fixture invoked a filesystem-producing helper and was replaced with pure dictionaries/actual STP/carriage producers; the interim lookup check compared return aliases with attributes only after lookup and could accept replacement. Finaled9 pins snapshot/admission/docmap/ordered document objects BEFORE lookup and checks the same pins after lookup/profiling. Three new pure equal-source/real-admission or document replacement refusal controls bring the authored diagnostic set to32. All new controls follow all12 original test definitions in the same original order; unused new temporary-directory fixtures are removed. Original real fleet/temporary API setup, measured calls/reports/equalities/2000/300/3M gates remain unchanged. Independent final source QA clears exacted9 plus authorizedW60e4b/root records/text. This is authored/source proof, not runtime recovery; every prior miss/HOLD/canonical result remains external history.
+
+Unpublished f57798f6 has sole2dc parent/tree9a085380. Canonical99007 completed02:50:10Z/PASS before commit02:51:52Z. Its actual all12 static scan finished02:54:51Z with39rawcommits/50every-parentpatches/136RAW136existingadjudications/zero unresolved-retained-errors/raw_scan_cleanFALSE/policy_clearTRUE. Immediate PR/main guard then refused BEFORE body edit/push because owner#658 merged as main0dc2f5d6 at02:11:02Z, rawC543+bf0e818c/tree3dea09a1. The guard refusal is source/base drift, not a runtime failure or duplicate publication. Finished f577/9a scans do not qualify the combined source.
+
+Integrate all eight incoming release-preparation paths unchanged, except resolving NOW as a full parent-history/row union and preserving both nonoverlapping SSOT facts. Owner product version becomes3.33.0rc5; schema stays3.23.0. RC5/#658 row retires under rule8 with its complete former row retained historically; its separate owner thread retains candidate release dispatch. Main's previous row reconciliation is respected, and every retired parent row remains exact history rather than a new active implementation queue. Actual909ours/857incoming owner-decision/handoff nonempty lines preserve ordered multiplicity. Only NOW conflicts; original text is retained externally. G14 algorithms/diagnostic controls/W60 custody bindings, four native schemas/literals, TypeScript, golden/sample/four Scope members and five admitted SPA outputs stay exactf577. Actual159 frontend processing inputs have zero overlap with incoming paths; seven receiver policies and current four marker owners need final independent rejoin. No new generation/re-pin/SPA receipt is indicated without actual drift. Fresh combined canonical/all12/every-parent/body/title and current package/default/native/Scope/all15/all applicable whole workflows are required; no release/tag/signing/attachment dispatch or old-source qualification follows from this integration.
+
+## Actual be8 source-bound diagnostic and W60b recovery
+
+Published be8f0d48 has ordered f577+0dc parents/tree77bc2fcc; actual executed07f60a6 has ordered0dc+be8 parents and the same tree. Eligible Python3.12 job114652465369/run38200452275 attempt1 reports1FAIL1059PASS1warning/572.68s. Its sole failure is unchanged document growth2161.0>2000ms. The1317481-byte complete-page assertion already passed before that failure. Cold253.6/warm255.3 are observations; their later300ms assertions, the full default suite and real UTC sample check were unreached. All32 new pure diagnostic controls join the unfiltered passing selection, with complete six-slot equivalence and current-source purity verified. This is not a separately named32-case receipt or current-source qualification.
+
+Ordinary timers show basis1696.6/admission1862.2ms and300 complete keys354.5ms. The14,000 real public role queries total16.8ms. The additional post-timer profile instead identifies360,000 joined_roles calls and194,000 empty_identity calls; instrumented self/cumulative times are diagnostic, inclusive and not predicted ordinary savings. Full keys, current-source proof, copies, original measured work, GC and every2000/300/3M guard stay unchanged.
+
+Current W60b job114652464867/run38200452363 attempt1 reports4477PASS2historicalSKIP/96.01s on actual07f/77bc. It reaches all three separately owner-approved immutableef730 custody bindings, seven inherited Git entries and all four BASE/E7/current-redactor byte/hash oracles. Three3251-case archive differentials have zero secret regressions. The two existing nested-shell checks remain skipped; their reason was not printed in this log. This proves historical W60 custody and the current redactor on those historical inputs, not equality of current G14 persisted outputs or field/release acceptance. Both completed logs were received once and independently reviewed; all earlier failures and unreached tails remain.
+
+## Current-key-history routing correction
+
+Independent design review allows reducing duplicate dispatch only while stored key history is exact. The sole per-invocation role-answer map keeps its original public owner calls and aliases. A fresh private missing sentinel and one ordinary get/local return avoid duplicate probes; any unsafe host/interface/VLAN query permanently selects the original membership-plus-getitem path before its first lookup, including final retrieval and later value-equal plain queries.
+
+A separate permanent host-proof-map history guard precedes all static/dynamic admission, index and later host-map accesses. Optional immutable host tokens carry only already-established host/full-key/observation/index joins after the original current record checks. They carry no relation, end verdict, row witness or cross-request result. Any unsafe host history disables mint and reuse, even after a callback restores a plain host. Current canonical empty-query binding, empty-cap saturation, exact argument/object coherence and post-query seed checks remain. Missing/invalid/cap-zero/foreign token cases use the existing routing path. Secondary configured-ID and empty-gap changes are omitted.
+
+The initial append-only-only token proposal was held before implementation: earlier foreign equal keys can retain observable hash/equality callbacks despite later plain arguments. The corrected hostile control must prove both real owner admissions occur using distinct valid peer evidence, then compare unsafe-to-plain restoration against the existing token-disabled planning/empty-sharing path. FactoryNone alone is not that oracle. These source premises and authored controls require independent applied review and real hosted execution; no performance saving or green handoff is claimed. No schema, native literal, TypeScript, engine/golden/sample, Scope output or admitted SPA change is justified by this internal dispatch correction. Fresh exact-head defaults/golden/UTC/native/Scope/distribution/installed/portable/Reference/all15+CodeQL/all applicable workflows and closing source/protection review remain required.
+
+Frozen author source adds36 PURE variants (7+9+3+7+3+1+1+5) after every original test definition. They compare complete six-slot metadata, inventory and lazy pages; foreign role-key then plain equality/hash/error traces; distinct real peer admissions before index/query; optional cap/factory/constructor/index/observation fallback; falsey/global-missing answers; boolean VLAN history; unsafe history after an earlier token; and corrupt token/resource outcomes. The first author tally39 was an arithmetic error corrected against the same frozen source; no runtime count was claimed. Only touched Ruff/whitespace ran locally. All55 earlier reader variants,20 empty-query controls and32 post-timer controls remain; actual fresh execution and unchanged budgets are mandatory.
+
+## Actual bf33 failure and exact original-domain correction
+
+Currentbf33/actual9759180e/rawordered0dc+bf33/treec115 eligible114672860034/run38207069046attempt1 reports3FAIL1093PASS1warning/622.87s. The unchanged budget fails documentgrowth2284.6>2000; the1317481-byte assertion already passes, while cold250.5/warm262.3 are observations and their later300ms assertions/default suite/UTC sample check are unreached. Two new None/global-missing cases fail FIRST in the old-CPU path because the authored expectation says one query. Original source performs currentA logicalPo10 then physicalGi1/0/1 before len raises; their enabled comparisons have not executed. This is an authored premise/source-QA miss, not a demonstrated new product escape. The other34 new variants join the unfiltered passing selection, without a separate named34 receipt.
+
+Independently cleared tests-only2fa00099848908ffa84982f14055c91b3d2aca09 changes12+/3-. Both query domains/order/currentA object/same genuine index, real logical row alias and exact physical empty list are required. Old/new six-slot metadata, inventory, all nine pages, whole holds/equality/count assertions remain. No skip, copied owner or weaker aggregate claim; actual fresh execution is mandatory. Current W60b114672798971 reports4477PASS2historicalSKIP95.34s on the same executed975/treec115; all3immutableef730 historical comparisons,7inherited paths,all4BASE/E7current-redactor byte/hash oracles,3x3251 zero-regression and wrapped-hostname checks reach. Both logs were received once, independently cached-reviewed, and must not be retrieved again.
+
+Ordinary basis1738.7/admission1906.3/currentkeys355.2/publicqueries16.2ms remain separate from post-timer instrumentation. Joined_roles427.55/empty_identity215.498 instrumented self times fall but outer gaps self1105.882 rises; this does not establish net ordinary saving or a GC cause. A narrow caller-loop proposal targets private plan-presence expressions, gated stored-native character dispatch and duplicate immutable signal lookups at the original operand points. Optional static IDs require exact current keys and permanent ordinary stored-key history/nonthrowing post-probe hints/ID0/original late missing-error fallback. Current exact built-in empty static lists alone may skip extension. No end/VLAN verdict, row/source read, owner call, key/proof/copy/timer/GC/budget shortcut is allowed.
+
+Independent design held blind signal reuse: a foreign compatibility truth object can be false before the first signal RHS, then true at the late allowance helper, making a reused signal unbound or stale from a prior end. Corrected design resets a private sentinel per end, captures only in the original RHS without extra truth checks, and falls back to the original late signal operand after the fresh VLAN read. The real flipping-truth/prior-different-signal/original-loop trace control is mandatory. The proposed plan Boolean establishes source-expression count only; a claim of certain CPython instruction removal was withdrawn. The disabled-loop oracle must retain BOTH previously accepted CPU flags and existing planning/empty-sharing. Conditional design clearance is not applied or runtime clearance, and these reductions may not close the284.6ms deficit.
+
+## Current-main dbcc receiver integration
+
+Owner#659 merged at2026-10-12T05:58:31Z asdbcc2c81a6fdf29ec958b610c8f8f3c060c171b3, ordered0dc+b24/tree173a. Only portable-receiver.yml, release supply-chain tests and NOW change. Root does not approve/merge/dispatch/download/sign/attest/promote a release. The incoming manual workflow keeps privileged draft fetch isolated from read-scoped candidate verification; source ancestry, full owner-derived denominator, all receipt/verifier checks and denial flags remain. Exact hosted runner census becomes24, with every existing protected15 context and both manual self-hosted fallbacks retained. Actual receiver execution belongs to its separate thread.
+
+Root merge uses no-commit; only NOW conflicts, and originals/both parent copies are retained. Exact incoming non-NOW blobsdb0697bae5302405dac0a38df3210471a8605b58/de637a3d9ef62d719d503482d5de142c6d009031 equalmain; frozen2fa test remains. All914ours/862incoming owner/handoff lines preserve order/multiplicity and21/3 literal rows remain, including the retired receiver-prep row and unchanged separate ownership. No AGENTS/CLAUDE/SSOT/attribute/G14/compiler/schema/pin/type/data/159SPA/sevenreceiver-policy/four-marker-owner overlap exists. New YAML lies outside the declared LF domains; no membership/schema/custody hash is locally calculated. Native/schema/SPA/golden/Scope values require current agreement but no new regeneration is indicated by these source changes. Fresh combined canonical privacy beforecommit plus all12 raw/messages/everyorderedparent/NULpaths/log/body/title/current-policy scans precede one normal push. All actual runtime/default/UTC/LF/native/Scope/distribution/installed/portable/Reference/current15+CodeQL/whole-workflow gates and independent final closing review remain required.
+
+Frozen author source usesUI68014c631c838eeef42bfe2667402c4d005acf40 andteste1377081fac811e04fdc0a8a63e44b21b37b599d, with18 NEW PURE loop variants after all prior definitions (6full-output,4stored-enum,2current-code,2flipping-truth/current-VLAN,1plan-property,1foreign-static-key/late-error,2real-witness extension). Both prior CPU flags remain enabled in the new-only disabled-loop oracle. The stronger2fa correction is preserved. Optional static-ID and current-empty-extension paths are included under the reviewed history/missing-late/ID0/current-exact-type constraints. No source benefit, instruction count or runtime receipt is claimed; authored fallback-domain controls are not public production admission promises. Touched Ruff/whitespace only ran locally; final applied source/text/combined-stage and fresh canonical/all12/hosted qualification remain mandatory.
+
+## Actual B0 negative, main-f637 owner closeout and next full-key mechanism
+
+Current B0/actual2f383/DBCC+B0/tree2be eligible114710180261 reports1FAIL1113PASS1warning785.44s. Only the unchanged document growth assertion fails:2471.2>2000ms. The complete1317481-byte page already passes3M; cold510.8 and warm314.4 are separate over300 observations whose later assertions, default suite and UTC sample check are unreached. All eighteen new candidate-loop controls and the stronger original two-query premise controls join the passing aggregate; no separately printed eighteen-case receipt is claimed. Current W60b4477PASS2historicalSKIP reaches all three immutableef comparisons and all four BASE/E7/current-redactor byte/hash oracles. Each completed log was received once and independently reviewed. Nothing qualifies a changed source.
+
+Normal current-key work is449.2ms across300hosts. Inclusive basis2056.9/admission2280.6 and public-role-query20.5ms are separate observations, not additive causes. Cold copy230.3ms with gen2collections39-to40 versus warm37.8ms/40-to40 is correlation only; deeper cause remains unknown. Instrumented extra length/get calls and1292.899ms gaps self time support reviewing explicit dispatch, not a claim of saved milliseconds. No GC/host-variation/prewarming/copy/receipt/threshold waiver is permitted.
+
+Owner#661 merged mainf6371b1c9068a75c70988823dd07984965c23759 at08:24:38Z, ordereddbcc+eb78/tree23bc2fdf, with ONLY NOW25+/1-. The no-commit integration preserves919ours863incoming nonempty owner/handoff lines in order/multiplicity,23ours3incoming literal rows and every14external gate name. RC5 release/receiver declarations remain attributed supervisor records; root did not reverify or receive their archives, sign, attest or dispatch a candidate. Unsigned/external-pending/fieldfalse/draftonly limits remain. No product/profile/data/pin/TypeScript/Scope/SPA/LF or current marker-policy owner changes are inherited.
+
+Conditional independent design permits native-for chunks over the SAME advanced iterator/depth frames. Count each occurrence before depth/type checks; inspect ALL dictionary keys before their values, preserve lazy depth-first ancestor resumption, Unicode lengths, repeated aliases, scalar/depth33 failures and unchanged65536-node/32-depth/1M-codepoint/8MiB-retention/32-answer caps. Only after complete eligibility may the same fresh marshal-v2 encode occur. Preserve the exact caught error domain and propagate errors previously outside it. No recursion, bulk queue, alias deduplication, metadata/hash key or omitted content is allowed. Literal prior iterative traversal and full six-slot/inventory/page owners provide pure mechanism and semantic controls; encoder traps, mutation, empty/deep/alias/cycle and original error boundaries must be exercised on hosted runners.
+
+The performance-unqualified caller-loop lane is withdrawn from the default hot row loop by selecting once between literal BF33 row kernel and the candidate. Bounded private dispatch duplication shares every public STP/allowance/identity/relation owner; the hot loop retains original seven fields, direct three-argument helper and extension/read points. Common static preparation still branches on loop_dispatch at configured/static writes and position construction, and declares candidate helper/history/sentinel objects. Independent applied QA caught the earlier claim of literal preparation/zero leftover overhead; the accepted scope is the literal hot kernel, not complete preparation withdrawal. The default control proves that kernel/shape/helper boundary, not absence of setup overhead. Eighteen candidate controls remain explicitly enabled, both prior CPU flags remain enabled, and all existing current-source/type/callback/identity/ref/native/paging controls remain mandatory. Source-level dispatch reduction is not latency proof. Final independent applied review, canonical privacy before commit, all12 every-parent/history/publication-text scans before push and all fresh unchanged runtime gates still close this work.
+
+Frozen authored UI474865c5120d22b59250ae59ceaf2ec0bad7a271 (146+/40-) and testscfb85a68ed63e62829c4ded37dc74f4d3a0c7370 (275+/0-) add35 pure variants after all prior controls:1 literal-default/candidate-equivalence,16 traversal/cap boundaries,6 nonplain/buffer refusals,2 mutation/error-domain controls,5 encoder refusals,1 fresh whole-encoding/type/order control and4 genuine current-source/full-output differentials. All eighteen candidate-loop controls stay explicitly enabled, all prior controls remain. Touched Ruff and whitespace pass; no local test/import/reproducer/controller ran. An interim new encoder spy incorrectly extended into separate scalar/order examples; its scope was corrected before freeze without execution. Independent applied QA and hosted budget/default/all-gate recovery remain pending; source mechanism is not performance proof.
+
+## Actual ED failure and conditional role-answer representation
+
+Actual ED093dc9/36e28/F637+ED/e22 selected job114764767548 reports1FAIL1148PASS1warning706.99s. Only unchanged document growth2274.5>2000ms fails. Complete page1317481 bytes passes3M before it; cold308.7/warm312.5 are separate over300 observations, with subsequent latency/default14/UTC15 unreached. All35 newly authored variants join the passing unfiltered census, not a separately printed named receipt. Normal basis1995.7/admission2191.8/300wholekeys327.2/public14000queries21.0ms are inclusive. Posttimer hot-kernel self1016.893 and joined_roles360000/self772.124 identify repeated representation work but do not establish savings, acceptance latency or a GC/host cause. All40 profile rows and complete six-slot/source-purity TRUE are retained as diagnostic evidence.
+
+Four current logs were received once, independently reviewed and ledgered: W60b1147647668864477PASS2historicalSKIP with all3immutableef/all4BASE-E7/current-redactor oracles; eligible548 current failure above; frontend11476482933538files537/API10/currentfour schema literals/types/build/privacy; Distribution1147647670771812 immutable files/SPA reproduction/wheel+sdist/twine/final reverify/selftest10+1NA absent Scopehub. Current whole CI/webapp/remaining workflows are not inferred from those component passes. No current artifact was selected or received. Original archive/authentication/source-roster/field limits and every older failure remain.
+
+Independent conditional design targets only canonical PRIVATE shared-empty/singleton role-answer representation. A native tuple with a fresh invocation tag carries cardinality and, for one position, the THIS-host row captured at the exact original list-comprehension read point before a physical callback. Actual seed owner returns remain their original objects. Multiple/noncanonical/foreign/unsafe initial domains retain original materialized answers. Both permanent map histories and exact original probe/order/factory/current-record/source/index/key/cap rules remain. No final relation, compatibility/state/allowance result or replacement verdict is cached.
+
+The initial plan's lazy unsafe-transition materialization is NOT cleared: allocation after the original cached retrieval creates a new error point; source reread could select a row replaced by a physical callback. The accepted path directly decodes already correctly minted tagged cells AFTER the original FINAL map retrieval, even after history/factory drift; those conditions disable new minting only. No extra lookup/hash/equality, pair/list construction or source reread is allowed there. Raw answers keep original len/not-beside/star-unpack, host-read, compatibility truth, state getter, second truth, fresh VLAN and late signal/helper order. Global allocation-failure equivalence or arbitrary private namespace/frame-inspection isolation is not claimed. All previous controls and a genuine representation-disabled semantic oracle, with both older CPU flags enabled, remain mandatory. New transition/alias/field/factory/error controls need independent applied review and hosted execution.
+
+Actual timed carriage_page performs two small-context encodings and ONE complete final response encoding. Pydantic/FastAPI serialization follows outside this direct timed call. Reusing later wire bytes would not demonstrate a correction to308.7/312.5 and an early response could bypass guards; no page wire-reuse shortcut is cleared. No current whole-source/proof/native/schema/owned-copy/nonce/header/byte guard or2000/300/3M threshold changes are permitted. Net representation benefit is unverified and may be insufficient.
+
+## Current-main FFA privacy/census integration
+
+Owner#655 merged at2026-10-12T10:41:55Z asffaab17871f10a24040b7e2c95fbe481bd6afa77, orderedF637+be9. Its PR body has historical round-3 counts; these are not new final-head proof. Complete11-file source integration changes client artifact name classes, SQLite companion suffixes, canonical privacy/ignore restatements, strict JS/Python download/write census and controls, a new early census CI step, and NRFU pack filenames to.nrfu.txt. It is owner source, not a G14 implementation takeover. Root does not approve/merge the PR or execute its writers locally.
+
+Only NOW conflicts. Original conflict and both parent copies are retained; the union preserves921ours889incoming nonempty owner/handoff lines in order/multiplicity and29/20 literal rows. Nine reintroduced already-merged Active rows are moved verbatim to history under rule8, confirmed through live PR states. Independent records review found seven additional stale Active rows; W62/#633 and its explicitly carried W54-W57, plus W60/#647, move to exact owner-merged history. W65/#637 moves to CLOSED historical status with no claimed merge. After that correction only W52/W10b/W60c remain active. Preserve all14 external release gates and attributed unsigned/draft-only/fieldfalse records. Auto-merged source keeps G14 escape-decoded marker inspection, observer main write count6/full-document wording, selected producer/default/UTC steps and carriage SSOT alongside all incoming strict controls. No branch of another owner is edited.
+
+The marker regex functions are unchanged by the incoming raw diff, but the canonical verifier and distribution policy Git identities change. Fresh current-policy canonical/all12 scans are mandatory; prior completed ED results stay historical. Incoming files overlap two159-SPA processing inputs, one of seven frontend receiver policies and three actual460-Scope material inputs. Old producer/profile receipts cannot certify the union. Independent source mapping and fresh hosted canonical/reproduction/producer observations decide whether actual output or binding refresh is needed; do not infer unchanged current qualification or regenerate golden/sample merely because a broader material census changed. Original admitted bytes and opaque ZIP remain preserved. No new producer/receipt/intake was performed in this local integration. Any necessary hosted route follows the existing user authority and its exact producer, selection and receipt gates.
+
+## Unpublished role-cell cost hold and narrowed revision
+
+The first authored role-cell source fccb95e6/test40e9656f had33 new pure variants and touched lint/whitespace passes only. Independent applied source review found no semantic counterexample, but Root held it before publication: each shared-empty hit still constructed a fresh three-field tuple in place of the old empty list and repeated full current-map joins plus factory checks. Eliminating a list expression did not establish less allocation or CPU work. This unpublished patch/report and its cost HOLD remain preserved; no runtime or latency result is invented.
+
+The narrower reviewed revision lazily retains ONE valid invocation-local empty cell at the first eligible original creation point. Every new reuse still follows fresh original empty_identity, native-key membership and the same history, owner, factory, sharing and cap conditions. Failed construction remains uncached and falls back; later attempts remain at their original creation points. Keep explicit exact-dict observation and MappingProxy index checks because empty_identity alone does not entail them. Existing cells still decode after the original FINAL retrieval even after unsafe history/factory drift; no transition materialization is added.
+
+A singleton still captures its row before the physical callback and outside optional constructor handling. Only a current canonical host token satisfying every existing factory/type/limit/current-host/observation/index/exact-identity condition may supply the already established join; missing, drifted, saturated or malformed cases retain the complete original six-way join fallback. No source/current-key/native/copy guard, input cap, owner call, callback/error order, budget or data family is removed. All33 controls and older families remain and gain positive reuse/uncached-failure/drift/cap/token-fallback controls. This identifies source work to remove, not saved milliseconds. Revised applied review, fresh current-policy scans and actual unchanged document/page limits remain mandatory.
+
+Revised author freeze: UIc3e0d21f89497f99df0b6cdfa4a5f45fc5ddf853 (121+/18- vsED), tests97fa7778acf33c2d73cc9bade52bd63904dde83c (658+/2-). All33 first role-cell variants remain and are strengthened;15 additional pure variants cover four post-first-empty drift/new-key cases, a genuine None-index shared-absence guard, and ten canonical-token/full-fallback cases. Total48 new role-cell variants. The old35 private spy only forwards the new keyword argument while retaining every seven-field/three-argument/once/non-vacuity assertion. Touched Ruff and owned whitespace pass; no runtime, budget file, schema, pin, golden/sample, Scope or frontend byte change is authored by this revision. Independent applied review and actual hosted recovery remain pending; current-policy/main material overlaps still require fresh combined observations.
+
+Independent review found and closed a test-proof gap before publication: the ten singleton token controls previously admitted a forced full-join implementation because they checked cells and outputs alone. The same ten cases now observe only the exact owned new_cell frame and actual bound native map-get calls: the valid token requires one token read and zero full-map reads; all nine ineligible cases require the complete five-map fallback, while disabled representation invokes no cell constructor. The previous profile hook is restored in finally before public DTO/page comparisons. All48 variants and prior inputs/output/alias assertions remain; no product, budget or timed-path instrumentation changed. This is authored mechanism evidence, not an executed pass or timing benefit. The earlier canonical12378 PASS on cb83/c3e0/97fa remains historical after this test-only strengthening; the final test blob is fe0413f128d47cfe837a5f403d4fc27d2c88981b and fresh pre-push scans are required.
+
+## Current 7ae result and exact-string leaf dispatch
+
+- **2026-10-12 (Codex, W52 current role-cell result and narrow leaf dispatch):** Published `7ae965c2` after current-main FFA integration and independent pre-push source/privacy/history review. Actual hosted `ff0ecf52` has ordered FFA + 7ae parents and equal tree `781264`. Python 3.12 job `114824200575` reports one failure / 1,196 passes: document growth 2,105.3 ms against unchanged 2,000. All 48 new role-cell controls have no failing node; no separately named 48-case receipt is invented. The page-byte assertion passes at 1,317,481 bytes. Cold/warm 296.5/295.6 ms are observations only because their later assertions and full-suite/UTC steps were not reached. Four complete diagnostic records retain equivalence/source purity; they are not acceptance timing or evidence of a cross-head speedup. W60b independently passes 4,477 with two historical skips and all three authorized historical bindings/four redacted-view oracles. Distribution independently passes 1,812-file immutable reproduction, 38 frontend files/537 controls, type/build/package/current privacy and self-test 10 plus one disclosed NA. Other workflows remain separately pending or metadata-only.
+
+  The next reviewed design moves only the exact-string leaf block ahead of dictionary/list dispatch, after the same node/depth checks and single type lookup. Strings avoid two inert identity comparisons; containers add one. Full key-first traversal, repeated aliases, type/codepoint/node/depth limits, exception behavior and fresh complete serialization remain. No guard deduplication after callback-capable role capture, new cache, budget change, timer instrumentation or generated data change is included. The literal full-walk oracle and all role controls remain; source review and actual hosted recovery are mandatory. Preserve ED's earlier failure, the first representation cost hold, token-witness gap and all older negatives. The failed Distribution log-client attempt returned zero bytes because its whole workflow was running; the single subsequent direct completed-job text receipt is separately recorded, with no product-failure inference.
+
+Applied source freeze: UI `a650a8feda96115ce09bda1291485e8101f6a703`, exactly five added/five removed lines moving the existing string block. Tests remain `fe0413f128d47cfe837a5f403d4fc27d2c88981b`. Existing literal full-walk, mixed-type, alias, cap, encoder/error, current-host mutation and real-producer differential controls already cover the changed dispatch; no implementation-mirroring test was added. All 48 role-cell controls and older families remain unchanged. Only touched Ruff and whitespace checks ran locally; both pass. No runtime recovery or timing benefit is verified. Fresh exact-source Rule-7 and all12 history scans precede publication.
+
+
+## Owner-merged W60c main integration
+
+- **2026-10-12 (Codex, W52 integrates owner-merged W60c):** Supervisor merged #660 at 13:42:20Z as `c39b706d`, ordered FFA + c6eacaa, tree `b03d3521`. Actual head and clean-merge trees agree; this is Git/source evidence, not a fabricated hosted execution receipt. Root did not approve or merge. Carry all six incoming non-board paths exactly, including current redaction owners, W60c corpus/tests/document and the expanded W60b workflow. Only NOW conflicted; both original parents and conflict are retained. Preserve every owner/handoff line and literal row, move both W60c histories and reintroduced merged/closed rows into history, and keep only W10b/W52 active. W60c's P2-6/P3-7 and inherited creator-alias limits remain explicitly deferred to their owner; G14 does not take that work.
+
+  Main advanced while the fb0e prepublication work was in progress. Canonical2038 passed exact tree b971 before commit. Actual history78124 already captured base c39b and passed 12 rules / 45 raw commits / 60 parent patches, with 168 raw matches fully adjudicated and no unresolved/retained errors. Root's initial FFA description was stale; independent review caught the new main before any body edit or push. These results are retained only for that unintegrated fb0e source, not substituted for fresh combined scans. The string dispatch remains exactly five moved lines, tests and G14 schema/native/data/Scope/dist families remain unchanged at integration. Fresh combined source/profile/producer/reproduction evidence must determine actual drift before any reviewed route action; golden/sample changes remain limited to approved design needs. No old receipt or green result qualifies this union.
+
+Source-derived, unexecuted W60c integration blocker: `test_w60c_each_finding_fix_and_final_head_keep_exact_main_views` still compares protected CURRENT_MAIN (`0dc2f5d6`) outputs against HEAD and current working-tree golden/sample bytes. The exact test command with --no-renames identifies ten changed protected paths against G14; the intended W60c final head `c6eacaa26a823b9176ef4127fdda477cfb637fbe` has zero protected-output differences and identical golden/sample Git blobs to 0dc. Root prepared an external-only proposal to bind just its moved-output, inherited-output and input-custody comparisons to that immutable W60c head. All CURRENT_MAIN/LATEST_MAIN/ROUND3/fix references, current candidate redactor, view hashes and byte-oracle assertions remain unchanged. The tracked test is still exact incoming source, and no runtime failure is invented. The prior user authorization explicitly covered W60b, so this separate W60c proof-scope correction requires the owner decision before application.
+
+The first saved diagnostic used ordinary rename detection and printed eight paths. Independent review corrected it to the test's exact --no-renames command: ten paths, including both deleted old JavaScript names. The first file remains preserved as a review-method miss; the ten-path list is the exact source counterexample. No hosted failure was executed or claimed for this new test.
+
+Owner decision received in this task: **Authorize W60c historical binding.** Applied exactly the independently reviewed external proposal: local immutable head `c6eacaa26a823b9176ef4127fdda477cfb637fbe` now owns only the moved-output, inherited-output and historical input-byte comparisons. The W60c test blob is `65b660cf93bcccece8cd26d8ea148a321d4206c6`. CURRENT_MAIN 0dc, LATEST_MAIN dbcc, ROUND3, all fix references, the current candidate redactor, baseline inputs, hashes and every redacted-view assertion remain unchanged. No test is deleted or skipped. Touched Ruff and whitespace pass; runtime closure is unverified and requires the fresh combined W60b/W60c workflow and all normal gates. The earlier source-derived ten-path conflict, eight-path diagnostic-method miss and pending-approval record remain historical; this direct approval supersedes only that authority hold.
+
+## Python 3.14 authored trace premise and preserved stronger controls
+
+Current published7ae job114824200732 ran actualff0e/tree781264 on CPython3.14.8. Its default suite reported2 failed/18,705 passed/165 skipped/3 xfailed/8 warnings/26 subtests in2156.65s. The two failures are the newly authored unsafe-lookup controls [foreign-host] and [final-none]. Both fail in the ORIGINAL disabled lane before reaching the enabled comparison: hash/eq/eq rather than hash/eq/hash/eq, and hash/eq/replace-final/eq rather than a second nested hash. The selected3.12-only step and UTC step were skipped as their unchanged conditions require. This does not establish an optimized-path regression or qualify that path; its comparison was unreached. Noneligible timed-false observations (document1601.4ms/cold2550.1ms/warm222.3ms) are preserved without transferring3.12 budget qualification.
+
+Exact official CPython3.14.8 [tuple_hash source](https://github.com/python/cpython/blob/v3.14.8/Objects/tupleobject.c) loads and stores a cached tuple hash, supporting the explanation for one child hash across two lookups using the same tuple. This is an inference from the versioned source and actual trace, not attestation of runner binary custody. Preserve the original source-review miss: interpreter hash callbacks were over-specified in authored tests.
+
+The reviewed correction uses a separate pure native-dictionary oracle with one fresh tuple and literal membership followed by FINAL getitem. It derives this runtime's complete raw callback trace while independently requiring two equality callbacks and the final returned value. Every actual lookup group and disabled/enabled full trace/output comparison remains exact. The oracle's state and mutations stay separate from the actual role map/source. Existing factory drift, first-equality final-none mutation, lookup-error class/arguments, current aliases, no source reread and no new factory/materialization controls remain. Add a distinct49th case mutating at the SECOND equality callback; its final None result rejects stale first values even when two operations produce the same trace. A one-get negative cannot satisfy the two-equality/trace assertion. No version skip, dropped hash events, loose callback allowance, product change or relaxed limit is authorized. The initial suggestion to replace the first-mutation case is withdrawn and retained as a design miss; the original case is kept.
+
+This design is source-reviewed and authorized for test-only implementation. Applied source review, fresh current-main canonical/history scans and all hosted matrix/default/UTC/2000/300/3M gates remain required. No local test, repro or profile was run.
+
+Applied test-only freeze: `tests/test_vlan_carriage.py` is `d75527025ce7e062ccc2342891db0e7c54c445d9` (64 added/13 removed lines); product UI remains `a650a8feda96115ce09bda1291485e8101f6a703`. The original four unsafe-lookup cases remain and the second-equality mutation is a separate49th role-cell variant. Exact runtime-native two-operation traces and returned-value identities are compared for each actual group; original disabled/enabled full traces and outputs remain equal. The isolated one-get and two-operation stale-first negatives exercise the rejected behaviors. Only touched Ruff/whitespace ran locally and passed. This is authored, not executed, proof; independent applied review and fresh combined hosted gates remain pending.
+
+
+## RC6 preparation main integration
+
+- **2026-10-12 (Codex, W52 integrates RC6 preparation main):** Supervisor merged #662 at16:28:47Z as `7fa74f53`, ordered `c39b706d + 1a4a3ab9`, tree `75207318`; head/merged/clean-merge trees agree. Root did not approve or merge. Carry the complete eight-file release-preparation change: product version3.33.0rc6, decoupled snapshot/schema version3.23.0 unchanged, release notes/SSOT and rc6 example strings. No release, tag, draft, receiver, asset, signing or promotion action is performed by G14. RC6's explicit post-merge operations remain with its separate owner; retain that active row with accurate merged-prep status and keep its original row/history verbatim. W10b and W52 remain active; previously merged/closed rows stay in history.
+
+  Only NOW conflicted; both parent copies and the original conflict are preserved. Resolve a union of every owner/handoff line and each parent's literal row multiplicity without needlessly duplicating rows already present. Preserve the G14 SSOT row alongside main's release-version change. Product G14, the five-line string dispatch, all49 controls, W60b/W60c historical bindings, schemas, native literals, LF receipts and adopted data/Scope/SPA bytes remain unchanged. Prior8f's verified3.12 budget/full/UTC, all Linux defaults, coverage87.44%, Scope7633/ten strict mutants/eight browser controls and other components remain old-source evidence; its Windows/full-source jobs were still running when main moved. Fresh combined source/profile/reproduction and every required/applicable hosted gate must qualify this new source. The schema is explicitly decoupled from product version; no golden/sample, native or frontend re-pin is invented from a version label alone. Any actual drift must use the reviewed hosted routes within the original design-only data authority.
+
+## Same-frame native classification correction
+
+- **2026-10-12 (Codex, W52 same-frame native classification correction):** Published f9eab71e / actual3ac8ce27 / treece935 retained all three round-2 semantic fixes, approved W60b/W60c historical bindings and complete main7fa. Actual eligible Python3.12 job114925928267 failed only document growth2389.7ms against unchanged2000, with1197passes; the1317481-byte/200-item page passed its byte assertion, but cold320.7/warm319.9 observations did not reach their later300ms assertions. Default and realUTC sample steps were skipped. Preserve that failure and every prior negative. The post-timer profile is equivalent/source-pure diagnostic evidence, not acceptance latency or a version/runner/GC diagnosis. Independent review rejected the larger first-helper inlining proposal on foreign-key callback-frame behavior; its additional guards made the dispatch rationale doubtful, so it was withdrawn without tracked application. Apply only the reviewed36+/9 same-frame scalar classification change: original helper frames, cap/token/six-map operations, current-source capture, post-owner seed checks and final lookups stay intact. The17 appended pure control variants retain all prior49/10 branch witnesses and compare genuine full outputs, spoofed-key callback/error traces and actual branch/helper counts. They are authored, not executed. No schema/native/TS/golden/sample/Scope/dist change, private verdict cache, GC/prewarm manipulation, local runtime or weakened budget. New exact-source scans and hosted recovery precede any green summary; RC6 release operations remain separate.
+
+## Exact fixture identity and controlled comparison
+
+- **2026-10-12 (Codex, W52 exact fixture identity and controlled comparison):** Published b6536e83 / actual5a3e1357 / tree51125 eligible job114954490545 reports2failed/1213passed/one warning in737.65s. Preserve both failures: original document-growth2793.1ms exceeds2000; the new spoofed-key[None] comparison retained two separately defined ForeignHost class objects in its full six-slot metadata. Their identical printed names do not make their identities equal. Move one class definition outside the False/True lane loop; retain fresh per-lane subjects/traces, all original methods, actual class metadata, owner callbacks, full outputs and exception assertions. This is a fixture-premise correction, not normalization or assertion removal. All49 prior role controls,17 new variants and10 branch witnesses remain. The1317481-byte/200-item page passes its byte assertion; cold329.7/warm337.1 observations did not reach later300ms assertions; full default and UTC sample steps were skipped. No kernel/runner/GC cause or speedup is inferred. Keep the original one-call after-timer diagnostic and32 controls literally intact. A separate wrapper compares current True and literal False on the same pinned subject/baseline/cache/documents after the real timers, with full source/six-slot/type/order/alias checks, genuine calls, direct result comparison and error-safe restoration. Two bounded40-row profiles are diagnostic80 rows total, never an acceptance latency or ratio. All real reports, thresholds and budget assertions remain. No UI/schema/native/TS/golden/sample/Scope/dist or timer change, local runtime, manual rerun, GC/prewarm manipulation or withheld failure. Applied source/static review and fresh hosted recovery are mandatory; no green handoff yet.
+
+## Complete-key active-frame scheduling
+
+- **2026-10-12:** Current210/actual1e57/tree640984 selected job114984717185 reports1failed/1264passed/one warning in820.71s; only document growth2370.8ms exceeds unchanged2000. Full page1317481bytes/200items passes its byte assertion. Cold331.5/warm327.2 are observed negatives before unreached300ms assertions; default/UTC were skipped. Preserve all failures and the earlier fixture/diagnostic source-review misses. The same-subject True/False pair confirms full six-slot equality/source purity and80 bounded profile rows, with fixed order and profiler effects; it is not a causal ratio, saved-time measurement or acceptance receipt.
+
+  The next source-only correction retains the exact complete-key algorithm but keeps the current child iterator/depth tuple active instead of appending and immediately popping it. Suspended parents still resume the same advanced iterator. Every container/scalar occurrence, all dictionary keys before values, node65536/depth32/codepoint1000000 bounds, alias counting, finite/exact types, current iterator/callback order and full fresh marshal-v2/8MiB optional retention remain unchanged. No partial encoding, fact cache, schema/pin/data/copy/API/guard change. Existing boundary/encoder/full-owner controls remain; add a literal current210 oracle and bounded traversal/order/nonvacuity controls. The measured343.4ms key component is itself smaller than the370.8ms document deficit, so this change carries no closure or headroom claim. Fresh hosted normal budgets, default/native/golden/UTC and all required/applicable workflows remain mandatory before the one round-2 summary.
+## Optional-prefix default withdrawal and exact warm-page diagnostic
+
+- **2026-10-13:** Published d7/DC7/tree1bfe eligible job115006629897 is1failed/1273passed/one warning826.17s. Only document growth2544.6ms exceeds unchanged2000. Page1317481bytes/200items passes its byte assertion; cold333.2/warm326.0 exceed300 as observations, with the later assertions/default/UTC unreached. Normal basis2083.3/admission2312.6/key336.2 and pages with no admission/key walk remain distinct. The fixed-order instrumented pair has complete equality/purity and40+40 rows; enabled joined-role self1050.745 versus disabled837.210 is not causal saving, ratio or headroom. All previous timing/source/control failures remain.
+
+  Independent review rejected adjacent logical/physical proof reuse: the current valid token already avoids six-map fallback, while broader reuse would skip fresh argument/operator/descriptor/history/cap checks. Withdraw only the unqualified optional-prefix default to False; preserve its per-call selector and original same-frame branches/guards. Inactive initialization/selector bookkeeping remains, so this is not a literal zero-overhead restoration. Keep all17 explicit mode controls. Preserve all50 comparison assertions by setting their requested starting mode before the genuine fixture baseline; add exact False-start restoration and wrong-mode/nonbool refusals. Production passes literalFalse to an exact-bool expected-default guard before the after-timer comparison. Original one-mode helper/32 controls stay unchanged.
+
+  The separate diagnostic profiles the exact already timed warm closure: carriage_page, its original complete schema validator, then original page metadata guard. Pins captured before the earlier admission comparison span its formatter and the new real call. Retain current cache/snapshot/admission/docs/raw binding, full typed values/aliases, exact call order/arguments, zero genuine binding/full-document/admission regeneration, first owner/refusal exception and every restoration. Compare the complete original wire response and mutable ownership before safe40-row rendering; standalone formatting failures remain bounded unavailable results, never hidden source/owner failures. Small pure fixture counts bind to their exact original query; the real200-item assertion remains unchanged. A legitimate unused cache-default constructor is not regeneration. Initial ambiguities about200 and construction were corrected before source adoption and remain recorded. No local runtime, additional data/profile receipt, copied verdict, owned-copy removal, encoding shortcut, GC/prewarm or threshold/timer change. Runtime and performance recovery remain unverified.
+  Initial unpublished diagnostic source held after independent review: it pinned the validator object/schema but looked up its validate method dynamically, allowing same-object method replacement after the earlier comparison to bypass the genuine schema call. This is a source-derived, unexecuted counterexample; the held patch/report remain preserved. The correction must pin and rejoin the actual bound callable before the earlier comparison, forward that saved callable and add a hostile replacement control. A newly authored optional-dependency skip is also removed so these new controls require their dependency; the pre-existing budget skip is unchanged. The condensed draft body briefly narrowed P1 to contradictory roles; corrected wording explicitly covers every relevant current role for stored configured codes, including agreeing forwarding and null pointers. None of these source/text review misses is a hosted failure or verified runtime closure.
+  A second unpublished diagnostic review held the post-only binding check: a genuine page callback could replace the validator method and a later metadata callback restore it, leaving end-state pins equal while the diagnostic used a different operation from the original closure. Add lightweight current-binding checks before each forwarded operation; full expensive source/value seals remain outside the profiled call. A bounded late replacement/restoration control and early owner/profile traps strengthen these refusals. This is another unexecuted diagnostic source miss, not a product runtime failure or permission to weaken a budget.
+  A third unpublished diagnostic hold identified unobserved cache lookup returns: a genuine pre-pinned lookup wrapper could return an equal cloned document or a distinct six-slot admission while the cache entry itself stayed unchanged. Add transparent return-identity checks against the pre-pinned document/snapshot/admission, with first-fault retention before production/validation and exact restoration of original instance-attribute presence. A bounded equal-replacement control closes that diagnostic subject mismatch. The review initially suggested dataclasses.replace for the admission; inspection corrected the unexecuted construction to its real six-slot class constructor. Preserve this reviewer construction miss separately from the valid source finding and from all hosted failures.
+
+  Final unpublished lookup review caught a remaining repinning seam: comparing the returned document to the current mutable document map can accept an equal replacement when that map is changed and later restored. The target must be the document object captured before the earlier comparison, with a genuine transient-map control. Preserve the held a40 source as another unexecuted diagnostic finding; snapshot/admission identity guards and instance-attribute restoration were already upheld.
+
+## Complete snapshot encoding candidate after main1d902
+
+Published23f/EAC6/a375 selected Python3.12 produced1failed/1292passed/one warning in866.57s. The sole document-growth assertion remains2968.3>unchanged2000ms; page1317481bytes/200items passed the byte assertion while cold337.2/warm343.3ms are observations before unreached300ms assertions and skipped default/UTC tails. The new exact-page diagnostic has complete equivalence/source purity and real page/schema/metadata calls; normal binary encoding120.2ms and instrumented marshal117.474ms identify work, not removable time or causal savings. All earlier negatives remain.
+
+Main1d902 is an owner-merged RC6 board-only closeout. Local merge1e988 preserves both full parent histories/rows, retires RC6 and retains all14 external gates. Its canonical static scan completed before the merge commit; final changed source still needs fresh publication scans.
+
+The independently reviewed optional encoding candidate uses the same full-snapshot helper and one original root copy, then a fresh strict C protocol4 encoder with memo disabled. Each current value/type/position and every alias occurrence is read; no decoder, mutable read verdict, stored source substitution, new proof field or larger retention bound is introduced. Always-refusing foreign reduction prevents added foreign serialization hooks. Unsupported writer profiles, errors or nonbytes fall through to the actual original marshal2 OUTSIDE the candidate exception, then the existing complete JSON/scaffold/canonical guard. Original fallback Buffer/audit/error behavior remains; successful eligible encoding omits the marshal-specific audit event, an observable private implementation difference without a sandbox/custody equivalence claim. Protocol5 and reference-count-dependent marshal4 remain rejected designs.
+
+Every existing bound-source test body and all proof/latency controls remain unchanged. New pure controls must use the genuine C writer, preserve alias/key positives and current mutations, exercise hostile reductions and protocol-specific Buffer/bytearray paths, and retain original exceptions/contexts/BaseExceptions/caps. Source clearance is conditional on the applied controls. No candidate runtime, speedup, document-budget recovery, page-budget recovery or final readiness is yet verified. No golden/sample, schema/native pin, generated types, Scope binding or frontend dist changes are justified solely by this private encoding change.
+
+## Current 0b39 crashes, wrapper premise and lifecycle discriminator
+
+Actual current385/19e371 Python3.10.22 and3.11.17 default step15 abort during garbage collection around3% with segmentation fault/process139. The3.10 stack is conftest46 teardown import,3.11 fixture setup/pluggy; neither identifies the corruptor. No named failed assertion or aggregate exists; remaining default/UTC did not execute. Python3.11 early full LF passes1/2.03s, and each earlier helper contract retains its own limited receipt. These positives do not erase the crashes.
+
+Eligible3.12 step14 completes2failed/1314passed/one warning826.48s. Original document growth2421.9 exceeds2000. The other failure is a newly authored wrapped-buffer control that assumes helper success although its actual original marshal fallback raises ValueError:unmarshallable object. Preserve the failed source and correct only that premise: compare actual original return OR exact errorclass/args and the complete callback trace; keep candidate-no-extra-export/one-real-original-call/same-whole-copy/exception-context controls. Byte1317481/200 passes; cold269.3/warm272.9 observations are not reached latency assertions, and default/UTC remain skipped. No selected3.12 segfault occurred.
+
+Exact official3.10/3.11 source refutes the NULL-memo deallocation and double heap-type traversal hypotheses. The bound refuser creates a temporary self edge but C dump clears it on both exit paths; this is not proof of corruption. Independently reviewed next discriminator: make the unused-self refuser static on ALL existing reviewed profiles with genuine descriptor/instance/class/owner identity and refusal controls. Keep the full codec, one fresh whole copy, original fallback and every cap/guard. No class-slot redesign, version exclusion, GC manipulation or cause/savings claim.
+
+An early named bound-source suite runs in its own fresh pytest process on every existing matrix leg. All original selected/default/UTC commands, conditions, order among existing steps, timeouts and budgets remain literal. It supplies a focused execution discriminator and never replaces complete defaults. All original test bodies and the prior23 variants remain except the evidence-backed new wrapper premise correction. Current runtime recovery and the document budget are still open. No artifact, generation, schema/native pin or data refresh follows from this source change.
+
+## Latest owner scope: unchanged tests and source-only corrections
+
+The latest owner instruction freezes EVERY test, performance budget and approved W60b/W60c historical binding at61607. Main1d902 is already included by merge1e988; both full board histories remain, with no duplicate integration. Current hosted logs are received once and bind DC08/e854. Python3.10 early96cases/96passed0.18s then process139;3.11 early95/96 then GCfatal before finalcontrol completion. Python3.12 early96cases complete normally, followed by1failed/1316passed/one warning821.56s, solely document2396.9>2000. Byte1317481/200passed; cold265.7/warm266.7 are observations before unreached300ms/default/UTC. Assertions alone do not certify process survival. The corrupting operation remains unconfirmed.
+
+Reviewed source-only prehook (protocol_assurance306e) returns literalNone for identity-exact JSON-native types/finite scalars, otherwise calls the existing exact static refuser before native fast dispatch. It creates no persistent IDs, normalizes no input, and keeps one fresh root copy, profiles, whole typed bytes, all caps and original M2outside-except fallback. The Cfrozenset unmatched nesting path is a source discrepancy, not a proved explanation of these GCcrashes. Tuple/frozenset-key fixtures now take earlier refusal; retain their exact tests and original error/context assertions without claiming unchanged value-note coverage. Per-occurrence overhead and runtime recovery are unmeasured.
+
+Reviewed public-normalizer correction (textutilsc08b) performs one scoped-case anchored prefix substitution in normalize_ifname, preserving its original bool/strip points and the literal14-substitution foreign/drift fallback. Original languages are disjoint and a replacement cannot enter a LATER rule; it can enter an EARLIER rule, so FiveGigabitEthernetftyGigE1 still produces FiftyGigE1 for this invocation. Port-case restriction, UnicodeSVI digits/boundary, optional-tail order and suffixes stay. Optional setup failure disables the optimization instead of creating an import error. Fresh coherent module/operator/pattern/replacer/template-helper checks guard the native lane. No client-value cache, local identity restatement, new admission rule or parser-output change is intended. The16800 normalizer/240000sub/272000compile profile population is instrumented evidence, not removed milliseconds or promised headroom.
+
+Both source corrections and every61607 test/workflow/historical binding are independently reviewed; all tests remain byte-identical and no new tests are added. No profile mask, GC adjustment, threshold/cap/timeout/baseline relaxation or old-receipt transfer. Combined source/records need fresh canonical/all12 pre-publication checks and exact-head hosted full process survival/native/default/golden/UTC/budgets/Scope/Reference/distribution/installed/portable/15contexts+CodeQL. Golden/sample/schema/pin/TS/Scope/dist regeneration is not inferred from value-equivalent or private-source changes; actual fresh comparisons remain decisive.
+
+## Native encoder ownership discriminator after da1e
+
+Current da1e/actual78b7/equalfc9 remains blocked. Once-received Python3.10 log115134456571 has all96 assertions and96passed0.25s followed by shell segmentation fault/139, without a Python fatal stack. Python3.11 log115134456392 reaches95 of96 then a GC-time fixture/setup fatal error/139; the final stateless-refuser case has no PASS. Later selected/default/UTC steps are skipped. These failures refute process recovery by the prehook alone. The corrupting operation remains unconfirmed; earlier refuted NULL-memo, traversal and buffer-reference hypotheses do not become explanations. Current3.12 selected-step metadata succeeds, while its complete default/UTC log remains pending and unread at this checkpoint.
+
+The source-only ownership adapter constructs one exact captured C Pickler and installs the SAME static JSON prehook through its real persistent_id property. The ordinary Python object delegates native fast access and dump; it does not subclass the C object. All static refusal functions, coherence checks, reviewed profiles, one whole copy, P4/fast1, caps, proof fields and original marshal2 fallback outside except remain. Constructor/dump/fault spies still execute real C operations; the description is delegation, not an inherited method. No pure-Python codec, fake bytes, load, GC manipulation, version mask, client cache, payload keepalive or test-specific production field. The exact adapter applied review is required before publication; removing subtype lifecycle composition is a discriminator, not a proved root cause or fix.
+
+Every test, workflow, budget and historical binding remains byte-identical to61607. Normalizer c08b is unchanged. No golden/sample/schema/native pin/Scope/dist refresh is inferred. Canonical privacy on the frozen staged tree, all12 fresh raw/every-parent/NUL-path/log/body/title/current-policy scans and independent actual-result review precede one push. Fresh all96 assertions WITH successful process exit on the supported matrix, unchanged document2000ms/pages300ms/3MB, selected/default/golden/UTC/native/Scope/Reference/distribution/installed/portable and all15+CodeQL/applicable whole workflows remain necessary before one round-2 summary and STOP. Previous failures, refusals, skipped tails and custody boundaries are preserved.
+
+## Failure-only native allocator evidence after5347
+
+Actual5347/efdd/equal6ff Python3.11 early step10 still ends139 after95 named passes, at GC fixture/setup before the last stateless-refuser case returns. The once-received93544byte log115145642850 binds current source; no aggregate or named assertion failure exists. The adapter did not establish process recovery. Current3.10 job115145643016 is also received once: all96 and aggregate96passed0.31s, then shellsegfault139 with no Python fatal stack. Both supported legs remain failed despite assertion passes. Current3.12 job115145643085 once154246bytes has early96passed0.37s normally then selected1FAIL1316PASS1warning831.52s, solely document2206.5>2000. Page1317481bytes/200items is asserted; cold447.4/warm450.3 observations exceed300 but their assertions and complete default/UTC are unreached. The five complete raw profile records remain evidence, not acceptance or a cross-head speedup. Exact marshal/PickleBuffer source paths refute a simple double-buffer-release explanation; original baseline calls precede candidate calls but no corruptor is established. Prior negatives and independent source/design limits remain. Current frontend115145558954 separately passes38files537tests/API10/types/currentpins/build/privacy; whole-source qualification does not follow.
+
+The diagnostic changes only early-step id metadata and adds one failure-only PR652 step in the existing CI test job. It reruns the SAME frozen96 pure-function suite in a separate hosted process with step-local PYTHONMALLOC=debug/PYTHONFAULTHANDLER=1, providing allocator-origin evidence. All existing jobs/runners/matrix/actions/commands/conditions/order/timeouts/limits remain. Every test and approved W60b/W60c binding stays61607 byte-identical; product, normalizer and data remain5347. No new job/test, continue-on-error, GC manipulation, profile exclusion, controller/local runtime or performance prewarming. Original early success skips it; original failure remainsFAIL regardless of its result. It is controlled failure instrumentation, not an unchanged-context retry to obtain green. Debug output is not acceptance timing or gate replacement. Fresh privacy/all12/independent actual review precede publication; actual native-origin diagnosis and final uninstrumented mandatory gates/budgets remain open.
+
+## Supervisor-directed complete pickle withdrawal
+
+The latest supervisor instruction permits converting only removed-lane controls and directs conservative pickle removal (or older-version fallback). Complete removal is chosen for every version. Protocol1d444 removes every optional Pickler/PID/refuser/profile/import branch and keeps exactly one original whole=dict(value)+real marshal.dumps(whole,2). Complete proof/scaffold/text/current comparison, authority and all existing caps remain. No substitute codec, version mask, GC operation, cache or fake bytes. Normalizer c08b and all G14/paging/data/schema/native pins remain. Current3.12 actually reports a budget failure rather than a segfault; both older process crashes and that distinct failure remain recorded.
+
+Tests3f0a keep the first465 pre-candidate lines and every unrelated valid test, performance budget and approved W60b/W60c historical binding. Only9 removed-lane definitions/24 variants become genuine original-codec complete-copy/type/key/alias/mutation/error/context/notes/hooks/fault/full-fallback/BaseException controls. Every ordinary bytearray/subclass/contiguous/released/noncontiguous memoryview domain remains with real-original return OR exact error comparison, but no PickleBuffer construction remains anywhere in product/tests. Complete genuine binding is minted BEFORE faults or incomplete bytes are injected, so an artificial partial encoding never supplies authority. An initial draft replaced the buffer domains with other primitives and was correctly held; restored domains and retained miss are now independently reviewed before publication. Authored96-case census is not runtime or coverage proof by count alone.
+
+The staged allocator-step proposal456/d9e is SUPERSEDED and never scanned, committed, pushed or executed. CI is restored to exact5347. Historical design, source reviews, reports and every received log remain; no source failure is erased. Current5347/efdd/6ff all-three failures stay exact:31096+aggregate then139;31195 then139;312 selected document2206.5>2000 with byte1317481PASS and447.4/450.3 latency observations before unreached300ms/default/UTC. Conservative withdrawal is not a confirmed corruptor diagnosis or measured gain. Fresh exact-head hosted supported-matrix process0, unchanged2000/300/3M, all source/alias/current-role/type/native/LF/default/golden/UTC/Scope/package/15required+CodeQL/whole-producer gates remain mandatory. Any performance recovery must be actual source work under those same assertions, not a larger budget, skip, timer or GC adjustment. New canonical/all12/independent actual publication checks precede every push; final green precedes the sole round-2 summary and STOP.
+
+## Successor-author recovery (2026-10-13)
+
+The owner-authorized successor found the existing branch worktree clean at `1e67c162`, exactly one unpublished commit after remote `5347e010`. Ordinary Git status showed no uncommitted tracked or non-ignored untracked files, so no preservation stash was required. Live remote main `1d902ee2` is already an ancestor. No reset, replacement worktree or duplicate main merge was needed.
+
+The complete PR discussion contains one issue comment, `6113983469`, and no inline comments or formal reviews. Its three current findings and earlier reconciliations were read in full. Independent source review of the withdrawal confirms one whole-root copy followed by original marshal2 for every interpreter, no PickleBuffer construction in production/tests, preserved original pre-candidate controls, and meaningful converted copy/alias/current-mutation/hooks/buffer/error/fallback/process-control tests. W60b/W60c test blobs remain unchanged (`e4b28a6a` and `65b660cf`). Carriage fixes, budgets, workflows and generated outputs are untouched by withdrawal.
+
+Freshly read completed job `115145643085` from run `38351726008` confirms Python 3.12's failure is the unchanged document budget: 2,206.5 ms growth, with 1,996.0 ms inclusive carriage admission and 1,764.4 ms basis checks. Page observations are 447.4/450.3 ms, including about 245 ms per pickle identity encoding; the later page assertions and full default/UTC tail did not run. These are prior-source observations, not a saving forecast or recovery proof. The next hosted head must measure the restored original codec before selecting further work reduction. Local activity remains source/Git review and permitted static checks only.
+
+## Restored-codec result and complete page-copy work reduction
+
+Published `200621ad` follows successful canonical privacy and a raw/decoded history scan covering all 12 marker patterns, 58 commits and 76 parent patches, with no matches or exceptions. PR execution `f92f200486ed763459e36823f755c86d8095e332` has ordered parents `1d902ee2` and `200621ad`; its tree equals the author tree `b8aff39e3c20adf9927cdaa8839b2ba6b9e72520`. The early bound-source process succeeds on all five Linux versions and Windows; this does not certify their still-separate full suites. W60b job `115179331899` passes 4,725 with two existing skips. The PR body edit superseded webapp run `38362364960`; replacement `38362383305` owns that head's webapp result.
+
+Linux 3.12 job `115179481672` finishes the G14 selection with 1 failed / 1,316 passed / one warning in 649.59 seconds. Document growth is 1,942.8 ms against 2,000 and full page bytes are 1,317,481 for 200 items. Warm page 315.3 ms fails the unchanged 300 ms limit; cold 296.4 ms precedes its unreached later assertion. Full default and UTC reproduction remain skipped. Source identity consumes 105.0/121.7 ms and complete page ownership copies 40.8/39.8 ms in the existing inclusive telemetry. These are observations of this head, not additive causal savings or final qualification.
+
+The corrective source changes only complete carriage-output copying after the existing `_require_json_native` guard. One invocation-local memo owns every native dict/list while immutable JSON scalar leaves avoid generic deepcopy dispatch. Repeated aliases, cycles, complete engine/carriage/vocabulary fields, parent-memo restoration and source keepalive are preserved. Any foreign value uses genuine stdlib deepcopy; after a foreign hook, every subsequent value/key uses the original interpreter's dispatch and memo semantics. Source snapshots, other documents and schema copy paths remain unchanged, as do source/summary checks, complete schema validation and full response-byte admission.
+
+Eleven added test variants compare the original copier and cover values/signed zero/Unicode, shared mutable aliases, both mutation directions, cycles without admitting them through the native guard, foreign value-before-key hooks and shared memo, scalar-memo injection, containing-list memo deletion/replacement, exact errors and KeyboardInterrupt, and the actual HTTP producer's retained complete output. Independent review identified the two memo gaps in the first unpublished helper; both are retained as source-review findings and corrected before publication. An initial new HTTP-control expectation was corrected to the existing ValueError behavior before execution. Every prior test and the entire budget file remain unchanged. Existing owned-copy telemetry continues to count its named stdlib copy calls; the unchanged page timer and complete post-timer profile include the new copier.
+
+No stored model, generated output, schema/native pin, artifact adoption, threshold, warm-up, GC setting, test skip or workflow changes. Hosted measurements and the final full matrix must establish correctness and actual budget recovery. A possible validator-code memo was source-refuted for foreign metadata callbacks and was not implemented. Independent review, fresh publication scans, all 15 protected successes and all applicable workflows precede the single round-2 summary and stop for re-review.
+
+Explicit recursion avoids a function/closure cycle retaining the source and copy memo after return; it does not change GC settings or collection. A permitted small synthetic in-memory probe of the two actual extracted pure functions passed values/aliases/isolation, cycle refusal, foreign-memo parity, process-control and source-release checks on local Python 3.12. This is a bounded pure-function check, not pytest, app/engine execution, timing, full-suite or hosted acceptance evidence. Touched Ruff and whitespace checks pass; the first cleanup spelling was rejected by Ruff and replaced before publication without suppressing a rule.
+
+## Supervisor-directed architectural correction after 02d14897
+
+Run `38367107244`, Linux 3.12 job `115195171692`, records 1 failed / 1,327 passed / one warning in
+832.39 seconds. Document growth 2,231.1 ms fails the unchanged 2,000 ms ceiling. Cold/warm page
+316.0/320.8 ms are observations before their unreached assertions; full default and UTC reproduction
+are skipped. The page-copy correction did not establish budget recovery. Earlier process-survival
+passes and every previous failure remain separate evidence.
+
+The supervisor directs bounded first-document carriage work, with preparation at production/ingest.
+The amended design records the implemented boundary: every valid object is prepared once from final
+snapshot bytes at `Store.add_snapshot`; original raw bytes and receipt identities stay intact. The first
+fleet document reads only a stored whole DTO whose carriage contribution is precomputed summaries and
+bounded source refs. The larger compact cable/code/role fragments are loaded only for selected lazy pages.
+Original full admission, stale-STP, channel-port and alias guards execute at ingest; the renderer shares
+the original whole-cable member/byte gate and consumes explicit prepared data, never a fake BoundSnapshot.
+
+Atomic sidecar persistence, INTEGER content/source anchors, immutable guards, one-time migration,
+version refusal, source/fragment substitution, incremental blob tampering, missing role directory
+entries and warm-cache deletion/tampering have authored controls. The initial review caught incomplete
+code-slice width, an absent-carriage request fallback and missing warm-fragment revalidation. All three
+were corrected before publication. No runtime pass is inferred from source review.
+
+API controls now inject fleet artifacts at the Store reader, preserving real source binding and every
+schema/source/nonce/copy/error assertion. Counts describe one prepared fleet read and three lazy device
+builds; actual ingestion binds once, and first-document/page controls forbid request binding, preparation,
+full admission, projection and code recounting. Original device-input isolation, single-flight, cache
+namespace/lifetime, failed-admission retry and page-forgery controls remain. The real budget keeps the
+same timed operations, first-use stub, 200 returned items, complete validation and 2,000/300 ms / 3 MB
+ceilings; it now discloses actual ingestion time. Two/eight-member HTTP traversal uses the Store path.
+Obsolete after-timer admission-profile executions are retired from that measurement; their independent
+legacy-owner unit controls remain and do not qualify the new HTTP path.
+
+A permitted small pure synthetic owner probe matches complete original/prepared page DTOs for valid
+configured evidence, changed logical port, stale STP error and missing section, with source purity and
+summary parity. No local pytest, Store/app execution, build, engine CLI or timing was run. Touched Ruff,
+syntax and whitespace checks pass. Golden/sample, historical W60 bindings, schemas/native pins,
+generated types, Scope bindings and workflow limits are unchanged. Source-byte integrity hashing
+remains O(bytes), and only selected fragments are certified on a page read. Version 1 requires an explicit
+future behavior-version/migration update. Fresh hosted validation on the final head remains mandatory.
+
+## Architecture integration: portable database census
+
+Published architecture head `eabd9cc8636f59e6000874fb309af394fa092672` follows canonical privacy
+and all-12-pattern raw/decoded scans (60 commits, 78 parent patches, zero matches/exceptions).
+Hosted merge `4b19156985b1b9f2aba7937eb25563cf14f86446` has ordered parents main `1d902ee2` and
+the author head, with equal tree `71fc8ebb0f8afb79f145b659af82cca8ba4d62e0`. CI run
+`38381067700` passes all six early bound-source processes. Other pending tests do not qualify it.
+The PR body edit supersedes webapp run `38381067723`; `38381085057` is its replacement.
+
+Portable run `38381067673`, job `115241319222`, fails with `database qualification evidence is
+invalid` after building and running the frozen application smokes. Independent static tracing
+identifies the exact mismatch: Store creates twelve tables and the database preflight emits every
+one, while the qualification receipt's closed row-count shape still names ten. The missing entries
+are `carriage_projection_parts` and `carriage_projection_role_presence`. The completed preflight
+cases already checked their request, row counts, raw hashes, source preservation and independent
+logical migration census; this later shape refusal is not evidence of a storage migration failure.
+
+The corrective source versions only the portable qualification receipt from `/2` to `/3`, adding
+both tables to its closed census. `/2` joins `/1` in explicit superseded refusal with a stated reason;
+no historical receipt is upgraded into a pass. The current shape fingerprint is updated under the
+new ID, the operator README is reconciled, and a new test compares the declaration with an actual
+Store database and refuses every missing table or an extra table. A separate control requires
+the `/2` refusal. The README-family assertion counts distinct schema families because one family
+now has two superseded versions; every current family and old-version refusal remains checked.
+The application/native schema pins, package version, historical custody bindings and golden/sample
+outputs remain unchanged. This integration correction requires fresh full hosted validation.
+
+## Materialized pages after eabd9cc8
+
+CI `38381067700`, Linux 3.12 job `115241603255`, reports 2 failed / 1,345 passed / one warning in
+796.98 seconds. Document growth is 91.7 ms (1,151.7 with carriage, 1,060.0 without), passing 2,000 ms.
+Warm page 537.0 ms fails 300; first-page 338.9 ms is an observation before its unreached assertion.
+The complete response is 1,317,481 bytes and 200 items. Ingest is 13,135.7 ms with carriage and 3,351.1
+without. These measurements qualify only that failing head; default-suite and UTC tails are skipped.
+The other failure is the new bounded-ref fixture: six cables yield seven refs in both representations,
+so its `old > new` assertion correctly fails. Webapp replacement run `38381085057`, W60b and Scope
+pass on that head; they do not erase either failure or certify the successor.
+
+The supervisor requires no relation computation on page requests. Preparation `/2` now renders full
+rows once during ingestion and streams independently compressed variants plus per-cable dictionaries
+into anchored storage. Page reads decode only selected, precomputed rows, with exact expansion bounds
+and the original complete member/byte prefix and full transport guards. Source, bounded context and
+selected rows are verified in one transaction with one raw-source hash. Cold pages never read or admit
+the global fleet document. Expected engine/summary copies precede the adapter call, so mutating both
+its input and output cannot forge agreement.
+
+The separate 64,000,000-byte derivative-payload cap includes every stored `/2` payload and its manifest;
+it excludes SQLite file/index/INTEGER overhead and is not an RSS bound. Ingestion over the cap rolls
+back atomically and returns an explicit HTTP 413. The original raw-section 6 MB / 600 KB growth gate,
+document 2,000 ms and page 300 ms / 3 MB limits are unchanged. Actual 100/200-VLAN derivative payload
+growth is measured after every existing timed operation and assertion, never as an added warm-up.
+The total database census is now thirteen tables; unpublished portable qualification `/3` is pinned to
+that shape, retaining explicit `/1` and `/2` refusal and all existing receipt guards.
+
+The bounded-reference fixture now uses twelve and twenty-four cables, retaining the strict reduction
+assertion and additionally proving original refs grow while prepared refs remain identical. Added
+controls cover streaming source mutation, malformed/truncated/trailing compressed data, exact expanded
+length, foreign/released buffers, cold-page no-document/no-relation traps, source/fragment substitution,
+selected-window census, migration refusal, source hash/read count and the ingestion rollback boundary.
+No GC setting, skip, warm-up, threshold or full response validator changes. A tiny pure synthetic probe
+passes eight complete original/materialized DTO comparisons plus malformed-stream and member-boundary
+controls; this is not a local runtime or hosted performance result. Fresh final-head CI remains required.
+
+## Current-source download binding after 1f83892f
+
+Published `1f83892f` follows fresh canonical privacy and all twelve raw/decoded marker scans (61 commits,
+79 parent patches; zero matches/exceptions). CI `38387518019` stops every matrix leg in the early client
+artifact census. Linux 3.12 job `115263336238` reports 2 failed / 658 passed in 29.08 seconds; bound-source,
+carriage budget and full default tails are not reached. The new HTTP 413 handler/import changed the
+complete `webapp/backend/app.py` blob from `f3ee6dbc` to `d6029eef`, but its current-source download-chain
+binding was missed. The strict gate correctly withholds implicit download-name classification.
+
+The corrective review inspects the full existing frontend caller/factory/catalogue and backend route,
+header, `_send_file`, SPECS/docmeta chain. All seven other bound files and all download functions/scopes
+are unchanged; the only app changes are the dedicated `CarriagePreparationLimitError` import and its
+JSON-only 413 handler. No download path calls the ingestion operation that raises that exception, and
+the handler writes no content-disposition or filename. Only the current app blob binding is reconciled.
+Discovery, every existing mutation/refusal control and historical W60 bindings remain unchanged. This
+is a reviewed current-source binding update, not a new exemption, budget pass or generated-dist import.
+
+## First materialized-page budget pass and transport-proof fixture alignment
+
+Published `0518f33a` follows fresh canonical privacy and all twelve raw/decoded marker scans (62 commits,
+80 parent patches, zero matches/exceptions). CI `38389043907`, Linux 3.12 job `115268253289`, passes
+the early census and bound-source processes, then reports 4 failed / 1,359 passed / one warning in
+1,254.55 seconds. All unchanged performance and response gates pass: document growth 87.7 ms;
+first/warm page 186.8/194.1 ms; 1,317,481 complete response bytes; 200 returned items. Source/page
+bundle reads are 52.1/51.9 ms and page assembly 14.1/16.1 ms in inclusive telemetry. Ingest with
+carriage is 107,864.7 ms versus 3,698.7 without. This is a material upfront cost, not a free cache.
+Actual derivative payloads are 24,667,919 bytes at 100 VLANs and 42,815,611 at 200 (growth 18,147,692),
+below the separate 64,000,000-byte cap; these exclude SQLite overhead. The original raw section is
+1,809,504 bytes and its 100-to-200-VLAN growth is 297,203, within the unchanged raw-section gates.
+
+The four failures are only the carriage variants of
+`test_native_document_success_never_certifies_a_nonnative_transport`. Their assertion expects one
+genuine whole-document native validation during each page request; the new cold-page path correctly
+does none. The test is aligned by explicitly making a successful inventory request first, with a
+genuine document acceptance and complete native transport proof, then exercising the original four
+absent/false/nonboolean/exception carriage-provider outcomes. The original one-document-True, no-proof
+on fallback, restored positive carriage proof and absent-nonce assertions remain unchanged. This adds
+a real antecedent and cross-request isolation assertion rather than weakening the expected count to
+zero. The separate internal-document non-transport-proof controls remain. No product code, timing,
+byte, nonce, schema or validation gate changes. Default-suite/UTC tails were skipped by these failures;
+the budget pass does not certify the full candidate. Fresh final-head 15/15 remains required.
+
+## Complete matrix recovery and Windows source-gate timeout
+
+Published `7de8357b` follows fresh canonical privacy and all twelve raw/decoded marker scans (63 commits,
+81 parent patches, zero matches/exceptions). CI `38393149663` completes every full matrix job: Linux
+3.10/3.11/3.12/3.13/3.14 and Windows 3.12. Linux 3.12 job `115281882944` passes 1,363 focused tests and
+19,170 full-suite tests (153 existing skips, three expected failures, 26 passed subtests). Focused/full
+document growth is 286.5/-14.7 ms; first-page 180.6/182.0 ms; warm-page 188.2/187.1 ms. Both retain
+200 items and 1,317,481 complete response bytes. Every unchanged assertion passes. Negative growth is
+baseline/timing variation, not negative work. With-carriage ingestion is 88,101.0/90,366.5 ms; actual
+100/200-VLAN derivative payloads remain 24,667,919/42,815,611 bytes. Coverage is 87.43% against 85%; UTC
+sample reproduction is FRESH. These results belong only to that exact source.
+
+The separate Windows full-source/frontend job `115281838516` in portable run `38393149677` is CANCELLED
+after its unchanged 120-minute limit. Pytest reaches 96%; its final aggregate and later frontend
+tests/build/dist reproduction are unreached. The annotation explicitly reports the two-hour timeout.
+Portable build/qualification succeeds independently, as do CodeQL, Master Reference, Scope, W60b and
+the replacement webapp run `38407832213`. This leaves 14/15 protected successes, not final acceptance.
+The full Windows matrix job `115281882938` separately passes 19,265 tests, 58 existing skips, three
+expected failures and 26 passed subtests in 9,540.05 seconds; it cannot substitute for the timed-out gate.
+
+The successor reduces two real costs without weakening existing assertions, limits, scheduling or source custody.
+For small exact native carriage rows, a conservative iterative preflight constructs an owned tree
+and proves a UTF-8 upper bound within the existing 3 MB ceiling before one ordinary JSON encode.
+Immutable scalar leaves may be shared; mutable containers are privately copied, including repeated
+aliases. Unsupported/foreign/non-ASCII/floating/deep/cyclic/large values and replaced encoder helpers
+use the original token stream and its byte/error behavior. Optional allocation failure also falls back.
+This changes producer serialization only, never page interpretation, row relations or stored bytes.
+
+Fresh database creation previously committed 64 CREATE statements separately. Only a database with
+no schema objects now runs that same schema inside one explicit transaction. Any existing table,
+index, trigger or view retains the original script; subsequent ALTER/backfill/authority migrations
+are unchanged. Failure attempts rollback and close independently while preserving the original
+exception, including process-control errors. Additive test controls cover fresh transaction boundaries,
+first-source custody, existing/partial/view-only behavior, whole-schema rollback and cleanup failures.
+Independent source review identified the initially missing `_make_iterencode` identity check and
+view-only database distinction; both are corrected before publication, with additive controls.
+
+Tiny synthetic pure-function probes establish byte parity, ownership, fallback and compressed-fragment
+parity only. A small two-member row reduces Python calls from 16,241 to 2,851; paired helper medians
+were 0.3285/0.2189 ms and one-cable producer medians 11.5180/10.3578 ms. These are not full budget or
+Windows runtime evidence. A guarded pointer-cache experiment had no overall gain (10.0687/10.1192 ms)
+and was completely withdrawn. An anchor-write micro-optimization was likewise not implemented.
+The fresh-schema 64-to-one commit reduction is structural, with hosted timing still unverified.
+All current performance/byte/member gates, historical W60 bindings, workflow limits, golden/sample
+outputs and frontend DTO shapes remain unchanged. Fresh exact-head hosted validation remains required.
+
+Supervisor comment `6147190093` supplies additional same-job progress comparisons: 7de spends 14.8
+minutes from 80 to 89 percent and 30.3 from 89 to 96, versus 3.7/18.4 on passing `02d14897`. Its
+ingestion-cost explanation is explicitly a hypothesis. This evidence motivates reducing producer
+and repeated Store initialization work; exact slow-test attribution requires hosted duration output.
+The existing complete-default CI command and portable source-gate command add only `--durations=40`.
+This reports the slowest completed setup/call/teardown phases after the same full selection; a hard
+timeout can still prevent its end-of-session table. Independent source review confirms the invocation
+and portable guards accept this reporting flag. No command removal, job, runner, dependency, permission,
+exit-code handling, skip, scheduling or limit changes; the diagnostic is not a substitute gate.
+
+## Round-2 independent verdict and round-3 ingestion corrections
+
+Author head `a4f428892446f07279378b9f89dcdb1a972d3ad3`, base `1d902ee2`, runs as PR execution
+`013da8dffe85e2f4b8ff6c7d3b0439b63d596cda` with the same tree `adeba528123d23f25350228f8d08c49b49d22455`.
+CI `38419773394` and all fifteen required contexts pass. Linux 3.12 job `115373710625` has 1,379 focused
+passes and 19,192 full passes / 153 skips / three expected failures / 26 subtests. Focused/full document
+growth is 193.9/40.2 ms, cold pages 124.3/130.9 ms and warm pages 126.7/132.4 ms, both with 200 items and
+1,317,481 bytes. With-carriage ingestion is 49,789.6/51,643.1 ms; without is 2,893.8/2,095.0 ms. The
+100/200-VLAN derivatives remain 24,667,919/42,815,611 payload bytes (18,147,692 growth), with 21,184,389
+bytes remaining under the unchanged 64,000,000-byte cap at 200 VLANs. This does not bound SQLite
+file/index/anchor overhead, whole-process RSS, other evidence/member mixes or every admissible scope.
+
+Portable source/frontend job `115373711762` in run `38419773225` passes in 70m48s including setup and
+frontend, below the unchanged 120-minute limit and the prior roughly 108-minute Python-only baseline.
+The complete frontend tail passes 38 files / 537 tests, build and tracked-dist equality. Its G14 pytest
+call durations are 100.83 seconds for eight-member traversal, 92.23 for document/page plus ingestion,
+and 54.03 for two-member traversal. These are test-body durations, not request latency or causal
+attribution. The separate Windows matrix passes 19,287 tests in 6,127.09 seconds; coverage is 87.44%
+against 85%. CodeQL, Master Reference, Scope, W60b and replacement webapp `38419773285` pass; initial
+same-head webapp `38419772614` was superseded/cancelled by the description edit. The author summary is
+comment `6150930184`. None of these positive results erases a source counterexample.
+
+Independent whole-PR review `6151643431` is **BLOCKED** on that same source. It explicitly closes stale
+STP admission (including null stored pointers), channel-record identity and complete member/byte paging.
+P1 shows that raw-only legacy migration commits its requirement/version columns before preparation,
+so a one-byte-cap failure can become an apparently complete but unreadable upgrade on restart. The
+same cap error bypasses the production startup handler. P2 traces the actual lazy row rendering,
+encoding and compression inside `Store._lock` and `BEGIN IMMEDIATE`; existing committed reads wait
+behind the upload. P3 limits qualification: prior ingestion measurements call Store directly, and
+the tiny real HTTP 413 test does not measure a full-scale multipart upload or disconnect/RSS behavior.
+
+Round 3 uses an explicit `-2` pending projection version for newly admitted raw-only legacy upgrades;
+the source-authority initialization and pending markers share one transaction. A pending source is
+verified before preparation and again before publication. Required parts and the one-way `-2` to `2`
+completion commit together. Interrupted/capped preparation leaves a source-bound pending record for
+the next startup; missing pending source anchors never trigger a new trust seal. Completed version `2`
+and superseded version `0` never enter retry, even when their parts are missing. Existing historical
+source-authority migration contracts are retained; this is not a general database-tamper certificate.
+The production entry catches the specific preparation-limit exception and refuses startup with
+preservation and retry guidance. Unrelated ValueError behavior is not hidden by that handler.
+
+The producer's complete row/variant stream and part encoding run before the shared Store lock/write
+transaction. One private immutable stage per Store owns the bytes; the original 64,000,000-byte
+payload limit remains, and framing/key metadata has its own 64,000,000-byte ceiling. This bounds the
+staged representation, not total RSS, which also includes the source, producer and construction
+buffers. Legacy startup stages one snapshot at a time. Final source checking, small identity-anchor
+framing, SQL inserts and atomic publication still serialize; this is read availability during expensive
+preparation, not a claim of wait-free reads during final publication. No new file-backed staging
+artifact, stored-derivative format, portable table census, native JSON schema pin or frontend DTO shape
+is introduced. A completed derivative's bytes and source identity remain subject to the existing guards.
+
+Additive test controls implement the exact cap=1/open/release/restore/reopen document falsifier and
+the real multipart first-next Event falsifier. Metadata, raw, inventory and campaign reads must finish
+while that gate remains closed. A later genuine-stream failure leaves the original snapshot/anchors/
+parts intact, publishes no new snapshot, and permits a subsequent successful upload. A production
+`serve.main` test covers the cap refusal and real reopen through the server entry. One multipart
+request uses the unchanged 300-device/200-VLAN/1,500-cable producer fixture, adding the top-level devices
+map required by real upload admission; its in-process ASGI timer includes multipart handling, parse,
+provenance, summary, preparation and commit, but not external network latency. It emits an exact-head
+`VLAN-CARRIAGE-BUDGET` multipart-upload record with source/derivative/staging bytes and limits. It also
+observes the single row-stream staging call and part-publication call; the latter excludes final
+commit, and neither is a new latency gate. This is not a whole-upload latency/RSS guarantee. Failure rollback is
+covered; network-client disconnection and peak RSS remain unqualified. All existing assertions,
+budgets, timeouts, historical bindings, raw golden and sample bytes remain unchanged. Fresh hosted
+results are required for these new controls and the final successor.
+The existing hosted G14 step additionally selects the new upload module, snapshot-storage controls
+and exact production startup recovery test. No original selection is removed; the complete default
+suite and every existing matrix/gate still run.
+
+### First hosted round-3 multipart and recovery evidence
+
+Implementation head `c6c42b7ba5c1976dfc668ad3c5a2a1c8dc83e6c9` runs against main `1d902ee2` as merge
+`5a5368ccd00431c0dcc8f6c46959e793e7406a63`, with equal tree `4d69fb405ee39a9499f10498da9d6a3c57501760`.
+Canonical privacy and all twelve raw/decoded history/publication patterns pass before its push
+(65 commits, 83 parent patches, zero matches/exceptions). The expanded focused G14 step in CI
+`38449865729`, Linux 3.12 job `115477690353`, passes, including the exact legacy-cap retry, production
+startup and Event-gated concurrent-reader/failure controls. This step starts at 18:51:04 UTC and
+finishes at 19:10:19 UTC on 2026-10-13; the separate complete default suite was still running when
+this record was written. The focused pass alone does not certify the whole head.
+
+Whole webapp run `38449863613` succeeds, including backend job `115477914906`, frontend/build, browser
+and visual checks. Duplicate same-head webapp run `38449865759` is cancelled during publication; it
+does not supply a passing verdict. The backend's actual multipart record reports:
+
+| Observation | Measured value / scope |
+|---|---|
+| Submitted fixture | 300 devices, 200 VLANs, 1,500 cables; original producer fixture plus upload-required devices map |
+| Whole ASGI multipart request | 88,344.8 ms; multipart, parse, provenance, summary, preparation and commit |
+| Row-stream staging call | 72,051.3 ms; outside the shared read/write critical section, excluding preparation factory work |
+| Prepared-part publication call | 8,982.3 ms; still serialized, excluding commit and other surrounding transaction work |
+| Uploaded / stored source bytes | 26,206,364 / 26,206,415; the route adds its owned provenance stamp |
+| Stored derivative payload | 43,951,249 bytes under the unchanged 64,000,000-byte limit |
+| Immutable staged representation | 52,563,524 bytes, including 8,612,275 bytes of framing/key metadata |
+| Framing/key metadata ceiling | 64,000,000 bytes, separate from the derivative payload cap |
+
+The staged representation remains bounded independently of cable/member input growth until refusal.
+The roughly nine-second part publication is real remaining serialized work: the Event control proves
+reads during expensive preparation, not a 300 ms concurrent-read promise during publication. The
+existing page timer starts after ingestion. The actual-upload input includes devices and server-owned
+provenance, so its derivative size is not the earlier direct-Store fixture's 42,815,611-byte observation.
+External network latency, client disconnection and peak RSS are unmeasured. Late stream-failure rollback
+and subsequent retry pass on the actual HTTP route. No upload duration ceiling, skip, warm-up or
+relaxed assertion was added. This documentation update requires its own fresh final-head checks; final
+qualification and measurements belong to the closing round-3 summary and the final PR Checks.
+
+### Actual fixture dependency engages webapp CI
+
+Measured-record head `81327be4` follows fresh privacy/history scans (66 commits, 84 parent patches,
+zero matches/exceptions). Its expanded focused G14 step and whole webapp run `38454975703` pass.
+The latter's backend job `115495532189` measures 61,250.4 ms for the actual multipart request,
+49,349.1 ms staging and 5,478.6 ms part publication excluding commit; every byte figure matches
+the first round-3 observation above. These are separate hosted observations, not a claimed speedup
+caused by the documentation-only change.
+
+Full Linux 3.13 job `115495732289` in CI `38454975455` then reports 1 failed / 19,201 passed / 164 skips /
+three expected failures / 26 subtests in 3,704.07 seconds. The sole failure is the unchanged
+`test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci`: the new multipart test imports
+`tests/test_vlan_carriage_budget.py`, but that helper was omitted from webapp CI's relevant-path policy.
+The strict guard correctly catches a future coverage gap when that imported fixture changes.
+
+The correction adds only that exact helper path to the classifier's owner tuple and identical
+main-push filter. PR triggering stays unconditional, and no assertion, exclusion, timeout or budget
+changes. The imported fixture and production behavior are unchanged. A tiny extracted pure-function
+probe checks the new path, unchanged unrelated-path behavior and exact workflow/owner policy parity;
+full runtime validation remains hosted. The failed result is retained and final-head 15/15 still
+precedes the round-3 summary and independent re-review.
+
+### Round-4 admission, RAM observation and accepted-upload disconnect scope
+
+Independent whole-PR review [6161038114](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6161038114)
+BLOCKS `39336b6c` despite its exact-head 15/15. Both precise round-2 blockers are independently
+closed: source-bound pending legacy retry/atomic completion and staging outside the Store read/write
+critical section. The three round-1 findings remain closed. The new P2 is a different boundary:
+public demo seed skipped heavy-work admission, and concurrent callers could occupy the shared
+worker pool while waiting for the stage lock. The prior 104m32s Windows source/frontend pass and
+all earlier failures/cancellations remain historical observations, not qualification of this successor.
+
+All four public preparation paths (snapshot upload, ZIP ingest, folder ingest and demo seed) now
+hold the existing memory-derived one-to-four heavy-work admission. Demo admission occurs on the
+ASGI event loop before its worker starts. Each admitted workflow owns a nonblocking Store
+`snapshot_preparation()` reservation in one worker, before snapshot JSON parsing, engine work,
+summary or demo campaign creation. A busy reservation raises the typed preparation-busy refusal;
+the HTTP response is 503 with `Retry-After: 5`. It never queues a worker behind a stage. Direct
+`Store.add_snapshot` also reserves before reading or serializing caller input. The internal lease is
+Store/thread-bound, active and single-use; it is an ownership/liveness mechanism, not an
+authenticated Python capability. Construction, producer, serialization and publication errors release
+it. Legacy startup uses the same nonblocking boundary while retaining one-source-at-a-time retry.
+Existing bounded network-body spooling precedes multipart heavy admission; no slow-body slot is
+introduced. Final SQL publication still serializes; committed-read liveness during preparation is
+not a wait-free publication guarantee.
+
+Additive hosted falsifiers in `webapp/tests/test_carriage_lifecycle.py` cover:
+
+- `test_simultaneous_demo_seeds_refuse_before_side_effects_and_leave_committed_reads_live`, at
+  one and four existing heavy-work slots, with an isolated three-worker AnyIO limiter. The genuine
+  first-next Event holds one accepted upload; four simultaneous public seeds must return 503 and
+  `Retry-After: 5`, without sample reads, summary calls or persisted campaign/source/part changes.
+  Committed metadata and raw reads must finish before release. Production capacities and every
+  existing assertion/deadline remain unchanged.
+- `test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_releases_resources`
+  uses a real Uvicorn HTTP server and loopback TCP connection. After the complete multipart body
+  is accepted and the genuine stage is held, it closes that exact client socket and observes the
+  server's connection-loss callback. No partial snapshot exists while held; releasing the stage
+  produces one complete, source-bound snapshot/document, closes both body and multipart-parser
+  spools, releases heavy/stage reservations, preserves the prior snapshot and permits another upload.
+  This tests late disconnection after acceptance, not every network/shutdown failure.
+
+**Closing the page does not cancel an accepted upload.** Accepted worker work runs through atomic
+completion; an actual preparation/publication error takes the existing rollback path. The client can
+lose its response while a complete snapshot is saved. Inspect the campaign's snapshot list and the
+new snapshot before choosing whether to submit again. There is no automatic outcome reconciliation,
+exactly-once retry promise, frontend abort signal or new idempotency mechanism in this PR. Earlier
+body interruption, process death, external-network deadlines and arbitrary cancellation remain
+separate from the finite late-disconnect control.
+
+The encoded stage is **in RAM**: `io.BytesIO` plus the returned immutable `bytes`, not a spool or
+on-disk staging artifact. Payload remains capped at 64,000,000 bytes and framing/key metadata at a
+separate 64,000,000 bytes, so completed encoded stage length is at most 128,000,000 logical bytes.
+Those limits do not bound BytesIO capacity/conversion, transient JSON/encodings, source/proof/producer
+trees, SQLite buffers or total process RSS. The existing budget fixture previously measured
+43,951,249 derivative payload + 8,612,275 framing = 52,563,524 stage bytes; those remain prior-head
+byte observations, not a memory-capacity certificate.
+
+`webapp/tests/test_carriage_ingestion.py::_observe_upload_rss` adds a cheap observation around the
+same existing actual 300-device/200-VLAN/1,500-cable multipart request. Linux samples resident pages
+from `/proc/self/statm` every 100 ms, reporting start/end/sampled maximum, count, sampling errors and
+sampler-stop status. It separately records Linux `getrusage(RUSAGE_SELF).ru_maxrss` before/after,
+explicitly a process-lifetime high-water value that includes earlier fixtures. The interval samples
+include the shared pytest process and SQLite buffers, exclude child processes and may miss spikes
+between samples; the baseline already contains the prepared test fixture and upload bytes. They do
+not isolate stage allocations or certify maximum concurrency/whole-process capacity. Sampling
+start/stop stays outside the unchanged upload timer, but the small observer cost during the request
+is part of that observation. Windows runs the unchanged upload measurement without this sampler.
+No new upload, warm-up, dependency, memory threshold, timeout or skip is added. Unsupported/error
+observations must be disclosed; a payload/length pass is never a peak-memory pass.
+
+The current successor's hosted logs and closing round-4 PR summary own its measured RSS, ingestion,
+page/document timings and exact-head verdict; those are not yet verified by this authored record.
+The original budget file, all existing assertions/timeouts, historical W60b/W60c bindings, native
+schema pins, golden/sample and frontend bytes remain unchanged. The two ingest worker callbacks
+are classified under their existing private-temp artifact families, retaining the original async
+route subjects; the download owner chain is unchanged and its full app-source proof is refreshed.
+No new SQLite table, schema-observer exemption or release authority is introduced.
+
+### First round-4 hosted evidence and ASGI-completion correction
+
+Published `510a92c50c3552221a11a287f890fb08315cc6cc` follows passing canonical privacy and all twelve
+marker scans (68 commits / 86 parent patches, no exceptions or errors). Whole webapp run
+`38520450353`, including backend job `115708835498`, succeeds; its new seed-saturation and real
+late-disconnect controls pass there. Linux 3.11/3.13 full jobs report 19,088/19,212 passes respectively,
+with their existing skips and expected failures. These successes do not erase the failed Windows gate.
+
+The actual multipart backend observation is 49,896.5 ms total, 40,743.7 ms staging and 3,750.4 ms
+part publication excluding commit. Payload/stage/framing remain 43,951,249 / 52,563,524 / 8,612,275
+bytes. Its shared-process RSS samples are start 857,735,168, highest 1,471,537,152 and end
+1,295,134,720 bytes: 473 samples at a nominal 100 ms interval, zero sampling errors and sampler
+stopped. The separately labeled process-lifetime getrusage high-water readings are 883,798,016
+before and 1,471,082,496 after bytes. The two methods retain their distinct figures; no causal
+reconciliation or hard RAM bound is inferred. These are exact prior-head observations; current-head
+numbers and full qualification still belong to the closing round-4 summary and hosted logs.
+
+Windows source/frontend job `115708700346` in portable run `38520450047` FAILS in the Python phase:
+`test_real_server_late_client_disconnect_finishes_one_atomic_upload_and_releases_resources`, then
+line 335, sees `_free_heavy_slots(app) == 0` immediately after the final ordinary retry returns 201.
+The actual disconnected request had already passed its explicit outer-handler completion, full
+publication, spool closure and free-slot assertions. The later frontend/build tail is not reached.
+This failure remains negative evidence on `510a92c5`.
+
+An HTTP client can receive the completed response before the outer body middleware's `finally`
+finishes: that middleware still awaits spool closure before releasing its heavy-work semaphore.
+The correction therefore adds request-specific outer-ASGI completion events for the initial upload
+and final deliberate retry. Test-only phase headers select an event at request entry; the event is
+set only when the entire app/middleware call has returned. Each existing 201 assertion is followed
+by a bounded completion wait before inspecting resources. The physical raw-TCP disconnect barrier
+and every existing snapshot, spool, slot and raw/source assertion stay unchanged. Static AST
+comparison retains all 67 prior assertions and 14 prior timeout/wait calls; four assertions and two
+additional 20-second completion waits are added. There are no sleeps, polling-to-pass, increased
+existing deadlines, product-code changes or relaxed equalities. This repairs evidence synchronization,
+not a demonstrated capacity-leak fix. A fresh successor must pass all fifteen protected contexts and
+all applicable complete workflows, including the unchanged Windows 120-minute source gate.
+
+## Round 5: multipart cleanup admission (2026-10-14)
+
+Independent round-4 review [6168909385](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6168909385)
+reviews `69bf8980167b86ad113b721d175213a67bcef803`: the round-3 admission P2 is closed, no P0/P1
+was found, and the bounded RAM/late-disconnect dispositions are honest. Its remaining P2 predates
+this PR: `_RequestBodyLimitMiddleware` awaited body-spool closure before releasing heavy admission;
+an error or cancellation at that await could permanently consume capacity in the surviving app.
+All fifteen checks on that old head and its 106m18s Windows source gate remain prior evidence,
+not qualification of the correction. Earlier failures and cancellations remain in this record and
+the [round-4 summary](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6167228665).
+
+The only product change is the middleware cleanup: an AnyIO shield protects entry to the threaded
+close, and an inner `finally` releases exactly the acquired heavy-work token even if close raises
+or the await is cancelled. The original close exception propagates to the ASGI caller/server;
+it is not suppressed or turned into a successful cleanup claim. An actual failed close need not
+have closed its spool. Snapshot preparation, publication/rollback and the accepted-work policy
+are unchanged; this cleanup runs after downstream work, without changing its durable outcome.
+
+`webapp/tests/test_carriage_lifecycle.py::test_multipart_cleanup_releases_admission_and_preserves_completed_upload`
+adds two hosted cases. `close_error` submits the reviewer's exact `boundary=x`, `{"devices":{}}`
+multipart bytes through the real `/api/campaigns/1/snapshots` route and real `BoundedSemaphore(1)`.
+The middleware spool's injected `OSError("synthetic close failure")` must propagate unchanged;
+the completed snapshot/source hash remains readable and both admissions are free. An ordinary
+second multipart upload must return 201, with the first snapshot bytes preserved. `cancelled_scope`
+lets the real downstream route/parser cleanup complete normally, cancels the enclosing request
+scope immediately before body-middleware cleanup, and requires actual spool closure, observable
+cancellation at the next checkpoint, released admissions and the same usable next upload.
+The error case closes its deliberately failing test spool separately in test teardown.
+
+No prior test definition, assertion, timer, timeout, fixture, budget, workflow or golden/sample
+byte changes. The download owner functions are unchanged; their existing full-app blob pin is
+refreshed for this isolated cleanup delta. Approved W60b/W60c bindings and all native/schema and
+frontend bytes remain. No new gate, dependency, UI behavior, abort/idempotency machinery or wider
+cleanup redesign is introduced. Runtime verification remains GitHub-only. The final exact-head
+hosted checks and round-5 summary own the test verdict; it is not yet verified by this authored
+record. Stop at all15 and independent re-review, with PR #652 draft.
+
+## Round 6: paired compute investigation (2026-10-14)
+
+Independent [round-5 review 6174489134](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/652#issuecomment-6174489134)
+closes the cleanup P2 on `3abe9d0f` but blocks compute-budget reliability. The original
+Linux 3.12 complete leg measured 3,597.6 ms against 3,000 ms, versus 1,570.8 ms in its
+focused process. The one owner-authorized unchanged replay measured 2,894.2 / 1,258.6 ms,
+still 2.30 times and only 105.8 ms under the original ceiling. Both observations remain
+negative evidence for stable margin; fifteen green contexts do not establish a cause.
+The earlier `69bf8980` pair was 1,517.0 / 1,593.3 ms. FastAPI also resolved from 0.143.0
+to 0.143.1 between those historical runs, so a source-only attribution is unproved.
+
+The first round-6 publication changes no product code, test assertion or existing workflow.
+The closed hosted-runner census registers the added job through its existing strict owner. Its
+new artifact writers are classified as CI evidence in the unchanged write-site census mechanism;
+the scripts live under `.github/scripts`, outside the existing LF byte-owner path denominator. The
+temporary hosted diagnostic runs exact `69bf8980167b86ad113b721d175213a67bcef803` and
+`3abe9d0f435ddef23f2710e9e61088b722575ef3` in isolated worktrees on one Ubuntu 24.04 /
+Python 3.12.15 runner, using one resolved dependency environment. Installed versions
+and RECORD digests must remain equal after each source-only editable rebind. Each
+source runs the original focused selection and complete default selection in fresh
+processes; ordered collection receipts compare the prefix through compute and the
+relative order of all common cases. Both original budget files remain byte-identical.
+
+The opt-in pytest observer calls the unchanged `_timed` implementation on the original
+compute callable exactly once. Lightweight wall/process CPU, `gc.get_count`, active
+thread and bounded-cache counters plus natural GC start/stop callbacks run inside its
+original timer. Numeric event buffers are allocated at plugin import, avoiding a new
+tracked event container per callback. No collection, GC threshold/enablement, cache,
+prewarming, input computation, test assertion or selection is changed. The allocating
+object census waits until both original engine and document/page budget tests finish;
+it reports aggregate suspect types, frames and tracebacks, never payloads or frame
+locals. These post-target GC-tracked counts include unreachable cycles awaiting
+natural collection and are not proof of live ownership or a leak. Observer failures
+are reported as missing evidence without replacing a compute result or exception.
+Nested pytest processes do not inherit active observation. Full logs, source/runtime
+bindings, collection order, natural events and failed gates are retained as artifacts.
+
+The root cause and correction are **not yet verified**. The extra shield's allocations,
+retained app/request state, framework resolution and scheduling remain hypotheses.
+Original 3,000/1,500 ms engine, 2,000 ms document, 300 ms/3 MB page gates and every
+existing timeout/assertion, historical custody binding and golden/sample byte stay
+unchanged. The new investigation's bounded job is separate from the unchanged
+120-minute Windows source gate. Final source correction, complete-suite margin,
+all fifteen checks and the round-6 evidence summary are still required before stopping
+for independent re-review. No approval, merge or release authority follows.
+
+The first diagnostic publication `229ae73a`, run `38613692672`, was refused before
+runner allocation: the job-level environment referenced `runner.temp`, which GitHub
+does not expose at that scope. Zero test jobs or compute measurements ran. Moving
+that same output-path binding to each execution step corrects the workflow schema;
+it changes no measurement or runtime setting. This startup failure remains evidence.
+
+### First paired result and diagnostic correction (2026-10-15)
+
+Hosted [run 38614432595](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38614432595),
+job `116025755267`, completed with failure. Artifacts `11924765723` (baseline) and
+`11930285463` (complete pair) retain every log, collection order and observation.
+Both subjects used Python 3.12.15, Ubuntu image `20261004.327.1`, FastAPI 0.143.1,
+Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1. All installed distribution versions
+and RECORD digests matched. The observer SHA-256 was
+`a2570012d5a467c84cdaf38ee01e9f52bbdfa4a5fff3e4542bcdaa64c4a6620f`.
+
+| Source / process | Original compute ms | Observed process CPU ms | Natural GC ms | Gen 0 / 1 / 2 events |
+|---|---:|---:|---:|---|
+| `69bf8980` focused | 1,455.5 | 1,455.25 | 17.62 | 417 / 38 / 0 |
+| `69bf8980` complete | 1,479.6 | 1,479.44 | 18.24 | 417 / 37 / 0 |
+| `3abe9d0f` focused | 1,449.2 | 1,449.02 | 16.64 | 419 / 38 / 0 |
+| `3abe9d0f` complete | 1,495.8 | 1,495.68 | 17.67 | 417 / 38 / 0 |
+
+The complete/focused ratios were 1.017 and 1.032. Wall and process CPU times
+nearly agreed; no generation-2 collection occurred inside these four observed
+calls. GC remained enabled at thresholds 700/10/10, with one live Python thread
+before and after each call. Producer admission caches had no misses during the
+calls. Ordered prefixes through compute matched: 649 focused and 15,858 complete
+nodes. Common relative order matched throughout; the only two new round-5 cases
+occurred after compute. Imported budget/compute source digests also matched.
+
+The census after both budget calls contained 3,393,298 and 3,393,361 tracked objects
+in the old/new complete processes, a difference of 63. Both had 57 FastAPI objects,
+3,078 routes, 57 Stores, 46 frames and 13 tracebacks. All four observations counted
+zero Tasks, Futures, CancelScopes, WorkerThreads, request objects, body spools and
+coroutines. This later census includes unreachable objects awaiting natural GC;
+it neither proves entry-time ownership nor excludes transient retention. The old
+focused census was additionally affected by its failed API test frame.
+
+This is **not closing evidence**. Both complete processes failed four earlier
+`test_graphify_guarded.py` controls (`test_cli_passthrough_happens_after_overlay_and_restores_argv`,
+`test_ambient_graphify_and_git_controls_are_sanitized_and_restored`,
+`test_relative_and_repo_local_executable_paths_are_excluded`, and
+`test_graphify_runtime_failure_is_not_misreported_as_a_preflight_failure`). The
+diagnostic's linked worktree has a `.git` file, while the original guard requires
+a standalone `.git` directory; `G017` therefore refused before the tests' stubbed
+CLI operations. Collection order equality does not undo that different execution
+state. Old complete reported 4 failed / 19,219 passed; new complete 4 failed /
+19,221 passed. Old focused also failed its original 300 ms cold-page gate at
+372.5 ms (1 failed / 1,457 passed); new focused passed all 1,460. None is waived.
+
+Separately, ordinary CI on diagnostic head `5c29b609` fails the unchanged strict
+Linux runner census: the temporary diagnostic adds job 25 against assertion 24.
+This is the sole full-suite failure on all six matrix legs, coverage, W60b replay
+and Windows source qualification; the extra job must be removed before final
+acceptance, rather than changing that assertion. The Windows source Python phase
+finished in 100m51s, below its unchanged 120-minute limit; its later frontend tail
+was not reached. Whole webapp, Scope, Master Reference, CodeQL, distribution and
+portable build/qualification succeeded. Ordinary Linux 3.12 measured 980.5 /
+895.4 ms focused/complete, but its earlier census failure and lack of a correction
+make that 0.913 ratio another observation, not a fix or acceptance substitute.
+
+The corrected diagnostic uses standalone full-history clones of the same exact
+two historical commits, preserving and checking every origin-tracking/tag ref,
+commit/tree identity and unchanged tracked bytes. The original commands, test
+order, shared runtime and all gate failures remain. The timer wrapper is now
+precreated at plugin import and installed before fixture setup, avoiding a new
+closure immediately before the original timer. It still invokes the original
+timer/callable once and returns the identical result tuple. Natural generation-2
+events retain a bounded preceding window with test/phase labels, frozen when the
+original timed call returns or raises so later API work cannot overwrite it.
+Callable-only wall/CPU spans distinguish observer boundary overhead; a later
+aggregate AST/receipt-graph census investigates a statically identified unused
+test cache without changing it. No cache intervention is included in this control.
+These changes reduce observer effects; they cannot make observation effect-free.
+
+The original failure, replay and this unsuccessful diagnostic remain negative
+evidence. No cleanup leak, GC cause or product correction is established yet.
+Independent static review required the standalone checkout and preservation of
+the preceding GC window. The next evidence is the corrected unchanged-source pair;
+only a demonstrated cause/retention correction followed by the original complete
+gates with margin and all fifteen checks can close round 6.
+
+The corrected diagnostic publication `5ff0c341` also exposed a missing scaffold
+classification in ordinary CI `38643201045`: Linux 3.12 job `116123585236` (and
+3.13/3.14 jobs `116123585175` / `116123585415`) stopped at 1 failed / 659 passed
+in the artifact-census selection, before the budget selections. The added writer
+count was correct, but its exact `-source-identity.json` filename suffix was not
+registered. Its narrow CI-evidence entry is corrected without changing the census
+assertion or any old classification. This failure does not affect the historical
+subjects in paired run `38643201157`; they contain neither diagnostic writer.
+That pair remains in progress, and no source fix or acceptance is inferred.
+
+### Corrected paired evidence and isolated retention intervention (2026-10-15)
+
+The corrected [run 38643201157](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38643201157)
+completed successfully on `5ff0c341`. Baseline artifact `11935168507` and complete
+artifact `11939297887` retain the four original selections. The complete artifact
+digest is `sha256:37636f8233ec34b091bfb4e9eab7c989259be459b54bdb0d3c608e556fdbdd6e`.
+Both standalone commits/trees and all 131 origin-tracking/tag refs matched their
+receipts. One AMD EPYC 7763 runner used Python 3.12.15, Ubuntu image
+`20261004.327.1`, FastAPI 0.143.1, Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1;
+the complete dependency version/RECORD closure stayed identical. Observer digest
+`34939afdcc11f1602cb35ea71d77b8f77fd83a08a0ebb6fb7022aa4209158481` matched all
+four receipts, with zero observation/callback errors and a frozen preceding window.
+
+| Source / selection | Original compute ms | Process CPU ms | Timed Gen 2 ms | Passed |
+|---|---:|---:|---:|---:|
+| `69bf8980` focused | 1,627.3 | 1,627.09 | 112.984 | 1,458 |
+| `69bf8980` complete | 1,515.6 | 1,515.40 | 0 | 19,223 |
+| `3abe9d0f` focused | 1,519.8 | 1,519.63 | 97.032 | 1,460 |
+| `3abe9d0f` complete | 1,501.8 | 1,501.61 | 0 | 19,225 |
+
+Both complete legs also retain 153 skips, three expected failures and 26 passing
+subtests. Every original assertion passes, including the four earlier Graphify
+controls. Ordered prefixes through compute match (649 focused / 15,858 complete),
+as does every common case's relative order. Only the two round-5 cleanup cases
+are added, after compute. Imported budget and engine source digests are unchanged.
+The complete/focused ratios are 0.931 and 0.988: this run does **not** reproduce
+the original 2.3 ratio, and does not erase the 3,597.6 ms failure or 2,894.2 ms replay.
+
+The natural collector supplies a concrete reliability concern. In the retained
+32-event preceding window, old/new complete collections cost 1,551.8–2,418.4 /
+1,589.1–2,382.4 ms, with process CPU nearly equal to wall time. Their last events
+end 5.570 / 5.399 seconds before compute. No such event falls inside either full
+compute timer here. Both focused timers do include one small generation-2 event
+inside the original callable. GC remains enabled at 700/10/10, with one Python
+thread before/after all calls and no producer admission-cache misses in them.
+The observed full-collection cost is greater than either full call's remaining
+3,000 ms headroom if such work falls inside that timer; it is not proof that it
+caused the historical failed event, which had no concurrent telemetry.
+
+The post-target old/new full heaps contain 3,393,292 / 3,393,355 tracked objects
+and 750,202 / 750,208 selected AST objects. Each retains two `test_impact_consumers._Graph`
+objects, with 12 and 7,148 units. Focused heaps contain 397,557 / 397,588 tracked
+objects and neither these graphs nor the selected AST objects at that boundary.
+The graph consumer is collected at index 6,129, before compute at 15,857 in the
+full selection; in focused it is index 811, after compute at 648 (zero-based).
+Both full heaps otherwise have the same 57 apps, 3,078 routes, 57 Stores, 46
+frames and 13 tracebacks. All four censuses find zero Tasks, Futures, CancelScopes,
+WorkerThreads, request objects, spools and coroutines. These observations supply
+no cleanup-specific retained-state growth; they do not exclude transient state
+or prove ownership of every counted object.
+
+Static ownership identifies an unused strong reference: `_graph`'s unbounded
+`lru_cache` retains each complete source-AST graph after its consuming test ends.
+Its only two callers are unparameterized tests, each calling once with a different
+root; subsequent traversals use their local result. No caller benefits from a
+cache hit. The graph-building body and both consumers' assertions can therefore
+remain unchanged while the caller controls the result's lifetime. CPython's
+[3.12.15 collector](https://github.com/python/cpython/blob/v3.12.15/Modules/gcmodule.c#L1334-L1377)
+describes the cost of a full collection as proportional to the long-lived heap.
+The cache's specific contribution still requires an isolated intervention.
+
+That intervention uses two clean immutable commits: a cached control with the
+temporary diagnostic workflow and its runner-registry row removed, followed by
+a candidate changing only `_graph`'s decorator and lifetime docstring. Both keep
+the same reporting scripts and artifact classifications. A later diagnostic-only
+commit restores the temporary job to compare those two sources on one runtime;
+both sources must satisfy the original 24-runner assertion. Natural GC, original
+timers, complete coverage/order, all budget/timeout/assertion bytes and golden/sample
+outputs remain. No cache clear, forced collection, prewarming or benchmark-aware
+cleanup is introduced. The job/row must again be removed before final ordinary
+15/15 validation and the round-6 summary. This is an experimental correction of
+demonstrated retention, not a claim that the earlier failure's cause is already proved.
+
+The same corrected pair also preserves the existing ingestion observations. Actual
+multipart uploads take 86,960.5–87,337.0 ms on this shared test runtime; payload,
+stage and framing remain 43,951,249 / 52,563,524 / 8,612,275 bytes against the unchanged
+64,000,000-byte payload and separate 64,000,000-byte framing limits. The raw budget
+derivative stays 24,667,919 / 42,815,611 bytes at 100/200 VLANs. Sampled shared-process
+RSS peaks span 2,360,586,240–3,271,000,064 bytes, with zero sampling errors; these
+include prior suite state and may miss between-sample spikes. They remain observations,
+not a new ingestion/RSS gate or a logical-bound-to-RSS claim. Every original API
+budget passed (document growth at most 97.6 ms, cold pages at most 204.4 ms, warm
+pages at most 210.5 ms, 200 items and 1,317,481 bytes).
+
+Ordinary `5ff0c341` failures are retained separately. The Windows source job
+`116123585092` completes in 111m14s with only the missing suffix classification
+and 25-versus-24 runner assertion; its frontend tail is not executed. Coverage
+job `116123585048` reports 87.44% against 85%, with the same two failures and
+19,209 passes / 167 skips / three expected failures / 26 passing subtests. The
+whole webapp, Scope and Master Reference workflows, portable build/qualification,
+lint, typing, distribution and dependency checks pass. These results do not qualify
+the intervention, whose fresh complete and final exact-head gates are still required.
+
+The matched sources are now immutable: cached control
+`d7b17e136c9436c83025c29cffef36a775624da1` (tree
+`cfd5a2c4dc7be94635df28834aab9f720fe17877`) and uncached candidate
+`62a995c4124fe622946526c91946d7340091c1fd` (tree
+`70b66746e7efa76e65db23121135c9d6e02031a8`). Their sole file difference is
+`tests/test_impact_consumers.py`: remove `_graph`'s unused `lru_cache` decorator
+and describe caller-owned lifetime. Independent static/AST review confirms all
+145 assertions and the rest of that module, including the graph-building body
+and `_scan` cache, are identical. Both callers and their assertions remain unchanged.
+Neither source contains the temporary workflow, and its runner owner exactly
+matches the original `3abe9d0f` owner. The subsequent temporary workflow restoration
+compares these commits using the same observer bytes and original selections;
+only source identities and the second subject's label change. The 24-runner
+assertion is not raised. Runtime effects of this candidate remain **not verified**
+until that comparison and final ordinary gates complete.
+
+### Matched result and removal of temporary diagnostics (2026-10-15)
+
+Hosted [run 38663415750](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38663415750),
+job `116189711787`, completes successfully on diagnostic host commit `446724ba`.
+The cached-control artifact is `11943888644` (digest
+`sha256:6089ce2b14c066f0773b0a657826940a6ebcc517c08aa45096fc32bb99426d3a`);
+the complete matched artifact is `11947042547` (digest
+`sha256:a55c1328ab18be9cf119d696707277f019a29f6b413319ea55fef1164e863f3f`).
+All four source/runtime/observer receipts validate, both complete test orders match
+exactly, and neither source has an unrelated preceding failure. Each focused
+selection passes all 1,460 cases; each complete selection passes 19,225 with the
+unchanged 153 skips, three expected failures and 26 passing subtests. The original
+24-runner assertion passes in both experimental subjects.
+
+This pair uses one Ubuntu image `20261012.334.1`, Python 3.12.15 and the same
+resolved dependency/RECORD closure for both sources (including FastAPI 0.143.1,
+Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1). It is a newer image than the
+historical-head pair above; absolute timings across the two runs are not treated
+as a controlled comparison. The observer remains exactly `34939afd...58481`.
+
+| Original measurement | Cached control `d7b17e13` | Candidate `62a995c4` |
+|---|---:|---:|
+| Focused compute | 1,434.6 ms | 1,531.4 ms |
+| Complete compute | 1,456.4 ms | 1,456.7 ms |
+| Complete / focused | 1.015 | 0.951 |
+| Complete process CPU | 1,456.21 ms | 1,456.50 ms |
+| Timed complete generation-2 events | 0 | 0 |
+| Post-target tracked objects | 3,393,362 | 1,661,761 |
+| Post-target selected AST objects | 750,208 | 30,903 |
+| Post-target `_Graph` instances | 2 | 0 |
+| Preceding 32 generation-2 events, range | 1,533.3–2,290.0 ms | 579.6–1,417.7 ms |
+| Same window, median | 1,652.24 ms | 709.31 ms |
+
+The candidate releases the two completed graphs and reduces the post-target
+tracked population by 1,731,601 objects (51.03%), including 719,305 selected AST
+objects (95.88%). The natural-collection windows show lower individual pause costs
+with CPU nearly equal to wall time. Their median falls 57.07%; they are **not
+event-for-event matched windows**. Natural scheduling changes as expected with the
+heap: generation-2 event counts through compute are 164 / 200, and different tests
+can occupy the last 32 slots. The same inventory scale test appears at the upper
+end of both windows. These are observed costs, not a worst-case latency bound.
+The bounded per-event measurements do not establish total suite GC CPU savings.
+
+The core full compute duration is effectively unchanged. The candidate's focused
+timer includes one 98.361 ms generation-2 collection inside the original callable;
+neither full timer includes one. Its 0.951 ratio is therefore reported with that
+collection context, not interpreted as a faster compute algorithm. Complete
+headroom is 1,543.3 ms against the unchanged 3,000 ms limit. All four observations
+retain enabled GC, thresholds 700/10/10, one thread before/after and zero observation
+errors. Producer admission caches have the same hit/miss changes. Apps, routes,
+Stores, frames and tracebacks keep the same full-process counts; no Task, Future,
+CancelScope, WorkerThread, request, spool or coroutine population appears.
+
+This isolates a useful correction: the unused suite-lifetime cache retained a
+large source-AST graph and increased observed natural collection costs. Removing
+that retention leaves the graph algorithm and every existing assertion intact.
+It does **not** identify the collection or event that produced the unprofiled
+historical 3,597.6 ms failure, nor establish a cleanup leak. That failure and the
+2,894.2 ms replay remain negative evidence. The closed shielded-close correction
+and both exact cleanup falsifiers remain unchanged.
+
+The existing API and ingestion observations remain finite and honest. In the
+candidate, cold/warm pages are 187.2/186.3 ms focused and 191.4/196.3 ms complete,
+with 200 items and 1,317,481 bytes. Document growth is -37.1 / -588.4 ms; the negative
+difference is not claimed as a product improvement. Actual multipart requests
+take 87,852.2 / 87,279.6 ms versus control 87,222.5 / 87,220.5 ms, so no ingestion
+speed improvement is claimed. Source, derivative, stage and framing bytes and
+both 64,000,000-byte limits are unchanged. Candidate shared-process sampled RSS
+peaks are 1,967,493,120 / 3,215,183,872 bytes, with zero sampler errors; they remain
+whole-process observations, not staging/RSS limits or field qualification.
+
+The temporary machinery is now removed from the final tree. Its exact reviewed
+[observer](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/scripts/carriage_compute_observer.py),
+[driver](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/scripts/run_carriage_compute_pair.py)
+and [workflow](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/workflows/g14-compute-diagnostic.yml)
+remain available in immutable history. Only their exact new writer, suffix and
+runner entries are removed; both census/runner owner files return byte-for-byte
+to `3abe9d0f`. The final round-6 delta from that reviewed head is only the test
+helper's decorator/docstring and the evidence/NOW records. Production cleanup,
+engine, budget file, original workflows, pytest configuration, every assertion,
+timeout, historical W60 binding and golden/sample byte are unchanged.
+
+Ordinary host-commit results are preserved separately: `446724ba` Linux 3.12 job
+`116189712278` measures 948.2 / 875.3 ms focused/complete (0.923 ratio), with every
+budget assertion passing. All six Python matrix legs, coverage and W60b have only
+the temporary 25-versus-24 runner failure; coverage reaches 87.44% against 85%.
+The Windows source job `116189711671` ends in 109m46s on that same count assertion,
+before its frontend tail. Webapp, Scope, Master Reference, portable build/qualification,
+lint, typing, distribution and dependency checks pass. These are not final clean
+qualification: removing diagnostic files can change collection-time allocations.
+Fresh uninstrumented ordinary checks on the cleaned head, including all fifteen
+protected contexts, both complete Windows gates and final budget measurements,
+remain mandatory. The final-head Checks and closing round-6 PR summary own that
+terminal verdict; no old timing or green run is transferred. Stop afterward for
+independent re-review, with the PR draft and no merge/release action.

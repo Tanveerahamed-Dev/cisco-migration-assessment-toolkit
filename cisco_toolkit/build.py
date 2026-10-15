@@ -1345,6 +1345,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         if is_live_trunk_status(tstat): interfaces[p].switchport_mode = "Trunk"
         if v.get("native_vlan"):   interfaces[p].trunk_native_vlan  = v["native_vlan"]
         if v.get("allowed_vlans"): interfaces[p].trunk_allowed_vlans = v["allowed_vlans"]
+        if v.get("allowed_literal"): interfaces[p].trunk_allowed_none = v["allowed_literal"]
         if v.get("port_channel") and not interfaces[p].port_channel:
             interfaces[p].port_channel = v["port_channel"]
 

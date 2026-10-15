@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, vlanCarriageFixture, carriagePageFixture, carriageSummaryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
   deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture, findingFacetsFixture } from "../test/projectionFixtures";
 
 function Harness() {
@@ -360,6 +360,118 @@ describe("Core snapshot route", () => {
     const link = await screen.findByRole("link", { name: "edge/a~b ↗" });
     expect(new URL(link.getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
     expect(screen.getAllByText("Synthetic input was not collected").length).toBeGreaterThan(0);
+  });
+  it("shows the engine's carriage summary and loads one lazy page without inventing carriage at a missing end", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/ui-projection/inventory/carriage?")) return new Response(JSON.stringify(carriagePageFixture()));
+      if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false }));
+      throw new Error(`Unexpected raw-source or recomputation request: ${url}`);
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    expect(within(panel).getByText("Synthetic supplied carriage census remains incomplete")).toBeInTheDocument();
+    expect(within(panel).getByText("edge not collected")).toBeInTheDocument();
+    expect(within(panel).getByText("3")).toBeInTheDocument();
+    // The summary is all the inventory row carries: no cable row is rendered before the page is requested.
+    expect(screen.queryAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(0);
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    await waitFor(() => expect(screen.getAllByRole("region").filter((node) =>
+      node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(2));
+    const requested = fetcher.mock.calls.map(([url]) => String(url)).find((url) => url.includes("/inventory/carriage?"))!;
+    expect(new URL(requested, "http://localhost").searchParams.toString()).toBe("vlan_index=0&offset=0&limit=25");
+    const regions = screen.getAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"));
+    expect(regions.map((node) => node.getAttribute("aria-label"))).toEqual(["Cable carriage source row 2", "Cable carriage source row 0"]);
+    expect(within(regions[0]).getAllByText("forwarding")).toHaveLength(2);
+    const missing = within(regions[1]);
+    expect(missing.getAllByText("one_end_only")).toHaveLength(2);
+    expect(missing.getAllByText("Synthetic missing B-end evidence; no blocked or forwarding claim").length).toBeGreaterThan(0);
+    expect(missing.queryByText("forwarding")).not.toBeInTheDocument();
+    expect(missing.queryByText("stp_blocked")).not.toBeInTheDocument();
+    expect(missing.getByRole("group", { name: "Cable 0 member 0" })).toHaveTextContent("synthetic-b");
+    expect(within(panel).getByText("Cables 1–2 of 2 assessed cables")).toBeInTheDocument();
+    fireEvent.click(within(regions[0]).getByRole("button", { name: "Qualifications for relation" }));
+    const drawer = screen.getByRole("dialog");
+    expect(drawer).toHaveTextContent("not simultaneous forwarding or data-plane delivery");
+    expect(drawer).toHaveTextContent("/vlan_carriage/rows/0/codes");
+    expect(drawer).toHaveTextContent("/vlan_carriage/cables/2");
+    expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+  });
+  it("discloses an unsupported cable page without a clean empty result or a next-cursor loop", async () => {
+    const result = carriagePageFixture();
+    result.payload.page = { ...result.payload.page, state: "unverified", reason: "unsupported: complete cable cannot fit",
+      returned: 0, items: [], has_more: true } as never;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/inventory/carriage?")) return new Response(JSON.stringify(result));
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("unsupported: complete cable cannot fit");
+    expect(within(panel).getByText("Cable page unavailable; 2 assessed cables retained")).toBeInTheDocument();
+    expect(within(panel).queryByText(/^No cables/)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/No assessed cable rows on this page/)).not.toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Next carriage page" })).toBeDisabled();
+  });
+  it("uses returned-prefix cursors and actual previous history across uneven carriage pages", async () => {
+    const summary = { ...carriageSummaryFixture(0), assessed: published(6) };
+    const document = vlanCarriageFixture();
+    document.payload.vlans.rows.page.items[0]!.selections.carriage = summary;
+    const original = carriagePageFixture(1, summary);
+    const cables = Array.from({ length: 6 }, (_, index) => ({ ...original.payload.page.items[index % 2]!,
+      index, pointer: `/vlan_carriage/cables/${index}` }));
+    const offsets: number[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(document));
+      if (url.includes("/inventory/carriage?")) {
+        const offset = Number(new URL(url, "http://localhost").searchParams.get("offset"));
+        offsets.push(offset);
+        const count = offset === 0 ? 2 : offset === 2 ? 1 : 3;
+        return new Response(JSON.stringify({ ...original, payload: { ...original.payload,
+          page: { state: "published", reason: null, byte_limit: 3000000, offset, limit: count, returned: count,
+            total: 6, has_more: offset + count < 6, items: cables.slice(offset, offset + count) } } }));
+      }
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    await within(panel).findByText("Cables 1–2 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Next carriage page" }));
+    await within(panel).findByText("Cables 3–3 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Next carriage page" }));
+    await within(panel).findByText("Cables 4–6 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Previous carriage page" }));
+    await within(panel).findByText("Cables 3–3 of 6 assessed cables");
+    fireEvent.click(within(panel).getByRole("button", { name: "Previous carriage page" }));
+    await within(panel).findByText("Cables 1–2 of 6 assessed cables");
+    expect(offsets).toEqual([0, 2, 3, 2, 0]);
+  });
+  it.each([
+    ["a drifted summary", () => carriagePageFixture(1, { ...carriageSummaryFixture(0), state: "published" }), "Carriage summary changed. Reload this view before continuing."],
+    ["another snapshot", () => carriagePageFixture(2), "Carriage snapshot identity changed. Reload this view before continuing."],
+    ["another page window", () => carriagePageFixture(1, carriageSummaryFixture(0), 1), "Carriage page context changed. Reload this view before continuing."],
+  ])("refuses a carriage page from %s instead of merging it", async (_name, page, message) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/inventory?")) return new Response(JSON.stringify(vlanCarriageFixture()));
+      if (url.includes("/ui-projection/inventory/carriage?")) return new Response(JSON.stringify(page()));
+      return new Response(JSON.stringify({ available: false }));
+    });
+    show("/snapshots/1?view=inventory&inventory=vlans");
+    fireEvent.click(await screen.findByText("Cable carriage and end evidence"));
+    const panel = screen.getByRole("region", { name: "VLAN row 0 cable carriage" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Load cable carriage" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryAllByRole("region").filter((node) => node.getAttribute("aria-label")?.startsWith("Cable carriage source row"))).toHaveLength(0);
   });
   describe.each([
     { view: "inventory", path: "/snapshots/1?view=inventory", label: "Finding severity for edge/a~b" },

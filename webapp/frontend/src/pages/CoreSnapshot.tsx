@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
-import { loadProjection, type Fact, type Projection, type Schemas, type View, type ViewDocument } from "../projection";
+import { loadCarriagePage, loadProjection, type CarriagePage, type CarriageSummary, type Fact, type Projection, type Schemas, type View,
+  type ViewDocument } from "../projection";
 import { EvidenceProvider, FactView, ImpactFactView, ListState, Qualifications, StateLabel, ValueText } from "./core/ProjectionEvidence";
 import { ProjectionList } from "./core/ProjectionList";
 import { TopologyPaths } from "./core/TopologyPaths";
@@ -236,6 +237,80 @@ function DeviceCard({ row, sid }: { row: Schemas["UiProjection1_DeviceRow"]; sid
   </article>;
 }
 
+// G14 v2: a VLAN row carries the engine's carriage summary (counts with their own states); its cable rows are loaded
+// one page at a time on request and must echo that exact summary (loadCarriagePage refuses drift).
+const CARRIAGE_COUNTS = ["assessed", "forwarding", "stp_blocked", "not_carried", "held", "edge_not_collected"] as const;
+const CARRIAGE_PAGE_SIZE = 25;
+function CarriageCable({ cable }: { cable: Schemas["UiProjection1_CarriageRow"] }) {
+  return <section className="projection-list-item" aria-label={`Cable carriage source row ${cable.index}`}>
+    <FactGrid facts={{ cable: cable.ends, relation: cable.relation, end_evidence: cable.evidence_shape,
+      evidence_basis: cable.basis }} />
+    <Pointer pointer={cable.cable_pointer} />
+    <ListState label={`Member evidence for cable row ${cable.index}`} source={cable.members} />
+    {cable.members.items.map((member) => <div key={member.pointer} role="group"
+      aria-label={`Cable ${cable.index} member ${member.index}`}>
+      <FactGrid facts={{ member_relation: member.relation, end_evidence: member.evidence_shape,
+        evidence_basis: member.basis, a_host: member.a.host, a_port: member.a.port,
+        a_signal: member.a.signal, a_basis: member.a.basis, b_host: member.b.host,
+        b_port: member.b.port, b_signal: member.b.signal, b_basis: member.b.basis }} />
+      <Pointer pointer={member.pointer} /></div>)}
+    <Pointer pointer={cable.pointer} /></section>;
+}
+function CarriagePanel({ document, summary }: { document: ViewDocument<"inventory">; summary: CarriageSummary }) {
+  const [page, setPage] = useState<CarriagePage | null>(null);
+  const [history, setHistory] = useState<number[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef<AbortController | null>(null);
+  const source = useRef({ document, summary });
+  useEffect(() => {
+    const was = source.current;
+    source.current = { document, summary };
+    if (was.document !== document || was.summary !== summary) {
+      request.current?.abort(); request.current = null;
+      setPage(null); setHistory([]); setBusy(false); setError("");
+    }
+  }, [document, summary]);
+  useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
+  async function load(offset: number) {
+    request.current?.abort();
+    const controller = new AbortController(); request.current = controller;
+    setBusy(true); setError("");
+    try {
+      const next = await loadCarriagePage(document, summary, offset, CARRIAGE_PAGE_SIZE, controller.signal);
+      if (!controller.signal.aborted) {
+        if (page && offset > page.offset) setHistory((prior) => [...prior, page.offset]);
+        else if (page && offset < page.offset) setHistory((prior) => prior.slice(0, -1));
+        setPage(next.payload.page);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Carriage page could not be loaded.");
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+      if (request.current === controller) request.current = null;
+    }
+  }
+  return <section aria-label={`VLAN row ${summary.vlan_index} cable carriage`} aria-busy={busy}>
+    <ListState label="VLAN cable carriage" source={summary} />
+    <FactGrid facts={{ assessed: summary.assessed, forwarding: summary.forwarding, stp_blocked: summary.stp_blocked,
+      not_carried: summary.not_carried, held: summary.held, edge_not_collected: summary.edge_not_collected }} order={CARRIAGE_COUNTS} />
+    {!page && <button className="btn" disabled={busy} onClick={() => void load(0)}>Load cable carriage</button>}
+    {page && <>
+      {page.items.map((cable) => <CarriageCable key={cable.pointer} cable={cable} />)}
+      {page.state === "unverified" && <p role="alert" className="projection-disclosure">{page.reason}</p>}
+      {page.state === "published" && !page.returned && <p className="projection-disclosure">No assessed cable rows on this page. The summary state above is unchanged.</p>}
+      <footer className="projection-pagination">
+        <span>{page.state === "unverified" ? `Cable page unavailable; ${page.total} assessed cables retained`
+          : `${page.returned ? `Cables ${page.offset + 1}–${page.offset + page.returned}` : "No cables"} of ${page.total} assessed cables`}</span>
+        <button className="btn" disabled={busy || !history.length}
+          onClick={() => void load(history[history.length - 1]!)}>Previous carriage page</button>
+        <button className="btn" disabled={busy || page.state !== "published" || !page.has_more || !page.returned}
+          onClick={() => void load(page.offset + page.returned)}>Next carriage page</button>
+      </footer></>}
+    {error && <p role="alert" className="projection-error">{error}</p>}
+  </section>;
+}
+
 function Inventory({ document }: { document: ViewDocument<"inventory"> }) {
   const [params, setParams] = useSearchParams();
   const tab = params.get("inventory") ?? "devices";
@@ -256,7 +331,10 @@ function Inventory({ document }: { document: ViewDocument<"inventory"> }) {
           endpoint_count: row.endpoint_count, endpoint_mix: row.endpoint_mix, wave: row.wave, scenario: row.scenario,
           domain: row.app_domain, criticality: row.criticality, dependencies: row.dependencies, window: row.cutover_window,
           rollback_owner: row.rollback_owner, root_claimants: row.stp_root_claimants, root_identities: row.stp_root_identities }} />
-          <Pointer pointer={row.pointer} /></details></article>} /></>}
+          <Pointer pointer={row.pointer} /></details>
+        <details><summary>Cable carriage and end evidence</summary>
+          <CarriagePanel document={document} summary={row.selections.carriage} />
+        </details></article>} /></>}
     {tab === "endpoints" && <><Panel title="Endpoint inventory"><FactView label="Engine endpoint total" fact={p.endpoints.total} /></Panel>
       <ProjectionList title="Endpoints" reference={reference} document={document} initial={p.endpoints.rows} renderRow={(row) => <article>
         <FactGrid facts={{ host: row.host, port: row.port, mac: row.mac, vlan: row.vlan, ip: row.ip, class: row.endpoint_class,

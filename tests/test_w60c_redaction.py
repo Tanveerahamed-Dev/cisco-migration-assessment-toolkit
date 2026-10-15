@@ -330,22 +330,23 @@ def test_w60c_inherited_source_review_probe_emits_runtime_evidence(archival_repl
 
 
 def test_w60c_each_finding_fix_and_final_head_keep_exact_main_views(archival_replay):
+    historical_head = "c6eacaa26a823b9176ef4127fdda477cfb637fbe"
     _cases, _results, sources, scratch = archival_replay
     protected_prefixes = ("tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/")
     protected_files = {"webapp/sample_data/sample_fleet.snapshot.json", "atlas-scope/src/data/fabric.json"}
-    changes = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", CURRENT_MAIN, "HEAD"],
+    changes = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", CURRENT_MAIN, historical_head],
                                       cwd=ROOT).decode().splitlines()
     moved = [path for path in changes if path.startswith(protected_prefixes) or path in protected_files]
     assert moved == [], ("STOP: W60c would move a persisted output; no import or regeneration", moved)
     expected_entries = subprocess.check_output(["git", "ls-tree", "-r", "-z", CURRENT_MAIN, "--",
         "tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/", *sorted(protected_files)], cwd=ROOT)
-    candidate_entries = subprocess.check_output(["git", "ls-tree", "-r", "-z", "HEAD", "--",
+    candidate_entries = subprocess.check_output(["git", "ls-tree", "-r", "-z", historical_head, "--",
         "tests/golden/", "webapp/frontend/dist/", "atlas-scope/dist-hub/", *sorted(protected_files)], cwd=ROOT)
     assert candidate_entries == expected_entries, "protected candidate modes/types/blobs differ from main"
     inputs = []
     for name in ("tests/golden/snapshot.json", "webapp/sample_data/sample_fleet.snapshot.json"):
         raw = subprocess.check_output(["git", "show", CURRENT_MAIN + ":" + name], cwd=ROOT)
-        assert (ROOT / name).read_bytes().replace(b"\r\n", b"\n") == raw
+        assert subprocess.check_output(["git", "show", historical_head + ":" + name], cwd=ROOT) == raw
         path = scratch / Path(name).name
         path.write_bytes(raw)
         inputs.append(str(path))

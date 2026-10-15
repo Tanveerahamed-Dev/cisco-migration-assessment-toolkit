@@ -113,16 +113,26 @@ _V1_FROZEN_CORPUS = {
 #: cutover_operator_evidence/1 on the LIVE corpus as the pre-W50 engine computed it (measured at e7c00e12), each an
 #: explicit pair: the corpus SHA-256 the digests were measured on, then the digests. A regeneration updates the pair
 #: together; a code change with the corpus unchanged fails (module docstring).
+#: W52 / G14: the committed golden and sample now carry G14's hosted-regenerated vlan_carriage section, so both pairs
+#: were re-measured together with the pure functions on those committed bytes, after the frozen-corpus pins were
+#: confirmed on the same tree. The previous pairs (golden c4f6a549.../9da4d736.../56b1c51c..., sample
+#: dbc229cf.../ab1f6d46.../0c81ec19...) still reproduce exactly when this tree's code reads the previous corpus bytes,
+#: so no code moved a stored-receipt digest; operator_evidence is unchanged and only the corpus moved comparison.
+#: W52 v2: hosted py312 job114449585329 on f8c19024 measured these complete pairs from the real admitted
+#: b43 producer/receipt outputs after the full58ae import and successful verify_import. The same unfiltered
+#: four-file run exercised every frozen control without a failure/skip. Both operator digests remain unchanged;
+#: all frozen fixtures/pins/assertions remain untouched. This receipt-first measured companion preserves the
+#: coupled live corpus/digest update; no local hash calculation or old-corpus qualification is substituted.
 _V1_LIVE = {
     "golden": {
-        "corpus_sha256": "c4f6a549299bd6494b9b0377a7a5be773d2322b3ace3b785701d2a57e7cc4643",
+        "corpus_sha256": "6070729ee19d162d025bdbe3b9e16b7983348c775d1c86ddc1eb831d7c50846b",
         "operator_evidence": "9da4d736cb8c1bfbe6ed4fe69c4ea01bacfd40ed2a353b50fa7368e8d3f75557",
-        "comparison": "56b1c51c69a0fe79c0ad193d78479aecee228c3acc4d7a1c8eab28a506cd0ce2",
+        "comparison": "d9620f944bf03b700afbe969030fcf4a49844b46124334d92eb1eaef57db7ccf",
     },
     "sample": {
-        "corpus_sha256": "dbc229cfdcd676bb07e99bdace7e26ea429de087715ebf1727064b4e373a26c1",
+        "corpus_sha256": "a22c0a987a3960a163aea780daedf42a6bf0be5e99ab02e4aa5005a13d1439d5",
         "operator_evidence": "ab1f6d468e57cba53658dff2af81baa25498fcf674f805d3a783dcd83c7c7b32",
-        "comparison": "0c81ec1949fe4af0344dd5953f6a7306832e1c4497a757a9ee92563870d53744",
+        "comparison": "13ec9b289d38df57ec1e7990cab3ccb07d64d10298d2ba9e6657f0264eedf14b",
     },
 }
 
@@ -218,7 +228,7 @@ def _assert_live_pair(name: str, measured: dict) -> None:
     assert measured["corpus_sha256"] == pinned["corpus_sha256"], (
         f"the {name} corpus was regenerated (its bytes no longer carry the SHA-256 the /1 digests were measured on). "
         "Re-measure and update the corpus_sha256 AND its digests together in _V1_LIVE, only while every frozen-corpus "
-        "pin still holds (module docstring)")
+        "pin still holds (module docstring). Actual hosted tuple: " + repr(measured))
     assert measured == pinned, (
         "cutover_operator_evidence/1 no longer recomputes the bytes the pre-W50 engine stored for an UNCHANGED "
         "corpus, so every stored receipt would fail re-verification. Restore _rehearsal_impact_evidence_v1 and the "
