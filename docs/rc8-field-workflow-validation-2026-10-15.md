@@ -13,6 +13,8 @@ selection events and assessment-linked document identity. Foundation correction
 `3d73a58a3c0e3c42d4fc342f0956ea93a1e9a656` adds plan-only UTC-Z compatibility without rewriting
 timestamp/hash bytes; `bee0dba2b81e5386932a7ca5e5b0271356d7e80d` closes malformed-Z admission
 with an ASCII extended timestamp grammar and transient fraction padding, preserving the same bytes.
+`8fca0ddda1017f2d9c2e5e8e77b7ac67ff47e41b` bounds UTC-Z clock fields and constructs aware UTC
+directly, keeping interpreter ISO-parser normalization outside that validation boundary.
 The visible app workflow is their dependent
 change. Product/schema versions, engine writers, tracked golden files and sample outputs are unchanged.
 
@@ -152,6 +154,17 @@ source must independently rebuild these committed bytes and pass every applicabl
   values remain unchanged. The blocked-PIPE control still cannot publish readiness. Old Windows and
   coverage jobs cancel without a completed pass. Their logs and the two failures remain evidence;
   fresh exact-source validation must close this separate correction too.
+- Foundation `acf55054` Python 3.14.8 job `116697640808`, CI `38815006575`, reports one failure,
+  19,448 passes, 165 skips, 3 expected failures, 8 warnings and 26 passing subtests in 4,064.78 seconds.
+  Dependent `8327211d` separately reports the same sole failure in job `116698855883`, CI
+  `38815376708`: one failure, 19,450 passes, the same skips/expected failures/warnings/subtests,
+  in 4,104.89 seconds. The retained `2026-10-15T24:00:00Z` negative is accepted when ISO parsing
+  normalizes that clock value. `8fca0ddd` closes hours to 00-23 and minutes/seconds to 00-59, then
+  constructs an aware UTC datetime directly from bounded fields. It preserves the original negative,
+  shared non-Z behavior and every raw timestamp/hash/authority byte. Seven positive and eighteen
+  negative boundary cases forbid legacy-parser use for valid and invalid Z inputs. The prior-head
+  app, frozen Windows, reference and frontend receipt successes remain bounded to those sources;
+  no failure is waived. The corrected combined head needs fresh full hosted gates before review.
 
 ## Review and delivery boundary
 
