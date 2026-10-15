@@ -7,6 +7,7 @@
 .saved-plan-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; margin: 0; padding: 0; min-width: 0; }
 .saved-plan-fields label { display: flex; flex-direction: column; gap: 7px; font-weight: 600; }
 .saved-plan-field { min-width: 0; }
+.saved-plan-select-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .saved-plan-help { margin: 7px 0 0; font-size: .8rem; overflow-wrap: anywhere; }
 .saved-plan-fields input, .saved-plan-fields select, .saved-plan-fields textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; font-weight: 400; }
 .saved-plan-fields input:focus-visible, .saved-plan-fields select:focus-visible, .saved-plan-fields textarea:focus-visible, .saved-plan-page button:focus-visible, .saved-plan-page a:focus-visible, .saved-plan-page summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }

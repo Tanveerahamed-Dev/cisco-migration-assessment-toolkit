@@ -220,8 +220,11 @@ test("real backend: ordinary upload to persisted selected plan and source-bound 
     await expect(page.getByText("No saved plan revisions yet.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Download MOP", exact: true })).toBeDisabled();
     await page.setViewportSize({ width: 728, height: 1024 });
-    await page.getByLabel("Plan name", { exact: true }).focus();
-    await page.getByLabel("Plan name", { exact: true }).press("Tab");
+    const planName = page.getByLabel("Plan name", { exact: true });
+    await expect(planName).toBeEnabled();
+    await planName.focus();
+    await expect(planName).toBeFocused();
+    await planName.press("Tab");
     await expect(page.getByLabel("Availability tier", { exact: true })).toBeFocused();
     const first = await saveRevision(page, snapshotId, "UI qualification ACI plan", "aci");
     expect(first.assessment.sha256).toBe("sha256:" + hash(original));
