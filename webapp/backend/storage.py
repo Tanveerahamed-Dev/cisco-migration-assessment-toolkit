@@ -1141,12 +1141,24 @@ _saved_plan_json_bytes = saved_plan_json_bytes
 def _parse_saved_plan_timestamp(value: Any) -> Optional[datetime]:
     """Validate ISO UTC-Z consistently on Python 3.10+ without rewriting envelope bytes.
 
-    Python 3.10's fromisoformat does not recognize the terminal UTC designator accepted by newer
-    interpreters. Normalize only this parsing input, then retain the existing awareness/refusal
-    checks. Legacy execution/receipt timestamp parsing and the immutable hash input stay unchanged.
+    UTC-Z metadata uses an extended ASCII date/time with seconds and optional 1-6 digit fractions.
+    Close that lexical form before adapting it: Python 3.10 can otherwise accept a residual Z next
+    to the normalized offset. Pad fractions only in this parsing copy for its 3/6-digit parser.
+    Calendar/time validity still belongs to datetime. Non-Z behavior, legacy execution/receipt
+    timestamp parsing and the immutable hash input stay unchanged.
     """
-    if type(value) is str and value.endswith("Z"):
-        value = value[:-1] + "+00:00"
+    if type(value) is str and ("Z" in value or "z" in value):
+        utc_z = re.fullmatch(
+            r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+            r"(?:\.([0-9]{1,6}))?Z", value,
+        )
+        if utc_z is None:
+            return None
+        value = utc_z.group(1)
+        fraction = utc_z.group(2)
+        if fraction is not None:
+            value += "." + fraction.ljust(6, "0")
+        value += "+00:00"
     return _parse_aware_timestamp(value)
 
 

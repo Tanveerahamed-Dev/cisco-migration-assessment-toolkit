@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-15** (Codex, Qatar; RC8 P0 owner-authorized implementation). Reasoning behind the current direction:
+Last reconciled: **2026-10-16** (Codex, Qatar; RC8 P0 supported-runtime input validation). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -393,6 +393,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- **2026-10-16 (Codex, RC8-P0-A malformed UTC suffix):** Head3d73a58a CI38804920843 / Python3.10 job116663859609 fails step16Run complete default suite:1FAILED19277PASSED297SKIPPED3XFAILED26subtests in3564.47seconds. All39 earlier valid-Z export failures close, but the retained malformed2026-10-15T00:00:00ZZ refusal does not raise. Replacing only the lastZ yields2026-10-15T00:00:00Z+00:00, which that interpreter accepts. This is a real new-plan input-validation gap, not a fixture to waive. Correct lexical admission before UTC suffix normalization; retain the shared legacy parser, original timestamp/hash/authority bytes, all original assertions, budgets, timeouts and golden/sample outputs. Independent source review and fresh Rule7 precede publication. Exact corrected-head supported runtime/all15/whole workflows must close it; earlier-head positives do not transfer. No local runtime, merge, release cut or publication.
 
 - **2026-10-15 (Codex, RC8-P0-A supported-runtime timestamp closure):** Required f66dc68e CI38796794102 / Python3.10 job116635407602 fails its complete default suite:39FAILED19229PASSED297SKIPPED3XFAILED26subtests. All39 failures are existing new-plan export fixtures whose aware UTC timestamp ends inZ; Python3.10 fromisoformat rejects that notation while3.11+ accepts it. Preserve every original fixture/assertion. A new-plan-only validation adapter converts terminalZ to+00:00 solely for the existing awareness parser, covering envelope and selection validation without changing shared legacy execution/receipt parsing, stored strings, canonical hash bytes, event authority or budgets. Add raw Z/+00 hash-preservation, eight invalid/naive/nonstring refusals and actual Store Z save/select/context/source-byte controls. Independent static reviews and Ruff/whitespace pass; hosted Python3.10 and all final-head gates must close the correction. Earlier f66 full-webapp/Scope/CodeQL and frozen positives remain bounded; the39 failures are never waived or regraded. No local runtime, fixture weakening, golden/sample/version change or release action.
 

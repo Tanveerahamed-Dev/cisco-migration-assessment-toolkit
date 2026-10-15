@@ -28,6 +28,9 @@ Windows qualification must succeed before that journey is reported as verified.
 - New-plan metadata accepts aware UTC `Z` and `+00:00` consistently on supported Python runtimes.
   Validation never rewrites the original timestamp string or its immutable hash/authority bytes;
   legacy execution/receipt timestamp parsing remains its separate owner.
+  The UTC-Z spelling uses ASCII `YYYY-MM-DDTHH:MM:SS[.1-6 digits]Z`; lowercase, interior or duplicate
+  designators and an offset plus `Z` refuse before conversion. Fraction padding occurs only in the
+  temporary parsing copy. Non-Z aware timestamp behavior remains unchanged.
 - Every saved plan is `UNAPPROVED_DRAFT`. Saving and selecting do not grant document approval, CAB,
   execution authority, signing, qualification or publication authority.
 
