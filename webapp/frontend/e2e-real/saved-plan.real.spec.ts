@@ -8,7 +8,8 @@ import { REAL_ORIGIN } from "./paths";
 
 // The existing real-backend core walk proves fresh collection/engine ingestion. This separate
 // walk uses the bundled synthetic snapshot through the ordinary browser upload, avoiding another
-// expensive engine run. No /api response is mocked. A network route only refuses foreign origins.
+// expensive engine run. Traffic is unmodified; passive request and WebSocket observers fail the
+// walk if any foreign origin is contacted. No response is mocked or connection intercepted.
 // This is synthetic local-browser evidence, not a physical disconnected/Python-absent host test.
 const SAMPLE = fileURLToPath(new URL("../../sample_data/sample_fleet.snapshot.json", import.meta.url));
 const DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -160,26 +161,26 @@ test("real backend: ordinary upload to persisted selected plan and source-bound 
   const serverErrors: string[] = [];
   let nativeDownloads = 0;
   let actor: Page | null = null;
-  await context.route("**/*", async (route) => {
-    const url = new URL(route.request().url());
+  context.on("request", (request) => {
+    const url = new URL(request.url());
     if ((url.protocol === "http:" || url.protocol === "https:") && url.origin !== REAL_ORIGIN) {
       foreign.push(`${url.origin}${url.pathname}`);
-      await route.abort("blockedbyclient");
-    } else {
-      await route.continue();
     }
   });
-  await context.routeWebSocket("**/*", (socket) => {
-    const url = new URL(socket.url());
-    if (url.origin.replace(/^ws/, "http") === REAL_ORIGIN) {
-      socket.connectToServer();
-    } else {
-      foreign.push(`${url.origin}${url.pathname}`);
-      socket.close({ code: 1008, reason: "This synthetic journey permits the local origin only" });
-    }
-  });
-  context.on("page", (created) => created.on("pageerror", (error) => pageErrors.push(error.message)));
-  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const observedPages = new WeakSet<Page>();
+  const observePage = (observed: Page): void => {
+    if (observedPages.has(observed)) return;
+    observedPages.add(observed);
+    observed.on("pageerror", (error) => pageErrors.push(error.message));
+    observed.on("websocket", (socket) => {
+      const url = new URL(socket.url());
+      if (url.origin.replace(/^ws/, "http") !== REAL_ORIGIN) {
+        foreign.push(`${url.origin}${url.pathname}`);
+      }
+    });
+  };
+  context.on("page", observePage);
+  context.pages().forEach(observePage);
   page.on("download", () => nativeDownloads++);
   context.on("response", (response) => {
     const url = new URL(response.url());

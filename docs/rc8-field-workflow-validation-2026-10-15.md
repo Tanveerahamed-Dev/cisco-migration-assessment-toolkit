@@ -110,6 +110,17 @@ source must independently rebuild these committed bytes and pass every applicabl
   parser and original stored/digested strings unchanged. Added controls prove distinct raw Z/+00
   hashes, malformed/naive/nonstring refusals and Store save/reselect/context/source-byte preservation.
   The new combined source requires fresh supported-runtime validation; earlier passes do not close it.
+- UI `15ec794d`: CI run `38805134587`, Python 3.14 job `116664462330`, fails the complete default
+  suite with 19 failures, 19,393 passes, 165 skips, 3 expected failures and 26 passing subtests.
+  Eighteen failures arise from a middle-dot added to the ASCII-only Windows field guide. Restore
+  ASCII wording; retain its existing encoding guard. The other failure is the real-browser tier's
+  unchanged prohibition on request interception: replace the new journey's HTTP/WebSocket routing
+  with passive request/socket observers on the initial and subsequent pages. Traffic stays unmodified;
+  all original foreign-origin, browser-error, native-download and stale-plan assertions remain.
+  No existing test, gate, timeout, budget or generated output changes. Earlier hosted browser and
+  frozen-package passes on this head do not close the failed complete suite. The observer edit changes
+  a frontend-profile input: the earlier 164-input receipt remains the import event's evidence only;
+  require a fresh complete hosted producer and post-import receipt for the corrected profile.
 
 ## Review and delivery boundary
 

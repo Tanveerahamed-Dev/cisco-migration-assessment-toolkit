@@ -43,7 +43,7 @@ plan, the documents and the older full snapshot page.
 
 SAVED PLANS / MOP AND NRFU DOWNLOADS
 ------------------------------------
-On the core assessment, choose "Saved plans · MOP / NRFU". Enter
+On the core assessment, choose Saved plans for MOP / NRFU. Enter
 requirements and a plan name, then save a revision. The app keeps the
 original assessment unchanged. Reopen or select a saved revision to see
 its stored design and acceptance checklist, then choose Download MOP or
