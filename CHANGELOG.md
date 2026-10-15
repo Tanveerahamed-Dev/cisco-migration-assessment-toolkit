@@ -6,6 +6,46 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Atlas 3.33.0rc7 candidate (2026-10-15)
+
+Changes since rc6 source `7fa74f53`, derived from the first-parent merge range
+`7fa74f53..89d214ea`:
+
+- **Candidate identity:** product `3.33.0rc7`, draft tag `v3.33.0-rc.7` and
+  `Atlas-3.33.0rc7-windows-x64.zip` installation example; schema remains `3.23.0`.
+  This preparation preserves the golden, sample and frontend bytes already merged at
+  `89d214ea`; RC6 receipts remain bound to their own source and assets.
+- **Bounded VLAN carriage (G14, #652):** the engine stores `vlan_carriage/2` facts once;
+  AssessHub renders per-VLAN summaries and bounded lazy pages of whole cables. Logical
+  port-channel PVST/allowance joins retain ambiguous, held, missing-evidence and edge-blind-spot
+  states. Captured configuration/PVST evidence does not establish simultaneous data-plane delivery.
+- **Upload staging and admission (#652):** derivative rendering, encoding and compression run
+  outside the shared Store lock/write transaction, followed by source-bound atomic publication.
+  Snapshot, ZIP, folder and demo preparation share heavy-work admission and reserve the stage
+  without waiting; contention returns 503/Retry-After before preparation side effects.
+- **Recovery and cleanup (#652):** raw-only upgrades establish pending source authority and
+  recover only against unchanged source bytes; completed or superseded derivatives refuse
+  regeneration after damage. Shielded spool cleanup releases admission after close errors or
+  cancellation. An accepted upload finishes atomically after a late disconnect: inspect stored
+  results before retrying; no exactly-once retry or arbitrary network/process-failure guarantee.
+- **Bounded observations (#652):** removes unused test-graph cache retention while preserving
+  the original assertions, timers, GC policy, budgets and timeouts. Historical failures and the
+  unprofiled triggering event remain in the G14 validation record; no universal latency claim.
+- **RC6 closeout (#663):** records the previous draft and hosted receiver integrity PASS,
+  preserving its source-specific receipts and all 14 owner-held external gates.
+
+Known limitations for this candidate:
+
+- Staging remains in RAM. Separate 64,000,000-byte derivative-payload and framing/key-metadata
+  caps do not bound whole-process RSS; sampled shared-process observations are not memory qualification.
+- W60c P2-6/P3-7 and the inherited creator marker-alias privacy escape remain open as documented
+  in the RC6 entry below. Scope A6/#604 remains parked and Scope ships as Preview.
+- All 14 `external_pending` gates from
+  `portable/release_contract.py :: REQUIRED_EXTERNAL_GATES` remain owner-held. The candidate
+  stays permanently `draft_only`, `UNSIGNED_RELEASE_CANDIDATE` and
+  `AUTOMATED_PASS_EXTERNAL_GATES_PENDING`, with `field_qualified=false`. Automated integrity
+  does not establish signing, field qualification, operator acceptance or publication authority.
+
 ### Atlas 3.33.0rc6 candidate (2026-10-12)
 
 Changes since rc5 source `0dc2f5d6`, derived from
