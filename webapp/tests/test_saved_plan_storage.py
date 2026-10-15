@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
 import shutil
@@ -204,6 +205,57 @@ def test_non_z_aware_plan_metadata_keeps_legacy_parser_behavior(seeded, created_
     plan = _save(store, sid, binding)
     assert storage._parse_saved_plan_timestamp(created_at) == storage._parse_aware_timestamp(created_at)
     assert saved_plan_digest({**plan, "created_at": created_at}).startswith("sha256:")
+
+
+@pytest.mark.parametrize(("created_at", "fields"), [
+    ("0001-01-01T00:00:00Z", (1, 1, 1, 0, 0, 0, 0)),
+    ("9999-12-31T23:59:59.999999Z", (9999, 12, 31, 23, 59, 59, 999999)),
+    ("2000-02-29T00:00:00.000001Z", (2000, 2, 29, 0, 0, 0, 1)),
+    ("2024-02-29T23:59:59Z", (2024, 2, 29, 23, 59, 59, 0)),
+    ("2026-10-15T00:00:00.0Z", (2026, 10, 15, 0, 0, 0, 0)),
+    ("2026-10-15T23:59:59.1Z", (2026, 10, 15, 23, 59, 59, 100000)),
+    ("2026-12-31T23:59:59.999Z", (2026, 12, 31, 23, 59, 59, 999000)),
+])
+def test_valid_utc_z_calendar_boundaries_never_use_iso_parser(seeded, monkeypatch, created_at, fields):
+    store, _cid, sid, _raw, binding = seeded
+    original = _save(store, sid, binding)
+
+    def forbidden(_value):
+        raise AssertionError("UTC-Z validation must not depend on the legacy ISO parser")
+
+    monkeypatch.setattr(storage, "_parse_aware_timestamp", forbidden)
+    parsed = storage._parse_saved_plan_timestamp(created_at)
+    assert parsed is not None
+    assert parsed == datetime(*fields, tzinfo=timezone.utc)
+    assert parsed.tzinfo is timezone.utc
+    plan = {**original, "created_at": created_at}
+    before = deepcopy(plan)
+    immutable = {key: value for key, value in plan.items() if key not in {"sha256", "selection_id"}}
+    raw = json.dumps(immutable, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False, allow_nan=False).encode("utf-8")
+    assert saved_plan_digest(plan) == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert plan == before and plan["created_at"] == created_at
+
+
+@pytest.mark.parametrize("created_at", [
+    "0000-01-01T00:00:00Z", "10000-01-01T00:00:00Z", "2026-00-01T00:00:00Z",
+    "2026-13-01T00:00:00Z", "2026-01-00T00:00:00Z", "2026-01-32T00:00:00Z",
+    "1900-02-29T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z",
+    "2026-10-15T24:00:00Z", "2026-10-15T24:00:00.000000Z", "2026-10-15T24:01:00Z",
+    "2026-10-15T99:59:59Z", "2026-10-15T23:60:00Z", "2026-10-15T23:59:60Z",
+    "2026-10-15T23:59:59ZZ", "2026-10-15T23:59:59+00:00Z", "2026-10-15T23:59:59z",
+])
+def test_invalid_utc_z_calendar_and_clock_never_use_iso_parser(seeded, monkeypatch, created_at):
+    store, _cid, sid, _raw, binding = seeded
+    plan = _save(store, sid, binding)
+
+    def forbidden(_value):
+        raise AssertionError("UTC-Z refusal must not depend on the legacy ISO parser")
+
+    monkeypatch.setattr(storage, "_parse_aware_timestamp", forbidden)
+    assert storage._parse_saved_plan_timestamp(created_at) is None
+    with pytest.raises(ValueError, match="metadata"):
+        saved_plan_digest({**plan, "created_at": created_at})
 
 
 def test_utc_z_plan_and_selection_survive_reopen_without_resealing(seeded, monkeypatch):

@@ -1142,23 +1142,29 @@ def _parse_saved_plan_timestamp(value: Any) -> Optional[datetime]:
     """Validate ISO UTC-Z consistently on Python 3.10+ without rewriting envelope bytes.
 
     UTC-Z metadata uses an extended ASCII date/time with seconds and optional 1-6 digit fractions.
-    Close that lexical form before adapting it: Python 3.10 can otherwise accept a residual Z next
-    to the normalized offset. Pad fractions only in this parsing copy for its 3/6-digit parser.
-    Calendar/time validity still belongs to datetime. Non-Z behavior, legacy execution/receipt
-    timestamp parsing and the immutable hash input stay unchanged.
+    Bound its clock fields and construct UTC directly: ISO-parser acceptance and normalization
+    vary across supported interpreters. The datetime constructor checks the calendar; fractional
+    padding applies only to the integer microseconds, never to the persisted string. Non-Z behavior,
+    legacy execution/receipt timestamp parsing and the immutable hash input stay unchanged.
     """
     if type(value) is str and ("Z" in value or "z" in value):
         utc_z = re.fullmatch(
-            r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
-            r"(?:\.([0-9]{1,6}))?Z", value,
+            r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})T"
+            r"(?P<hour>[01][0-9]|2[0-3]):(?P<minute>[0-5][0-9]):(?P<second>[0-5][0-9])"
+            r"(?:\.(?P<fraction>[0-9]{1,6}))?Z", value,
         )
         if utc_z is None:
             return None
-        value = utc_z.group(1)
-        fraction = utc_z.group(2)
-        if fraction is not None:
-            value += "." + fraction.ljust(6, "0")
-        value += "+00:00"
+        try:
+            return datetime(
+                year=int(utc_z.group("year")), month=int(utc_z.group("month")),
+                day=int(utc_z.group("day")), hour=int(utc_z.group("hour")),
+                minute=int(utc_z.group("minute")), second=int(utc_z.group("second")),
+                microsecond=int((utc_z.group("fraction") or "0").ljust(6, "0")),
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            return None
     return _parse_aware_timestamp(value)
 
 
