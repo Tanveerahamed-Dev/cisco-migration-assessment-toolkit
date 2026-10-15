@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import sqlite3
@@ -532,6 +533,117 @@ CREATE TABLE IF NOT EXISTS gates (
     decided_at  TEXT NOT NULL,
     UNIQUE(campaign_id, wave, gate)
 );
+-- Saved plans are separate from immutable assessment evidence and execution approval.
+-- These empty additive tables need no historical backfill or trust reseal.
+CREATE TABLE IF NOT EXISTS plan_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 64),
+    plan_json BLOB NOT NULL,
+    UNIQUE(snapshot_id, revision)
+);
+CREATE TABLE IF NOT EXISTS plan_revision_authority (
+    plan_id INTEGER PRIMARY KEY REFERENCES plan_revisions(id),
+    authority_version INTEGER NOT NULL CHECK (authority_version = 1),
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plan_selection_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    revision INTEGER NOT NULL,
+    previous_selection_id INTEGER NOT NULL CHECK (previous_selection_id >= 0),
+    plan_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    digest_0 INTEGER NOT NULL,
+    digest_1 INTEGER NOT NULL,
+    digest_2 INTEGER NOT NULL,
+    digest_3 INTEGER NOT NULL,
+    FOREIGN KEY(snapshot_id, revision) REFERENCES plan_revisions(snapshot_id, revision)
+);
+CREATE INDEX IF NOT EXISTS ix_plan_selection_snapshot ON plan_selection_events(snapshot_id, id);
+CREATE TRIGGER IF NOT EXISTS plan_revisions_no_update BEFORE UPDATE ON plan_revisions
+BEGIN SELECT RAISE(ABORT, 'saved plan revisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_revisions_no_delete BEFORE DELETE ON plan_revisions
+BEGIN SELECT RAISE(ABORT, 'saved plan revisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_revisions_no_replace BEFORE INSERT ON plan_revisions
+WHEN EXISTS (SELECT 1 FROM plan_revisions
+             WHERE id=NEW.id OR (snapshot_id=NEW.snapshot_id AND revision=NEW.revision))
+BEGIN SELECT RAISE(ABORT, 'saved plan revisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_revision_authority_no_update BEFORE UPDATE ON plan_revision_authority
+BEGIN SELECT RAISE(ABORT, 'saved plan authority is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_revision_authority_no_delete BEFORE DELETE ON plan_revision_authority
+BEGIN SELECT RAISE(ABORT, 'saved plan authority is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_revision_authority_no_replace BEFORE INSERT ON plan_revision_authority
+WHEN EXISTS (SELECT 1 FROM plan_revision_authority WHERE plan_id=NEW.plan_id)
+BEGIN SELECT RAISE(ABORT, 'saved plan authority is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_selection_events_no_update BEFORE UPDATE ON plan_selection_events
+BEGIN SELECT RAISE(ABORT, 'saved plan selections are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_selection_events_no_delete BEFORE DELETE ON plan_selection_events
+BEGIN SELECT RAISE(ABORT, 'saved plan selections are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS plan_selection_events_no_replace BEFORE INSERT ON plan_selection_events
+WHEN EXISTS (SELECT 1 FROM plan_selection_events WHERE id=NEW.id)
+BEGIN SELECT RAISE(ABORT, 'saved plan selections are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_snapshot_no_delete BEFORE DELETE ON snapshots
+WHEN OLD.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions WHERE snapshot_id=OLD.id)
+BEGIN SELECT RAISE(ABORT, 'saved plan assessment is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_snapshot_no_rebind
+BEFORE UPDATE OF id, campaign_id, label, uploaded_at, script_version, snapshot_json ON snapshots
+WHEN OLD.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions WHERE snapshot_id=OLD.id)
+BEGIN SELECT RAISE(ABORT, 'saved plan assessment is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_snapshot_no_replace BEFORE INSERT ON snapshots
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=NEW.id AND saved_plan_required=1)
+  OR EXISTS (SELECT 1 FROM plan_revisions WHERE snapshot_id=NEW.id)
+BEGIN SELECT RAISE(ABORT, 'saved plan assessment is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_snapshot_authority_no_delete BEFORE DELETE ON snapshot_authority
+WHEN EXISTS (SELECT 1 FROM snapshots WHERE id=OLD.snapshot_id AND saved_plan_required=1)
+  OR EXISTS (SELECT 1 FROM plan_revisions WHERE snapshot_id=OLD.snapshot_id)
+BEGIN SELECT RAISE(ABORT, 'saved plan assessment authority is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_engagement_no_delete BEFORE DELETE ON campaign_identities
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=OLD.campaign_id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan engagement is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_engagement_no_rebind
+BEFORE UPDATE OF campaign_id, engagement_id ON campaign_identities
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=OLD.campaign_id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan engagement is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_engagement_no_replace BEFORE INSERT ON campaign_identities
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=NEW.campaign_id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan engagement is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_campaign_no_delete BEFORE DELETE ON campaigns
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=OLD.id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan campaign is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_campaign_no_rebind BEFORE UPDATE OF id ON campaigns
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=OLD.id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan campaign is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_campaign_no_replace BEFORE INSERT ON campaigns
+WHEN EXISTS (SELECT 1 FROM snapshots s WHERE s.campaign_id=NEW.id
+             AND (s.saved_plan_required=1 OR EXISTS (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)))
+BEGIN SELECT RAISE(ABORT, 'saved plan campaign is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS saved_plan_markers_no_regression
+BEFORE UPDATE OF saved_plan_required, saved_plan_revision_count, saved_plan_selection_id ON snapshots
+WHEN NOT (
+    NEW.id=OLD.id AND NEW.saved_plan_required=1 AND OLD.saved_plan_required IN (0,1)
+    AND NEW.saved_plan_revision_count BETWEEN 1 AND 64
+    AND NEW.saved_plan_revision_count BETWEEN OLD.saved_plan_revision_count AND OLD.saved_plan_revision_count+1
+    AND NEW.saved_plan_selection_id>OLD.saved_plan_selection_id
+    AND NEW.saved_plan_revision_count=(SELECT COUNT(*) FROM plan_revisions WHERE snapshot_id=OLD.id)
+    AND NEW.saved_plan_revision_count=(SELECT MAX(revision) FROM plan_revisions WHERE snapshot_id=OLD.id)
+    AND EXISTS (
+        SELECT 1 FROM plan_selection_events e JOIN plan_revisions p
+          ON p.snapshot_id=e.snapshot_id AND p.revision=e.revision
+        JOIN plan_revision_authority a ON a.plan_id=p.id
+        WHERE e.id=NEW.saved_plan_selection_id AND e.snapshot_id=OLD.id
+          AND e.previous_selection_id=OLD.saved_plan_selection_id AND a.authority_version=1
+    )
+)
+BEGIN SELECT RAISE(ABORT, 'saved plan history markers cannot regress or detach'); END;
 """
 
 
@@ -905,6 +1017,173 @@ class ExecutionReceiptAuthorityError(RuntimeError):
     """Persisted execution decision rows cannot be re-authorized from their exact sources."""
 
 
+class SavedPlanConflictError(RuntimeError):
+    """The caller's assessment binding or selected-plan generation is stale."""
+
+
+class SavedPlanIntegrityError(RuntimeError):
+    """Saved plan, selection, or assessment bytes no longer match their durable authority."""
+
+
+class SavedPlanLimitError(ValueError):
+    """A saved-plan payload, revision history, or selection history exceeds its finite bound."""
+
+
+SAVED_PLAN_MAX_BYTES = 4 * 1024 * 1024
+SAVED_PLAN_MAX_REVISIONS = 64
+SAVED_PLAN_MAX_SELECTIONS = 256
+_SAVED_PLAN_MAX_DEPTH = 64
+_SAVED_PLAN_MAX_NODES = 200_000
+_SQLITE_MAX_ID = (1 << 63) - 1
+_SAVED_PLAN_KEYS = frozenset({
+    "schema", "revision", "label", "created_at", "assessment", "projection", "status",
+})
+
+
+def saved_plan_json_bytes(value: Any) -> bytes:
+    """Bound canonical JSON before allocation, shared by plan preparation and storage.
+
+    Count repeated aliases and escaped UTF-8 strings at every occurrence before encoding. A
+    tiny Python list of references to one large string must not allocate a multi-GiB JSON result
+    before discovering the 4 MiB limit. The encoder is separately bounded, never joined first.
+    """
+    size = 0
+
+    def consume(amount: int) -> None:
+        nonlocal size
+        size += amount
+        if size > SAVED_PLAN_MAX_BYTES:
+            raise SavedPlanLimitError("saved plan exceeds the 4 MiB payload limit")
+
+    def string_size(text: str) -> int:
+        # JSON quotes, backslashes, short escapes and other controls have different widths.
+        if len(text) > SAVED_PLAN_MAX_BYTES:
+            raise SavedPlanLimitError("saved plan string exceeds the payload limit")
+        length = 2
+        for char in text:
+            point = ord(char)
+            if char in ('"', "\\", "\b", "\f", "\n", "\r", "\t"):
+                length += 2
+            elif point < 0x20:
+                length += 6
+            elif point < 0x80:
+                length += 1
+            elif point < 0x800:
+                length += 2
+            elif 0xD800 <= point <= 0xDFFF:
+                raise ValueError("saved plan strings must be valid Unicode")
+            else:
+                length += 3 if point < 0x10000 else 4
+            if size + length > SAVED_PLAN_MAX_BYTES:
+                raise SavedPlanLimitError("saved plan exceeds the 4 MiB payload limit")
+        return length
+
+    active: set[int] = set()
+    stack = [(value, 0, False)]
+    nodes = 0
+    while stack:
+        item, depth, leaving = stack.pop()
+        if leaving:
+            active.remove(id(item))
+            continue
+        nodes += 1
+        if nodes > _SAVED_PLAN_MAX_NODES or depth > _SAVED_PLAN_MAX_DEPTH:
+            raise SavedPlanLimitError("saved plan JSON exceeds its structural bound")
+        if type(item) in (dict, list):
+            if len(item) + nodes + len(stack) > _SAVED_PLAN_MAX_NODES:
+                raise SavedPlanLimitError("saved plan JSON exceeds its structural bound")
+            if id(item) in active:
+                raise ValueError("saved plan JSON contains a cycle")
+            consume(2 + max(0, len(item) - 1) + (len(item) if type(item) is dict else 0))
+            active.add(id(item))
+            stack.append((item, depth, True))
+            if type(item) is dict:
+                for key, child in item.items():
+                    if type(key) is not str:
+                        raise ValueError("saved plan JSON object keys must be strings")
+                    consume(string_size(key))
+                    stack.append((child, depth + 1, False))
+            else:
+                stack.extend((child, depth + 1, False) for child in item)
+        elif type(item) is str:
+            consume(string_size(item))
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise ValueError("saved plan JSON numbers must be finite")
+            consume(len(repr(item)))
+        elif type(item) is int:
+            if item.bit_length() > 4096:
+                raise SavedPlanLimitError("saved plan integer exceeds its encoding bound")
+            consume(len(str(item)))
+        elif item is None:
+            consume(4)
+        elif type(item) is bool:
+            consume(4 if item else 5)
+        elif item is not None and type(item) is not bool:
+            raise ValueError("saved plan contains a non-JSON value")
+    encoded = bytearray()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, allow_nan=False)
+    for chunk in encoder.iterencode(value):
+        raw = chunk.encode("utf-8", errors="strict")
+        if len(encoded) + len(raw) > SAVED_PLAN_MAX_BYTES:
+            raise SavedPlanLimitError("saved plan exceeds the 4 MiB payload limit")
+        encoded.extend(raw)
+    return bytes(encoded)
+
+
+# Retain the private storage seam while preparation/render helpers use the public owner above.
+_saved_plan_json_bytes = saved_plan_json_bytes
+
+
+def _saved_plan_envelope_bytes(record: Any) -> bytes:
+    if type(record) is not dict or set(record) - {"sha256", "selection_id"} != _SAVED_PLAN_KEYS:
+        raise ValueError("saved plan envelope has an unsupported shape")
+    if record["schema"] != "atlas.saved_plan/1" or record["status"] != "UNAPPROVED_DRAFT":
+        raise ValueError("saved plan schema or approval posture is invalid")
+    if (type(record["revision"]) is not int
+            or not 1 <= record["revision"] <= SAVED_PLAN_MAX_REVISIONS
+            or type(record["label"]) is not str or not 1 <= len(record["label"]) <= 200
+            or not record["label"].strip()
+            or type(record["created_at"]) is not str
+            or _parse_aware_timestamp(record["created_at"]) is None
+            or type(record["assessment"]) is not dict
+            or set(record["assessment"]) != set(_SNAPSHOT_BINDING_FIELDS)
+            or type(record["projection"]) is not dict):
+        raise ValueError("saved plan envelope metadata is invalid")
+    return _saved_plan_json_bytes({key: record[key] for key in _SAVED_PLAN_KEYS})
+
+
+def saved_plan_digest(record: Dict[str, Any]) -> str:
+    """One immutable-envelope hash owner; selection events do not change plan identity."""
+    return "sha256:" + hashlib.sha256(_saved_plan_envelope_bytes(record)).hexdigest()
+
+
+def _saved_plan_integer(value: Any, *, allow_zero: bool = False) -> None:
+    if type(value) is not int or not (0 if allow_zero else 1) <= value <= _SQLITE_MAX_ID:
+        raise ValueError("saved plan identity must be a bounded integer")
+
+
+def _saved_plan_binding_matches(candidate: Any, expected: Dict[str, Any]) -> bool:
+    return (type(candidate) is dict and set(candidate) == set(expected)
+            and _binding_matches(candidate, expected))
+
+
+def _saved_plan_authority_limbs(plan_id: int, snapshot_id: int, revision: int,
+                                raw: bytes) -> tuple[int, int, int, int]:
+    return _authority_limbs({"schema": "saved_plan_authority/1", "plan_id": plan_id,
+                             "snapshot_id": snapshot_id, "revision": revision,
+                             "envelope": _blob_identity(raw)})
+
+
+def _saved_plan_selection_limbs(event: Any) -> tuple[int, int, int, int]:
+    return _authority_limbs({"schema": "saved_plan_selection/1", **{
+        key: event[key] for key in (
+            "id", "snapshot_id", "revision", "previous_selection_id", "plan_sha256", "created_at",
+        )
+    }})
+
+
 class CarriagePreparationLimitError(ValueError):
     """One snapshot's materialized derivative exceeds the closed ingest payload limit."""
 
@@ -1072,6 +1351,15 @@ class Store:
                         f"INTEGER NOT NULL DEFAULT {version_default} "
                         "CHECK (carriage_projection_version IN (-2,0,2))"
                     )
+                # Append-only INTEGER witnesses survive loss of every plan table, or only its
+                # latest tail. Existing assessments start with no plan; never synthesize/reseal one.
+                for column, declaration in (
+                    ("saved_plan_required", "INTEGER NOT NULL DEFAULT 0 CHECK (saved_plan_required IN (0,1))"),
+                    ("saved_plan_revision_count", "INTEGER NOT NULL DEFAULT 0 CHECK (saved_plan_revision_count BETWEEN 0 AND 64)"),
+                    ("saved_plan_selection_id", "INTEGER NOT NULL DEFAULT 0 CHECK (saved_plan_selection_id >= 0)"),
+                ):
+                    if column not in snapshot_columns:
+                        self._conn.execute(f"ALTER TABLE snapshots ADD COLUMN {column} {declaration}")
                 # v2/legacy classification is decision-bearing even before the first comparison exists.
                 # Keep it in INTEGER columns (sqlite blobopen can incrementally rewrite TEXT/BLOB
                 # without firing row triggers) and migrate older stores once from their historical
@@ -1629,6 +1917,13 @@ class Store:
                 if receipt is not None:
                     self._conn.rollback()
                     return "receipted"
+                if self._conn.execute(
+                    """SELECT 1 FROM snapshots s WHERE s.campaign_id=?
+                       AND (s.saved_plan_required=1 OR EXISTS
+                            (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id)) LIMIT 1""", (campaign_id,),
+                ).fetchone() is not None:
+                    self._conn.rollback()
+                    return "planned"
                 self._conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
                 self._conn.commit()
                 return "deleted"
@@ -2345,6 +2640,12 @@ class Store:
                 if receipt is not None:
                     self._conn.rollback()
                     return "receipted"
+                if self._conn.execute(
+                    """SELECT 1 FROM snapshots s WHERE s.id=? AND (s.saved_plan_required=1 OR EXISTS
+                       (SELECT 1 FROM plan_revisions p WHERE p.snapshot_id=s.id))""", (snapshot_id,),
+                ).fetchone() is not None:
+                    self._conn.rollback()
+                    return "planned"
                 self._conn.execute("DELETE FROM snapshots WHERE id=?", (snapshot_id,))
                 self._conn.commit()
                 return "deleted"
@@ -2355,6 +2656,286 @@ class Store:
     def delete_snapshot(self, snapshot_id: int) -> bool:
         """Compatibility wrapper; receipt-bound source snapshots are never deleted."""
         return self.delete_snapshot_if_unreceipted(snapshot_id) == "deleted"
+
+    # -- saved plans --------------------------------------------------------
+    @contextmanager
+    def _saved_plan_transaction(self, *, write: bool = False) -> Iterator[None]:
+        """One coherent SQLite read, or a bounded publication with full rollback."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                yield
+                if write:
+                    self._conn.commit()
+                else:
+                    self._conn.rollback()
+            except BaseException:
+                self._rollback_carriage_publication()
+                raise
+
+    def _saved_plan_source_locked(self, snapshot_id: int) -> Optional[tuple[bytes, Dict[str, Any]]]:
+        try:
+            source = self._carriage_bound_source_locked(snapshot_id)
+        except (ExecutionReceiptAuthorityError, TypeError, ValueError) as exc:
+            raise SavedPlanIntegrityError("saved plan assessment authority is invalid") from exc
+        if source is None:
+            if (self._conn.execute("SELECT 1 FROM snapshots WHERE id=?", (snapshot_id,)).fetchone()
+                    or self._conn.execute("SELECT 1 FROM plan_revisions WHERE snapshot_id=? LIMIT 1",
+                                          (snapshot_id,)).fetchone()):
+                raise SavedPlanIntegrityError("saved plan assessment identity is missing")
+            return None
+        _row, raw, binding = source
+        return raw, binding
+
+    def _saved_plan_record_locked(self, snapshot_id: int, revision: int,
+                                  binding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """SELECT p.id, p.snapshot_id, p.revision,
+                      length(CAST(p.plan_json AS BLOB)) AS payload_bytes,
+                      CASE WHEN length(CAST(p.plan_json AS BLOB)) <= ?
+                           THEN CAST(p.plan_json AS BLOB) END AS payload,
+                      a.plan_id AS authority_plan_id, a.authority_version,
+                      a.digest_0 AS authority_digest_0, a.digest_1 AS authority_digest_1,
+                      a.digest_2 AS authority_digest_2, a.digest_3 AS authority_digest_3
+               FROM plan_revisions p LEFT JOIN plan_revision_authority a ON a.plan_id=p.id
+               WHERE p.snapshot_id=? AND p.revision=?""",
+            (SAVED_PLAN_MAX_BYTES, snapshot_id, revision),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            if (type(row["id"]) is not int or row["id"] <= 0
+                    or type(row["authority_plan_id"]) is not int
+                    or row["authority_plan_id"] != row["id"]
+                    or type(row["authority_version"]) is not int or row["authority_version"] != 1
+                    or type(row["payload_bytes"]) is not int
+                    or not 0 < row["payload_bytes"] <= SAVED_PLAN_MAX_BYTES):
+                raise ValueError("missing or malformed saved plan authority")
+            raw = _snapshot_blob_bytes(row["payload"])
+            expected = _saved_plan_authority_limbs(row["id"], snapshot_id, revision, raw)
+            if not _authority_row_matches(row, expected):
+                raise ValueError("saved plan bytes do not match their integer anchor")
+            record = _strict_json_loads(raw)
+            if (type(record) is not dict or set(record) != _SAVED_PLAN_KEYS
+                    or _saved_plan_envelope_bytes(record) != raw
+                    or record["revision"] != revision
+                    or not _saved_plan_binding_matches(record["assessment"], binding)):
+                raise ValueError("saved plan envelope or assessment binding differs")
+            record["sha256"] = saved_plan_digest(record)
+            return record
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise SavedPlanIntegrityError("saved plan revision cannot be verified") from exc
+
+    def _saved_plan_state_locked(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
+        source = self._saved_plan_source_locked(snapshot_id)
+        if source is None:
+            return None
+        raw, binding = source
+        markers = self._conn.execute(
+            "SELECT saved_plan_required,saved_plan_revision_count,saved_plan_selection_id "
+            "FROM snapshots WHERE id=?", (snapshot_id,),
+        ).fetchone()
+        if markers is None or any(type(value) is not int for value in markers):
+            raise SavedPlanIntegrityError("saved plan history markers are invalid")
+        rows = self._conn.execute(
+            """SELECT p.revision, a.plan_id, a.authority_version
+               FROM plan_revisions p LEFT JOIN plan_revision_authority a ON a.plan_id=p.id
+               WHERE p.snapshot_id=? ORDER BY p.revision LIMIT ?""",
+            (snapshot_id, SAVED_PLAN_MAX_REVISIONS + 1),
+        ).fetchall()
+        if (len(rows) > SAVED_PLAN_MAX_REVISIONS
+                or any(type(row["revision"]) is not int or row["revision"] != index
+                       or row["plan_id"] is None or row["authority_version"] != 1
+                       for index, row in enumerate(rows, 1))):
+            raise SavedPlanIntegrityError("saved plan revision history is incomplete or invalid")
+        events = self._conn.execute(
+            "SELECT * FROM plan_selection_events WHERE snapshot_id=? ORDER BY id LIMIT ?",
+            (snapshot_id, SAVED_PLAN_MAX_SELECTIONS + 1),
+        ).fetchall()
+        if len(events) > SAVED_PLAN_MAX_SELECTIONS:
+            raise SavedPlanIntegrityError("saved plan selection history exceeds its bound")
+        previous = 0
+        selected_revisions: set[int] = set()
+        for event in events:
+            if (type(event["id"]) is not int or not previous < event["id"] <= _SQLITE_MAX_ID
+                    or type(event["snapshot_id"]) is not int or event["snapshot_id"] != snapshot_id
+                    or type(event["revision"]) is not int or not 1 <= event["revision"] <= len(rows)
+                    or type(event["previous_selection_id"]) is not int
+                    or event["previous_selection_id"] != previous
+                    or type(event["plan_sha256"]) is not str
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", event["plan_sha256"]) is None
+                    or _parse_aware_timestamp(event["created_at"]) is None
+                    or not _authority_row_matches(event, _saved_plan_selection_limbs(event), prefix="digest")):
+                raise SavedPlanIntegrityError("saved plan selection history cannot be verified")
+            previous = event["id"]
+            selected_revisions.add(event["revision"])
+        if selected_revisions != set(range(1, len(rows) + 1)):
+            raise SavedPlanIntegrityError("saved plan history lost an automatic selection")
+        if (markers["saved_plan_required"] != int(bool(rows))
+                or markers["saved_plan_revision_count"] != len(rows)
+                or markers["saved_plan_selection_id"] != previous):
+            raise SavedPlanIntegrityError("saved plan history does not match its durable markers")
+        selected = None
+        if events:
+            selected = self._saved_plan_record_locked(snapshot_id, events[-1]["revision"], binding)
+            if selected is None or selected["sha256"] != events[-1]["plan_sha256"]:
+                raise SavedPlanIntegrityError("selected saved plan identity differs")
+            selected["selection_id"] = previous
+        return {"raw": raw, "binding": binding, "revision_count": len(rows),
+                "selection_count": len(events), "selection_id": previous, "selected": selected}
+
+    def _advance_saved_plan_markers_locked(self, snapshot_id: int, state: Dict[str, Any],
+                                           revision_count: int, selection_id: int) -> None:
+        changed = self._conn.execute(
+            """UPDATE snapshots SET saved_plan_required=1,saved_plan_revision_count=?,saved_plan_selection_id=?
+               WHERE id=? AND saved_plan_required=? AND saved_plan_revision_count=? AND saved_plan_selection_id=?""",
+            (revision_count, selection_id, snapshot_id, int(bool(state["revision_count"])),
+             state["revision_count"], state["selection_id"]),
+        )
+        if changed.rowcount != 1:
+            raise SavedPlanConflictError("saved plan history changed during publication")
+
+    def _next_saved_plan_id_locked(self, table: str) -> int:
+        if table not in {"plan_revisions", "plan_selection_events"}:
+            raise ValueError("invalid saved plan identity owner")
+        maximum = self._conn.execute(f"SELECT COALESCE(MAX(id),0) FROM {table}").fetchone()[0]
+        sequence = self._conn.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone()
+        sequence_value = sequence[0] if sequence else 0
+        if any(type(value) is not int or value < 0 for value in (maximum, sequence_value)):
+            raise SavedPlanIntegrityError("saved plan identity high-water mark is invalid")
+        high_watermark = max(maximum, sequence_value)
+        if high_watermark >= _SQLITE_MAX_ID:
+            raise SavedPlanLimitError("saved plan identity space is exhausted")
+        return high_watermark + 1
+
+    def _append_saved_plan_selection_locked(self, snapshot_id: int, revision: int,
+                                            digest: str, state: Dict[str, Any]) -> int:
+        if state["selection_count"] >= SAVED_PLAN_MAX_SELECTIONS:
+            raise SavedPlanLimitError("saved plan selection limit (256) reached")
+        event = {"id": self._next_saved_plan_id_locked("plan_selection_events"),
+                 "snapshot_id": snapshot_id, "revision": revision,
+                 "previous_selection_id": state["selection_id"], "plan_sha256": digest,
+                 "created_at": _now()}
+        self._conn.execute(
+            """INSERT INTO plan_selection_events
+               (id,snapshot_id,revision,previous_selection_id,plan_sha256,created_at,
+                digest_0,digest_1,digest_2,digest_3) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (*event.values(), *_saved_plan_selection_limbs(event)),
+        )
+        return event["id"]
+
+    def list_saved_plans(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
+        """Metadata for verified immutable revisions and the current explicit selection."""
+        _saved_plan_integer(snapshot_id)
+        with self._saved_plan_transaction():
+            state = self._saved_plan_state_locked(snapshot_id)
+            if state is None:
+                return None
+            metadata = []
+            for revision in range(1, state["revision_count"] + 1):
+                record = self._saved_plan_record_locked(snapshot_id, revision, state["binding"])
+                if record is None:
+                    raise SavedPlanIntegrityError("saved plan revision disappeared")
+                metadata.append({key: record[key] for key in (
+                    "schema", "revision", "label", "created_at", "sha256", "status",
+                )})
+            return {"assessment": state["binding"], "selection_id": state["selection_id"],
+                    "selected_revision": state["selected"]["revision"] if state["selected"] else None,
+                    "revisions": metadata}
+
+    def save_plan_revision(self, snapshot_id: int, label: str, projection: Dict[str, Any],
+                           expected_binding: Dict[str, Any], expected_selection_id: int
+                           ) -> Optional[Dict[str, Any]]:
+        """Append and select server-produced plan bytes; never alter the assessment or gates."""
+        _saved_plan_integer(snapshot_id)
+        _saved_plan_integer(expected_selection_id, allow_zero=True)
+        if type(label) is not str or not 1 <= len(label) <= 200 or not label.strip():
+            raise ValueError("saved plan label must contain 1 to 200 characters")
+        if type(projection) is not dict:
+            raise ValueError("saved plan projection must be a JSON object")
+        # Cut caller aliases and do bounded serialization outside the shared connection lock.
+        owned_projection = _strict_json_loads(_saved_plan_json_bytes(projection))
+        supplied_binding = dict(expected_binding) if type(expected_binding) is dict else None
+        with self._saved_plan_transaction(write=True):
+            state = self._saved_plan_state_locked(snapshot_id)
+            if state is None:
+                return None
+            if (state["selection_id"] != expected_selection_id
+                    or not _saved_plan_binding_matches(supplied_binding, state["binding"])):
+                raise SavedPlanConflictError("assessment or selected plan changed; reload before saving")
+            if state["revision_count"] >= SAVED_PLAN_MAX_REVISIONS:
+                raise SavedPlanLimitError("saved plan revision limit (64) reached")
+            if state["selection_count"] >= SAVED_PLAN_MAX_SELECTIONS:
+                raise SavedPlanLimitError("saved plan selection limit (256) reached")
+            revision = state["revision_count"] + 1
+            record = {"schema": "atlas.saved_plan/1", "revision": revision, "label": label,
+                      "created_at": _now(), "assessment": state["binding"],
+                      "projection": owned_projection, "status": "UNAPPROVED_DRAFT"}
+            raw = _saved_plan_envelope_bytes(record)
+            record["sha256"] = saved_plan_digest(record)
+            plan_id = self._next_saved_plan_id_locked("plan_revisions")
+            self._conn.execute(
+                "INSERT INTO plan_revisions(id,snapshot_id,revision,plan_json) VALUES (?,?,?,?)",
+                (plan_id, snapshot_id, revision, raw),
+            )
+            self._conn.execute(
+                """INSERT INTO plan_revision_authority
+                   (plan_id,authority_version,digest_0,digest_1,digest_2,digest_3) VALUES (?,?,?,?,?,?)""",
+                (plan_id, 1, *_saved_plan_authority_limbs(plan_id, snapshot_id, revision, raw)),
+            )
+            record["selection_id"] = self._append_saved_plan_selection_locked(
+                snapshot_id, revision, record["sha256"], state)
+            self._advance_saved_plan_markers_locked(snapshot_id, state, revision, record["selection_id"])
+            return record
+
+    def select_plan_revision(self, snapshot_id: int, revision: int, plan_sha256: str,
+                             expected_selection_id: int) -> Optional[Dict[str, Any]]:
+        """Append selection even when reselecting the same revision, preserving ABA detection."""
+        _saved_plan_integer(snapshot_id)
+        _saved_plan_integer(revision)
+        _saved_plan_integer(expected_selection_id, allow_zero=True)
+        if type(plan_sha256) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", plan_sha256) is None:
+            raise ValueError("saved plan digest must be a SHA-256 identity")
+        with self._saved_plan_transaction(write=True):
+            state = self._saved_plan_state_locked(snapshot_id)
+            if state is None:
+                return None
+            record = self._saved_plan_record_locked(snapshot_id, revision, state["binding"])
+            if record is None:
+                return None
+            if state["selection_id"] != expected_selection_id or record["sha256"] != plan_sha256:
+                raise SavedPlanConflictError("saved plan selection or revision identity changed")
+            record["selection_id"] = self._append_saved_plan_selection_locked(
+                snapshot_id, revision, record["sha256"], state)
+            self._advance_saved_plan_markers_locked(
+                snapshot_id, state, state["revision_count"], record["selection_id"])
+            return record
+
+    def get_saved_plan_context(self, snapshot_id: int, revision: int, plan_sha256: str,
+                               selection_id: int) -> Optional[Dict[str, Any]]:
+        """Freeze one currently selected revision with its original bound assessment for export."""
+        _saved_plan_integer(snapshot_id)
+        _saved_plan_integer(revision)
+        _saved_plan_integer(selection_id, allow_zero=True)
+        if type(plan_sha256) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", plan_sha256) is None:
+            raise ValueError("saved plan digest must be a SHA-256 identity")
+        with self._saved_plan_transaction():
+            state = self._saved_plan_state_locked(snapshot_id)
+            if state is None:
+                return None
+            if revision > state["revision_count"]:
+                return None
+            record = state["selected"]
+            if (record is None or state["selection_id"] != selection_id
+                    or record["revision"] != revision or record["sha256"] != plan_sha256):
+                raise SavedPlanConflictError("saved plan selection is stale; reload before export")
+            raw, binding = state["raw"], state["binding"]
+        from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
+        try:
+            snapshot = bind_snapshot_json_bytes(raw)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise SavedPlanIntegrityError("saved plan assessment cannot be parsed") from exc
+        return {"snapshot": snapshot, "binding": binding, "plan": record}
 
     # -- executions ----------------------------------------------------------
     # A live cutover-execution run (war room) over one snapshot's plan. The state blob is the source

@@ -30,7 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, BinaryIO, Callable, Dict, List, Literal
 
 from anyio import CancelScope
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,7 +57,8 @@ from . import (
     ui_projection_api,
 )
 from .storage import (
-    CarriagePreparationBusyError, CarriagePreparationLimitError, ExecutionReceiptAuthorityError, Store,
+    CarriagePreparationBusyError, CarriagePreparationLimitError, ExecutionReceiptAuthorityError,
+    SavedPlanConflictError, SavedPlanIntegrityError, SavedPlanLimitError, Store,
 )
 
 _HERE = Path(__file__).resolve().parent
@@ -396,6 +397,26 @@ BodyRowId = Annotated[
 ]
 BoundedToken = Annotated[str, Field(max_length=_LEN_TOKEN)]
 BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
+PlanRowId = Annotated[int, PathParam(ge=1, le=_SQLITE_INT_MAX)]
+PlanSelectionQuery = Annotated[int, Query(ge=1, le=_SQLITE_INT_MAX)]
+PlanDigestQuery = Annotated[str, Query(pattern=r"^sha256:[0-9a-f]{64}$")]
+
+
+class SavedPlanIn(BaseModel):
+    """Only requirements are caller-owned; derived plan sections are server-produced."""
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, max_length=_LEN_NAME, strict=True)
+    requirements: Dict[str, Any] = Field(default_factory=dict)
+    assessment: Dict[str, Any]
+    expected_selection_id: int = Field(strict=True, ge=0, le=_SQLITE_INT_MAX)
+
+
+class SavedPlanSelectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_sha256: str = Field(strict=True, pattern=r"^sha256:[0-9a-f]{64}$")
+    expected_selection_id: int = Field(strict=True, ge=0, le=_SQLITE_INT_MAX)
 
 
 class CampaignIn(BaseModel):
@@ -608,7 +629,7 @@ class _RequestBodyLimitMiddleware:
                         parse_constant=ingest.reject_nonfinite,
                         object_pairs_hook=_reject_duplicate_json_keys,
                     )
-                except (UnicodeDecodeError, ValueError) as exc:
+                except (UnicodeDecodeError, ValueError, RecursionError) as exc:
                     # Never reflect decoder/hook exception text.  The duplicate-key hook includes
                     # the attacker-supplied member name in its ValueError, and other decoder
                     # implementations may disclose parser internals.  Preserve the one useful,
@@ -2710,6 +2731,26 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             headers={"Retry-After": "5"},
         )
 
+    @app.exception_handler(SavedPlanConflictError)
+    async def saved_plan_conflict(_request: Request, _error: SavedPlanConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The assessment or selected plan changed. Reload saved plans and select again.",
+        })
+
+    @app.exception_handler(SavedPlanIntegrityError)
+    async def saved_plan_integrity(_request: Request, _error: SavedPlanIntegrityError) -> JSONResponse:
+        return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+            "detail": "Saved-plan integrity could not be verified. Preserve this database and restore "
+                      "a verified backup; the plan has not been regenerated or approved.",
+        })
+
+    @app.exception_handler(SavedPlanLimitError)
+    async def saved_plan_limit(_request: Request, _error: SavedPlanLimitError) -> JSONResponse:
+        return JSONResponse(status_code=413, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The saved-plan storage limit was reached. Reduce the plan scope or start a "
+                      "separate assessment; existing revisions are preserved.",
+        })
+
     @app.exception_handler(ExecutionReceiptAuthorityError)
     async def execution_receipt_authority_error(
             _request: Request, _error: ExecutionReceiptAuthorityError) -> JSONResponse:
@@ -3010,6 +3051,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 "A campaign containing canonical comparison receipts is an immutable decision "
                 "record and cannot be deleted",
             )
+        if deleted == "planned":
+            raise HTTPException(409, "A campaign containing saved plans is immutable and cannot be deleted")
         # A bare 204 — JSONResponse(content=None) would serialize a "null" body, which uvicorn
         # rejects on a 204 with an ASGI RuntimeError on every delete.
         return Response(status_code=204)
@@ -3591,6 +3634,133 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
+    @app.get("/api/snapshots/{snapshot_id}/plans")
+    def saved_plans(snapshot_id: PlanRowId, request: Request, response: Response) -> Dict[str, Any]:
+        """Saved revisions and the current append-only selection, not an implicit latest preview."""
+        response.headers["Cache-Control"] = "no-store"
+        with _generation_slot(request.app.state.generation_semaphore):
+            state = store.list_saved_plans(snapshot_id)
+        if state is None:
+            raise HTTPException(404, "Snapshot not found")
+        return state
+
+    @app.post("/api/snapshots/{snapshot_id}/plans", status_code=201)
+    def save_plan(snapshot_id: PlanRowId, body: SavedPlanIn, request: Request,
+                  response: Response) -> Dict[str, Any]:
+        """Derive outside the Store lock, then publish a separate immutable plan with source/CAS checks."""
+        response.headers["Cache-Control"] = "no-store"
+        if not body.label.strip():
+            raise HTTPException(400, "A saved plan needs a non-empty label")
+        with _generation_slot(request.app.state.generation_semaphore):
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snap, binding = bound
+            # This early equality prevents expensive work for an already stale form. Storage
+            # independently checks complete exact-type binding again in its publication transaction.
+            if (set(body.assessment) != set(binding)
+                    or any(type(body.assessment[k]) is not type(v) or body.assessment[k] != v
+                           for k, v in binding.items())):
+                raise SavedPlanConflictError("assessment binding changed")
+            try:
+                projection = deliverables.prepare_saved_plan(snap, body.requirements)
+                record = store.save_plan_revision(
+                    snapshot_id, body.label.strip(), projection, binding,
+                    body.expected_selection_id,
+                )
+            except deliverables.SavedPlanError as exc:
+                raise HTTPException(400, "The requirements cannot form a supported saved plan") from exc
+            except (SavedPlanConflictError, SavedPlanIntegrityError, SavedPlanLimitError):
+                raise
+            except ValueError as exc:
+                raise HTTPException(400, "The saved-plan request is invalid") from exc
+            if record is None:
+                raise HTTPException(404, "Snapshot not found")
+        return record
+
+    @app.post("/api/snapshots/{snapshot_id}/plans/{revision}/select")
+    def select_saved_plan(snapshot_id: PlanRowId, revision: PlanRowId,
+                          body: SavedPlanSelectionIn, request: Request,
+                          response: Response) -> Dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        with _generation_slot(request.app.state.generation_semaphore):
+            record = store.select_plan_revision(
+                snapshot_id, revision, body.plan_sha256, body.expected_selection_id,
+            )
+        if record is None:
+            raise HTTPException(404, "Saved plan not found for this snapshot")
+        return record
+
+    def _saved_plan_context(snapshot_id: int, revision: int, plan_sha256: str,
+                            selection_id: int) -> Dict[str, Any]:
+        context = store.get_saved_plan_context(snapshot_id, revision, plan_sha256, selection_id)
+        if context is None:
+            raise HTTPException(404, "Saved plan not found for this snapshot")
+        return context
+
+    @app.get("/api/snapshots/{snapshot_id}/plans/{revision}")
+    def saved_plan(snapshot_id: PlanRowId, revision: PlanRowId, plan_sha256: PlanDigestQuery,
+                   selection_id: PlanSelectionQuery, request: Request,
+                   response: Response) -> Dict[str, Any]:
+        """Reopen the pinned saved bytes; never recompute under a newer planner."""
+        response.headers["Cache-Control"] = "no-store"
+        with _generation_slot(request.app.state.generation_semaphore):
+            context = _saved_plan_context(snapshot_id, revision, plan_sha256, selection_id)
+        return context["plan"]
+
+    @app.get("/api/snapshots/{snapshot_id}/plans/{revision}/deliverable/{kind}")
+    def saved_plan_deliverable(snapshot_id: PlanRowId, revision: PlanRowId, kind: str,
+                               plan_sha256: PlanDigestQuery, selection_id: PlanSelectionQuery,
+                               request: Request):
+        """One pinned revision supplies the content, visible provenance and response identity."""
+        if kind not in deliverables.SPECS:
+            raise HTTPException(400, "Unknown saved-plan deliverable")
+        if not _deliverable_availability().get(kind):
+            raise HTTPException(503, "The required document renderer is unavailable")
+        with _generation_slot(request.app.state.generation_semaphore):
+            context = _saved_plan_context(snapshot_id, revision, plan_sha256, selection_id)
+            snap, binding, plan = context["snapshot"], context["binding"], context["plan"]
+            # A derived planning projection is never rebound as observed assessment bytes.
+            # The unchanged portfolio sidecar belongs only to this original BoundSnapshot.
+            portfolio = (protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
+                         if kind in {"runbook", "mop", "nrfu"} else None)
+            gate_record = (gates.gate_record(store.list_gates(binding["campaign_id"]))
+                           if kind == "engagement" else None)
+            gate_note = deliverables.gate_disclosure(kind, engagement=binding["engagement_id"])
+            path = None
+            try:
+                path = deliverables.generate_saved_plan(
+                    kind, snap, binding["label"], plan, gates=gate_record,
+                    protocol_assurance_bundle=portfolio, document_gate=gate_note,
+                )
+                # The expensive render ran without Store._lock. Refuse a selection/source change
+                # before reading the file; cleanup applies even when this second read refuses.
+                after = _saved_plan_context(snapshot_id, revision, plan_sha256, selection_id)
+                if after["binding"] != binding or after["plan"]["sha256"] != plan["sha256"]:
+                    raise SavedPlanConflictError("saved plan changed during rendering")
+                headers = {
+                    "Cache-Control": "no-store",
+                    "X-Atlas-Assessment-SHA256": binding["sha256"],
+                    "X-Atlas-Plan-Revision": str(revision),
+                    "X-Atlas-Plan-SHA256": plan["sha256"],
+                    "X-Atlas-Plan-Selection": str(selection_id),
+                    "X-Atlas-Plan-Status": "UNAPPROVED_DRAFT",
+                }
+                if gate_note:
+                    headers["X-Gate-Status"] = (
+                        f"{gate_note['status']}:"
+                        f"{','.join(gate_note.get('missing') or ['-'])}"
+                    )
+                spec = deliverables.SPECS[kind]
+                return _send_file(path, spec.media, f"{binding['label']}_plan-r{revision}",
+                                  spec.download_suffix, headers=headers)
+            except deliverables.SavedPlanError as exc:
+                raise HTTPException(409, "The saved plan cannot be verified for this export") from exc
+            finally:
+                if path is not None:
+                    with contextlib.suppress(OSError):
+                        os.unlink(path)
+
     def _bound_comparison_pair(before_snapshot_id: int, after_snapshot_id: int):
         if before_snapshot_id == after_snapshot_id:
             raise HTTPException(400, "Before and after snapshots must be different")
@@ -4145,6 +4315,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 "A snapshot bound by a canonical comparison receipt is immutable and cannot be "
                 "deleted",
             )
+        if deleted == "planned":
+            raise HTTPException(409, "A snapshot used by saved plans is immutable and cannot be deleted")
         return Response(status_code=204)
 
     @app.post("/api/compare")

@@ -172,8 +172,8 @@ MANIFEST_SCHEMA = "atlas.portable-member-manifest/1"
 #: attribution of every shipped frontend (``npm_build_attribution``).
 TOOLCHAIN_SCHEMA = "atlas.portable-toolchain-receipt/2"
 SIGNING_SCHEMA = "atlas.portable-signing/1"
-#: /3: adds the versioned ingest-owned carriage preparation tables to the closed database row census.
-QUALIFICATION_SCHEMA = "atlas.portable-qualification/3"
+#: /4: adds saved-plan tables and exact frozen offline saved-plan/document journey evidence.
+QUALIFICATION_SCHEMA = "atlas.portable-qualification/4"
 #: Every superseded receipt schema id, with why a document carrying it is REFUSED rather than
 #: migrated. One id names one shape: a shape change bumps the id and lands the old id here, so an
 #: older package is refused with its reason instead of failing a shape check with none
@@ -195,6 +195,11 @@ _SUPERSEDED_SCHEMAS = {
         "carriage_projection_v2_parts "
         "evidence, and database qualification that never covered those tables cannot be migrated "
         "into a pass"
+    ),
+    "atlas.portable-qualification/3": (
+        "a /3 qualification receipt predates saved plan revisions, their authority and selection "
+        "events, and the frozen offline saved-plan/document journey: neither the extended database "
+        "census nor that journey can be reconstructed as a passing check from an older receipt"
     ),
     "atlas.portable-third-party-notices/1": (
         "a /1 notices document predates the per-project npm notices: it has no namespaced entry "
@@ -253,6 +258,7 @@ AUTOMATED_CHECK_EVIDENCE: Mapping[str, str | None] = types.MappingProxyType({
     "same_version_database_copy_integrity": "database preflight (validated on a real runtime)",
     "prior_release_database_forward_compatibility": "database preflight (validated on a real runtime)",
     "frozen_redaction_and_manifest": "redaction and manifest proof (validated on a real runtime)",
+    "offline_saved_plan_documents": "offline saved-plan and document identity proof (validated on a real runtime)",
 })
 REQUIRED_AUTOMATED_CHECKS = frozenset(AUTOMATED_CHECK_EVIDENCE)
 REQUIRED_EXTERNAL_GATES = frozenset({
@@ -1909,6 +1915,19 @@ _DATABASE_EVIDENCE_KEYS = frozenset({
     "after_table_count", "before_table_set_digest", "after_table_set_digest",
     "prior_table_preservation_digest", "request_sha256", "source_sha256", "migrated_copy_sha256",
 })
+_SAVED_PLAN_DOCUMENT_KINDS = ("mop", "nrfu")
+_SAVED_PLAN_JOURNEY_KEYS = frozenset({
+    "status", "campaign_id", "snapshot_id", "upload_sha256", "upload_bytes",
+    "assessment_sha256", "assessment_bytes", "assessment_binding_sha256",
+    "plan_revision", "plan_sha256", "selection_id", "saved_revision_count",
+    "selected_record_sha256", "reopened_record_sha256", "server_restarted",
+    "assessment_unchanged", "zero_requirement_preserved", "stale_selection_refused",
+    "wrong_plan_refused", "database_copy", "documents",
+})
+_SAVED_PLAN_DOCUMENT_KEYS = frozenset({
+    "kind", "bytes", "sha256", "assessment_sha256", "plan_revision", "plan_sha256",
+    "selection_id", "unapproved_draft", "provenance_bound",
+})
 _NOTICE_COMMON_KEYS = frozenset({
     "key", "ecosystem", "name", "version", "license_declared", "license_files", "evidence_status",
 })
@@ -2018,7 +2037,10 @@ _SCHEMA_SHAPES: Mapping[str, Mapping[str, Any]] = _frozen({
             "execution_comparisons", "execution_l2_failure_trial_authority",
             "execution_l2_failure_trial_sources", "executions", "gates", "snapshot_authority",
             "snapshots",
+            "plan_revisions", "plan_revision_authority", "plan_selection_events",
         }),
+        "saved_plan_journey": _SAVED_PLAN_JOURNEY_KEYS,
+        "saved_plan_document": _SAVED_PLAN_DOCUMENT_KEYS,
         "redaction_evidence": frozenset({
             "status", "artifact_count", "manifest_verified", "independent_manifest_artifact_count",
             "independent_redaction_artifact_count", "independent_redaction_proof_digest",
@@ -3041,6 +3063,82 @@ def unsigned_signing_receipt(manifest: Mapping[str, Any]) -> dict[str, Any]:
     }, SIGNING_SCHEMA, "document", "UNSIGNED_RELEASE_CANDIDATE")
 
 
+def _validate_saved_plan_documents_evidence(evidence: object) -> None:
+    """Require a closed identity-consistent frozen journey; this is not field acceptance."""
+    if not _has_shape(evidence, QUALIFICATION_SCHEMA, "saved_plan_journey"):
+        raise PortableReleaseError("offline saved-plan journey evidence shape is invalid")
+    assert isinstance(evidence, Mapping)
+    if (
+        evidence.get("status") != "pass"
+        or any(type(evidence.get(field)) is not int or evidence[field] <= 0
+               for field in ("campaign_id", "snapshot_id", "upload_bytes", "assessment_bytes",
+                             "plan_revision", "selection_id"))
+        or evidence.get("saved_revision_count") != 2
+        or type(evidence.get("saved_revision_count")) is not int
+        or any(not _HEX64.fullmatch(str(evidence.get(field)))
+               for field in ("upload_sha256", "assessment_binding_sha256",
+                             "selected_record_sha256", "reopened_record_sha256"))
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(evidence.get("assessment_sha256")))
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(evidence.get("plan_sha256")))
+        or evidence["selected_record_sha256"] != evidence["reopened_record_sha256"]
+        or any(evidence.get(field) is not True
+               for field in ("server_restarted", "assessment_unchanged", "zero_requirement_preserved",
+                             "stale_selection_refused", "wrong_plan_refused"))
+    ):
+        raise PortableReleaseError("offline saved-plan journey identity or outcome is invalid")
+    database = evidence.get("database_copy")
+    if (
+        not _has_shape(database, QUALIFICATION_SCHEMA, "database_evidence", "same_version_database_copy_integrity")
+        or database.get("status") != "pass" or database.get("copy_migrated") is not False
+        or database.get("source_store_unchanged") is not True
+        or not _has_shape(database.get("row_counts"), QUALIFICATION_SCHEMA, "database_row_counts")
+        or any(type(value) is not int or value < 0 for value in database["row_counts"].values())
+        or database["row_counts"].get("campaigns") != 1
+        or database["row_counts"].get("snapshots") != 1
+        or database["row_counts"].get("plan_revisions") != 2
+        or database["row_counts"].get("plan_revision_authority") != 2
+        or database["row_counts"].get("plan_selection_events") != 3
+        or type(database.get("before_table_count")) is not int
+        or type(database.get("after_table_count")) is not int
+        or database["before_table_count"] != len(_declared(QUALIFICATION_SCHEMA, "database_row_counts"))
+        or database["after_table_count"] != database["before_table_count"]
+        or any(not _HEX64.fullmatch(str(database.get(field)))
+               for field in ("before_table_set_digest", "after_table_set_digest",
+                             "prior_table_preservation_digest", "request_sha256", "source_sha256",
+                             "migrated_copy_sha256"))
+        or database["before_table_set_digest"] != database["after_table_set_digest"]
+        or database["source_sha256"] != database["migrated_copy_sha256"]
+    ):
+        raise PortableReleaseError("offline saved-plan database-copy preservation evidence is invalid")
+    documents = evidence.get("documents")
+    if not isinstance(documents, list) or len(documents) != len(_SAVED_PLAN_DOCUMENT_KINDS):
+        raise PortableReleaseError("offline saved-plan document denominator is invalid")
+    kinds = []
+    hashes = []
+    for document in documents:
+        if not _has_shape(document, QUALIFICATION_SCHEMA, "saved_plan_document"):
+            raise PortableReleaseError("offline saved-plan document evidence shape is invalid")
+        if (
+            type(document.get("bytes")) is not int or document["bytes"] <= 0
+            or not _HEX64.fullmatch(str(document.get("sha256")))
+            or document.get("assessment_sha256") != evidence["assessment_sha256"]
+            or type(document.get("plan_revision")) is not int
+            or document["plan_revision"] != evidence["plan_revision"]
+            or document.get("plan_sha256") != evidence["plan_sha256"]
+            or type(document.get("selection_id")) is not int
+            or document["selection_id"] != evidence["selection_id"]
+            or document.get("unapproved_draft") is not True
+            or document.get("provenance_bound") is not True
+        ):
+            raise PortableReleaseError("offline saved-plan document identity or outcome is invalid")
+        kinds.append(document.get("kind"))
+        hashes.append(document["sha256"])
+    if any(not isinstance(kind, str) for kind in kinds) or sorted(kinds) != sorted(_SAVED_PLAN_DOCUMENT_KINDS):
+        raise PortableReleaseError("offline saved-plan document kinds differ from the owned denominator")
+    if len(set(hashes)) != len(_SAVED_PLAN_DOCUMENT_KINDS):
+        raise PortableReleaseError("offline saved-plan documents reuse the same artifact bytes")
+
+
 def _validate_qualification(
     qualification: Mapping[str, Any],
     source: Mapping[str, Any],
@@ -3145,6 +3243,8 @@ def _validate_qualification(
                 )
             ):
                 raise PortableReleaseError("redaction qualification evidence is invalid")
+        if real_runtime and identifier == "offline_saved_plan_documents":
+            _validate_saved_plan_documents_evidence(evidence)
     if len(ids) != len(set(ids)) or set(ids) != REQUIRED_AUTOMATED_CHECKS:
         raise PortableReleaseError("qualification check denominator differs from the closed automated set")
     pending = qualification.get("external_pending")
