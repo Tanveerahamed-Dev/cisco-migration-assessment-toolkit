@@ -143,6 +143,15 @@ source must independently rebuild these committed bytes and pass every applicabl
   and the shared legacy parser. Additional controls cover fractional hash preservation, malformed
   designators, calendar validity, early refusal and unchanged non-Z offset handling. Its corrected
   source is merged into this dependent branch; fresh final-head hosted gates remain mandatory.
+- Foundation `3d73a58a` portable source/frontend job `116663739701` in run `38804920913` ends
+  cancelled, but its pre-cancellation log already contains two real failures in the new large-child
+  output test. Both success/failure variants see an empty readiness file: existence precedes the
+  synthetic child's `write_text` completion. `acf55054cf94a5aeee4e06dc622aeda617da4b17` changes only
+  that child fixture to close a sibling pending file and atomically publish it afterward. All 21
+  assertion ASTs, output/sentinel/flush ordering, variants, cleanup, failure-tail bounds and timing
+  values remain unchanged. The blocked-PIPE control still cannot publish readiness. Old Windows and
+  coverage jobs cancel without a completed pass. Their logs and the two failures remain evidence;
+  fresh exact-source validation must close this separate correction too.
 
 ## Review and delivery boundary
 
