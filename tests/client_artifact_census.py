@@ -1382,10 +1382,10 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    # Multipart cleanup shields spool closure and unconditionally releases its heavy-work token.
-    # The complete download caller/route/catalogue/_send_file chain retains its same name owners.
-    "webapp/backend/app.py": "d6c905f222cc8baeb9d1e70b1772180b4d894226",
-    "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
+    # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
+    # caller/route/catalogue/_send_file closure retains every original response-name owner.
+    "webapp/backend/app.py": "b3b9b54ff8f98eff89047c6b8450d96e158abee1",
+    "webapp/backend/deliverables.py": "a364bfc3bd1ca0f56c1fb7dc59983a730a3c237d",
     "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {
