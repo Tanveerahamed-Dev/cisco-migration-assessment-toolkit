@@ -181,6 +181,13 @@ copies stay outside npm resolution and keep the release gate blocked.
 
 ## graphify
 
+Hosted knowledge maintenance is documented in `docs/knowledge-export.md`. The manual-only
+`knowledge-export.yml` workflow and `.github/scripts/knowledge_export.py` export one explicitly
+reviewed RC7 source to a fresh review artifact, without moving the local canonical checkout or
+writing the personal vault. The GitHub-only rule above applies; older local commands below describe
+the producer contract, not local execution permission. No refresh is established until the hosted
+generation, unchanged report gate and export checks actually succeed.
+
 This project has a knowledge graph at graphify-out/ (12,881 nodes / 22,851 edges as of 2026-08-07 — this figure is only a dated cache; the machine-readable owner is `graphify-out/graph.json`, so read it rather than copying this line; after the 2026-07-03 de-pollution that also
 excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `*_DC_Design/`,
 `compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
