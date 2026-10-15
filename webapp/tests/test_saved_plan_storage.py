@@ -119,6 +119,46 @@ def test_complete_immutable_envelope_has_one_utf8_digest_owner(seeded):
             saved_plan_digest(changed)
 
 
+def test_aware_utc_spellings_validate_without_rewriting_immutable_hash_input(seeded):
+    store, _cid, sid, _raw, binding = seeded
+    original = _save(store, sid, binding)
+    digests = []
+    for created_at in ("2026-10-15T00:00:00Z", "2026-10-15T00:00:00+00:00"):
+        plan = {**original, "created_at": created_at}
+        before = deepcopy(plan)
+        immutable = {key: value for key, value in plan.items() if key not in {"sha256", "selection_id"}}
+        raw = json.dumps(immutable, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False).encode("utf-8")
+        digest = saved_plan_digest(plan)
+        assert digest == "sha256:" + hashlib.sha256(raw).hexdigest()
+        assert plan == before and plan["created_at"] == created_at
+        digests.append(digest)
+    assert digests[0] != digests[1]  # validation equivalence never rewrites the immutable bytes
+
+
+@pytest.mark.parametrize("created_at", [None, False, 0, "", "2026-10-15", "2026-10-15T00:00:00",
+                                         "2026-10-15T00:00:00ZZ", "2026-10-15T00:00:00+00:00Z"])
+def test_plan_timestamp_compatibility_keeps_naive_malformed_and_nonstring_refusals(seeded, created_at):
+    store, _cid, sid, _raw, binding = seeded
+    plan = _save(store, sid, binding)
+    with pytest.raises(ValueError, match="metadata"):
+        saved_plan_digest({**plan, "created_at": created_at})
+
+
+def test_utc_z_plan_and_selection_survive_reopen_without_resealing(seeded, monkeypatch):
+    store, _cid, sid, raw, binding = seeded
+    timestamp = storage._now().replace("+00:00", "Z")
+    monkeypatch.setattr(storage, "_now", lambda: timestamp)
+    plan = _save(store, sid, binding)
+    assert plan["created_at"] == timestamp
+    assert _context(store, sid, plan)["plan"] == plan
+    selected = store.select_plan_revision(sid, plan["revision"], plan["sha256"], plan["selection_id"])
+    assert selected["sha256"] == plan["sha256"] and selected["created_at"] == timestamp
+    assert selected["selection_id"] > plan["selection_id"]
+    assert _context(store, sid, selected)["plan"] == selected
+    assert store.get_snapshot_blob(sid) == (raw, binding)
+
+
 def test_restart_never_recomputes_saved_projection(tmp_path, monkeypatch):
     path = tmp_path / "restart.db"
     store = Store(path)

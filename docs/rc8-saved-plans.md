@@ -25,6 +25,9 @@ Windows qualification must succeed before that journey is reported as verified.
   the saved result; a newer planner must not silently change the same revision.
 - Selection is an append-only event. Save/select requires the previous selection ID. Selecting A, then B,
   then A creates three different selections; the first request cannot masquerade as current again.
+- New-plan metadata accepts aware UTC `Z` and `+00:00` consistently on supported Python runtimes.
+  Validation never rewrites the original timestamp string or its immutable hash/authority bytes;
+  legacy execution/receipt timestamp parsing remains its separate owner.
 - Every saved plan is `UNAPPROVED_DRAFT`. Saving and selecting do not grant document approval, CAB,
   execution authority, signing, qualification or publication authority.
 

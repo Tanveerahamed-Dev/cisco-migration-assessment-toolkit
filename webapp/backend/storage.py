@@ -1138,6 +1138,18 @@ def saved_plan_json_bytes(value: Any) -> bytes:
 _saved_plan_json_bytes = saved_plan_json_bytes
 
 
+def _parse_saved_plan_timestamp(value: Any) -> Optional[datetime]:
+    """Validate ISO UTC-Z consistently on Python 3.10+ without rewriting envelope bytes.
+
+    Python 3.10's fromisoformat does not recognize the terminal UTC designator accepted by newer
+    interpreters. Normalize only this parsing input, then retain the existing awareness/refusal
+    checks. Legacy execution/receipt timestamp parsing and the immutable hash input stay unchanged.
+    """
+    if type(value) is str and value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return _parse_aware_timestamp(value)
+
+
 def _saved_plan_envelope_bytes(record: Any) -> bytes:
     if type(record) is not dict or set(record) - {"sha256", "selection_id"} != _SAVED_PLAN_KEYS:
         raise ValueError("saved plan envelope has an unsupported shape")
@@ -1148,7 +1160,7 @@ def _saved_plan_envelope_bytes(record: Any) -> bytes:
             or type(record["label"]) is not str or not 1 <= len(record["label"]) <= 200
             or not record["label"].strip()
             or type(record["created_at"]) is not str
-            or _parse_aware_timestamp(record["created_at"]) is None
+            or _parse_saved_plan_timestamp(record["created_at"]) is None
             or type(record["assessment"]) is not dict
             or set(record["assessment"]) != set(_SNAPSHOT_BINDING_FIELDS)
             or type(record["projection"]) is not dict):
@@ -2766,7 +2778,7 @@ class Store:
                     or event["previous_selection_id"] != previous
                     or type(event["plan_sha256"]) is not str
                     or re.fullmatch(r"sha256:[0-9a-f]{64}", event["plan_sha256"]) is None
-                    or _parse_aware_timestamp(event["created_at"]) is None
+                    or _parse_saved_plan_timestamp(event["created_at"]) is None
                     or not _authority_row_matches(event, _saved_plan_selection_limbs(event), prefix="digest")):
                 raise SavedPlanIntegrityError("saved plan selection history cannot be verified")
             previous = event["id"]
