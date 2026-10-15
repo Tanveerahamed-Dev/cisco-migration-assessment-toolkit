@@ -113,12 +113,20 @@ async function expectSavedView(page: Page, plan: SavedPlanRecord): Promise<void>
 async function downloadDocument(page: Page, testInfo: TestInfo, snapshotId: number,
   plan: SavedPlanRecord, kind: "mop" | "nrfu"): Promise<Record<string, unknown>> {
   const responsePromise = page.waitForResponse((response) => response.request().method() === "GET"
-    && new URL(response.url()).pathname === `/api/snapshots/${snapshotId}/plans/${plan.revision}/deliverable/${kind}`);
+    && new URL(response.url()).pathname === `/api/snapshots/${snapshotId}/plans/${plan.revision}/deliverable/${kind}`)
+    .then((response) => {
+      // Retain the original HTTP body as soon as its response arrives. Waiting until the native
+      // blob has been saved can outlive Chromium's response-body retention window.
+      const body = response.body();
+      void body.catch(() => undefined); // always awaited below; never substitute another request
+      return { response, body };
+    });
   const downloadPromise = page.waitForEvent("download");
   // An earlier HTTP assertion must remain the failure if no native download can follow it.
+  void responsePromise.catch(() => undefined);
   void downloadPromise.catch(() => undefined);
   await page.getByRole("button", { name: kind === "mop" ? "Download MOP" : "Download NRFU", exact: true }).click();
-  const response = await responsePromise;
+  const { response, body } = await responsePromise;
   expect(response.status()).toBe(200);
   const headers = response.headers();
   expect(headers["content-type"].split(";", 1)[0]).toBe(DOCX_MEDIA);
@@ -130,6 +138,7 @@ async function downloadDocument(page: Page, testInfo: TestInfo, snapshotId: numb
   const query = new URL(response.url()).searchParams;
   expect(query.get("plan_sha256")).toBe(plan.sha256);
   expect(query.get("selection_id")).toBe(String(plan.selection_id));
+  const originalHttpBytes = await body;
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe(`Atlas-snapshot-${snapshotId}-plan-r${plan.revision}-${kind}.docx`);
   const path = testInfo.outputPath(`${kind}-revision-${plan.revision}-selection-${plan.selection_id}.docx`);
@@ -137,7 +146,7 @@ async function downloadDocument(page: Page, testInfo: TestInfo, snapshotId: numb
   expect(await download.failure()).toBeNull();
   const bytes = await readFile(path);
   expect(hash(bytes), "The native blob download must equal the exact verified API response")
-    .toBe(hash(await response.body()));
+    .toBe(hash(originalHttpBytes));
   const xml = mainDocumentXml(bytes);
   const visible = await page.evaluate(({ xml: content, namespace }) => {
     const document = new DOMParser().parseFromString(content, "application/xml");

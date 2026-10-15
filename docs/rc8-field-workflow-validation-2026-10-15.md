@@ -121,6 +121,18 @@ source must independently rebuild these committed bytes and pass every applicabl
   frozen-package passes on this head do not close the failed complete suite. The observer edit changes
   a frontend-profile input: the earlier 164-input receipt remains the import event's evidence only;
   require a fresh complete hosted producer and post-import receipt for the corrected profile.
+- UI `848030b4`: real-browser run `38812233814`, job `116688127197`, reports one failure and
+  two passes. The native MOP and NRFU downloads exist, but the second document's late
+  `response.body()` call, after saving the native file, receives Chromium's `Network.getResponseBody`
+  resource-not-found error. Artifact `12009640412` is 6,800,421 bytes, SHA-256
+  `566cfa8d80edf0e03123841cec78ae928561abcd7a32e7df3553a0f19a000918`.
+  Its trace shows MOP body retention succeeds and NRFU HTTP 200/identity headers and native download
+  precede the failed body read. The generic navigation diagnostic does not establish an actual page
+  navigation or a product rendering failure. Start retaining the original response body directly in
+  the registered response continuation before awaiting the button click. Still compare those exact
+  bytes against the native file; retain every status/header/provenance assertion. No separate GET,
+  request interception, retry, body fallback or relaxed check is introduced. Require a fresh complete
+  browser journey, whole producer and corrected-profile receipt; the failed run cannot supply them.
 
 ## Review and delivery boundary
 
