@@ -1377,15 +1377,15 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "7438cd4403be6ed14eaa03a74fcbb295259d0a1e",
+    "webapp/frontend/src/api.ts": "a29b1191642c6e55813811b0c21528c986158dce",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
-    "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
+    "webapp/frontend/src/pages/Snapshot.tsx": "61f62dbafb9e7c34ffcbc8c7d5df04a4d3298500",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
     "webapp/backend/app.py": "b3b9b54ff8f98eff89047c6b8450d96e158abee1",
-    "webapp/backend/deliverables.py": "a364bfc3bd1ca0f56c1fb7dc59983a730a3c237d",
+    "webapp/backend/deliverables.py": "9fee1565062f00c52b85e209ae173239e229ad30",
     "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {

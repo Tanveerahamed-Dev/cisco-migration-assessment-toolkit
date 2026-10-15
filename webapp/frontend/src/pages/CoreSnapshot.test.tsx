@@ -24,6 +24,8 @@ describe("Core snapshot route", () => {
     expect(screen.getAllByText("0").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Insufficient Data" })).toBeInTheDocument();
     expect(screen.getByText("Synthetic readiness inputs were not collected")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Saved plans · MOP / NRFU" })).toHaveAttribute("href", "/snapshots/1/plans");
+    expect(screen.getByRole("link", { name: "Tools and downloads" })).toHaveAttribute("href", "/snapshots/1/tools");
     expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
   });
   it("shows the owner's health partition and move-group checks in supplied order with source qualifications", async () => {

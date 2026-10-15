@@ -315,7 +315,8 @@ def catalogue() -> list:
     """Canonical snapshot-download metadata plus live renderer availability, for the UI."""
     avail = availability()
     return [{"key": s.key, "label": s.label, "ext": s.ext, "available": avail[s.key],
-             "producer": s.producer, "engine_cli_member": s.cli_produced, "stage": s.stage}
+             "producer": s.producer, "engine_cli_member": s.cli_produced, "stage": s.stage,
+             "saved_plan_basis": saved_plan_basis(s.key)}
             for s in SPECS.values()]
 
 
@@ -419,6 +420,18 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
 SAVED_PLAN_PROJECTION_SCHEMA = "atlas.saved_plan_projection/1"
 SAVED_PLAN_REQUIREMENTS_BYTES = 64 * 1024
 _PLAN_DERIVED_KINDS = frozenset({"design", "crd", "mop", "nrfu", "deck"})
+_PLAN_BASELINE_KINDS = frozenset({"cutover", "engagement", "runbook", "archreview", "opshandbook"})
+
+
+def saved_plan_basis(kind: str) -> str | None:
+    """One owner for displayed plan semantics; a future unclassified writer is unsupported."""
+    if kind in _PLAN_DERIVED_KINDS:
+        return "selected-requirements"
+    if kind in _PLAN_BASELINE_KINDS:
+        return "assessment-baseline"
+    return None
+
+
 _PLAN_SECTION_KEYS = frozenset({
     "requirements_register", "design_blueprint", "design_nrfu", "architecture_coverage",
     "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage",
@@ -756,7 +769,7 @@ def generate_saved_plan(kind: str, snapshot: dict, label: str, plan: dict, *,
     """Render one selected revision without changing original source, protocol or approval authority."""
     from cisco_toolkit.docmeta import protocol_assurance_receipt_view
 
-    if kind not in SPECS:
+    if kind not in SPECS or saved_plan_basis(kind) is None:
         raise SavedPlanError("Selected plan deliverable is unsupported")
     assessment, projection = _validated_saved_plan(snapshot, plan)
     if protocol_assurance_bundle is not None or kind in {"runbook", "mop", "nrfu"}:
