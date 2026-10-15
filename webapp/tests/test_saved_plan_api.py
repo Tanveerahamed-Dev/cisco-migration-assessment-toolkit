@@ -175,6 +175,40 @@ def test_deep_json_refuses_without_decoding_or_saving_a_plan(client):
     assert _state(client, sid)["revisions"] == []
 
 
+@pytest.mark.parametrize("content_type", ["application/json", "application/vnd.atlas+json", None])
+@pytest.mark.parametrize("suffix", ["", "/1/select"])
+def test_plan_depth_guard_precedes_decoding_for_every_json_transport(client, monkeypatch, content_type, suffix):
+    _cid, sid = _source(client)
+    wire = ('{"requirements":' + '[' * 2000 + '0' + ']' * 2000 + '}').encode()
+
+    def forbidden_decode(*_args, **_kwargs):
+        raise AssertionError("Excessive plan nesting reached a JSON decoder")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(app_module.json, "loads", forbidden_decode)
+        response = client.post(f"/api/snapshots/{sid}/plans{suffix}", content=wire,
+                               headers={} if content_type is None else {"content-type": content_type})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid JSON request body"}
+    assert _state(client, sid)["revisions"] == []
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-32"])
+def test_plan_depth_guard_ignores_escaped_quotes_and_brackets_in_real_requirements(client, encoding):
+    _cid, sid = _source(client)
+    state = _state(client, sid)
+    text = 'Literal [ { bracket and "quoted" text with \\ slash } ] ' * 100
+    wire = json.dumps({
+        "label": "Quoted requirements", "requirements": {"constraints": text},
+        "assessment": state["assessment"], "expected_selection_id": 0,
+    }).encode(encoding)
+    response = client.post(f"/api/snapshots/{sid}/plans", content=wire,
+                           headers={"content-type": "application/json"})
+    assert response.status_code == 201, response.text
+    assert response.json()["projection"]["requirements"]["constraints"] == [text.strip()]
+    assert len(_state(client, sid)["revisions"]) == 1
+
+
 def test_saved_plan_routes_inherit_origin_and_auth_guards(client):
     _cid, sid = _source(client)
     state = _state(client, sid)
