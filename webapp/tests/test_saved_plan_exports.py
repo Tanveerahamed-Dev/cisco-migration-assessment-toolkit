@@ -45,6 +45,14 @@ def test_future_unclassified_writer_cannot_export_a_saved_plan(monkeypatch):
 
 def _snapshot(*, count: int = 2):
     hosts = [f"EXAMPLE-SW-{index}" for index in range(count)]
+    validation_item = {
+        "device": hosts[0], "platform": "ios", "wave": "EXAMPLE-G1", "category": "Routing",
+        "severity": "High", "check": "EXAMPLE observed routing baseline",
+        "command": "show ip ospf neighbor", "expect": "PRE-CUTOVER DEGRADED",
+        "why": "EXAMPLE observed fault remains a blocker",
+        "evidence_state": "degraded", "projection_custody": "embedded_unverified",
+        "source_key": "routing_neighbors.EXAMPLE-SW-0",
+    }
     baseline = {
         "script_version": "3.23.0",
         "generated_at": "2026-10-15T00:00:00Z",
@@ -60,16 +68,10 @@ def _snapshot(*, count: int = 2):
             "hard_cutover_endpoints": 0,
         }],
         "validation_plan": {
-            "items": [{
-                "device": hosts[0], "wave": "EXAMPLE-G1", "category": "Routing",
-                "severity": "High", "check": "EXAMPLE observed routing baseline",
-                "command": "show ip ospf neighbor", "expect": "PRE-CUTOVER DEGRADED",
-                "why": "EXAMPLE observed fault remains a blocker",
-                "evidence_state": "degraded", "projection_custody": "embedded_unverified",
-                "source_key": "routing_neighbors.EXAMPLE-SW-0",
-            }],
-            "by_wave": {},
-            "summary": {"n_items": 1, "n_waves": 1, "n_high": 1},
+            "items": [validation_item],
+            "by_wave": {"EXAMPLE-G1": [copy.deepcopy(validation_item)]},
+            "summary": {"n_items": 1, "n_waves": 1, "n_high": 1,
+                        "by_category": {"Routing": 1}},
         },
         "collection_completeness": {
             "summary": {"inventory": count, "complete": count, "not_collected": 0},
@@ -334,6 +336,10 @@ def test_actual_office_outputs_keep_visible_identity_and_original_protocol_custo
 
 def test_mop_wave_and_nrfu_coverage_consume_the_same_persisted_selected_design():
     snapshot = _snapshot(count=45)
+    baseline_gate = engine.compute_current_baseline_gate(snapshot["validation_plan"])
+    assert baseline_gate["integrity"] == {"valid": True, "failures": []}
+    assert baseline_gate["verdict"] == "BLOCKED"
+    assert baseline_gate["summary"]["n_blockers"] == 1
     plan = _plan(snapshot, {"fabric_operating_model": "nxos-evpn", "data_classification": ["restricted"]})
     rendered = deliverables.render_saved_plan(snapshot, plan)
     blueprint = plan["projection"]["sections"]["design_blueprint"]
@@ -363,6 +369,37 @@ def test_mop_wave_and_nrfu_coverage_consume_the_same_persisted_selected_design()
             assert "PRE-CUTOVER DEGRADED" in text
         finally:
             Path(path).unlink()
+
+
+def test_malformed_original_baseline_stays_indeterminate_in_selected_plan_mop():
+    # Reproduce the former inconsistent synthetic baseline: neither its missing row owner
+    # nor its contradictory grouping/summary may become an apparent observed blocker.
+    malformed = copy.deepcopy(dict(_snapshot()))
+    validation = malformed["validation_plan"]
+    validation["items"][0].pop("platform")
+    validation["by_wave"] = {}
+    validation["summary"].pop("by_category")
+    snapshot = bind_snapshot_json_bytes(json.dumps(malformed, separators=(",", ":")).encode("utf-8"))
+    baseline_gate = engine.compute_current_baseline_gate(validation)
+    assert baseline_gate["verdict"] == "INDETERMINATE"
+    assert baseline_gate["integrity"]["valid"] is False
+    assert baseline_gate["blockers"] == []
+    assert baseline_gate["summary"]["n_blockers"] == 0
+    plan = _plan(snapshot, {"fabric_operating_model": "nxos-evpn"})
+    rendered = deliverables.render_saved_plan(snapshot, plan)
+    assert rendered["validation_plan"] == validation
+    assert engine.compute_current_baseline_gate(rendered["validation_plan"]) == baseline_gate
+    portfolio = build_protocol_single_snapshot_bundle(snapshot, plan["assessment"])
+    path = deliverables.generate_saved_plan(
+        "mop", snapshot, "EXAMPLE malformed original baseline", plan,
+        protocol_assurance_bundle=portfolio, document_gate=None,
+    )
+    try:
+        text, _core = _office(path)
+        assert "HOLD — current baseline INDETERMINATE" in text
+        assert "EXAMPLE observed routing baseline" not in text
+    finally:
+        Path(path).unlink()
 
 
 def test_tampered_and_valid_cross_campaign_sidecars_refuse_without_dropping_controls():

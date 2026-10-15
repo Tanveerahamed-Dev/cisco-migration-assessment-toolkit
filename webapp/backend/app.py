@@ -58,6 +58,7 @@ from . import (
 )
 from .storage import (
     CarriagePreparationBusyError, CarriagePreparationLimitError, ExecutionReceiptAuthorityError,
+    SAVED_PLAN_MAX_JSON_DEPTH,
     SavedPlanConflictError, SavedPlanIntegrityError, SavedPlanLimitError, Store,
 )
 
@@ -399,7 +400,7 @@ BoundedToken = Annotated[str, Field(max_length=_LEN_TOKEN)]
 BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
 PlanRowId = Annotated[int, PathParam(ge=1, le=_SQLITE_INT_MAX)]
 PlanSelectionQuery = Annotated[int, Query(ge=1, le=_SQLITE_INT_MAX)]
-PlanDigestQuery = Annotated[str, Query(pattern=r"^sha256:[0-9a-f]{64}$")]
+PlanDigestQuery = Annotated[str, Query(min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$")]
 
 
 class SavedPlanIn(BaseModel):
@@ -415,7 +416,7 @@ class SavedPlanIn(BaseModel):
 class SavedPlanSelectionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    plan_sha256: str = Field(strict=True, pattern=r"^sha256:[0-9a-f]{64}$")
+    plan_sha256: str = Field(strict=True, min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$")
     expected_selection_id: int = Field(strict=True, ge=0, le=_SQLITE_INT_MAX)
 
 
@@ -537,6 +538,39 @@ def _max_json_body_bytes() -> int:
 
 _MULTIPART_UPLOAD_PATH_RE = re.compile(
     r"^/api/campaigns/[^/]+/(?:snapshots|ingest)/?$")
+_SAVED_PLAN_WRITE_PATH_RE = re.compile(
+    r"^/api/snapshots/[^/]+/plans(?:/[^/]+/select)?/?$")
+
+
+def _guard_saved_plan_wire_depth(raw_body: bytes) -> None:
+    """Refuse excessive nesting before either JSON decoder or validation-error encoding.
+
+    A raised process recursion limit can let a deeply nested value reach FastAPI's recursive
+    error encoder. This bounded lexical preflight counts only containers outside strings; the
+    existing strict JSON parser still owns syntax, duplicate keys and finite numbers. Use its
+    encoding detection so the same UTF-8/16/32 bodies have the same structural ceiling.
+    """
+    text = raw_body.decode(json.detect_encoding(raw_body))
+    depth = 0
+    quoted = escaped = False
+    for character in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > SAVED_PLAN_MAX_JSON_DEPTH:
+                raise ValueError("Saved-plan JSON exceeds its structural limit")
+        elif character in "]}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Saved-plan JSON is unbalanced")
 
 
 def _is_multipart_upload(request: Request) -> bool:
@@ -621,9 +655,15 @@ class _RequestBodyLimitMiddleware:
             # bodies here, while their original bytes still exist, then rewind for Starlette.  The
             # multipart snapshot-upload path retains its dedicated strict snapshot parser.
             content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if received and content_type == "application/json":
+            plan_json = bool(_SAVED_PLAN_WRITE_PATH_RE.fullmatch(request.url.path)) and (
+                not content_type or content_type == "application/json"
+                or content_type.startswith("application/") and content_type.endswith("+json")
+            )
+            if received and (content_type == "application/json" or plan_json):
                 raw_body = await run_in_threadpool(spool.read)
                 try:
+                    if plan_json:
+                        await run_in_threadpool(_guard_saved_plan_wire_depth, raw_body)
                     json.loads(
                         raw_body,
                         parse_constant=ingest.reject_nonfinite,
