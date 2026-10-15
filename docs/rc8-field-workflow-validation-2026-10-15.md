@@ -11,7 +11,9 @@ The baseline is RC7/main `3401627f6fd69bb838a2c921d7f95c77b2373623`, retaining G
 `f66dc68e62560af343c3ca4bddd1a0423d16dfdc` adds immutable saved planning projections, append-only
 selection events and assessment-linked document identity. Foundation correction
 `3d73a58a3c0e3c42d4fc342f0956ea93a1e9a656` adds plan-only UTC-Z compatibility without rewriting
-timestamp/hash bytes. The visible app workflow is their dependent
+timestamp/hash bytes; `bee0dba2b81e5386932a7ca5e5b0271356d7e80d` closes malformed-Z admission
+with an ASCII extended timestamp grammar and transient fraction padding, preserving the same bytes.
+The visible app workflow is their dependent
 change. Product/schema versions, engine writers, tracked golden files and sample outputs are unchanged.
 
 | Operator outcome | Source owners | Validation owners |
@@ -133,6 +135,14 @@ source must independently rebuild these committed bytes and pass every applicabl
   bytes against the native file; retain every status/header/provenance assertion. No separate GET,
   request interception, retry, body fallback or relaxed check is introduced. Require a fresh complete
   browser journey, whole producer and corrected-profile receipt; the failed run cannot supply them.
+- Foundation `3d73a58a`: CI `38804920843`, Python 3.10 job `116663859609`, closes all 39 valid-Z
+  export failures but reports one failure, 19,277 passes, 297 skips, 3 expected failures and 26 passing
+  subtests in 3,564.47 seconds. The unchanged malformed `2026-10-15T00:00:00ZZ` negative is accepted
+  after suffix replacement leaves `Z+00:00` for that older parser. `bee0dba2` closes UTC-Z lexical
+  admission before conversion and retains all original fixtures/assertions, raw envelope/hash bytes
+  and the shared legacy parser. Additional controls cover fractional hash preservation, malformed
+  designators, calendar validity, early refusal and unchanged non-Z offset handling. Its corrected
+  source is merged into this dependent branch; fresh final-head hosted gates remain mandatory.
 
 ## Review and delivery boundary
 

@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-16** (Codex, Qatar; RC8 P0 hosted integration corrections). Reasoning behind the current direction:
+Last reconciled: **2026-10-16** (Codex, Qatar; RC8 P0 supported-runtime and hosted browser corrections). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -393,6 +393,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- **2026-10-16 (Codex, RC8-P0-A malformed UTC suffix):** Head3d73a58a CI38804920843 / Python3.10 job116663859609 fails step16Run complete default suite:1FAILED19277PASSED297SKIPPED3XFAILED26subtests in3564.47seconds. All39 earlier valid-Z export failures close, but the retained malformed2026-10-15T00:00:00ZZ refusal does not raise. Replacing only the lastZ yields2026-10-15T00:00:00Z+00:00, which that interpreter accepts. This is a real new-plan input-validation gap, not a fixture to waive. Correct lexical admission before UTC suffix normalization; retain the shared legacy parser, original timestamp/hash/authority bytes, all original assertions, budgets, timeouts and golden/sample outputs. Independent source review and fresh Rule7 precede publication. Exact corrected-head supported runtime/all15/whole workflows must close it; earlier-head positives do not transfer. No local runtime, merge, release cut or publication.
 
 - **2026-10-16 (Codex, RC8-P0-B native-response observation):** Head848030b4 real-browser38812233814 / job116688127197 has1FAILED2PASSED. Artifact12009640412 is6800421bytes/SHA566cfa8d80edf0e03123841cec78ae928561abcd7a32e7df3553a0f19a000918. Trace retains actual MOP60399bytes and NRFU53978bytes native files; MOP's late body read succeeds, NRFU's HTTP200/identity headers and native download precede a Network.getResponseBody resource-not-found error at the byte-comparison observation. The generic navigation diagnostic does not prove actual page navigation or product rendering failure. Retain the original response body from its registered continuation before awaiting the click, then keep the exact native-vs-HTTP hash equality and every status/header/content/provenance assertion. No interception, second GET, retry, fallback or budget/timeout change. Independent review and fresh Rule7 precede push; fresh complete browser/whole producer/current-profile receipt/all15 remain required. No local runtime, output regeneration, merge or release action.
 

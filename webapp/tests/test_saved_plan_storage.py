@@ -145,6 +145,67 @@ def test_plan_timestamp_compatibility_keeps_naive_malformed_and_nonstring_refusa
         saved_plan_digest({**plan, "created_at": created_at})
 
 
+@pytest.mark.parametrize("fraction", ["1", "12", "123", "1234", "12345", "123456"])
+def test_fractional_utc_z_metadata_preserves_original_hash_bytes(seeded, fraction):
+    store, _cid, sid, _raw, binding = seeded
+    original = _save(store, sid, binding)
+    created_at = "2026-10-15T12:34:56." + fraction + "Z"
+    plan = {**original, "created_at": created_at}
+    before = deepcopy(plan)
+    immutable = {key: value for key, value in plan.items() if key not in {"sha256", "selection_id"}}
+    raw = json.dumps(immutable, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False, allow_nan=False).encode("utf-8")
+    digest = saved_plan_digest(plan)
+    assert digest == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert plan == before and plan["created_at"] == created_at
+    offset = {**plan, "created_at": "2026-10-15T12:34:56." + fraction.ljust(6, "0") + "+00:00"}
+    assert storage._parse_saved_plan_timestamp(created_at) == storage._parse_aware_timestamp(
+        offset["created_at"],
+    )
+    assert saved_plan_digest(offset) != digest
+
+
+@pytest.mark.parametrize("created_at", [
+    "2026-10-15T00:00:00ZZZ", "2026-10-15Z00:00:00Z", "2026-10-15T00:00:00Z+00:00",
+    "2026-10-15T00:00:00+00:00ZZ", "2026-10-15T00:00:00-02:00Z",
+    "2026-10-15T00:00:00+02:00Z", "2026-10-15T00:00:00z", "2026-10-15T00:00:00zZ",
+    "2026-10-15T00:00:00Zz", "2026-10-15T00:00:00z+00:00", "2026-10-15z00:00:00+00:00",
+    "2026-10-15T00:00:00.Z", "2026-10-15T00:00:00,123Z", "2026-10-15T00:00:00.1234567Z",
+    "2026-10-15T00:00Z", "2026-10-15Z", "20261015T000000Z", "2026-W42-4T00:00:00Z",
+    "2026-10-15 00:00:00Z", "2026-10-15T00:00:00Z\n", " 2026-10-15T00:00:00Z",
+    "2026-02-30T00:00:00Z", "2026-10-15T24:00:00Z", "2026-10-15T00:60:00Z",
+    "2026-10-15T00:00:60Z",
+])
+def test_utc_z_metadata_refuses_noncanonical_designators_and_invalid_wallclock(seeded, created_at):
+    store, _cid, sid, _raw, binding = seeded
+    plan = _save(store, sid, binding)
+    with pytest.raises(ValueError, match="metadata"):
+        saved_plan_digest({**plan, "created_at": created_at})
+
+
+@pytest.mark.parametrize("created_at", [
+    "2026-10-15T00:00:00ZZ", "2026-10-15Z00:00:00Z", "2026-10-15T00:00:00Z+00:00",
+    "2026-10-15T00:00:00+00:00Z", "2026-10-15T00:00:00z",
+])
+def test_invalid_z_designators_are_refused_before_legacy_parsing(monkeypatch, created_at):
+    def forbidden(_value):
+        raise AssertionError("malformed UTC-Z metadata must not reach the legacy parser")
+
+    monkeypatch.setattr(storage, "_parse_aware_timestamp", forbidden)
+    assert storage._parse_saved_plan_timestamp(created_at) is None
+
+
+@pytest.mark.parametrize("created_at", [
+    "2026-10-15T12:34:56+00:00", "2026-10-15T12:34:56.123456+03:00",
+    "2026-10-15 12:34:56-02:00",
+])
+def test_non_z_aware_plan_metadata_keeps_legacy_parser_behavior(seeded, created_at):
+    store, _cid, sid, _raw, binding = seeded
+    plan = _save(store, sid, binding)
+    assert storage._parse_saved_plan_timestamp(created_at) == storage._parse_aware_timestamp(created_at)
+    assert saved_plan_digest({**plan, "created_at": created_at}).startswith("sha256:")
+
+
 def test_utc_z_plan_and_selection_survive_reopen_without_resealing(seeded, monkeypatch):
     store, _cid, sid, raw, binding = seeded
     timestamp = storage._now().replace("+00:00", "Z")
