@@ -794,9 +794,11 @@ def _graph_units(tree):
                     yield target.id, node.value, "data"
 
 
-@functools.lru_cache(maxsize=None)
 def _graph(root):
-    """The resolved unit graph of the scanned tree under `root`, built once per root (callers only read it).
+    """The resolved unit graph of the scanned tree under `root`, owned by its consuming check.
+
+    Each caller builds once for a different root and reuses its local graph. Let its
+    source ASTs be released when that check finishes instead of retaining them for the suite.
 
     ``edges`` and ``direct`` (a unit that is the owner or names it through a resolved import alias) plus the extra,
     conservative ``constructs`` and ``owner_refs`` routes are what the W50 receipt-closure check reads
