@@ -15,8 +15,8 @@ import sys
 
 
 SUBJECTS = (
-    ("baseline", "69bf8980167b86ad113b721d175213a67bcef803"),
-    ("round5", "3abe9d0f435ddef23f2710e9e61088b722575ef3"),
+    ("baseline", "d7b17e136c9436c83025c29cffef36a775624da1"),
+    ("candidate", "62a995c4124fe622946526c91946d7340091c1fd"),
 )
 FOCUSED = [
     "tests/test_vlan_carriage.py", "tests/test_ui_projection_vlan_carriage.py",
@@ -87,7 +87,7 @@ def main():
     output = Path(os.environ["G14_PAIR_OUTPUT"]).resolve()
     subject = sys.argv[1]
     if subject not in {label for label, _ in SUBJECTS}:
-        raise SystemExit("Expected baseline or round5")
+        raise SystemExit("Expected baseline or candidate")
     output.mkdir(parents=True, exist_ok=True)
     plugin_dir = output / "observer"
     plugin_dir.mkdir(exist_ok=True)
@@ -178,7 +178,7 @@ def main():
             "through_compute_sha256": [hashlib.sha256(json.dumps(prefix).encode()).hexdigest() for prefix in prefixes],
             "common_relative_order_identical": relative[0] == relative[1],
             "only_baseline": [node for node in sequences[0] if node not in common],
-            "only_round5": [node for node in sequences[1] if node not in common],
+            "only_candidate": [node for node in sequences[1] if node not in common],
         }
     (output / "order-comparison.json").write_text(json.dumps(orders, indent=2), encoding="utf-8")
     print("PAIR-RESULT " + json.dumps({"executions": results, "orders": orders}), flush=True)

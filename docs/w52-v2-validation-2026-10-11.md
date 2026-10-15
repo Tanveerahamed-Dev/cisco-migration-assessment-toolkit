@@ -1370,3 +1370,19 @@ job `116123585048` reports 87.44% against 85%, with the same two failures and
 whole webapp, Scope and Master Reference workflows, portable build/qualification,
 lint, typing, distribution and dependency checks pass. These results do not qualify
 the intervention, whose fresh complete and final exact-head gates are still required.
+
+The matched sources are now immutable: cached control
+`d7b17e136c9436c83025c29cffef36a775624da1` (tree
+`cfd5a2c4dc7be94635df28834aab9f720fe17877`) and uncached candidate
+`62a995c4124fe622946526c91946d7340091c1fd` (tree
+`70b66746e7efa76e65db23121135c9d6e02031a8`). Their sole file difference is
+`tests/test_impact_consumers.py`: remove `_graph`'s unused `lru_cache` decorator
+and describe caller-owned lifetime. Independent static/AST review confirms all
+145 assertions and the rest of that module, including the graph-building body
+and `_scan` cache, are identical. Both callers and their assertions remain unchanged.
+Neither source contains the temporary workflow, and its runner owner exactly
+matches the original `3abe9d0f` owner. The subsequent temporary workflow restoration
+compares these commits using the same observer bytes and original selections;
+only source identities and the second subject's label change. The 24-runner
+assertion is not raised. Runtime effects of this candidate remain **not verified**
+until that comparison and final ordinary gates complete.
