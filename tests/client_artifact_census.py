@@ -1377,11 +1377,11 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "a29b1191642c6e55813811b0c21528c986158dce",
+    "webapp/frontend/src/api.ts": "e5c0296f3473ec0a36a9fb63816bc27fad90e4be",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
-    "webapp/frontend/src/pages/Snapshot.tsx": "61f62dbafb9e7c34ffcbc8c7d5df04a4d3298500",
+    "webapp/frontend/src/pages/Snapshot.tsx": "a15c2317b74338c001ec843aaf1d9754fc7784f1",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
     "webapp/backend/app.py": "b3b9b54ff8f98eff89047c6b8450d96e158abee1",

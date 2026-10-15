@@ -1038,7 +1038,7 @@ export default function SnapshotPage() {
       <VerificationWarning value={s.verification} />
 
       <section className="panel" aria-labelledby="saved-plan-door">
-        <h2 id="saved-plan-door">Saved plans and document downloads</h2>
+        <h2 id="saved-plan-door" style={{ lineHeight: "32px" }}>Saved plans and document downloads</h2>
         <p>Save requirements as a named revision, reopen that plan, and download its matching MOP,
           NRFU and design documents. Saving a plan keeps it an unapproved draft.</p>
         <Link className="btn primary" to={`/snapshots/${sid}/plans`}>Open saved plans · MOP / NRFU</Link>

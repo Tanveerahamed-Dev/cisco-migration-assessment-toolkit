@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import { api, ApiError, type SavedPlanAssessment, type SavedPlanRecord, type SavedPlanState } from "./api";
 
 const docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -88,7 +89,7 @@ describe("saved-plan JSON client", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(plan, 201));
     await expect(api.savePlan(7, body)).resolves.toEqual(plan);
     expect(fetch).toHaveBeenCalledWith("/api/snapshots/7/plans", expect.objectContaining({ body: JSON.stringify(body) }));
-    const sent = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+    const sent = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
     expect(sent.requirements.convergence_budget_ms).toBe(text);
   });
 
@@ -260,6 +261,51 @@ describe("saved-plan document response boundary", () => {
     expect(result.blob.size).toBe(8);
   });
 
+  it("accepts genuine cross-realm Uint8Array bytes and ignores spoofed own byte metadata", async () => {
+    const foreign = runInNewContext("new Uint8Array([80,75,3,4,1,2,3,4])") as Uint8Array;
+    expect(foreign instanceof Uint8Array).toBe(false);
+    expect(ArrayBuffer.isView(foreign)).toBe(true);
+    Object.defineProperty(foreign, "byteLength", { value: 0 });
+    Object.defineProperty(foreign, "byteOffset", { value: 999 });
+    Object.defineProperty(foreign, "buffer", { value: new ArrayBuffer(0) });
+    const response = documentResponse(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(foreign); controller.close();
+    } }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+    const result = await api.savedPlanDocument(7, record(), "mop", "docx");
+    expect(result.blob.size).toBe(zip.byteLength);
+    expect(result.blob.type).toBe(docx);
+  });
+
+  it("rejects another typed-array kind even when its tag and raw bytes imitate Uint8Array", async () => {
+    const foreign = runInNewContext("new Uint16Array(4)") as Uint16Array;
+    new Uint8Array(foreign.buffer).set(zip);
+    Object.defineProperty(foreign, Symbol.toStringTag, { value: "Uint8Array" });
+    expect(Object.prototype.toString.call(foreign)).toBe("[object Uint8Array]");
+    expect(ArrayBuffer.isView(foreign)).toBe(true);
+    const response = documentResponse(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(foreign as unknown as Uint8Array); controller.close();
+    } }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({
+      status: 502, message: "The document stream is invalid",
+    });
+  });
+
+  it("uses the intrinsic byte length to refuse an oversized cross-realm view", async () => {
+    const foreign = runInNewContext("new Uint8Array(32 * 1024 * 1024 + 1)") as Uint8Array;
+    foreign.set(zip);
+    Object.defineProperty(foreign, "byteLength", { value: 0 });
+    const cancel = vi.fn();
+    const response = documentResponse(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(foreign);
+    }, cancel }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+  });
+
   it("refuses a partial HTTP response even when it starts with the expected ZIP signature", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(zip, { status: 206, headers: documentHeaders() }));
     await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
@@ -287,6 +333,14 @@ describe("saved-plan document response boundary", () => {
       await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
     },
   );
+
+  it.each([null, ""])("refuses a missing or empty content type %s", async (contentType) => {
+    const headers = documentHeaders();
+    if (contentType === null) delete headers["content-type"];
+    else headers["content-type"] = contentType;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(zip, headers));
+    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+  });
 
   it.each([new Uint8Array(), new Uint8Array([0x50, 0x4b]), new Uint8Array([0x50, 0x4b, 0x05, 0x06]), new TextEncoder().encode("<html>error</html>")])(
     "refuses empty, truncated or non-Office ZIP body %o", async (body) => {

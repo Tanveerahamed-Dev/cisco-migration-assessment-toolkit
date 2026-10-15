@@ -1636,6 +1636,13 @@ const SAVED_PLAN_DOCUMENT_TYPES = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 } as const;
+// Fetch may supply bytes from a different realm (native Response + a browser frame/test DOM).
+// Intrinsic accessors inspect internal TypedArray slots, ignoring spoofed own properties/tags.
+const PLAN_TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const PLAN_BYTE_TAG = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
+const PLAN_BYTE_LENGTH = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "byteLength")?.get;
+const PLAN_BYTE_OFFSET = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "byteOffset")?.get;
+const PLAN_BYTE_BUFFER = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "buffer")?.get;
 
 function planObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1797,6 +1804,21 @@ async function discardPlanResponse(response: Response): Promise<void> {
     try { await response.body.cancel(); } catch { /* preserve the original failure */ }
   }
 }
+function ownedPlanChunk(value: unknown, remaining: number): Uint8Array<ArrayBuffer> {
+  planAssert(ArrayBuffer.isView(value) && PLAN_BYTE_TAG?.call(value) === "Uint8Array",
+    "The document stream is invalid");
+  const length: unknown = PLAN_BYTE_LENGTH?.call(value);
+  const offset: unknown = PLAN_BYTE_OFFSET?.call(value);
+  const buffer: ArrayBufferLike | undefined = PLAN_BYTE_BUFFER?.call(value);
+  planAssert(planInteger(length, true) && planInteger(offset, true) && buffer !== undefined,
+    "The document stream is invalid");
+  planAssert(length <= remaining, "The saved-plan document exceeds the download limit", 413);
+  // A fixed-length view/copy does not retain a larger backing buffer, invoke an overridden
+  // iterator, or let a spoofed .byteLength bypass the limit. It also admits cross-realm bytes.
+  const owned = new Uint8Array(length);
+  owned.set(new Uint8Array(buffer, offset, length));
+  return owned;
+}
 async function planResponseChunks(response: Response, limit: number, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>[]> {
   planAbort(signal);
   const length = response.headers.get("content-length");
@@ -1818,11 +1840,9 @@ async function planResponseChunks(response: Response, limit: number, signal?: Ab
       const { done, value } = await reader.read();
       planAbort(signal);
       if (done) { completed = true; break; }
-      planAssert(value instanceof Uint8Array, "The document stream is invalid");
-      planAssert(value.byteLength <= limit - total, "The saved-plan document exceeds the download limit", 413);
-      total += value.byteLength;
-      // Own just these bytes, not a potentially much larger backing allocation or reused chunk.
-      chunks.push(new Uint8Array(value));
+      const chunk = ownedPlanChunk(value, limit - total);
+      total += chunk.byteLength;
+      chunks.push(chunk);
     }
     if (!response.headers.get("content-encoding") || response.headers.get("content-encoding") === "identity") {
       planAssert(declared === null || declared === total, "The saved-plan document was truncated");
@@ -1864,7 +1884,7 @@ async function savedPlanDocument(sid: number, record: SavedPlanRecord, kind: str
       && headers.get("X-Atlas-Plan-Status") === "UNAPPROVED_DRAFT",
     "The downloaded document belongs to a different assessment or saved-plan selection");
     const media = SAVED_PLAN_DOCUMENT_TYPES[extension];
-    planAssert(headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() === media,
+    planAssert(headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === media,
       "The downloaded document has an unexpected file type");
     const chunks = await planResponseChunks(response, SAVED_PLAN_DOCUMENT_LIMIT, signal);
     const prefix: number[] = [];

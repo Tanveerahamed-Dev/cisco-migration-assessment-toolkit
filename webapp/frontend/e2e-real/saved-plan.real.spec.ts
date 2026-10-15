@@ -204,6 +204,13 @@ test("real backend: ordinary upload to persisted selected plan and source-bound 
     const uploadResponse = await uploaded;
     expect(uploadResponse.status()).toBe(201);
     const snapshotId = (await uploadResponse.json() as { id: number }).id;
+    // Ordinary snapshot upload refreshes the wave roster; unlike engine ingestion it does not
+    // navigate automatically. Follow the operator-visible link and bind it to the returned ID.
+    const uploadedSnapshot = page.getByRole("link", { name: /Synthetic saved-plan baseline/ });
+    await expect(uploadedSnapshot).toHaveCount(1);
+    await expect(uploadedSnapshot).toBeVisible();
+    await expect(uploadedSnapshot).toHaveAttribute("href", `/snapshots/${snapshotId}`);
+    await uploadedSnapshot.click();
     await page.waitForURL(new RegExp(`/snapshots/${snapshotId}$`));
     await expect(page.getByRole("heading", { name: `Snapshot ${snapshotId}`, level: 1, exact: true })).toBeVisible();
     const original = await rawAssessment(page, snapshotId);
