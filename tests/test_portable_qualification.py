@@ -224,7 +224,8 @@ def test_saved_plan_server_drains_large_child_output_and_retains_bounded_failure
         "import pathlib,sys,time; "
         "sys.stdout.buffer.write(b'x'*(2*1024*1024)); "
         "sys.stdout.write('\\nsynthetic server diagnostic sentinel\\n'); sys.stdout.flush(); "
-        "pathlib.Path(sys.argv[1]).write_text('ready',encoding='ascii'); time.sleep(30)"
+        "ready=pathlib.Path(sys.argv[1]); pending=ready.with_name(ready.name+'.pending'); "
+        "pending.write_text('ready',encoding='ascii'); pending.replace(ready); time.sleep(30)"
     )
 
     def start(_command, **kwargs):
