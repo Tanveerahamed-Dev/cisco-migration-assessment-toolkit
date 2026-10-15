@@ -1277,3 +1277,96 @@ registered. Its narrow CI-evidence entry is corrected without changing the censu
 assertion or any old classification. This failure does not affect the historical
 subjects in paired run `38643201157`; they contain neither diagnostic writer.
 That pair remains in progress, and no source fix or acceptance is inferred.
+
+### Corrected paired evidence and isolated retention intervention (2026-10-15)
+
+The corrected [run 38643201157](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38643201157)
+completed successfully on `5ff0c341`. Baseline artifact `11935168507` and complete
+artifact `11939297887` retain the four original selections. The complete artifact
+digest is `sha256:37636f8233ec34b091bfb4e9eab7c989259be459b54bdb0d3c608e556fdbdd6e`.
+Both standalone commits/trees and all 131 origin-tracking/tag refs matched their
+receipts. One AMD EPYC 7763 runner used Python 3.12.15, Ubuntu image
+`20261004.327.1`, FastAPI 0.143.1, Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1;
+the complete dependency version/RECORD closure stayed identical. Observer digest
+`34939afdcc11f1602cb35ea71d77b8f77fd83a08a0ebb6fb7022aa4209158481` matched all
+four receipts, with zero observation/callback errors and a frozen preceding window.
+
+| Source / selection | Original compute ms | Process CPU ms | Timed Gen 2 ms | Passed |
+|---|---:|---:|---:|---:|
+| `69bf8980` focused | 1,627.3 | 1,627.09 | 112.984 | 1,458 |
+| `69bf8980` complete | 1,515.6 | 1,515.40 | 0 | 19,223 |
+| `3abe9d0f` focused | 1,519.8 | 1,519.63 | 97.032 | 1,460 |
+| `3abe9d0f` complete | 1,501.8 | 1,501.61 | 0 | 19,225 |
+
+Both complete legs also retain 153 skips, three expected failures and 26 passing
+subtests. Every original assertion passes, including the four earlier Graphify
+controls. Ordered prefixes through compute match (649 focused / 15,858 complete),
+as does every common case's relative order. Only the two round-5 cleanup cases
+are added, after compute. Imported budget and engine source digests are unchanged.
+The complete/focused ratios are 0.931 and 0.988: this run does **not** reproduce
+the original 2.3 ratio, and does not erase the 3,597.6 ms failure or 2,894.2 ms replay.
+
+The natural collector supplies a concrete reliability concern. In the retained
+32-event preceding window, old/new complete collections cost 1,551.8–2,418.4 /
+1,589.1–2,382.4 ms, with process CPU nearly equal to wall time. Their last events
+end 5.570 / 5.399 seconds before compute. No such event falls inside either full
+compute timer here. Both focused timers do include one small generation-2 event
+inside the original callable. GC remains enabled at 700/10/10, with one Python
+thread before/after all calls and no producer admission-cache misses in them.
+The observed full-collection cost is greater than either full call's remaining
+3,000 ms headroom if such work falls inside that timer; it is not proof that it
+caused the historical failed event, which had no concurrent telemetry.
+
+The post-target old/new full heaps contain 3,393,292 / 3,393,355 tracked objects
+and 750,202 / 750,208 selected AST objects. Each retains two `test_impact_consumers._Graph`
+objects, with 12 and 7,148 units. Focused heaps contain 397,557 / 397,588 tracked
+objects and neither these graphs nor the selected AST objects at that boundary.
+The graph consumer is collected at index 6,129, before compute at 15,857 in the
+full selection; in focused it is index 811, after compute at 648 (zero-based).
+Both full heaps otherwise have the same 57 apps, 3,078 routes, 57 Stores, 46
+frames and 13 tracebacks. All four censuses find zero Tasks, Futures, CancelScopes,
+WorkerThreads, request objects, spools and coroutines. These observations supply
+no cleanup-specific retained-state growth; they do not exclude transient state
+or prove ownership of every counted object.
+
+Static ownership identifies an unused strong reference: `_graph`'s unbounded
+`lru_cache` retains each complete source-AST graph after its consuming test ends.
+Its only two callers are unparameterized tests, each calling once with a different
+root; subsequent traversals use their local result. No caller benefits from a
+cache hit. The graph-building body and both consumers' assertions can therefore
+remain unchanged while the caller controls the result's lifetime. CPython's
+[3.12.15 collector](https://github.com/python/cpython/blob/v3.12.15/Modules/gcmodule.c#L1334-L1377)
+describes the cost of a full collection as proportional to the long-lived heap.
+The cache's specific contribution still requires an isolated intervention.
+
+That intervention uses two clean immutable commits: a cached control with the
+temporary diagnostic workflow and its runner-registry row removed, followed by
+a candidate changing only `_graph`'s decorator and lifetime docstring. Both keep
+the same reporting scripts and artifact classifications. A later diagnostic-only
+commit restores the temporary job to compare those two sources on one runtime;
+both sources must satisfy the original 24-runner assertion. Natural GC, original
+timers, complete coverage/order, all budget/timeout/assertion bytes and golden/sample
+outputs remain. No cache clear, forced collection, prewarming or benchmark-aware
+cleanup is introduced. The job/row must again be removed before final ordinary
+15/15 validation and the round-6 summary. This is an experimental correction of
+demonstrated retention, not a claim that the earlier failure's cause is already proved.
+
+The same corrected pair also preserves the existing ingestion observations. Actual
+multipart uploads take 86,960.5–87,337.0 ms on this shared test runtime; payload,
+stage and framing remain 43,951,249 / 52,563,524 / 8,612,275 bytes against the unchanged
+64,000,000-byte payload and separate 64,000,000-byte framing limits. The raw budget
+derivative stays 24,667,919 / 42,815,611 bytes at 100/200 VLANs. Sampled shared-process
+RSS peaks span 2,360,586,240–3,271,000,064 bytes, with zero sampling errors; these
+include prior suite state and may miss between-sample spikes. They remain observations,
+not a new ingestion/RSS gate or a logical-bound-to-RSS claim. Every original API
+budget passed (document growth at most 97.6 ms, cold pages at most 204.4 ms, warm
+pages at most 210.5 ms, 200 items and 1,317,481 bytes).
+
+Ordinary `5ff0c341` failures are retained separately. The Windows source job
+`116123585092` completes in 111m14s with only the missing suffix classification
+and 25-versus-24 runner assertion; its frontend tail is not executed. Coverage
+job `116123585048` reports 87.44% against 85%, with the same two failures and
+19,209 passes / 167 skips / three expected failures / 26 passing subtests. The
+whole webapp, Scope and Master Reference workflows, portable build/qualification,
+lint, typing, distribution and dependency checks pass. These results do not qualify
+the intervention, whose fresh complete and final exact-head gates are still required.

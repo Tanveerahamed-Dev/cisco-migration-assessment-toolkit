@@ -59,10 +59,6 @@ _RUNNER_JOBS = {
     "engine-output-receipt.yml": {
         "receive": ("Receive engine outputs as review data (manual)", _LINUX_IMAGE),
     },
-    # Temporary same-runtime historical comparison; no protected context is replaced.
-    "g14-compute-diagnostic.yml": {
-        "pair": ("Same-runtime old and round-5 compute observations", _LINUX_IMAGE),
-    },
     "scale-qualification.yml": {
         "qualify": ("Synthetic 300-device scale budgets (weekly or manual)", _LINUX_IMAGE),
     },
