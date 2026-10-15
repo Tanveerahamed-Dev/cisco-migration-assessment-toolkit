@@ -1386,3 +1386,99 @@ compares these commits using the same observer bytes and original selections;
 only source identities and the second subject's label change. The 24-runner
 assertion is not raised. Runtime effects of this candidate remain **not verified**
 until that comparison and final ordinary gates complete.
+
+### Matched result and removal of temporary diagnostics (2026-10-15)
+
+Hosted [run 38663415750](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/38663415750),
+job `116189711787`, completes successfully on diagnostic host commit `446724ba`.
+The cached-control artifact is `11943888644` (digest
+`sha256:6089ce2b14c066f0773b0a657826940a6ebcc517c08aa45096fc32bb99426d3a`);
+the complete matched artifact is `11947042547` (digest
+`sha256:a55c1328ab18be9cf119d696707277f019a29f6b413319ea55fef1164e863f3f`).
+All four source/runtime/observer receipts validate, both complete test orders match
+exactly, and neither source has an unrelated preceding failure. Each focused
+selection passes all 1,460 cases; each complete selection passes 19,225 with the
+unchanged 153 skips, three expected failures and 26 passing subtests. The original
+24-runner assertion passes in both experimental subjects.
+
+This pair uses one Ubuntu image `20261012.334.1`, Python 3.12.15 and the same
+resolved dependency/RECORD closure for both sources (including FastAPI 0.143.1,
+Starlette 1.8.0, AnyIO 4.15.1 and pytest 9.1.1). It is a newer image than the
+historical-head pair above; absolute timings across the two runs are not treated
+as a controlled comparison. The observer remains exactly `34939afd...58481`.
+
+| Original measurement | Cached control `d7b17e13` | Candidate `62a995c4` |
+|---|---:|---:|
+| Focused compute | 1,434.6 ms | 1,531.4 ms |
+| Complete compute | 1,456.4 ms | 1,456.7 ms |
+| Complete / focused | 1.015 | 0.951 |
+| Complete process CPU | 1,456.21 ms | 1,456.50 ms |
+| Timed complete generation-2 events | 0 | 0 |
+| Post-target tracked objects | 3,393,362 | 1,661,761 |
+| Post-target selected AST objects | 750,208 | 30,903 |
+| Post-target `_Graph` instances | 2 | 0 |
+| Preceding 32 generation-2 events, range | 1,533.3–2,290.0 ms | 579.6–1,417.7 ms |
+| Same window, median | 1,652.24 ms | 709.31 ms |
+
+The candidate releases the two completed graphs and reduces the post-target
+tracked population by 1,731,601 objects (51.03%), including 719,305 selected AST
+objects (95.88%). The natural-collection windows show lower individual pause costs
+with CPU nearly equal to wall time. Their median falls 57.07%; they are **not
+event-for-event matched windows**. Natural scheduling changes as expected with the
+heap: generation-2 event counts through compute are 164 / 200, and different tests
+can occupy the last 32 slots. The same inventory scale test appears at the upper
+end of both windows. These are observed costs, not a worst-case latency bound.
+The bounded per-event measurements do not establish total suite GC CPU savings.
+
+The core full compute duration is effectively unchanged. The candidate's focused
+timer includes one 98.361 ms generation-2 collection inside the original callable;
+neither full timer includes one. Its 0.951 ratio is therefore reported with that
+collection context, not interpreted as a faster compute algorithm. Complete
+headroom is 1,543.3 ms against the unchanged 3,000 ms limit. All four observations
+retain enabled GC, thresholds 700/10/10, one thread before/after and zero observation
+errors. Producer admission caches have the same hit/miss changes. Apps, routes,
+Stores, frames and tracebacks keep the same full-process counts; no Task, Future,
+CancelScope, WorkerThread, request, spool or coroutine population appears.
+
+This isolates a useful correction: the unused suite-lifetime cache retained a
+large source-AST graph and increased observed natural collection costs. Removing
+that retention leaves the graph algorithm and every existing assertion intact.
+It does **not** identify the collection or event that produced the unprofiled
+historical 3,597.6 ms failure, nor establish a cleanup leak. That failure and the
+2,894.2 ms replay remain negative evidence. The closed shielded-close correction
+and both exact cleanup falsifiers remain unchanged.
+
+The existing API and ingestion observations remain finite and honest. In the
+candidate, cold/warm pages are 187.2/186.3 ms focused and 191.4/196.3 ms complete,
+with 200 items and 1,317,481 bytes. Document growth is -37.1 / -588.4 ms; the negative
+difference is not claimed as a product improvement. Actual multipart requests
+take 87,852.2 / 87,279.6 ms versus control 87,222.5 / 87,220.5 ms, so no ingestion
+speed improvement is claimed. Source, derivative, stage and framing bytes and
+both 64,000,000-byte limits are unchanged. Candidate shared-process sampled RSS
+peaks are 1,967,493,120 / 3,215,183,872 bytes, with zero sampler errors; they remain
+whole-process observations, not staging/RSS limits or field qualification.
+
+The temporary machinery is now removed from the final tree. Its exact reviewed
+[observer](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/scripts/carriage_compute_observer.py),
+[driver](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/scripts/run_carriage_compute_pair.py)
+and [workflow](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/446724baefe7758ed0fdc3cdbade7bffb887a35d/.github/workflows/g14-compute-diagnostic.yml)
+remain available in immutable history. Only their exact new writer, suffix and
+runner entries are removed; both census/runner owner files return byte-for-byte
+to `3abe9d0f`. The final round-6 delta from that reviewed head is only the test
+helper's decorator/docstring and the evidence/NOW records. Production cleanup,
+engine, budget file, original workflows, pytest configuration, every assertion,
+timeout, historical W60 binding and golden/sample byte are unchanged.
+
+Ordinary host-commit results are preserved separately: `446724ba` Linux 3.12 job
+`116189712278` measures 948.2 / 875.3 ms focused/complete (0.923 ratio), with every
+budget assertion passing. All six Python matrix legs, coverage and W60b have only
+the temporary 25-versus-24 runner failure; coverage reaches 87.44% against 85%.
+The Windows source job `116189711671` ends in 109m46s on that same count assertion,
+before its frontend tail. Webapp, Scope, Master Reference, portable build/qualification,
+lint, typing, distribution and dependency checks pass. These are not final clean
+qualification: removing diagnostic files can change collection-time allocations.
+Fresh uninstrumented ordinary checks on the cleaned head, including all fifteen
+protected contexts, both complete Windows gates and final budget measurements,
+remain mandatory. The final-head Checks and closing round-6 PR summary own that
+terminal verdict; no old timing or green run is transferred. Stop afterward for
+independent re-review, with the PR draft and no merge/release action.
