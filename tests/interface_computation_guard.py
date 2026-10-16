@@ -9,24 +9,30 @@ from __future__ import annotations
 import ast
 from collections import Counter
 import hashlib
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = "docs/interface-computation-debt.json"
 ORIGIN = "9112a16e4e4d91674ba5cb2881f0d75071c7d78c"
 ROOTS = ("webapp/frontend/src/", "webapp/backend/", "atlas-scope/src/")
-SPECIAL = ("cisco_toolkit/blast_radius_explorer.html", "cisco_toolkit/excel.py", "cisco_toolkit/docmeta.py")
+SPECIAL = ("cisco_toolkit/blast_radius_explorer.html", "cisco_toolkit/excel.py", "cisco_toolkit/docmeta.py",
+           "cisco_toolkit/html.py", "atlas-scope/tools/lib/compile-model.mjs")
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")
+VERDICTS = frozenset({"READY", "NOT READY", "CAUTION", "GO", "NO-GO", "CONDITIONAL GO", "Critical", "Excellent", "Good", "Fair", "Poor", "ok", "watch", "risk", "crit", "healthy", "permit", "deny", "allow", "block", "reached", "unreachable"})
 PATTERNS = {
     "dynamic-code": re.compile(r"\b(?:eval|exec|Function)\s*\("),
     "graph-worklist": re.compile(r"\b(?:queue|visited|adjacency|neighbours|neighbors)\s*\.\s*(?:shift|pop|popleft|add|push|append)\s*\("),
     "filter-count": re.compile(r"\.filter\s*\([^;\n]{1,200}\)\s*\.length\b"),
+    "raw-count": re.compile(r"\.\s*(?:length|size)\b|\b(?:len|sum|Counter)\s*\("),
+    "raw-threshold": re.compile(r"(?:>=|<=|>|<)\s*[0-9]+"),
 }
 
 
@@ -48,7 +54,7 @@ def source_map(revision=None):
     for path in names:
         if path in SPECIAL or path in writers:
             selected.add(path)
-        elif path.startswith(ROOTS) and path.endswith((".py", ".js", ".jsx", ".mjs", ".ts", ".tsx")):
+        elif path.startswith(ROOTS) and path.endswith((".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")):
             if path == "webapp/backend/engine.py" or "/generated/" in path or "/test/" in path or "/__tests__/" in path or re.search(r"\.(?:test|spec)\.", path):
                 continue
             selected.add(path)
@@ -59,6 +65,108 @@ def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def read_registry(text):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate debt registry key")
+            result[key] = value
+        return result
+
+    def constant(_value):
+        raise ValueError("Nonfinite debt registry value")
+
+    return json.loads(text, object_pairs_hook=unique, parse_constant=constant)
+
+
+def ast_form(value):
+    """Version-neutral semantic AST, independent of ast.dump's debug formatting.
+
+    Empty optional lists (such as 3.12's type_params) add no semantics. Nonempty
+    new fields remain bound; literal None/False/zero and byte/complex values stay
+    distinct. Locations and comments never enter the fingerprint.
+    """
+    if isinstance(value, ast.AST):
+        return {"type": type(value).__name__, "fields": {
+            key: ast_form(item) for key, item in ast.iter_fields(value)
+            if not (isinstance(item, list) and not item)}}
+    if isinstance(value, list):
+        return [ast_form(item) for item in value]
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    if isinstance(value, complex):
+        return {"complex": [value.real.hex(), value.imag.hex()]}
+    if isinstance(value, float):
+        return {"float": value.hex()}
+    if value is Ellipsis:
+        return {"literal": "ellipsis"}
+    return value
+
+
+class ScriptSources(HTMLParser):
+    """Use HTML parsing, not a filtering regexp, for the Explorer's script census."""
+
+    def __init__(self, depth=0):
+        super().__init__(convert_charrefs=False)
+        self.scripts = []
+        self.active = None
+        self.line = 0
+        self.depth = depth
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            if any(name == "src" for name, _value in attrs):
+                raise ValueError("External Explorer scripts cannot escape the source census")
+            self.active = []
+            self.line = self.getpos()[0] - 1
+        # Attribute values are entity-decoded by HTMLParser. Scan inline event
+        # bodies as functions too; inspected bodies are never evaluated.
+        for name, value in attrs:
+            if name.startswith("on") and value:
+                symbol = "html_event_" + name + "_" + digest(value)[:16]
+                self.scripts.append("\n" * (self.getpos()[0] - 1) + f"function {symbol}() {{\n{value}\n}}")
+            if name in ("href", "xlink:href", "action", "formaction") and value:
+                normalized = value.translate({9: None, 10: None, 13: None}).lstrip("".join(chr(i) for i in range(33)))
+                url = urlsplit(normalized)
+                if url.scheme.lower() == "javascript":
+                    body = unquote(normalized.partition(":")[2], errors="strict")
+                    symbol = "html_url_" + digest(body)[:16]
+                    self.scripts.append(f"function {symbol}() {{\n{body}\n}}")
+            if name == "srcdoc" and value:
+                if self.depth >= 8:
+                    raise ValueError("Nested HTML source exceeds the static census depth")
+                nested = ScriptSources(self.depth + 1)
+                nested.feed(value)
+                nested.close()
+                if nested.active is not None:
+                    raise ValueError("Nested HTML has an unclosed script")
+                self.scripts.extend(nested.scripts)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "script":
+            raise ValueError("Self-closing script syntax is ambiguous and cannot be omitted")
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data):
+        if self.active is not None:
+            self.active.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self.active is not None:
+            self.scripts.append("\n" * self.line + "".join(self.active))
+            self.active = None
+
+
+def html_scripts(text):
+    parser = ScriptSources()
+    parser.feed(text)
+    parser.close()
+    if parser.active is not None or not parser.scripts:
+        raise ValueError("Explorer script census is absent or unclosed")
+    return "\n".join(parser.scripts)
+
+
 def python_sites(path, text):
     result, counts = [], Counter()
 
@@ -66,7 +174,7 @@ def python_sites(path, text):
         scope = "<module>"
 
         def emit(self, node, rule, normalized=None):
-            fingerprint = digest(normalized if normalized is not None else ast.dump(node, include_attributes=False))
+            fingerprint = digest(normalized if normalized is not None else json.dumps(ast_form(node), sort_keys=True, separators=(",", ":")))
             key = (self.scope, rule, fingerprint)
             counts[key] += 1
             result.append(dict(path=path, symbol=self.scope, rule=rule, fingerprint=fingerprint,
@@ -89,10 +197,19 @@ def python_sites(path, text):
                 self.emit(node, "aggregate")
             if name in {"bfs", "dfs", "shortest_path", "dijkstra", "reachable", "flood_fill"}:
                 self.emit(node, "graph-call")
+            if name in {"append", "extend", "pop", "popleft", "add", "update"}:
+                self.emit(node, "collection-update")
+            if name == "get" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0 and DOMAIN.search(ast.unparse(node)):
+                self.emit(node, "fact-default-zero")
+            self.generic_visit(node)
+
+        def visit_Return(self, node):
+            if node.value is not None and any(isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in VERDICTS for n in ast.walk(node.value)):
+                self.emit(node.value, "fact-decision")
             self.generic_visit(node)
 
         def visit_Compare(self, node):
-            if any(isinstance(n, ast.Constant) and type(n.value) in (int, float) for n in ast.walk(node)) and DOMAIN.search(self.scope + ast.unparse(node)):
+            if any(isinstance(n, ast.Constant) and type(n.value) in (int, float) for n in ast.walk(node)):
                 self.emit(node, "fact-threshold")
             self.generic_visit(node)
 
@@ -102,13 +219,18 @@ def python_sites(path, text):
             self.generic_visit(node)
 
         def visit_AugAssign(self, node):
-            if DOMAIN.search(ast.unparse(node.target)) or (isinstance(node.target, ast.Subscript) and isinstance(node.op, ast.Add)):
+            if isinstance(node.op, (ast.Add, ast.Sub)):
                 self.emit(node, "counter-update")
             self.generic_visit(node)
 
         def visit_Assign(self, node):
-            if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add) and any(isinstance(t, ast.Subscript) for t in node.targets):
+            if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
                 self.emit(node, "counter-update")
+            self.generic_visit(node)
+
+        def visit_IfExp(self, node):
+            if re.search(r"Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy", ast.unparse(node.body) + ast.unparse(node.orelse)):
+                self.emit(node.test, "fact-decision")
             self.generic_visit(node)
 
         def visit_For(self, node):
@@ -130,12 +252,7 @@ def scan(sources):
             sites.extend(python_sites(path, text))
         else:
             if path.endswith(".html"):
-                # The template owns one literal script element. A new script is scanned too;
-                # unresolved external scripts refuse rather than falling outside the census.
-                scripts = list(re.finditer(r"<script\b([^>]*)>(.*?)</script\s*>", text, re.I | re.S))
-                if not scripts or any(re.search(r"\bsrc\s*=", m[1], re.I) for m in scripts):
-                    raise ValueError("Explorer script census is absent or external")
-                text = "\n".join("\n" * text[:m.start(2)].count("\n") + m[2] for m in scripts)
+                text = html_scripts(text)
             javascript.append(dict(path=path, text=text))
     if javascript:
         node = shutil.which("node")
@@ -149,9 +266,12 @@ def scan(sources):
         # Separate lexical tripwire also sees generated code held inside string templates.
         # It supplements AST analysis; it is not a replacement for parsing.
         for rule, pattern in PATTERNS.items():
-            for occurrence, match in enumerate(pattern.finditer(text), 1):
+            occurrences = Counter()
+            for match in pattern.finditer(text):
+                fingerprint = digest(match.group())
+                occurrences[fingerprint] += 1
                 sites.append(dict(path=path, symbol="<forbidden-pattern>", rule=rule,
-                                  fingerprint=digest(match.group()), occurrence=occurrence,
+                                  fingerprint=fingerprint, occurrence=occurrences[fingerprint],
                                   line=text[:match.start()].count("\n") + 1, expression=match.group()))
     return sorted(sites, key=identity)
 
@@ -179,6 +299,10 @@ def validate(registry, current, origin, ancestors=()):
     rows = registry["sites"]
     if not isinstance(rows, list) or any(not isinstance(row, dict) or set(row) != expected_keys for row in rows):
         raise ValueError("Debt entries are not closed exact call sites")
+    if any(any(not isinstance(row[key], str) or not row[key] for key in ("path", "symbol", "rule", "fingerprint", "disposition"))
+           or re.fullmatch(r"[0-9a-f]{64}", row["fingerprint"]) is None
+           or type(row["occurrence"]) is not int or row["occurrence"] < 1 for row in rows):
+        raise ValueError("Debt call-site identities have malformed exact types")
     keys = [identity(row) for row in rows]
     if len(set(keys)) != len(keys) or keys != sorted(keys):
         raise ValueError("Debt entries repeat or are not deterministically ordered")
@@ -195,12 +319,14 @@ def validate(registry, current, origin, ancestors=()):
 
 
 def check():
-    registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
+    registry = read_registry((ROOT / REGISTRY).read_text(encoding="utf-8"))
+    if registry.get("stage") != "active":
+        raise ValueError("Debt register requires source-bound active review")
     subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ORIGIN, "HEAD"], check=True)
     current, origin = scan(source_map()), scan(source_map(ORIGIN))
     previous = []
     for commit in git("log", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
-        previous.append(json.loads(git("show", commit + ":" + REGISTRY)))
+        previous.append(read_registry(git("show", commit + ":" + REGISTRY)))
     validate(registry, current, origin, previous)
     return len(current)
 
@@ -208,7 +334,12 @@ def check():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--observe":
         observations = scan(source_map())
-        Path(sys.argv[2]).write_text(json.dumps({"proposal": proposal(observations), "observations": observations}, indent=2) + "\n", encoding="utf-8")
+        record = {"source_commit": git("rev-parse", "HEAD").decode().strip(),
+                  "source_tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+                  "detectors": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in (
+                      "tests/interface_computation_guard.py", ".github/scripts/interface_computation_ast.mjs")},
+                  "proposal": proposal(observations), "observations": observations}
+        Path(sys.argv[2]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         print(f"Observed {len(observations)} exact static sites; admission still requires review")
     elif sys.argv[1:] == ["--check"]:
         print(f"Interface computation ratchet passed: {check()} exact sites")

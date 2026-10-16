@@ -141,6 +141,8 @@ jobs:
           path: ${{ runner.temp }}/interface-debt-observed.json
           if-no-files-found: error
           retention-days: 14
+      - name: Every canonical fact has an executed real-producer reconcile check
+        run: python -m pytest tests/test_pipeline_inprocess.py::test_pipeline_inprocess_builds_all_three_deliverables
       - name: Closed interface computation ratchet and mutation controls
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
