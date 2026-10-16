@@ -172,7 +172,7 @@ def package_data_modules() -> tuple[str, ...]:
     format validation. Its module reads syntax_rfc3987.lark during import; Python modules alone
     therefore cannot start the frozen API. The spec collects package data through this owner.
     """
-    return ("rfc3987_syntax", "cyclonedx", "license_expression")
+    return ("rfc3987_syntax", "cyclonedx")
 
 
 def package_metadata_distributions() -> tuple[str, ...]:
