@@ -319,14 +319,21 @@ function tokenStreams(path, text, symbol = '<forbidden-pattern>', lineOffset = 0
       payloads.push({text: node.head.text + node.templateSpans.map(span => '__census_interpolation__' + span.literal.text).join(''),
         line: lineOffset + file.getLineAndCharacterOfPosition(node.getStart(file)).line});
     }
-    if (ts.isRegularExpressionLiteral(node) || ts.isJsxText(node)) masks.set(node.getStart(file), {end: node.end, text: null});
+    if (ts.isRegularExpressionLiteral(node)) masks.set(node.getStart(file), {end: node.end, text: null});
+    if (ts.isJsxText(node)) masks.set(node.pos, {end: node.end, text: null});
     ts.forEachChild(node, collect);
   }
   collect(file);
+  const ranges = [...masks].map(([start, mask]) => ({start, ...mask}))
+    .filter(mask => mask.end > mask.start).sort((left, right) => left.start - right.start || right.end - left.end);
+  let rangeIndex = 0;
   const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, file.languageVariant, text);
   const tokens = [];
   for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    const start = scanner.getTokenPos(), mask = masks.get(start);
+    const start = scanner.getTokenPos();
+    while (rangeIndex < ranges.length && ranges[rangeIndex].end <= start) rangeIndex++;
+    const candidate = ranges[rangeIndex];
+    const mask = candidate && candidate.start <= start && start < candidate.end ? candidate : null;
     const line = lineOffset + file.getLineAndCharacterOfPosition(start).line + 1;
     if (mask) {
       if (mask.text !== null) tokens.push(['string', mask.text, line]);

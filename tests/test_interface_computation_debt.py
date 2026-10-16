@@ -255,6 +255,19 @@ def test_engine_readiness_can_be_displayed_without_a_new_verdict_return(parser):
     assert guard.scan({"webapp/frontend/src/New.tsx": "export function View({fact}) { return <span>{fact.readiness}</span>; }"}) == []
 
 
+def test_multiline_jsx_whitespace_masks_advance_and_inert_text_is_not_code(parser):
+    source = """export function View({fact}) {
+ return (
+  <section>
+   <span>{fact.value}</span>
+   <p>len(rows) queue.pop()</p>
+  </section>
+ );
+}
+"""
+    assert guard.scan({"webapp/frontend/src/New.tsx": source}) == []
+
+
 def test_ast_parse_errors_fail_closed(parser, capsys):
     with pytest.raises(subprocess.CalledProcessError):
         guard.scan({"webapp/frontend/src/New.ts": "function broken( {"})

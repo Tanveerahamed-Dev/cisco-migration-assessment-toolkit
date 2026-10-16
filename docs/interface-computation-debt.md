@@ -303,3 +303,13 @@ cached identifier/literal feature bits, while lexical identities remain token
 normalized. File/phase stderr markers identify the active unit if a refusal or
 timeout remains. The v2 fingerprints are reindexed before initial admission;
 no old observation is transferred as validation of this implementation.
+
+Head `bfd58a9b`, CI `38960141939`, Python 3.11 job `117173253303`, retains
+**163 synthetic passes / 3 deselected** but still times out at 90 seconds.
+The phase markers show `ArchReviewPanel.tsx` completing and the lexer stopping
+inside `.design-sync/previews/Bars.tsx`. A whitespace-only JSX text node can
+have `getStart()` at its end, producing a zero-width mask and rewinding the
+scanner indefinitely. Masks now use actual JSX text ranges, discard zero-width
+ranges and advance only to an end strictly beyond the current token. A multiline
+JSX control covers whitespace-only text and inert displayed `len(rows)` text.
+The original timeout stays in force; no source file is skipped or waived.
