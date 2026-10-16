@@ -1040,6 +1040,13 @@ def _main_scoped(argv: list[str]) -> int:
               f"--redact-folder.", file=sys.stderr)
         return 2
 
+    if _frozen() and os.path.lexists(_exe_dir().parent / "Atlas.update-state.json"):
+        print(f"{APP_TITLE}: refusing to start - portable maintenance is incomplete.\n"
+              "  Preserve every Atlas* path and finish the recorded update or rollback with "
+              "its installed-version recovery helper (README-FIELD.txt, UPDATE).",
+              file=sys.stderr)
+        return 1
+
     if bool(args.ssl_certfile) != bool(args.ssl_keyfile):
         print(f"{APP_TITLE}: --ssl-certfile and --ssl-keyfile must be supplied together.",
               file=sys.stderr)

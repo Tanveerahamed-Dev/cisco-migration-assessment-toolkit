@@ -50,6 +50,18 @@ def test_maintenance_command_keeps_engine_argv_opaque(monkeypatch):
     assert seen == [["--update", "opaque"]]
 
 
+def test_pending_maintenance_refuses_server_before_creating_an_empty_store(tmp_path, monkeypatch, capsys):
+    bundle = tmp_path / "Atlas"
+    bundle.mkdir()
+    (tmp_path / "Atlas.update-state.json").write_text("interrupted transaction", encoding="ascii")
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: bundle)
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("store path was touched"))
+    assert serve._main_scoped(["--no-browser"]) == 1
+    assert "portable maintenance is incomplete" in capsys.readouterr().err
+    assert not (bundle / "data").exists()
+
+
 def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monkeypatch):
     source = tmp_path / "installed"
     (source / "_internal").mkdir(parents=True)
@@ -176,6 +188,11 @@ def test_successor_inventory_cannot_remove_or_replace_installed_dependencies():
     for forbidden in release_contract._FORBIDDEN_PACKAGE_PARTS:
         assert not release_contract._runtime_inventory_matches(
             {**successor, forbidden: "1.0"}, allow_extensions=True)
+        assert not release_contract._runtime_inventory_matches(
+            {**successor, forbidden.upper(): "1.0"}, allow_extensions=True)
+    for noncanonical in ("Window_Runtime", "window.runtime", "window--runtime", "openai ", "\u200bopenai", "\uff4f\uff50\uff45\uff4e\uff41\uff49"):
+        assert not release_contract._runtime_inventory_matches(
+            {**successor, noncanonical: "1.0"}, allow_extensions=True)
 
 
 @pytest.mark.parametrize("relative", [

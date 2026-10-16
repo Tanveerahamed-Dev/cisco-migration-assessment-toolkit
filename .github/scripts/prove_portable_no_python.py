@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -235,6 +236,18 @@ def extract_bootstrap(package: Path, destination: Path) -> Path:
     return executable
 
 
+def copy_runtime_for_smoke(bootstrap: Path, destination: Path) -> dict[str, str]:
+    """Meet the canonical runtime-smoke input contract without mutating a package."""
+    packaged_files = files(bootstrap)
+    runtime_files = {name: sha for name, sha in packaged_files.items()
+                     if name.split("/", 1)[0] != "release-metadata"}
+    shutil.copytree(bootstrap, destination, ignore=lambda directory, names: (
+        {"release-metadata"} if Path(directory) == bootstrap else set()))
+    require(files(destination) == runtime_files, "smoke runtime bytes differ from the packaged ZIP")
+    require(files(bootstrap) == packaged_files, "runtime copy changed the packaged bootstrap")
+    return packaged_files
+
+
 def prove(release_directory: Path, *, baseline_package: Path | None = None) -> dict:
     require(os.name == "nt", "Python-absent desktop proof requires hosted Windows")
     packages = list(release_directory.glob("Atlas-*-windows-x64.zip"))
@@ -255,7 +268,13 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
         from portable.build_atlas import selftest_gap, smoke
 
         # Reuse the canonical four-step smoke without changing its assertions/output.
-        smoke(unused_port(), dist=bootstrap.parent, environment=environment)
+        # Its input contract intentionally refuses packaged release metadata. Make
+        # a separate runtime-only copy, prove every runtime byte equals the ZIP,
+        # and leave the hash-checked packaged bootstrap intact for installation.
+        smoke_bundle = scratch / "runtime-smoke" / "Atlas"
+        packaged_files = copy_runtime_for_smoke(bootstrap.parent, smoke_bundle)
+        smoke(unused_port(), dist=smoke_bundle, environment=environment)
+        require(files(bootstrap.parent) == packaged_files, "smoke changed the packaged bootstrap")
         standalone = run(bootstrap, ["--selftest", "--db", str(scratch / "bootstrap-check.db")],
                          environment, scratch, timeout=180)
         require(not selftest_gap(standalone.stdout), "standalone frozen selftest omitted required checks")
@@ -337,6 +356,14 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
         require(journal.is_file(), "injected update interruption left no recoverable journal")
         require(json.loads(journal.read_text(encoding="utf-8"))["phase"] == "activated",
                 "update did not reach the selected interruption boundary")
+        blocked_server = subprocess.run(
+            [str(executable), "--no-browser", "--port", str(unused_port())],
+            env=environment, cwd=scratch, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=20, check=False,
+        )
+        require(blocked_server.returncode != 0 and "portable maintenance is incomplete" in blocked_server.stderr,
+                "unfinished update allowed a server to open a replacement data directory")
+        require(not data.exists(), "unfinished update created an unowned active data directory")
         maintenance(executable, update_arguments, environment, scratch)
         verify_slot(destination)
         unchanged_data(baseline_files, data)

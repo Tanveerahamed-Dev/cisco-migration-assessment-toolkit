@@ -25,6 +25,13 @@ Windows build-and-qualify job exercises frozen installation, three interrupted p
 recovery, rollback and database restore with Python/py hidden from the product's PATH.
 Its observer still has Python; the actual Python-uninstalled/disconnected-host gate remains external.
 
+The installed verifier also recognizes bounded, architecture-neutral managed IL-only
+DLLs for the planned Windows window adapter. These are labelled separately from native
+AMD64 PE images and remain in all member, SBOM and signing denominators. PE32
+Authenticode offsets are handled explicitly; native x86, mixed mode, required/preferred
+32-bit execution, native CLR tables and malformed metadata remain refused. Strong naming
+is separate from Authenticode. This change ships no window dependency in the installer PR.
+
 ## Build
 
 Release candidates use the exact Windows x64 toolchain in `portable/toolchain.json` and the

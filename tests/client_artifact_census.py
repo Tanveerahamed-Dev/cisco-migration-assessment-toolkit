@@ -3125,8 +3125,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, ("database",), "read-only inspection of the hosted HTTP-seeded synthetic database"),
     ".github/scripts/prove_portable_no_python.py::extract_bootstrap": (
         1, NON_CLIENT, (), "closed-set public candidate code extracted to an external hosted proof folder"),
+    ".github/scripts/prove_portable_no_python.py::copy_runtime_for_smoke": (
+        1, NON_CLIENT, (), "a byte-equal runtime copy of packaged public application code; package metadata remains intact"),
     ".github/scripts/prove_portable_no_python.py::prove": (
-        15, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
+        16, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
     ".github/scripts/prove_portable_no_python.py::main": (
         2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (

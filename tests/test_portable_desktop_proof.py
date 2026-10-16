@@ -160,3 +160,19 @@ def test_python_absent_proof_runs_in_existing_build_context_after_packaging() ->
     artifacts = [step for step in steps if step.get("with", {}).get("name", "").startswith("atlas-desktop-no-python-")]
     assert len(artifacts) == 1
     assert artifacts[0]["with"]["if-no-files-found"] == "error"
+
+
+def test_runtime_smoke_copy_preserves_package_and_excludes_only_root_metadata(tmp_path: Path) -> None:
+    package = tmp_path / "package" / "Atlas"
+    (package / "release-metadata").mkdir(parents=True)
+    (package / "release-metadata" / "manifest.json").write_text("retained metadata", encoding="ascii")
+    (package / "_internal" / "release-metadata").mkdir(parents=True)
+    (package / "_internal" / "release-metadata" / "runtime.bin").write_bytes(b"nested runtime bytes")
+    (package / "Atlas.exe").write_bytes(b"synthetic application bytes")
+    before = proof.files(package)
+    runtime = tmp_path / "runtime" / "Atlas"
+    assert proof.copy_runtime_for_smoke(package, runtime) == before
+    assert proof.files(package) == before
+    assert not (runtime / "release-metadata").exists()
+    assert (runtime / "_internal" / "release-metadata" / "runtime.bin").read_bytes() == b"nested runtime bytes"
+    assert (runtime / "Atlas.exe").read_bytes() == b"synthetic application bytes"

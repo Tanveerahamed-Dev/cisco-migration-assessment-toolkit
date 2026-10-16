@@ -393,6 +393,8 @@ Run that exact helper executable with --recover and the installation parent
 folder. The optional wrapper selects and checks this helper automatically
 when a journal exists. Recovery finishes the recorded request; inspect its
 exit status before issuing another update.
+If the active executable still exists, Atlas reports "portable maintenance is
+incomplete" and refuses to open a new empty store until recovery is finished.
 Never copy new files over the active Atlas\ tree. The updater verifies and
 preflights Atlas.incoming on the destination drive, preserves a hash-bound
 pre-update database backup, moves data\ to Atlas.data-handoff, switches and
