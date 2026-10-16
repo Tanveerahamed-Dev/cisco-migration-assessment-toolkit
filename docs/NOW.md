@@ -23,12 +23,14 @@ There is **one application**: the `main` branch of this repository on GitHub.
   invent, restate or default a fact (`docs/ssot.md`). Some screens still compute facts
   themselves; see the dated verdict.
   - **Binding since 2026-10-16:** `docs/decisions/0008-engine-computes-interface-displays.md`.
-    The engine computes and the interface displays. The rule is enforced in CI by a canonical-fact
-    reconcile ratchet and a closed interface-computation debt register, which may only shrink.
-    RC8-P1-H retires the audited duplicates.
-- **The one front end (ADR 0008, 2026-10-16):** the Atlas app, which is AssessHub (`webapp/frontend`)
-  in the native Atlas window. It has six tabs per snapshot: Network (topology-first workspace),
-  Findings, Inventory, Plan, Change and Reports.
+    The engine computes and the interface displays. Its CI enforcement, a canonical-fact
+    reconcile ratchet and a closed interface-computation debt register that may only shrink, is
+    **pending RC8-P1-H**. It counts as in force only once that work merges with exact-head
+    evidence; until then reviewers enforce the rule. RC8-P1-H also retires the audited duplicates.
+- **The one front end (ADR 0008, 2026-10-16):** the Atlas app, which is AssessHub (`webapp/frontend`).
+  The target shell is a native Atlas window; today `Atlas.exe` opens the app in the default browser.
+  Per snapshot it has five job workspaces: Investigate (default; topology, questions and Browse),
+  Fix, Migrate, Cut over and Deliver. A Find bar and a Trust drawer serve every workspace.
   - The HTML explorer and Atlas Scope are no longer separate user-facing front ends. Their best
     views are rebuilt inside the app on engine data.
   - The `/scope` entry and the explorer link leave the app.
@@ -404,6 +406,7 @@ protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
 
+- 2026-10-16, Claude (F0, supervisor): an independent Codex review of `bb8fb75a` returned BLOCKED, with one P1: the present-tense claims that CI already enforces ADR 0008. Those claims now read as pending RC8-P1-H and count as in force only with that work's exact-head evidence. Two non-blocking P3s were applied in the same revision. (1) The native Atlas window is stated as the target shell; today `Atlas.exe` opens the browser. (2) The six tabs are replaced by the owner-approved five job workspaces: Investigate (default), Fix, Migrate, Cut over and Deliver. Find and Trust are shared. The evidence control keeps every published projection state. Docs only; a fresh independent review of the new head is required.
 - 2026-10-16, Claude (F0, supervisor): the owner asked for one foundation, a single source of truth where the engine computes and the front end only displays, and an end to drift between sessions. A read-only audit with a refuter at main `9112a16e` found the engine contract sound, but several surfaces still compute engine-owned facts. Recorded the binding rule as ADR 0008, amending D9 with CI enforcement, and routed `AGENTS.md` and `CLAUDE.md` to it. RC8-P1-H (Codex) implements the ratchets and retires the audited duplicates; RC8-P1-G reads only the projection. Docs only; no code, test or gate changed.
 - 2026-10-15, Codex (K1 / #665): hosted head `4216cc91` failed the existing client-artifact census with four unclassified controller functions (one failed, 659 passed on Python 3.12 Linux). Added exact writer counts and grounded dispositions, retaining delegated JSON serialization and all scanner/privacy/verifier rules. Independent static review found no issues with the correction. A focused hosted admission/wiring step now runs early; default-suite collection remains intact. Corrected-head CI is still required; no merge, knowledge dispatch or successful refresh is claimed.
 

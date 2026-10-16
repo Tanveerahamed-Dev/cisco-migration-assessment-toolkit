@@ -13,7 +13,9 @@ the engine computes, the interface displays. Every fact and analysis is computed
 and reaches users through the snapshot or `ui_projection`. AssessHub, the topology workspace, Atlas
 Scope, the HTML explorer and every document only format and display it. A screen that needs a new
 value gets it from a new engine-owned fact registered in `docs/ssot.md`, never from its own
-calculation. CI enforces this; a conflicting change needs an owner amendment to ADR 0008.
+calculation. Its mechanical CI enforcement (ADR 0008 point 4) is **pending RC8-P1-H** and counts as
+in force only once that work merges with exact-head evidence; until then reviewers enforce the rule.
+A conflicting change needs an owner amendment to ADR 0008.
 
 ## Repository-review record (CLOSED 2026-08-03)
 
