@@ -25,115 +25,15 @@ population, which is ``n_past_ldos`` (152) -- silently dropping 152 end-of-suppo
 false "healthy" reading. The near-twin: ``len(devices)`` / ``len(health_scores)`` used as a
 reported device count instead of ``executive_brief.scale.n_devices``.
 
-Fact readers are read-only. ``derive_late_snapshot_sections`` is the explicit producer
-boundary that publishes late sections into a caller-owned assembly snapshot.
+Read-only and side-effect free: this module derives, it never mutates the snapshot.
 """
 from __future__ import annotations
 
 import math
 import reprlib
 from fractions import Fraction
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
-
-
-PLAN_SECTION_KEYS = frozenset({"requirements_register", "design_blueprint", "design_nrfu"})
-
-
-def derive_late_snapshot_sections(
-    snapshot: Dict[str, Any], requirements: Optional[dict], *, profile: str,
-    compute_blueprint: Optional[Callable[..., dict]] = None,
-    compute_nrfu: Optional[Callable[..., dict]] = None,
-    compute_architecture: Optional[Callable[..., dict]] = None,
-    compute_coverage: Optional[Callable[..., dict]] = None,
-    compute_unknown: Optional[Callable[..., dict]] = None,
-    unknown_unavailable: Optional[Callable[..., dict]] = None,
-    logger: Any = None,
-    record_phase_failure: Optional[Callable[..., Any]] = None,
-    record_integrity_failure: Optional[Callable[..., Any]] = None,
-    publish_schema: Optional[Callable[..., Any]] = None,
-) -> None:
-    """Publish the common late phase order into an isolated caller-owned assembly.
-
-    ``saved_plan`` publishes only the three plan-owned sections and propagates failures.
-    It never refreshes observed coverage, headline verification, census or lineage.
-    ``assessment`` preserves the CLI's four fail-soft boundaries and partial publications;
-    its callbacks retain the existing logging, integrity and workbook owners. Injected
-    compute functions preserve the CLI's public monkeypatch sites. Defaults are lazy,
-    analysis-only imports, so a saved plan does not load or call assessment-only phases.
-    """
-    if profile not in {"assessment", "saved_plan"}:
-        raise ValueError("Unsupported late derivation profile")
-    assessment = profile == "assessment"
-    if assessment and (logger is None or record_phase_failure is None
-                       or record_integrity_failure is None or publish_schema is None):
-        raise ValueError("Assessment late derivation requires publication callbacks")
-    # Only the assessment profile reaches these callbacks, after the required-owner check.
-    record_phase_failure = cast(Callable[..., Any], record_phase_failure)
-    record_integrity_failure = cast(Callable[..., Any], record_integrity_failure)
-    publish_schema = cast(Callable[..., Any], publish_schema)
-
-    try:
-        if compute_blueprint is None or compute_nrfu is None:
-            from . import design_advisor
-            if compute_blueprint is None:
-                compute_blueprint = design_advisor.compute_design_blueprint
-            if compute_nrfu is None:
-                compute_nrfu = design_advisor.compute_design_nrfu
-        register = requirements or {}
-        if register or not assessment:
-            snapshot["requirements_register"] = register
-        if register and assessment:
-            logger.info(f"  [design] requirements register supplied ({', '.join(sorted(register))}) -> blueprint right-sized")
-        snapshot["design_blueprint"] = compute_blueprint(snapshot, register or None)
-        snapshot["design_nrfu"] = compute_nrfu(snapshot["design_blueprint"])
-        if not assessment:
-            return
-        if compute_architecture is None:
-            from .design_advisor import compute_architecture_coverage
-            compute_architecture = compute_architecture_coverage
-        if compute_coverage is None:
-            from .coverage_matrix import compute_coverage_matrix
-            compute_coverage = compute_coverage_matrix
-        snapshot["architecture_coverage"] = compute_architecture(snapshot)
-        snapshot["coverage_matrix"] = compute_coverage(snapshot)
-    except Exception as exc:
-        if not assessment:
-            raise
-        logger.warning(f"  design_blueprint compute failed (non-fatal): {exc}")
-        record_phase_failure("Design blueprint", f"{type(exc).__name__}: {exc}")
-
-    # Unknown evidence remains independently available after a design/coverage failure.
-    try:
-        if compute_unknown is None:
-            from .unknown_evidence import compute_unknown_evidence
-            compute_unknown = compute_unknown_evidence
-        snapshot["unknown_evidence"] = compute_unknown(snapshot)
-    except Exception as exc:
-        logger.warning(f"  unknown-evidence aggregation failed (non-fatal): {exc}")
-        if unknown_unavailable is None:
-            from .unknown_evidence import unavailable_unknown_evidence
-            unknown_unavailable = unavailable_unknown_evidence
-        snapshot["unknown_evidence"] = unknown_unavailable()
-        record_phase_failure("Unknown evidence", f"{type(exc).__name__}: {exc}")
-    try:
-        drift = audit(snapshot)
-        if isinstance(snapshot.get("executive_brief"), dict):
-            snapshot["executive_brief"]["ssot"] = summary(snapshot)
-        if drift:
-            record_integrity_failure(snapshot, drift)
-    except Exception as exc:
-        logger.warning(f"  SSOT self-check skipped (non-fatal): {exc}")
-        record_phase_failure("SSOT self-check", f"{type(exc).__name__}: {exc}")
-    try:
-        snapshot["schema_census"] = compute_schema_census(snapshot)
-        snapshot["fact_lineage"] = compute_fact_lineage(snapshot)
-        # The second census includes its own publication and fact_lineage, as in the CLI.
-        snapshot["schema_census"] = compute_schema_census(snapshot)
-        publish_schema(snapshot["schema_census"])
-    except Exception as exc:
-        logger.warning(f"  schema-census / fact-lineage skipped (non-fatal): {exc}")
-        record_phase_failure("Schema census / fact lineage", f"{type(exc).__name__}: {exc}")
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
 # The dotted path is the SINGLE authoritative source; anything else reporting the same concept

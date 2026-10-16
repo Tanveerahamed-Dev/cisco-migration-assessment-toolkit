@@ -931,25 +931,25 @@ def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     txt = _registry_text()
     engine = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     analyze = (ROOT / "cisco_toolkit" / "analyze.py").read_text(encoding="utf-8", errors="ignore")
-    # Late assignments moved to one producer, not to the read-only SSOT readers. Admit only
+    # Plan-prefix assignments moved to one producer, not to the read-only SSOT readers. Admit only
     # that unique helper, and only while main actually invokes it for this same snapshot.
     engine_tree = ast.parse(engine)
     main = next(node for node in engine_tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
     calls = [node for node in ast.walk(main) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
-             and node.func.value.id == "_ssot" and node.func.attr == "derive_late_snapshot_sections"]
+             and node.func.value.id == "_design_advisor" and node.func.attr == "derive_plan_sections"]
     assert len(calls) == 1, "CLI must invoke the shared late producer exactly once"
     call = calls[0]
     assert call.args and isinstance(call.args[0], ast.Name) and call.args[0].id == "snap_dict"
     profiles = [keyword.value for keyword in call.keywords if keyword.arg == "profile"]
     assert len(profiles) == 1 and isinstance(profiles[0], ast.Constant) and profiles[0].value == "assessment"
     assert any(isinstance(node, ast.ImportFrom) and node.module == "cisco_toolkit"
-               and any(alias.name == "ssot" and alias.asname == "_ssot" for alias in node.names)
-               for node in ast.walk(main)), "the CLI producer alias must resolve to the SSOT owner"
-    late_source = (ROOT / "cisco_toolkit" / "ssot.py").read_text(encoding="utf-8")
+               and any(alias.name == "design_advisor" and alias.asname == "_design_advisor" for alias in node.names)
+               for node in ast.walk(main)), "the CLI producer alias must resolve to the design owner"
+    late_source = (ROOT / "cisco_toolkit" / "design_advisor.py").read_text(encoding="utf-8")
     late_owners = [node for node in ast.parse(late_source).body
-                   if isinstance(node, ast.FunctionDef) and node.name == "derive_late_snapshot_sections"]
+                   if isinstance(node, ast.FunctionDef) and node.name == "derive_plan_sections"]
     assert len(late_owners) == 1, "shared late producer must have one source owner"
     late_body = "\n".join(ast.get_source_segment(late_source, node) or "" for node in late_owners[0].body)
     src = engine + "\n" + analyze + "\n" + late_body

@@ -26,7 +26,7 @@ from cisco_toolkit.docmeta import (  # noqa: E402  (engine establishes package p
     ASSESSHUB_DOWNLOAD_SPECS,
     ArtifactSpec,
 )
-from cisco_toolkit.ssot import PLAN_SECTION_KEYS  # noqa: E402
+from cisco_toolkit.design_advisor import PLAN_SECTION_KEYS  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +424,7 @@ SAVED_PLAN_REQUIREMENTS_BYTES = 64 * 1024
 _PLAN_DERIVED_KINDS = frozenset({"design", "crd", "mop", "nrfu", "deck"})
 _PLAN_DERIVATION_OWNERS = (
     "cisco_toolkit.design_advisor.requirements_from_interview",
-    "cisco_toolkit.ssot.derive_late_snapshot_sections",
+    "cisco_toolkit.design_advisor.derive_plan_sections",
     "cisco_toolkit.design_advisor.compute_design_blueprint",
     "cisco_toolkit.design_advisor.compute_design_nrfu",
 )
@@ -540,7 +540,7 @@ def _saved_plan_requirements(requirements: Any) -> dict:
 
 def prepare_saved_plan(snapshot: dict, requirements: dict) -> dict:
     """Derive once from an isolated copy; callers persist this exact non-authoritative projection."""
-    from cisco_toolkit import ssot
+    from cisco_toolkit import design_advisor
 
     if not isinstance(snapshot, dict):
         raise SavedPlanError("Saved plan assessment must be an object")
@@ -553,7 +553,7 @@ def prepare_saved_plan(snapshot: dict, requirements: dict) -> dict:
     # dict() deliberately strips BoundSnapshot's process-local source marker; deepcopy protects
     # the original nested observations even if a future owner starts updating an input container.
     rendered = copy.deepcopy(dict(snapshot))
-    ssot.derive_late_snapshot_sections(rendered, register, profile="saved_plan")
+    design_advisor.derive_plan_sections(rendered, register, profile="saved_plan")
     projection = {
         "schema": SAVED_PLAN_PROJECTION_SCHEMA,
         "requirements": register,

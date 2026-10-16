@@ -103,16 +103,16 @@ def _office(path: str, extension: str = "docx"):
 
 
 def test_preparation_preserves_source_and_publishes_only_the_plan_owned_sections(monkeypatch):
-    from cisco_toolkit import ssot
+    from cisco_toolkit import design_advisor
 
     calls = []
-    original_late = ssot.derive_late_snapshot_sections
+    original_late = design_advisor.derive_plan_sections
 
     def counted_late(snapshot, requirements, **kwargs):
         calls.append(kwargs["profile"])
         return original_late(snapshot, requirements, **kwargs)
 
-    monkeypatch.setattr(ssot, "derive_late_snapshot_sections", counted_late)
+    monkeypatch.setattr(design_advisor, "derive_plan_sections", counted_late)
     snapshot = _snapshot()
     original = copy.deepcopy(dict(snapshot))
     marker = bound_snapshot_source(snapshot)
@@ -155,14 +155,14 @@ def test_preparation_preserves_source_and_publishes_only_the_plan_owned_sections
 def test_reopen_consumes_persisted_sections_without_current_planner_recomputation(monkeypatch):
     snapshot = _snapshot()
     plan = _plan(snapshot, {"constraints": "budget, security"})
-    from cisco_toolkit import design_advisor, ssot
+    from cisco_toolkit import design_advisor
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("reopening must not rerun the current planner")
 
     monkeypatch.setattr(design_advisor, "compute_design_blueprint", forbidden)
     monkeypatch.setattr(design_advisor, "compute_design_nrfu", forbidden)
-    monkeypatch.setattr(ssot, "derive_late_snapshot_sections", forbidden)
+    monkeypatch.setattr(design_advisor, "derive_plan_sections", forbidden)
     reopened = deliverables.render_saved_plan(snapshot, json.loads(json.dumps(plan)))
     for key, value in plan["projection"]["sections"].items():
         assert reopened[key] == value
@@ -270,7 +270,7 @@ def test_rehashed_observed_section_injection_is_refused_for_every_plan_export(se
             deliverables.generate_saved_plan(kind, snapshot, "EXAMPLE refused", plan)
 
 
-@pytest.mark.parametrize("legacy", ["projection", "derivation", "observed-sections"])
+@pytest.mark.parametrize("legacy", ["projection", "derivation", "observed-sections", "old-helper-owner"])
 def test_old_projection_profiles_refuse_instead_of_reinterpreting_saved_bytes(legacy):
     snapshot = _snapshot()
     plan = _plan(snapshot)
@@ -278,6 +278,8 @@ def test_old_projection_profiles_refuse_instead_of_reinterpreting_saved_bytes(le
         plan["projection"]["schema"] = "atlas.saved_plan_projection/1"
     elif legacy == "derivation":
         plan["projection"]["derivation"]["schema"] = "atlas.saved_plan_derivation/1"
+    elif legacy == "old-helper-owner":
+        plan["projection"]["derivation"]["owners"][1] = "cisco_toolkit.ssot.derive_late_snapshot_sections"
     else:
         for key in ("architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage"):
             plan["projection"]["sections"][key] = {}
