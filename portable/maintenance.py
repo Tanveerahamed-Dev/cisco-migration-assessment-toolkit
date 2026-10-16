@@ -437,7 +437,7 @@ def _cleanup_prepared_helper(helper: Path, entries: list, request_identity: os.s
     _remove_created(files, directories)
 
 
-def _wait_for_parent(pid: int) -> None:
+def _wait_for_parent(pid: int, creation: int | None = None) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -445,13 +445,21 @@ def _wait_for_parent(pid: int) -> None:
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = kernel.OpenProcess(0x00100000, False, pid)
+    handle = kernel.OpenProcess(0x00101000 if creation is not None else 0x00100000, False, pid)
     if not handle:
         if ctypes.get_last_error() == 87:
             return
         raise OSError(ctypes.get_last_error(), "cannot wait for Atlas to close")
     try:
+        if creation is not None:
+            created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+            if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                          ctypes.byref(kernel_time), ctypes.byref(user_time)):
+                raise OSError(ctypes.get_last_error(), "cannot bind recovery caller creation time")
+            if ((created.dwHighDateTime << 32) | created.dwLowDateTime) != creation:
+                raise ValueError("recovery caller process identity changed")
         if kernel.WaitForSingleObject(handle, 300_000) != 0:
             raise TimeoutError("Atlas did not release its application directory within 300 seconds")
     finally:
@@ -510,14 +518,43 @@ def _worker(request_path: Path) -> int:
     return _finish(result, outcome)
 
 
-def _recover(executable: Path, root: Path, result: Path | None) -> int:
+def _recovery_parent(pid: int | None, creation: int | None) -> bool:
+    if pid is None and creation is None:
+        return False
+    if (type(pid) is not int or not 0 < pid <= 0xFFFFFFFF or pid == os.getpid()
+            or type(creation) is not int or not 0 < creation <= 0xFFFFFFFFFFFFFFFF):
+        raise ValueError("recovery parent PID/creation must be paired positive identities and must not wait on itself")
+    return True
+
+
+def _recover(executable: Path, root: Path, result: Path | None,
+             *, parent_pid: int | None = None, parent_creation: int | None = None) -> int:
     root, executable = _normal(root), _normal(executable)
     nonce = uuid.uuid4().hex
     result_path = _result_path(root, str(result) if result else None, nonce)
     nonce = _RESULT.fullmatch(result_path.name).group(1)
     outcome = _outcome(nonce)
     try:
+        receiving = _recovery_parent(parent_pid, parent_creation)
+        if receiving:
+            # A receiver cannot acquire the handoff lock while its launching
+            # process owns it. Establish the intended helper without mutation,
+            # then wait on that actual caller's OS handle outside every lock.
+            pointer, authority_raw = _object(root / "Atlas.maintenance.json")
+            relative = pointer.get("helper")
+            if (pointer.get("schema") != "atlas.maintenance-recovery/1" or not isinstance(relative, str)
+                    or not re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}/Atlas/Atlas\.exe", relative)
+                    or executable != root.joinpath(*relative.split("/"))):
+                raise ValueError("recovery receiver must be the recorded original helper")
+            _value, request_raw = _object(executable.parent.parent / "request.json")
+            if hashlib.sha256(request_raw).hexdigest() != pointer.get("request_sha256"):
+                raise ValueError("recorded recovery request changed before waiting")
+            _wait_for_parent(parent_pid, parent_creation)
         with _handoff_lock(root):
+            if receiving:
+                if (_object(root / "Atlas.maintenance.json")[1] != authority_raw
+                        or _object(executable.parent.parent / "request.json")[1] != request_raw):
+                    raise ValueError("recorded recovery authority changed while waiting for its caller")
             if not os.path.lexists(root / "Atlas.update-state.json"):
                 raise ValueError("no journaled maintenance request to recover")
             _physical(root / "Atlas.update-state.json")
@@ -526,27 +563,26 @@ def _recover(executable: Path, root: Path, result: Path | None) -> int:
             if "-TestFailAfter" in arguments:
                 arguments = arguments[:arguments.index("-TestFailAfter")]
             arguments.append("-RecoverOnly")
-            if executable == recorded:
+            if receiving:
+                if executable != recorded:
+                    raise ValueError("recorded recovery helper changed while waiting for its caller")
                 rc = _transaction(recorded, arguments, outcome)
                 outcome.update(exit_code=rc, status="complete" if rc == 0 else "refused")
                 return _finish(result_path, outcome)
-        # Release our handle before the recorded original version acquires it.
-        # The pointer is preserved; the active version never replaces the trust root.
-        child = subprocess.run(
-            [str(recorded), "--recover", str(root), "--maintenance-result", str(result_path)],
-            cwd=str(root), check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if not result_path.is_file():
-            raise ValueError(f"recorded recovery helper returned {child.returncode} without a durable result")
-        value, _raw = _object(result_path)
-        if (value.get("schema") != RESULT_SCHEMA or value.get("nonce") != nonce
-                or type(value.get("exit_code")) is not int or value["exit_code"] != child.returncode
-                or value.get("status") != ("complete" if child.returncode == 0 else "refused")):
-            raise ValueError("recorded recovery helper returned an inconsistent result")
-        if child.returncode:
-            print(f"Atlas recovery REFUSED: {value.get('error', 'transaction failed')}; result: {result_path}",
-                  file=sys.stderr)
-        return child.returncode
+            caller_pid = os.getpid()
+            caller_creation = _process_identity(caller_pid)
+            if caller_creation is None:
+                raise ValueError("cannot establish recovery caller identity")
+            subprocess.Popen(
+                [str(recorded), "--recover", str(root), "--maintenance-result", str(result_path),
+                 "--recover-parent-pid", str(caller_pid), "--recover-parent-creation", str(caller_creation)],
+                cwd=str(root), close_fds=True,
+                creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                               | getattr(subprocess, "DETACHED_PROCESS", 0)),
+            )
+        print(json.dumps({"status": "scheduled", "result": str(result_path),
+                          "message": "Atlas is closing; wait for recovery's terminal result."}))
+        return 0
     except _ERRORS as exc:
         outcome["error"] = str(exc)
     return _finish(result_path, outcome)
@@ -558,6 +594,10 @@ def _require_runtime() -> None:
 
 
 def _validate_options(args) -> None:
+    if args.recover_parent_pid is not None or args.recover_parent_creation is not None:
+        if not args.recover:
+            raise ValueError("recovery parent identities apply only to --recover")
+        _recovery_parent(args.recover_parent_pid, args.recover_parent_creation)
     if args.recover or args.maintenance_worker:
         if (args.package or args.expected_sha256 or args.dest or args.restore_pre_update_database
                 or args.test_fail_after or (args.maintenance_worker and args.maintenance_result)):
@@ -588,6 +628,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--restore-pre-update-database", action="store_true")
     parser.add_argument("--maintenance-result", metavar="FILE")
     parser.add_argument("--test-fail-after", help=argparse.SUPPRESS)
+    parser.add_argument("--recover-parent-pid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--recover-parent-creation", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         _require_runtime()
@@ -597,7 +639,8 @@ def main(argv: list[str]) -> int:
         executable = _normal(sys.executable)
         if args.recover:
             return _recover(executable, _normal(args.recover),
-                            _normal(args.maintenance_result) if args.maintenance_result else None)
+                            _normal(args.maintenance_result) if args.maintenance_result else None,
+                            parent_pid=args.recover_parent_pid, parent_creation=args.recover_parent_creation)
         source = executable.parent
         root = _normal(args.install or args.dest or source.parent)
         _physical(root)

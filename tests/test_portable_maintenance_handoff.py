@@ -231,7 +231,7 @@ def test_changed_recovery_helper_dependency_refuses_before_dispatch(tmp_path, mo
 
     monkeypatch.setattr(release_contract, "verify_installed_bundle", refuse)
     monkeypatch.setattr(maintenance, "_handoff_lock", unlocked)
-    monkeypatch.setattr(maintenance.subprocess, "run", lambda *a, **kw: pytest.fail("changed helper launched"))
+    monkeypatch.setattr(maintenance.subprocess, "Popen", lambda *a, **kw: pytest.fail("changed helper launched"))
     assert maintenance._recover(executable, tmp_path, None) == 1
     receipts = list(tmp_path.glob("Atlas.maintenance-result.*.json"))
     assert len(receipts) == 1
@@ -240,28 +240,38 @@ def test_changed_recovery_helper_dependency_refuses_before_dispatch(tmp_path, mo
     assert (helper / "request.json").exists()
 
 
-def test_active_version_routes_explicit_recovery_to_original_verified_helper(tmp_path, monkeypatch):
-    _helper, original, _result = bound_helper(tmp_path, monkeypatch)
+def test_active_version_schedules_original_helper_and_exits_before_recovery(tmp_path, monkeypatch, capsys):
+    helper, original, _result = bound_helper(tmp_path, monkeypatch)
     active = tmp_path / "Atlas/Atlas.exe"
     active.parent.mkdir()
     active.write_bytes(b"new version, not recovery authority")
     (tmp_path / "Atlas.update-state.json").write_text("interrupted", encoding="ascii")
     pointer = (tmp_path / "Atlas.maintenance.json").read_bytes()
+    request = (helper / "request.json").read_bytes()
     monkeypatch.setattr(maintenance, "_handoff_lock", unlocked)
     calls = []
 
-    def run(argv, **kwargs):
-        calls.append(argv)
-        result = Path(argv[argv.index("--maintenance-result") + 1])
-        value = maintenance._outcome(maintenance._RESULT.fullmatch(result.name).group(1))
-        value.update(status="complete", exit_code=0)
-        result.write_text(json.dumps(value), encoding="utf-8")
-        return subprocess.CompletedProcess(argv, 0)
+    def spawn(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=123)
 
-    monkeypatch.setattr(maintenance.subprocess, "run", run)
+    monkeypatch.setattr(maintenance.subprocess, "Popen", spawn)
+    monkeypatch.setattr(maintenance.subprocess, "run", lambda *a, **kw: pytest.fail("active caller waited on child"))
+    monkeypatch.setattr(maintenance, "_transaction", lambda *a: pytest.fail("active image still owns directory"))
+    monkeypatch.setattr(maintenance, "_wait_for_parent", lambda *a: pytest.fail("launcher must exit, not wait"))
     assert maintenance._recover(active, tmp_path, None) == 0
-    assert calls[0][:3] == [str(original), "--recover", str(tmp_path)]
+    argv, options = calls[0]
+    assert argv[:3] == [str(original), "--recover", str(tmp_path)]
+    assert argv[argv.index("--recover-parent-pid") + 1] == str(maintenance.os.getpid())
+    assert argv[argv.index("--recover-parent-creation") + 1] == str(maintenance.os.getpid() + 1000)
+    assert options["close_fds"] is True and options["cwd"] == str(tmp_path)
+    assert options["creationflags"] == (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                        | getattr(subprocess, "DETACHED_PROCESS", 0))
+    result = Path(argv[argv.index("--maintenance-result") + 1])
+    assert not result.exists()  # scheduled never masquerades as transaction completion
+    assert json.loads(capsys.readouterr().out)["status"] == "scheduled"
     assert (tmp_path / "Atlas.maintenance.json").read_bytes() == pointer
+    assert (helper / "request.json").read_bytes() == request
 
 
 @pytest.mark.parametrize("mode", ["--update", "--rollback"])
@@ -555,9 +565,11 @@ def test_recovery_only_completes_recorded_request_without_mutating_its_arguments
     original_request, original_pointer = request_path.read_bytes(), pointer_path.read_bytes()
     (tmp_path / "Atlas.update-state.json").write_bytes(b"recorded transaction")
     monkeypatch.setattr(maintenance, "_handoff_lock", unlocked)
+    monkeypatch.setattr(maintenance, "_wait_for_parent", lambda pid, creation: None)
     calls = []
     monkeypatch.setattr(maintenance, "_transaction", lambda exe, args, outcome: calls.append((exe, args)) or 0)
-    assert maintenance._recover(executable, tmp_path, None) == 0
+    assert maintenance._recover(executable, tmp_path, None,
+                                parent_pid=maintenance.os.getpid() + 1, parent_creation=42) == 0
     assert calls == [(executable, ["-Dest", str(tmp_path), "-Rollback", "-RecoverOnly"])]
     assert request_path.read_bytes() == original_request
     assert pointer_path.read_bytes() == original_pointer
@@ -585,3 +597,138 @@ def test_retirement_preserves_request_changed_or_replaced_after_code_cleanup(tmp
     maintenance._retire_helpers(tmp_path, tmp_path / "next")
     assert helper.is_dir()
     assert request_path.read_bytes() == preserved
+
+
+def test_recovery_receiver_waits_outside_lock_then_verifies_before_transaction(tmp_path, monkeypatch):
+    _helper, executable, _result = bound_helper(tmp_path, monkeypatch)
+    (tmp_path / "Atlas.update-state.json").write_bytes(b"recorded journal")
+    events = []
+    held = [False]
+    caller_pid = maintenance.os.getpid() + 1
+
+    def wait(pid, creation):
+        assert not held[0] and (pid, creation) == (caller_pid, 42)
+        events.append("caller_exited")
+
+    @contextmanager
+    def lock(_root):
+        assert events == ["caller_exited"]
+        held[0] = True
+        events.append("locked")
+        try:
+            yield
+        finally:
+            held[0] = False
+
+    def verified(_root):
+        assert held[0] and "caller_exited" in events
+        events.append("verified")
+
+    def transact(exe, arguments, outcome):
+        assert held[0] and exe == executable and events[-1] == "verified"
+        assert arguments[-1] == "-RecoverOnly"
+        events.append("transaction")
+        return 0
+
+    monkeypatch.setattr(maintenance, "_wait_for_parent", wait)
+    monkeypatch.setattr(maintenance, "_handoff_lock", lock)
+    monkeypatch.setattr(release_contract, "verify_installed_bundle", verified)
+    monkeypatch.setattr(maintenance, "_transaction", transact)
+    assert maintenance._recover(executable, tmp_path, None, parent_pid=caller_pid, parent_creation=42) == 0
+    assert events == ["caller_exited", "locked", "verified", "transaction"]
+
+
+@pytest.mark.parametrize("changed", ["pointer", "request", "dependency"])
+def test_recovery_receiver_refuses_corruption_or_authority_change_during_wait(tmp_path, monkeypatch, changed):
+    helper, executable, _result = bound_helper(tmp_path, monkeypatch)
+    (tmp_path / "Atlas.update-state.json").write_bytes(b"preserved journal")
+    dependency = executable.parent / "runtime.bin"
+    dependency.write_bytes(b"approved runtime")
+
+    def wait(_pid, _creation):
+        if changed == "dependency":
+            dependency.write_bytes(b"changed runtime")
+        else:
+            path = tmp_path / "Atlas.maintenance.json" if changed == "pointer" else helper / "request.json"
+            path.write_bytes(path.read_bytes() + b"\n")
+
+    def verified(_root):
+        if dependency.read_bytes() != b"approved runtime":
+            raise release_contract.PortableReleaseError("runtime checksum mismatch")
+
+    monkeypatch.setattr(maintenance, "_wait_for_parent", wait)
+    monkeypatch.setattr(maintenance, "_handoff_lock", unlocked)
+    monkeypatch.setattr(release_contract, "verify_installed_bundle", verified)
+    monkeypatch.setattr(maintenance, "_transaction", lambda *a: pytest.fail("corrupt recovery state executed"))
+    assert maintenance._recover(executable, tmp_path, None,
+                                parent_pid=maintenance.os.getpid() + 1, parent_creation=42) == 1
+    receipts = list(tmp_path.glob("Atlas.maintenance-result.*.json"))
+    assert len(receipts) == 1 and json.loads(receipts[0].read_text())["status"] == "refused"
+    assert (tmp_path / "Atlas.update-state.json").read_bytes() == b"preserved journal"
+
+
+@pytest.mark.parametrize("pid,creation", [
+    (None, 1), (1, None), (0, 1), (-1, 1), (0x100000000, 1), (1, 0), (1, 0x10000000000000000),
+])
+def test_recovery_parent_identity_pair_rejects_missing_or_out_of_range_values(pid, creation):
+    with pytest.raises(ValueError, match="paired positive"):
+        maintenance._recovery_parent(pid, creation)
+
+
+def test_recovery_parent_identity_never_waits_on_itself():
+    with pytest.raises(ValueError, match="itself"):
+        maintenance._recovery_parent(maintenance.os.getpid(), 42)
+
+
+def test_recovery_parent_flags_refuse_an_active_nonhelper_receiver(tmp_path, monkeypatch):
+    _helper, _original, _result = bound_helper(tmp_path, monkeypatch)
+    (tmp_path / "Atlas.update-state.json").write_bytes(b"journal")
+    active = tmp_path / "Atlas/Atlas.exe"
+    active.parent.mkdir()
+    active.write_bytes(b"active application")
+    monkeypatch.setattr(maintenance, "_wait_for_parent", lambda *a: pytest.fail("wrong receiver waited"))
+    monkeypatch.setattr(maintenance, "_transaction", lambda *a: pytest.fail("wrong receiver executed"))
+    assert maintenance._recover(active, tmp_path, None,
+                                parent_pid=maintenance.os.getpid() + 1, parent_creation=42) == 1
+
+
+@pytest.mark.parametrize("argv", [
+    ["--rollback", "--recover-parent-pid", "1", "--recover-parent-creation", "42"],
+    ["--recover", "unused", "--recover-parent-pid", "1"],
+    ["--recover", "unused", "--recover-parent-creation", "42"],
+])
+def test_hidden_recovery_identity_flags_cannot_be_ignored_or_split(monkeypatch, argv):
+    monkeypatch.setattr(maintenance, "_require_runtime", lambda: None)
+    monkeypatch.setattr(maintenance, "_recover", lambda *a, **kw: pytest.fail("invalid identity dispatched"))
+    assert maintenance.main(argv) == 1
+
+
+def test_recovery_spawn_failure_saves_refusal_without_mutating_original_authority(tmp_path, monkeypatch):
+    helper, executable, _result = bound_helper(tmp_path, monkeypatch)
+    (tmp_path / "Atlas.update-state.json").write_bytes(b"journal")
+    pointer = (tmp_path / "Atlas.maintenance.json").read_bytes()
+    request = (helper / "request.json").read_bytes()
+    monkeypatch.setattr(maintenance, "_handoff_lock", unlocked)
+
+    def fail(*args, **kwargs):
+        raise OSError("synthetic detached recovery failure")
+
+    monkeypatch.setattr(maintenance.subprocess, "Popen", fail)
+    assert maintenance._recover(executable, tmp_path, None) == 1
+    receipts = list(tmp_path.glob("Atlas.maintenance-result.*.json"))
+    assert len(receipts) == 1
+    assert "synthetic detached recovery failure" in json.loads(receipts[0].read_text())["error"]
+    assert (tmp_path / "Atlas.maintenance.json").read_bytes() == pointer
+    assert (helper / "request.json").read_bytes() == request
+
+
+def test_wrapper_recovery_and_update_share_terminal_receipt_wait_with_unchanged_budget():
+    root = Path(__file__).resolve().parents[1]
+    wrapper = (root / "portable/make_stick.ps1").read_text(encoding="ascii")
+    assert '@("--recover", $destRoot, "--maintenance-result", $result)' in wrapper
+    assert "& $commandExe @arguments" in wrapper
+    assert wrapper.index("Wait-MaintenanceResult $result $nonce") > wrapper.index("& $commandExe @arguments")
+    assert wrapper.count("AddMinutes(30)") == 1 and wrapper.count("Start-Sleep -Milliseconds 250") == 1
+    assert '$receipt.nonce -cne $nonce' in wrapper and '$receipt.exit_code -is [int]' in wrapper
+    assert '$receipt.status -ne $(if ($receipt.exit_code -eq 0)' in wrapper
+    assert 'exit ([int]$receipt.exit_code)' in wrapper

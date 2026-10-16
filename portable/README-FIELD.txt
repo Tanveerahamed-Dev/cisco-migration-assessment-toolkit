@@ -411,6 +411,11 @@ wrapper supports explicit -Recover; it must not reinterpret a new update
 as a request to replay an older recorded operation. Recovery completes only
 the recorded interrupted transaction. Inspect its outcome before separately
 requesting any new update or rollback.
+When --recover is launched through the active Atlas.exe, it schedules the
+recorded helper and closes to release its own Windows image handles. As with
+an update, wait for the printed receipt's terminal status and exit_code;
+dispatch exit zero is not completion. The wrapper's -Recover waits for that
+same terminal receipt and returns its actual result.
 If the active executable still exists, Atlas reports "portable maintenance is
 incomplete" and refuses to open a new empty store until recovery is finished.
 Never copy new files over the active Atlas\ tree. The updater verifies and

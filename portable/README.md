@@ -44,6 +44,9 @@ Recovery is explicit: `Atlas.exe --recover ROOT` or the optional wrapper's `-Rec
 A pending journal refuses a new update/rollback; recovery uses the recorded installed-version
 helper and reports its terminal result and failure reason before a new operation is requested.
 It never silently converts a requested new operation into replay of an older request.
+Recovery launched from the active executable detaches the recorded helper and exits
+so Windows can release the caller's image. Its scheduled result still requires the
+fresh terminal receipt; the wrapper's `-Recover` waits for that actual completion.
 An interrupted first journaled `--install` has no installed helper/pointer: retain the
 destination and rerun the same separately extracted, hash-checked bootstrap with the
 same ZIP, published SHA-256 and destination. Only a matching first-install journal
