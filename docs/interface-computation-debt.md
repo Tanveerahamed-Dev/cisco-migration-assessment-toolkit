@@ -409,8 +409,8 @@ Negative controls cover uncovered bundles/entries, absent/conditional gates,
 a changed build or output allowance, and inline computation in a compiled entry.
 Fresh hosted captures and final-head gates remain required.
 
-Initial role metadata, including the mixed comparison correction, is frozen in
-`97813d794f8cb8d61b206ba49a52aa4f9142b8e6`.
+Initial role metadata, including the mixed comparison correction and module-owned
+companion migration, is frozen in `2efe2fd77a1e67ea3c298408141a466e65cf3945`.
 `ORIGIN` pins the initial application fact source; `ROLE_ORIGIN` independently
 pins the reviewed role assignments. The actual detector bytes are bound separately
 in every observation, rather than inferred from the source ceiling revision. The source ceiling
@@ -555,3 +555,5 @@ process-boundary mistakes, not validation. No local test/build/engine or formal
 verification controller was run; nevertheless the standing doctrine also bars
 local custody verification. All closing custody and receipt checks are hosted.
 The complete exact-head gates and the same independent reviewer remain required.
+
+The immutable companion/unchanged-source migration snapshot is `2efe2fd77a1e67ea3c298408141a466e65cf3945`; its role values are compared with literal-assignment snapshot `97813d79` by a hosted control.
