@@ -59,6 +59,9 @@ _RUNNER_JOBS = {
     "engine-output-receipt.yml": {
         "receive": ("Receive engine outputs as review data (manual)", _LINUX_IMAGE),
     },
+    "knowledge-export.yml": {
+        "export": ("Export exact RC7 knowledge for review (manual)", _LINUX_IMAGE),
+    },
     "scale-qualification.yml": {
         "qualify": ("Synthetic 300-device scale budgets (weekly or manual)", _LINUX_IMAGE),
     },
@@ -185,7 +188,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 24
+    assert linux_selectors == 25
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
