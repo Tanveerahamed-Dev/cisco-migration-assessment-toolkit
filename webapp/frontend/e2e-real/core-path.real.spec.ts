@@ -191,6 +191,9 @@ async function ingestSyntheticCollection(page: Page, campaignId: number, label: 
   const meta = JSON.parse(body) as IngestMeta;
   expect(meta.label).toBe(label);
   await page.waitForURL(new RegExp(`/snapshots/${meta.id}$`));
+  // Strangler boundary: prove the new default, then retain the full Classic workflow below.
+  await expect(page.getByRole("region", { name: "Network map", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Classic view", exact: true }).filter({ hasText: "Classic view" }).last().click();
   return meta;
 }
 

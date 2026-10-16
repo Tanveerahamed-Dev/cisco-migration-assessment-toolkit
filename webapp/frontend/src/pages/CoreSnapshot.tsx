@@ -494,6 +494,7 @@ export default function CoreSnapshot() {
     <div className="breadcrumb"><Link to="/campaigns">Campaigns</Link> / Snapshot {id}</div>
     <header className="page-head"><div><h1>{view === "device" ? host ?? "Device" : `Snapshot ${id}`}</h1>
       <p className="sub">Evidence-led migration assessment</p></div><span className="spacer" /><ScopeLink key={sid} sid={sid} />
+      <Link className="btn" to={`/snapshots/${id}${document ? `?${new URLSearchParams({ source: document.identity.sha256, source_bytes: String(document.identity.bytes) })}` : ""}`}>Network workspace</Link>
       <Link className="btn" to={`/snapshots/${id}/tools`}>Tools and downloads</Link></header>
     <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings", "topology"] as const).map((item) =>
       <Link key={item} aria-current={view === item || (view === "device" && item === "inventory") ? "page" : undefined}

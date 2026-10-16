@@ -38,7 +38,8 @@ async function installProjectionRoutes(page: Page, scope: "unavailable" | "refus
 
 test("fifth tab renders engine styles, evidence and a usable path without legacy fetching", async ({ page }) => {
   const observed = await installProjectionRoutes(page);
-  await page.goto("/snapshots/1");
+  // Keep the complete Classic path gate until its native replacement lands.
+  await page.goto("/snapshots/1?view=overview");
   await page.getByRole("link", { name: "Topology & Paths", exact: true }).click();
   await expect(page.getByText("All projected list pages loaded.", { exact: false })).toBeVisible();
   const map = page.getByRole("img", { name: "Engine topology diagram" });

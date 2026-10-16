@@ -1,0 +1,28 @@
+# RC8-P1-G: one Atlas App workspace
+
+The owner-approved target is the existing React app inside the native Atlas window. The six-screen Claude Design prototype is the visual specification. Its topology, names, counters, status statements and example outcomes are illustrative, never engine evidence. Existing theme tokens supply the palette. Small visual refinements may follow without changing this structure.
+
+## Four reviewable increments
+
+1. **Shell and Network foundation:** engagement rail and New assessment placeholder; snapshot selector and Compare/Reports entry; coverage banner; six tabs; default native d3-force topology/cable canvas; search, collection filter, source legend and selection-driven Details panel. Published collection:false nodes are hatched. Unsupported layers/colour overlays stay visibly unavailable until the engine contract exists. Preserve Classic workflows and their tests through explicit Classic view links.
+2. **Network investigation tools:** five tools in the same panel: Details, If this fails, Path, Endpoint, VLAN. Read device failure_impact, project_path, project_inventory endpoint summaries and stored G14 vlan_carriage/2 through its projection. Label route-model scope, missing identity populations and lower bounds; never imply live traffic/ACL proof or a complete multi-MAC lookup. Evidence stays beside the investigation. Engine-owned map overlays require an exact published join/style contract first.
+3. **Findings and Inventory:** severity chips use project_findings facets without client recounting. Retain owner lower-bound semantics, issue/remediation evidence and paging. Show on map navigates through published identity-bound joins. Inventory subviews use project_inventory, retain Not collected states and device/source evidence. Move the corresponding full browser assertions to the replacement in this same PR before retiring the Classic routes.
+4. **Plan, Change and Reports:** integrate design, move groups and saved plans (#666/#667), then MOP/runbook, the single engine wave decision, NRFU and before/after comparison. Reports lists the authoritative deliverable catalogue. Preserve creation/ingest/execution/immutable comparison receipt and document custody gates as each route moves. No browser gate verdict, readiness census, eligibility inference or progress calculation substitutes for an engine-owned fact.
+
+## Strangler boundary
+
+PR1 changes the default snapshot entry. Explicit `?view=...` routes, Tools, campaigns, execution and the original landing screen continue to render the same Classic React components. The native header enters Classic Overview and preserves source identity parameters. The Classic header returns to Network. Native engagement records avoid old summary KPIs.
+
+The existing Core and path browser gates enter their already supported explicit `?view=overview` URL; every functional assertion is retained. The real-backend ingest gate additionally proves the native default and follows Classic view before its unchanged complete workflow walk. Scope/Explorer gates and screens remain until RC8-P1-H PR4 retires both under ADR 0008. No new iframe or Explorer/Scope link is added to Network.
+
+## Source and evidence admission
+
+Topology pagination retains the existing row/page/draw budgets and exact immutable source/engine binding. Node selection uses the engine's exact row and published host. Cable-to-node joins use only published row references. Device and trust child views must match parent snapshot identity and engine; their own limitation registries remain authoritative. Cancellation, stale-response refusal, retry and bounded requests protect source changes. Compact Info controls retain Published, evidence addresses, basis and qualifications in a keyboard-accessible drawer; withheld reasons and lower bounds remain visible.
+
+Requested from RC8-P1-H: topology overlay presentation/join contracts and per-node coverage; a complete MAC/IP lookup beyond per-port endpoint summaries; stranded endpoint identities. Current owner confirmation says these are not yet published. Do not manufacture them or copy prototype outcomes such as an ACL-clear path.
+
+## Acceptance and custody
+
+GitHub runs every runtime test and build. Do not run local suites, browsers, builds, engine probes or receipt verification. Rule-7 tree privacy and complete new-commit marker scans precede every push. The source producer, reviewed hosted distribution receiver and post-import byte proof must bind the exact source. Require all15 protected contexts and complete applicable workflows on the final head, then stop for independent review. Golden/sample bytes, budgets, gates and existing assertions stay intact. No merge, installation or release is authorized.
+
+The closed #669 iframe experiment is superseded. Its source/artifacts cannot qualify this branch; useful unverified WIP is retained only in its local checkpoint.
