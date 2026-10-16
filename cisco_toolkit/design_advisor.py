@@ -4166,6 +4166,36 @@ REQUIREMENTS_AVAILABILITY_TIERS = ("gold", "silver", "bronze")
 REQUIREMENTS_FABRIC_MODELS = ("nxos-evpn", "aci")
 REQUIREMENTS_VLAN_MIN = 1
 REQUIREMENTS_VLAN_MAX = 4094
+PLAN_SECTION_KEYS = frozenset({"requirements_register", "design_blueprint", "design_nrfu"})
+
+
+def derive_plan_sections(snapshot, requirements, *, profile, compute_blueprint=None,
+                         compute_nrfu=None, requirements_published=None):
+    """Publish the one requirements -> blueprint -> NRFU sequence into a caller-owned copy.
+
+    ``assessment`` preserves the CLI's absent-empty register policy and reports a supplied
+    register through its existing logging callback before computing the blueprint.
+    ``saved_plan`` always publishes the selected register, including an explicit empty one.
+    Both profiles propagate errors; the CLI owns its historical fail-soft boundary, while
+    saved-plan admission refuses a failed derivation. Assessment-only coverage, integrity,
+    lineage and census remain in the CLI and are never recomputed by this plan producer.
+    Optional compute injections preserve the CLI's existing monkeypatch sites.
+    """
+    if profile not in {"assessment", "saved_plan"}:
+        raise ValueError("Unsupported plan derivation profile")
+    if profile == "assessment" and requirements_published is None:
+        raise ValueError("Assessment plan derivation requires a requirements publication callback")
+    register = requirements or {}
+    if register or profile == "saved_plan":
+        snapshot["requirements_register"] = register
+    if register and profile == "assessment":
+        requirements_published(register)
+    if compute_blueprint is None:
+        compute_blueprint = compute_design_blueprint
+    if compute_nrfu is None:
+        compute_nrfu = compute_design_nrfu
+    snapshot["design_blueprint"] = compute_blueprint(snapshot, register or None)
+    snapshot["design_nrfu"] = compute_nrfu(snapshot["design_blueprint"])
 
 
 def requirements_contract():

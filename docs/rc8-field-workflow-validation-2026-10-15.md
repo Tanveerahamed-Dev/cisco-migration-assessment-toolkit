@@ -286,3 +286,59 @@ fresh hosted API observation, reviewed source-bound SPA import/receiver, all15 r
 equivalents and all applicable whole workflows are still required on the revised source. Runtime
 closure is not verified here. Stop for independent review; no merge, version/release cut, signing,
 physical field qualification or publication is authorized. All14 external gates remain pending.
+
+## Generated-contract bootstrap failures and architecture follow-through
+
+On B2cde, tested merge c3cb790c has ordered parents fb6acc0e and2cde2417, treeb46db0b7.
+Portable run38872276159/job116879139954 fails step7, pinned npm/frontend rebuild, at08:20:31Z:
+api.ts cannot import generated designRequirementsContract/DesignRequirements. SavedPlan.tsx also
+reports unknown-value and implicit-any tier/model diagnostics; those may cascade but remain
+unclosed until a fresh post-import compiler succeeds. No frozen build or ZIP is produced. Its full
+46,075-byte log has SHA-256 cc37836b8ca4bfb14820e96c0fd27140faefb5790f2cb6f3e84fb9449aa152c4.
+Backend job116880486297 fails the Scope hub build at08:21:41Z on the same missing exports;
+backend pytest is not reached. Its55,213-byte log has SHA-256
+e474155ff22c5e0666193db26393e529ae260bb62a000da22e099c94430d248f.
+Visual116880486340 fails its type check before comparisons (34,922 bytes, SHA-256
+b1addcf46d76094a4074e2e7592cd50b8a11e73aaa8100629bb698c5de5602e7).
+Real-browser116880486320 cannot start its server, so no specs/native journey run (82,159 bytes,
+SHA-256 4fb3054f4f26c397350ec27bdf374e4dbfe203f8d00ccbc50f27eba258109746).
+These are actual failed gates. They are not waived or labelled backend/browser passes.
+
+Reference run38872276228/job116878929631 separately fails exact-tree compilation at08:34:10Z
+on undeclared canonical_snapshot-to-design_intelligence/governance dependencies from the shared
+helper in ssot.py. Its75,088-byte EOF log has SHA-256
+0c6b72937d9eeacd8680ca83439f99bd4b5752db27c889a2546e00645f7ba62a.
+Capacity then refuses21 unmeasured walls from absent downstream receipts, with zero measured
+walls at95%: this is not a measured budget breach. Foundation0b48a64a corrects ownership by moving
+the complete common requirements/blueprint/NRFU prefix to design_advisor.derive_plan_sections and
+restoring assessment-only CLI blocks. ssot.py returns byte-exactc95; no dependency exception,
+new module or ceiling change is introduced. All twelve failure/order cases are retained using
+actual CLI blocks in hosted pytest, alongside full in-process wiring and original negative controls.
+
+The old c95 source job116844806054 succeeds at07:49:56Z (132,819-byte raw log, SHA-256
+cfb80699885b31e8c8e4f4064269da2ec265cf72565998eb69525d89f95f753b): Python reaches100%
+without a printed aggregate, then frontend38files/537tests/build/dist equality pass. Its later
+Coverage116845086939 and Linux3.12 job116845087164 are superseded by the genuine fb6 push and
+cancel at08:07:37Z/08:07:26Z, last93%/99%. Their logs are100,022/163,322 bytes, SHA-256
+41ddda0302d98ca70c1159a17e40bac4bec55f914a068b6fbd8478e0a4df2d2b and
+7bfc1f0908cfe18640d6fe352f96b0f17d8b64837d5e597de90f4896c2cc8aa2. Linux's sample step
+is skipped; neither has a final passing aggregate. Old B46 source116849155875 is superseded by
+the2cde push and cancels at08:14:10Z, last81%, with no aggregate/frontend completion; full104,110-byte
+log SHA-256 c0261af97e84f2ed70c79de5e14dbdaba85068b529ff42215e3af3c6a546c94e. These are
+cancellations, not inferred timeouts or passes. All remain supervisor-refuted historical controls.
+
+The ordinary B2cde schema observation is pinned to c3cb790c/basefb6 and its independently frozen
+1,836-file Git ledger. Any eventual artifact remains old-base source-edit data. It must not be
+relabelled as a new-source receipt after the foundation advances. Only an independently reviewed
+canonical openapi.ts may be imported, followed by fresh exact-source generation/build, complete
+165-file frontend inputs, SPA producer/receiver and all15/applicable whole/native/frozen gates.
+Nothing in this record establishes current readiness, approval, qualification or release authority.
+
+The genuine0b48 corrective push also supersedes fb6's incomplete source/matrix/Coverage work.
+Five started-job EOF logs are retained; three cancelled matrix jobs have no steps/runner and their
+one terminal log request returns404, so no runnable evidence is invented. Last source/Windows/
+Linux3.12/Python3.13/Coverage progress is65%/18%/1%/32%/35%. Windows' partial3,640 passed/
+4 skipped is followed by interruption, not a completed suite. Explicit higher-priority CI/portable
+annotations support supersession, not timeout. The separate negative-closure record has SHA-256
+19367b22972469ebcced9c98cd71552f9319ec7c005f2324d9e443d4fa7b0d1b; the earlier Reference
+architecture failure remains an independent failed gate. None transfers to0b48 readiness.

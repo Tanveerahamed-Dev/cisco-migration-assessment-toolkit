@@ -1385,7 +1385,7 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
     "webapp/backend/app.py": "b67333da3d8ef2d90caf17641b73aa5dfbf506c4",
-    "webapp/backend/deliverables.py": "2b2f6a8daa41cb21d6b9bfab14601ea7082c07d3",
+    "webapp/backend/deliverables.py": "2934411b5768c67c2a78a35176d7f1c638d1b9fb",
     "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {

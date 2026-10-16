@@ -69,12 +69,15 @@ unknown evidence, schema census, fact lineage and executive brief retain their s
 basis; saving a plan does not recompute or promote them. Projection/derivation profile `/2` refuses
 older profiles and additional observed sections, even when an envelope has been rehashed.
 
-The CLI and saved-plan preparation share the late-derivation owner in `cisco_toolkit.ssot`. Its
-saved-plan profile derives requirements, blueprint and design NRFU in that order; the assessment
-profile continues through the existing observed companions and disclosure callbacks. Existing
-assessment failure labels, fail-soft boundaries and output order remain intact. Render-time SSOT
-integrity disclosure remains active on an isolated writer copy and preserves original failures;
-it does not rewrite the persisted assessment or turn inherited failures into a successful phase.
+The CLI and saved-plan preparation share their complete planning prefix through
+`cisco_toolkit.design_advisor.derive_plan_sections`: requirements, blueprint and design NRFU, in
+that order. The saved-plan profile publishes an explicit empty register; assessment preserves the
+original absent-register behavior. Assessment-only architecture/coverage, unknown evidence,
+audit/summary/integrity and census/lineage/recensus/workbook publication remain exclusively in the
+CLI, in their original order and four fail-soft boundaries. The canonical SSOT owner remains a
+read-only fact reader. Render-time SSOT integrity disclosure remains active on an isolated writer
+copy and preserves original failures; it does not rewrite the persisted assessment or turn an
+inherited failure into a successful phase.
 
 The engine's requirements contract also owns saved-plan list fields, option values and VLAN bounds.
 The actual OpenAPI schema exposes it, and the existing hosted generator emits its runtime metadata
@@ -195,7 +198,7 @@ was duplicated in a different order, sidecar membership and requirements domains
 owners, and two SSOT rows did not distinguish assessment and saved-plan bases. Earlier green
 jobs and package receipts remain evidence for their exact sources, not closure of these findings.
 
-The correction limits the saved projection to its three owned sections, shares the late pipeline,
+The correction limits the saved projection to its three owned sections, shares the complete planning prefix,
 centralizes sidecar membership and generates the UI requirements contract from its engine owner.
 SSOT rows for assessment headline facts and stored design decisions now point to the saved-plan
 owner row for the selected-plan basis. New hostile drift/profile/writer-isolation and metadata
@@ -205,7 +208,25 @@ The generated contract must come from the hosted observation; no local generator
 Independent review follows those gates. No PR merge, release cut or publication is authorized.
 
 Static follow-through also finds the existing registry producer-key guard still searches only
-the CLI and analysis module. Its source closure now includes only the unique shared helper body,
+the CLI and analysis module. Its source closure now includes only the unique shared planning helper body,
 after verifying the CLI calls that owner exactly once with `snap_dict` and the assessment profile.
 Every existing required key and assignment assertion remains. This ownership adaptation requires
 fresh hosted execution along with the original in-process pipeline and golden/sample checks.
+
+## Hosted architecture refusal and owner correction (2026-10-16)
+
+Foundation fb6acc0e Reference run38871468415/job116876310326 fails exact-tree compilation:
+`edge:3129:undeclared:canonical_snapshot->design_intelligence`, plus edges3134/3135 from
+canonical_snapshot to governance. The helper's placement in ssot.py introduced forbidden reverse
+dependencies. Its full75,089-byte log has SHA-256
+`a95f4e3a5c1aa5671bbdafdd54dd2dd92b246494b4dd119b7b249b7ea13a663b`.
+The capacity step then refuses21 unmeasured walls because compiler/downstream receipts are absent;
+zero measured walls exceed95% and none lie between85% and95%. This is not a measured capacity breach.
+
+The correction moves the entire shared three-section planning prefix to its existing design owner
+and restores the assessment-only blocks to their original CLI location/order/boundaries. It adds no
+module, reverse-dependency exception or architecture allow-list entry. The dependency policy,
+compiler gate and every capacity ceiling remain unchanged. Existing hostile observation/profile/
+writer-isolation controls remain, while shared-prefix and actual CLI order/failure tests bind the
+corrected ownership. Fresh exact-source Reference, runtime, golden/sample and all15 gates must pass;
+prior bounded static review and old successful jobs did not close this architectural failure.

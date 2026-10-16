@@ -58,25 +58,20 @@ def test_empty_multichassis_producer_is_not_published_as_runtime_support():
 
 
 def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch):
-    from cisco_toolkit import ssot
+    from cisco_toolkit import design_advisor
 
     late_calls = []
-    original_late = ssot.derive_late_snapshot_sections
+    original_late = design_advisor.derive_plan_sections
 
     def counted_late(snapshot, requirements, **kwargs):
         assert kwargs["profile"] == "assessment"
         assert kwargs["compute_blueprint"] is cp.compute_design_blueprint
         assert kwargs["compute_nrfu"] is cp.compute_design_nrfu
-        assert kwargs["compute_architecture"] is cp.compute_architecture_coverage
-        assert kwargs["compute_coverage"] is cp.compute_coverage_matrix
-        assert kwargs["compute_unknown"] is cp.compute_unknown_evidence
-        assert kwargs["unknown_unavailable"] is cp.unavailable_unknown_evidence
-        assert kwargs["record_phase_failure"] is cp._record_phase_failure
-        assert kwargs["record_integrity_failure"] is cp._record_ssot_integrity_failure
+        assert callable(kwargs["requirements_published"])
         late_calls.append(snapshot)
         return original_late(snapshot, requirements, **kwargs)
 
-    monkeypatch.setattr(ssot, "derive_late_snapshot_sections", counted_late)
+    monkeypatch.setattr(design_advisor, "derive_plan_sections", counted_late)
     collection = fx.write_collection(str(tmp_path / "collection"))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")

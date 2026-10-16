@@ -5492,23 +5492,83 @@ def main():
         "Traffic Assurance sheet", write_traffic_assurance_sheet, wb,
         snap_dict.get("traffic_assurance"),
     )
-    # One late-phase owner for CLI assessment assembly and the bounded saved-plan profile.
-    # Pass the CLI globals explicitly: existing monkeypatches, failure/integrity callbacks,
-    # workbook publication and the historical assessment phase order remain unchanged.
-    from cisco_toolkit import ssot as _ssot
-    _ssot.derive_late_snapshot_sections(
-        snap_dict, _validated_inputs.get("requirements"), profile="assessment",
-        compute_blueprint=compute_design_blueprint,
-        compute_nrfu=compute_design_nrfu,
-        compute_architecture=compute_architecture_coverage,
-        compute_coverage=compute_coverage_matrix,
-        compute_unknown=compute_unknown_evidence,
-        unknown_unavailable=unavailable_unknown_evidence,
-        logger=logger,
-        record_phase_failure=_record_phase_failure,
-        record_integrity_failure=_record_ssot_integrity_failure,
-        publish_schema=lambda census: write_coverage_schema_sheet(wb, census),
-    )
+    # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
+    # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
+    # the design DOCX / explorer / webapp all read ONE blueprint instead of re-deriving design intent. It
+    # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
+    # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
+    try:
+        from cisco_toolkit import design_advisor as _design_advisor
+        _design_advisor.derive_plan_sections(
+            snap_dict, _validated_inputs.get("requirements"), profile="assessment",
+            compute_blueprint=compute_design_blueprint,
+            compute_nrfu=compute_design_nrfu,
+            requirements_published=lambda register: logger.info(
+                f"  [design] requirements register supplied ({', '.join(sorted(register))}) -> blueprint right-sized"),
+        )
+        # Architecture-coverage SSOT: which architecture CLASSES were observed vs not, and what fired -- one
+        # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
+        # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
+        snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
+        # Coverage matrix (Plan-A #5): compose the four coverage sources -- collection / capture / parse /
+        # architecture -- into ONE per-(device, axis) first-class table (recomputes no device state, just
+        # projects the published verdicts). Reads architecture_coverage above, so it inherits the
+        # blueprint's date-relativity -> excluded from the golden + publish-locked alongside it.
+        snap_dict["coverage_matrix"] = compute_coverage_matrix(snap_dict)
+    except Exception as e:                                            # fail-soft: never break the snapshot write
+        logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
+        _record_phase_failure("Design blueprint", f"{type(e).__name__}: {e}")
+    # Governed unknown-evidence queue: aggregate only the parser/coverage/architecture diagnostics
+    # already published above. The owner discards raw device names, paths, command payloads and unknown
+    # tokens; events remain candidate classifications / needs-triage, never support verdicts. Keep this
+    # in its own fail-soft boundary so a design-coverage failure still yields an honest partial queue,
+    # and an aggregate failure still publishes the canonical unavailable shape rather than disappearing.
+    try:
+        snap_dict["unknown_evidence"] = compute_unknown_evidence(snap_dict)
+    except Exception as e:
+        logger.warning(f"  unknown-evidence aggregation failed (non-fatal): {e}")
+        snap_dict["unknown_evidence"] = unavailable_unknown_evidence()
+        _record_phase_failure("Unknown evidence", f"{type(e).__name__}: {e}")
+    # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
+    # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
+    # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose
+    # it via the existing assessment_integrity channel (which the deck/explorer already surface) +
+    # an [INTEGRITY] warning. A clean run stamps nothing -> no false alarm, no golden churn. (ssot.audit)
+    try:
+        from cisco_toolkit import ssot as _ssot
+        _ssot_drift = _ssot.audit(snap_dict)
+        # Positive self-verification badge for the dashboards (golden-excluded with executive_brief):
+        # an always-present client-facing trust signal that the published headline facts were
+        # reconciled to the raw evidence, distinct from the drift-only assessment_integrity channel.
+        if isinstance(snap_dict.get("executive_brief"), dict):
+            snap_dict["executive_brief"]["ssot"] = _ssot.summary(snap_dict)
+        if _ssot_drift:
+            _record_ssot_integrity_failure(snap_dict, _ssot_drift)
+    except Exception as e:                                            # fail-soft: a self-check must never break the write
+        logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
+        _record_phase_failure("SSOT self-check", f"{type(e).__name__}: {e}")
+    # J3 + J2: coverage-schema census + fact-lineage — the coverage-honesty doctrine made QUERYABLE.
+    # Both are computed HERE, from the fully-assembled snap_dict (so the census sees every section and
+    # the lineage reads the final canonical blocks), reusing the SSOT contract (abstention_reason /
+    # CANONICAL_FACTS) rather than a parallel one. schema_census is presence/absence + structural shape
+    # only -> non-volatile -> golden-stable; fact_lineage embeds the date-relative headline VALUES, so
+    # it is golden-EXCLUDED (stripped like executive_brief/lifecycle_risk) and pinned in its own test.
+    try:
+        from cisco_toolkit import ssot as _ssot2
+        snap_dict["schema_census"] = _ssot2.compute_schema_census(snap_dict)   # per-section coverage map (SuzieQ `describe` analog)
+        snap_dict["fact_lineage"] = _ssot2.compute_fact_lineage(snap_dict)      # attribute-level provenance for the canonical facts
+        # The census self-describes the FINAL snapshot; the two keys it adds above (schema_census /
+        # fact_lineage) are themselves absent from the map it computed, so re-census once so the
+        # published census is complete + self-consistent with the JSON it ships in (one source of truth).
+        snap_dict["schema_census"] = _ssot2.compute_schema_census(snap_dict)
+        # Coverage Schema sheet: the workbook twin of the census. It is added only after the
+        # fully-assembled snap_dict exists; the finalizer publishes the workbook after all late
+        # integrity state is synchronized. It carries only section names/states/counts/notes —
+        # no IP/MAC/serial — so it is share-safe under --redact without a further scrub.
+        write_coverage_schema_sheet(wb, snap_dict["schema_census"])
+    except Exception as e:                                            # fail-soft: census/lineage must never break the write
+        logger.warning(f"  schema-census / fact-lineage skipped (non-fatal): {e}")
+        _record_phase_failure("Schema census / fact lineage", f"{type(e).__name__}: {e}")
     # roadmap A1/H2: opt-in state-assertion check-pack (--assert-pack FILE), evaluated over the FULL snapshot
     # (coverage-honest: a subject that was not collected -> [NOT OBSERVED], excluded from the pass/fail denominator).
     if args.assert_pack:
