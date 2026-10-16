@@ -358,6 +358,7 @@ Mixed modules remain interface and their detections remain visible debt:
 | `cisco_toolkit/html.py`, `cisco_toolkit/excel.py`, `cisco_toolkit/deck.py` | RC8-P1-H PR-3: move fact helpers to engine owners; keep rendering interface |
 | `COLLECT_PARSE_V3_23_0.py` | RC8-P1-H follow-up `CLI fact assembly extraction`: separate fact assembly from collection/report orchestration |
 | `webapp/backend/engine.py` | RC8-P1-H follow-up `AssessHub engine adapter extraction`: move fact/view ownership out of the renderer adapter |
+| `cisco_toolkit/comparison.py` | RC8-P1-H PR-3 / follow-up `Comparison fact-owner extraction`: move delta and cutover fact helpers out of `html.py`; preserve the canonical comparison composer |
 | `cisco_toolkit/attestation.py` | RC8-P1-H follow-up `Attestation registry input extraction`: remove the dynamic CLI import used to derive command claims |
 | `cisco_toolkit/archreview.py`, `design.py`, `mop.py`, `crd.py`, `engagement.py`, `runbook.py`, `ops.py` | RC8-P1-H PR-2/PR-3 and follow-up `Document fact helper extraction`: separate mixed planning/fact helpers from their writers |
 | `webapp/backend/summary.py`, `graph.py`, `cutover.py` | RC8-P1-H PR-1/PR-2: remove audited local facts; adapter remains interface |
@@ -442,3 +443,14 @@ engine role independently of libraries. Controls prove both the valid engine
 reader and missing/false/dynamic read-only flags, saves, escapes and constructors.
 No filename exception, role downgrade, production calculation or existing
 refusal assertion changes. No capture/admission is claimed from this failed run.
+
+
+Head `20f025a9`, CI `38971719812`, Linux 3.12 job `117211579325`,
+passes **660** artifact controls and **209 synthetic controls / 3 deselected**,
+then the engine direction check refuses `comparison.py -> html.py`. This is a
+real mixed dependency: `compare_bound_pair` calls `_html.compute_snapshot_delta`
+and `_html.compute_cutover_gate`. The owner-approved initial role correction
+keeps `comparison.py` interface until its named fact-owner extraction; those
+computations enter the register instead of gaining an engine exception. The
+initial role basis is repinned to include this correction. No function body or
+fact value changes, and this failed census supplies no admission evidence.

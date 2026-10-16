@@ -11,7 +11,7 @@ source-binding receipts.  This layer neither reads storage nor invents source cu
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
 
 
 from typing import Any, Dict, List, Optional
