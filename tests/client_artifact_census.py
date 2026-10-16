@@ -1384,9 +1384,9 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/pages/Snapshot.tsx": "a15c2317b74338c001ec843aaf1d9754fc7784f1",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
-    "webapp/backend/app.py": "28b0f69d4630af2768338404c0b7592cf30a6d49",
-    "webapp/backend/deliverables.py": "9fee1565062f00c52b85e209ae173239e229ad30",
-    "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
+    "webapp/backend/app.py": "b67333da3d8ef2d90caf17641b73aa5dfbf506c4",
+    "webapp/backend/deliverables.py": "2b2f6a8daa41cb21d6b9bfab14601ea7082c07d3",
+    "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {
     ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
