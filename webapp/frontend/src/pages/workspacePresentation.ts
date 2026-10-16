@@ -1,4 +1,4 @@
-import type { InvestigationTool } from "../components/InvestigationPanel";
+import type { InvestigationTool } from "./workspace/InvestigationPanel";
 
 // Provisional presentation configuration while the consolidated product concept is prepared.
 // No request, projection ownership, analysis result or selection lifetime depends on this list.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router";
-import { api, type AppIdentity, type Campaign } from "../api";
-import { useViewTransition } from "./ui";
+import { api, type AppIdentity, type Campaign } from "../../api";
+import { useViewTransition } from "../../components/ui";
 
 export function AtlasRail({ app }: { app: AppIdentity | null }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);

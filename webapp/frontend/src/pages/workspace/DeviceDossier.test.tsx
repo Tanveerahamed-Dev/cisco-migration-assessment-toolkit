@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deviceFixture, published, topologyFixture } from "../test/projectionFixtures";
+import { deviceFixture, published, topologyFixture } from "../../test/projectionFixtures";
 import { DeviceDossier, requireDossierContext } from "./DeviceDossier";
 
 const json = (value: unknown) => new Response(JSON.stringify(value));

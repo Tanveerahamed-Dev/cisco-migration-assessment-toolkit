@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { equalJson, loadProjection, ProjectionContextError, sameIdentity, type Fact, type Projection, type ViewDocument } from "../projection";
-import { EvidenceProvider, FactView } from "../pages/core/NativeEvidence";
-import { NativeProjectionList as ProjectionList } from "../pages/core/NativeProjectionList";
+import { equalJson, loadProjection, ProjectionContextError, sameIdentity, type Fact, type Projection, type ViewDocument } from "../../projection";
+import { EvidenceProvider, FactView } from "../core/NativeEvidence";
+import { NativeProjectionList as ProjectionList } from "../core/NativeProjectionList";
 import "./deviceDossier.css";
 
 export interface DeviceDossierProps {

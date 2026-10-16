@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, type Campaign, type Summary } from "../api";
+import { api, ApiError, type Campaign, type Summary } from "../../api";
 import { AtlasRail } from "./AtlasRail";
 
 const campaign = (id = 7, name = "Synthetic assessment"): Campaign => ({

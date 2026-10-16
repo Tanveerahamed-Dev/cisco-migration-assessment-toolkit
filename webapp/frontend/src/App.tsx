@@ -13,7 +13,7 @@ import { api, ApiError } from "./api";
 import type { AppIdentity } from "./api";
 import SnapshotWorkspace from "./pages/SnapshotWorkspace";
 import Engagements from "./pages/Engagements";
-import { AtlasRail } from "./components/AtlasRail";
+import { AtlasRail } from "./pages/workspace/AtlasRail";
 import "./pages/snapshotWorkspace.css";
 
 function useTheme() {
