@@ -64,7 +64,7 @@ calculations: an entry is an exact legacy footprint, not an assertion that every
 length check is a network fact. This does not prove arbitrary program semantics
 or eliminate the independent review requirement.
 
-Version 2's source/role ceiling is initial assignment `7117ca872198c412ff664f0b32d715aaac3bd3ab` (foundation main `5f1e067c` plus this PR's guard, role metadata and build-equality gate). This explicitly widens
+Version 2's source ceiling is initial boundary `cb9bee1840dd29dfffc5bfefc697dcd62dbb82ca` (foundation main `5f1e067c` plus this PR's guard, role metadata and build-equality gate). This explicitly widens
 the proposed v1 footprint and changes lexical identities; its before/after counts
 must be disclosed with the hosted admission evidence. This permission applies
 only to the still-unmerged PR-0 proposal, not future feature exemptions.
@@ -372,36 +372,40 @@ These named follow-ups are scope records, not new active branches or build strea
 Every browser entry document, including checked-in compiled HTML, remains
 inspected for inline/event/URL computations. The only covered generated tree is
 `webapp/frontend/dist/`. Its imported minified modules are excluded from debt
-identities only through `.github/workflows/webapp-ci.yml`, frontend job, step
-**Verify checked-in SPA equals the source-bound build**. That step calls
-`.github/scripts/frontend_build_handoff.py verify-committed`, after the existing
-**Bind immutable frontend inputs before the SPA build**, `npm run build`, and
-**Verify privacy and capture the generated SPA for review**. The prior handoff
-proved source binding but did not compare checked-in output; this PR strengthens
-it with complete Git/build/captured member equality and per-member byte equality.
-All existing build, privacy and receiver gates remain. Capture is preserved before
-the comparison so a stale checked-in tree has reviewable hosted regeneration
-input rather than a waived failure. No local build or regeneration is allowed.
+identities only through the existing required **Distribution contract** job in
+`.github/workflows/ci.yml`. Its steps **Capture the immutable source identity**,
+**Rebuild the bundled AssessHub SPA**, and **Prove the SPA build reproduced the
+immutable source** bind the commit/tree, install the locked source dependencies,
+run frontend tests/build, and execute `.github/scripts/verify_checkout_immutable.py`.
+The verifier compares every tracked file's mode and bytes against immutable HEAD,
+requires index/tree equality, and refuses all unapproved untracked output,
+including ignored output. Only `webapp/frontend/node_modules` is exempted as an
+installation tree; compiled output is not allowlisted. Thus extra, removed or
+changed compiled members fail, including an out-of-project source helper changed
+during the build. Its existing refusal controls are in
+`tests/test_verify_checkout_immutable.py`; no verifier or gate is weakened.
 
-The guard checks this named gate is present, unconditional and ordered after the
-bound build. Any checked-in executable under another `dist`, `dist-hub`, `build`
-or `.next` tree fails closed as uncovered; new roots require a reviewed byte gate.
-Third-party bundle contents rely on the scanned source's locked dependency
-terminal rule; compiled third-party identities never enter the shrink-only
-register. Negative controls cover uncovered bundles/entries, gate removal or
-conditional execution, complete inventory/byte mismatches, and inline computation
-in a compiled entry. Fresh hosted captures and final-head gates remain required.
+The existing **Full source and frontend gate (unprivileged runner)** and
+**Build and qualify Atlas.exe** in `.github/workflows/portable-release.yml` also
+rebuild the tracked SPA and compare it with Git on Windows. These are additional
+required evidence; the computation guard's mechanical compiled exclusion relies
+on Distribution contract's stricter complete checkout inventory proof. No new
+build job, frontend build policy or handoff protocol is introduced here.
 
+The guard requires that named job/proof to be unconditional, after the immutable
+identity capture and locked source build, with only its existing node_modules
+installation allowance. Missing/conditional proof, changed build/source binding
+or allowing compiled output refuse. Any checked-in executable under another
+`dist`, `dist-hub`, `build` or `.next` tree fails as uncovered; new roots require a
+reviewed source-to-dist gate. Third-party bundle contents follow the source's
+package-lock terminal rule. Their minified identities never enter the register.
+Negative controls cover uncovered bundles/entries, absent/conditional gates,
+a changed build or output allowance, and inline computation in a compiled entry.
+Fresh hosted captures and final-head gates remain required.
 
-The initial role metadata, detector boundary and compiled-byte gate are frozen in
-`7117ca872198c412ff664f0b32d715aaac3bd3ab`. `ORIGIN` and `ROLE_ORIGIN` pin that reviewed
-source for the initial v2 ceiling. The old foundation source predates role
-metadata, so using it directly would mistake newly authored CI computations for
-legacy product debt or infer future roles. This initial ceiling changes no
-engine-owned values or golden/sample bytes. After admission every active v2
-ancestor still constrains the register, with all merge parents retained.
-
-The source-bound build also refuses tracked modifications outside the generated
-SPA and nonignored untracked repository inputs, so an out-of-project imported
-helper cannot evade the before/after source binding. Its refusal controls run in
-the early matrix step alongside the detector controls, before census admission.
+Initial role metadata is frozen in `7117ca872198c412ff664f0b32d715aaac3bd3ab`.
+The complete class boundary is pinned by `ORIGIN` before its hosted capture;
+`ROLE_ORIGIN` independently pins the reviewed role assignments. The source ceiling
+contains the foundation code, role metadata and this CI guard; engine-owned
+values and golden/sample bytes remain unchanged. After admission every active v2
+ancestor constrains the register, with all merge parents retained.

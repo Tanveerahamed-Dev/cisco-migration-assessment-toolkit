@@ -51,15 +51,8 @@ def build(tmp_path, monkeypatch):
         if command[0] == "npm":
             return b"11.16.0\n"
         assert command[0] == "git"
-        if command[1] == "diff":
-            return b""
-        if command[1] == "ls-files" and "--others" in command and "webapp/frontend" not in command:
-            return b""
         if command[1] == "rev-parse":
             return ("a" * 40 if command[2] == "HEAD" else "b" * 40).encode()
-        if command[1] == "ls-tree" and "--name-only" not in command:
-            return ("\0".join("100644 blob " + "c" * 40 + "\t" + path for path in paths
-                              if path.startswith("webapp/frontend/dist/")) + "\0").encode()
         if command[1] == "cat-file":
             data = committed[command[3].removeprefix("HEAD:")]
             return str(len(data)).encode() if command[2] == "-s" else data
@@ -311,65 +304,3 @@ def test_helper_and_privacy_guard_changes_engage_the_existing_hosted_job():
     upload = workflow.index("name: Preserve the source-bound SPA build handoff", after)
     assert before < build < after < upload
     assert "permissions:\n  contents: read" in workflow
-
-
-
-def _commit_synthetic_bundle(build):
-    name = "webapp/frontend/dist/assets/app.js"
-    build.paths.append(name)
-    build.indexed.append(name)
-    build.committed[name] = (build.root / name).read_bytes()
-
-
-def test_checked_in_dist_gate_compares_the_complete_bound_build(build):
-    _commit_synthetic_bundle(build)
-    build.run("before")
-    build.run("after")
-    build.run("verify-committed")
-
-
-@pytest.mark.parametrize("mutation", ["tracked-byte", "missing-tracked", "extra-tracked", "generated-byte", "captured-byte"])
-def test_checked_in_dist_gate_refuses_changed_missing_extra_or_unbound_bytes(build, mutation):
-    _commit_synthetic_bundle(build)
-    build.run("before")
-    build.run("after")
-    asset = "webapp/frontend/dist/assets/app.js"
-    if mutation == "tracked-byte":
-        build.committed[asset] = b"different checked-in bundle"
-    elif mutation == "missing-tracked":
-        build.paths.remove(asset)
-    elif mutation == "extra-tracked":
-        build.paths.append("webapp/frontend/dist/assets/uncovered.js")
-    elif mutation == "generated-byte":
-        (build.root / asset).write_bytes(b"different generated bundle")
-    else:
-        (build.target / "dist/assets/app.js").write_bytes(b"different captured bundle")
-    with pytest.raises(ValueError, match="compiled (inventory|bytes)"):
-        build.run("verify-committed")
-
-
-
-def test_build_binding_refuses_a_changed_helper_outside_the_frontend_directory(build, monkeypatch):
-    original = handoff.subprocess.check_output
-
-    def changed(command, **kwargs):
-        if command[0:2] == ["git", "diff"]:
-            raise handoff.subprocess.CalledProcessError(1, command)
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(handoff.subprocess, "check_output", changed)
-    with pytest.raises(handoff.subprocess.CalledProcessError):
-        build.run("before")
-
-
-def test_build_binding_refuses_an_untracked_out_of_project_helper(build, monkeypatch):
-    original = handoff.subprocess.check_output
-
-    def changed(command, **kwargs):
-        if command[0:2] == ["git", "ls-files"] and "--others" in command and "webapp/frontend" not in command:
-            return b"shared/metrics.ts\0"
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(handoff.subprocess, "check_output", changed)
-    with pytest.raises(ValueError, match="Untracked repository input"):
-        build.run("before")

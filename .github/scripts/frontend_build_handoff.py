@@ -66,42 +66,9 @@ def _inventory(dist: Path) -> list[Path]:
     return sorted(files)
 
 
-
-def verify_committed_dist(root: Path, output: Path) -> None:
-    """The checked-in SPA must equal every byte/member of the hosted bound build.
-
-    Capture happens first, so a refused stale distribution remains available as
-    review-only hosted regeneration input. This comparison grants no release authority.
-    """
-    entries = subprocess.check_output(
-        ["git", "ls-tree", "-r", "-z", "HEAD", "--", "webapp/frontend/dist"], cwd=root,
-    ).decode("utf-8").split("\0")
-    committed = {}
-    for entry in filter(None, entries):
-        metadata, name = entry.split("\t", 1)
-        mode, kind, _oid = metadata.split()
-        if mode != "100644" or kind != "blob" or not name.startswith("webapp/frontend/dist/"):
-            raise ValueError("Checked-in compiled member is not an ordinary source-bound file")
-        committed[name.removeprefix("webapp/frontend/dist/")] = name
-    dist = root / "webapp/frontend/dist"
-    generated = {path.relative_to(dist).as_posix(): path for path in _inventory(dist)}
-    captured_root = output / "dist"
-    captured = {path.relative_to(captured_root).as_posix(): path for path in _inventory(captured_root)}
-    if not committed or set(committed) != set(generated) or set(generated) != set(captured):
-        raise ValueError("Checked-in compiled inventory differs from the source-bound build")
-    for name, path in generated.items():
-        data = _read_bounded(path, MAX_TOTAL_BYTES)
-        if data != _read_bounded(captured[name], MAX_TOTAL_BYTES):
-            raise ValueError("Captured compiled bytes differ from the bound build: " + name)
-        original = subprocess.check_output(["git", "cat-file", "blob", "HEAD:" + committed[name]], cwd=root)
-        if data != original:
-            raise ValueError("Checked-in compiled bytes differ from the source-bound build: " + name)
-    print("Checked-in SPA: complete inventory and bytes equal the source-bound build")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("before", "after", "verify-committed"))
+    parser.add_argument("phase", choices=("before", "after"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
@@ -113,13 +80,6 @@ def main() -> None:
         return subprocess.check_output(["git", *tokens], cwd=root).decode().strip()
 
     def source_inputs() -> dict[str, object]:
-        # Imports can reach helpers outside the frontend directory. Bind their
-        # tracked source too, without executing a second dependency resolver.
-        subprocess.check_output(["git", "diff", "--exit-code", "--quiet", "HEAD", "--", ".",
-                                 ":(exclude)webapp/frontend/dist"], cwd=root)
-        extras = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root).decode().split("\0")
-        if any(path and not path.startswith("webapp/frontend/dist/") for path in extras):
-            raise ValueError("Untracked repository input can change the frontend source closure")
         paths = subprocess.check_output(
             ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD", "--",
              "webapp/frontend", *PROCESSING_INPUTS], cwd=root,
@@ -168,11 +128,6 @@ def main() -> None:
         before.write_text(json.dumps(source, sort_keys=True) + "\n", encoding="utf-8")
         return
     _ordinary_directory(output)
-    if args.phase == "verify-committed":
-        if json.loads(_read_bounded(before, MAX_INPUT_BYTES)) != source:
-            raise ValueError("Frontend source differs from the pre-build binding")
-        verify_committed_dist(root, output)
-        return
     if set(output.iterdir()) != {before}:
         raise ValueError("Handoff output is not the fresh before-phase directory")
     if json.loads(_read_bounded(before, MAX_INPUT_BYTES)) != source:

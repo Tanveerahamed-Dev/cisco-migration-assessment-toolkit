@@ -728,26 +728,26 @@ def test_compiled_exclusion_requires_the_named_enforced_build_comparison():
     read = lambda path: (guard.ROOT / path).read_text(encoding="utf-8")
     assert compiled_coverage(names, read) == set(names)
     for before, after in [
-        ("Verify checked-in SPA equals the source-bound build", "Removed gate"),
-        ('      - name: Verify checked-in SPA equals the source-bound build',
-         '      - if: false\n        name: Verify checked-in SPA equals the source-bound build'),
-        ('      - run: npm run build', '      - run: echo build'),
-        ('frontend_build_handoff.py verify-committed', 'frontend_build_handoff.py after'),
+        ("Prove the SPA build reproduced the immutable source", "Removed gate"),
+        ('      - name: Prove the SPA build reproduced the immutable source',
+         '      - if: false\n        name: Prove the SPA build reproduced the immutable source'),
+        ('          npm run build', '          echo build'),
+        ('--allow-untracked-prefix webapp/frontend/node_modules', '--allow-untracked-prefix webapp/frontend/dist'),
     ]:
         def changed(path):
             text = read(path)
-            return text.replace(before, after) if path.endswith("webapp-ci.yml") else text
+            return text.replace(before, after) if path.endswith("ci.yml") else text
         with pytest.raises(ValueError, match="source-to-dist gate"):
             compiled_coverage(names, changed)
 
 
 def test_compiled_entry_inline_code_stays_scanned_but_covered_bundles_do_not(parser, tmp_path, monkeypatch):
-    workflow = (guard.ROOT / ".github/workflows/webapp-ci.yml").read_text(encoding="utf-8")
-    helper = (guard.ROOT / ".github/scripts/frontend_build_handoff.py").read_text(encoding="utf-8")
+    workflow = (guard.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    helper = (guard.ROOT / ".github/scripts/verify_checkout_immutable.py").read_text(encoding="utf-8")
     source_fixture(tmp_path, monkeypatch, {
         "cisco_toolkit/docmeta.py": 'ARTIFACT_SPECS = ()',
-        ".github/workflows/webapp-ci.yml": workflow,
-        ".github/scripts/frontend_build_handoff.py": helper,
+        ".github/workflows/ci.yml": workflow,
+        ".github/scripts/verify_checkout_immutable.py": helper,
         "webapp/frontend/dist/index.html": '<script src="assets/app.js"></script><script>function answer(rows) {return rows.length}</script>',
         "webapp/frontend/dist/assets/app.js": "throw new Error('compiled bytes verified by source-to-dist gate')",
     })

@@ -324,9 +324,6 @@ jobs:
           path: ${{ runner.temp }}/frontend-dist-handoff/
           if-no-files-found: error
           retention-days: 14
-      - name: Verify checked-in SPA equals the source-bound build
-        working-directory: .
-        run: python .github/scripts/frontend_build_handoff.py verify-committed --output "${{ runner.temp }}/frontend-dist-handoff"
 
   e2e:
     needs: scope

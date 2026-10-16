@@ -166,16 +166,20 @@ def python_closure(names, read, role_read=None):
 
 
 COMPILED_ROOT = "webapp/frontend/dist/"
-DIST_WORKFLOW = ".github/workflows/webapp-ci.yml"
-DIST_GATE = "Verify checked-in SPA equals the source-bound build"
-DIST_COMMAND = 'python .github/scripts/frontend_build_handoff.py verify-committed --output "${{ runner.temp }}/frontend-dist-handoff"'
+DIST_WORKFLOW = ".github/workflows/ci.yml"
+DIST_GATE = "Prove the SPA build reproduced the immutable source"
+DIST_COMMAND = ('python .github/scripts/verify_checkout_immutable.py '
+                '--expected-commit "${{ steps.source.outputs.commit }}" '
+                '--expected-tree "${{ steps.source.outputs.tree }}" '
+                '--allow-untracked-prefix webapp/frontend/node_modules')
 
 
 def compiled_coverage(names, read):
-    """Refuse uncovered generated code; entry documents themselves stay scanned.
+    """Require the existing whole-checkout build proof before excluding imports.
 
-    The named hosted gate compares the entire checked-in distribution inventory
-    and every byte with the source-bound build; minified identities are not debt.
+    Every compiled entry stays inspected. The required Distribution contract
+    compares all tracked bytes and refuses every unapproved output (ignored too).
+    It therefore closes minified imports without ratcheting generated identities.
     """
     generated = {path for path in names if any(part in {"dist", "dist-hub", "build", ".next"}
                  for part in PurePosixPath(path).parts[:-1])
@@ -187,20 +191,31 @@ def compiled_coverage(names, read):
         raise ValueError("Compiled source has no source-to-dist gate: " + uncovered[0])
     import yaml
     workflow = yaml.safe_load(read(DIST_WORKFLOW))
-    job = workflow["jobs"]["frontend"]
+    job = workflow["jobs"]["package"]
     steps = job["steps"]
     gates = [(index, step) for index, step in enumerate(steps) if step.get("name") == DIST_GATE]
     if len(gates) != 1:
         raise ValueError("Compiled source-to-dist gate is absent or ambiguous")
     index, gate = gates[0]
-    if (gate.get("run") != DIST_COMMAND or gate.get("working-directory") != "."
-            or "if" in gate or gate.get("continue-on-error") or job.get("continue-on-error")
-            or not any(step.get("run") == "npm run build" and "if" not in step
-                       and not step.get("continue-on-error") for step in steps[:index])
-            or not any("frontend_build_handoff.py after" in step.get("run", "")
-                       and "if" not in step and not step.get("continue-on-error") for step in steps[:index])):
-        raise ValueError("Compiled source-to-dist gate is not enforced after the bound build")
-    helper = ast.parse(read(".github/scripts/frontend_build_handoff.py"))
-    if not any(isinstance(node, ast.FunctionDef) and node.name == "verify_committed_dist" for node in helper.body):
-        raise ValueError("Compiled byte-comparison implementation is absent")
+    builds = [(i, step) for i, step in enumerate(steps[:index])
+              if step.get("name") == "Rebuild the bundled AssessHub SPA"]
+    captures = [(i, step) for i, step in enumerate(steps[:index])
+                if step.get("name") == "Capture the immutable source identity"]
+    if (job.get("name") != "Distribution contract" or "if" in job or job.get("continue-on-error")
+            or "if" in gate or gate.get("continue-on-error") or gate.get("run") != DIST_COMMAND
+            or len(builds) != 1 or len(captures) != 1):
+        raise ValueError("Compiled source-to-dist gate is not required after the bound build")
+    build_index, build = builds[0]
+    capture_index, capture = captures[0]
+    if (build.get("working-directory") != "webapp/frontend" or "if" in build or build.get("continue-on-error")
+            or build.get("run", "").split() != "npm run verify:node npm ci npm test npm run build".split()
+            or capture_index >= build_index or capture.get("id") != "source" or "if" in capture
+            or capture.get("continue-on-error")
+            or "git rev-parse 'HEAD^{commit}'" not in capture.get("run", "")
+            or "git rev-parse 'HEAD^{tree}'" not in capture.get("run", "")):
+        raise ValueError("Compiled source-to-dist gate lost its immutable source/build binding")
+    helper = ast.parse(read(".github/scripts/verify_checkout_immutable.py"))
+    required = {"_verify_tracked_bytes", "_untracked_paths", "_checkout_observation", "verify_checkout"}
+    if not required <= {node.name for node in helper.body if isinstance(node, ast.FunctionDef)}:
+        raise ValueError("Compiled source-to-dist gate byte/inventory implementation is absent")
     return {path for path in names if path.startswith(COMPILED_ROOT)}
