@@ -256,3 +256,33 @@ uses its registered PYSEC-2026-2858 suppression and emits `2 ignored` without na
 records; no alias attribution or zero-vulnerability claim follows. Reference warns at85.55%
 of its release census-byte ceiling and85.00% of its compiler JSON-string ceiling; neither
 ceiling changes. Preserve every earlier failure, cancellation and external approval boundary.
+
+## Supervisor SSOT refutation before review (2026-10-16)
+
+Independent audit `wf_f0aab664-711` refutes #666 at `c95c2b74` and this dependent PR at
+`46ffef86`. Their green jobs, actual downloads and frozen package controls do not prove that
+recomputed observed companions retain the stored assessment basis. Stop old-source frontend
+intake and review readiness; retain all previous results and failures as source-bound evidence.
+
+The foundation correction overlays only requirements register, design blueprint and design NRFU.
+Assessment architecture/coverage/unknown-evidence/census/lineage and executive brief stay on their
+stored basis. One shared late-derivation owner preserves CLI phase order and failure callbacks;
+Protocol Assurance membership has one artifact-registry owner. Original assessment failure details
+and render-time SSOT integrity disclosure remain active. Two assessment SSOT rows explicitly link
+the separate saved-plan basis.
+An inherited Design blueprint/requirements failure can still withhold Design recommendations as
+UNVERIFIED. A visible saved-plan stamp discloses that retained assessment limit; generating a draft
+does not repair original failures or establish universal parity across withheld sections.
+
+Frontend keys, list fields, tiers, fabric choices and VLAN limits consume the requirements contract
+owned by `cisco_toolkit.design_advisor`. Actual OpenAPI exposes that contract, and the existing
+generator emits its runtime constant and types into `openapi.ts`; required freshness checks compare
+the complete output. Synthetic changed domains/ranges exercise the consumer. Legacy engine input
+normalization is preserved. Generated exports are not hand-authored: a fresh hosted observation
+must supply the canonical bytes before the new frontend can pass its required checks.
+
+Applied static review, Rule7 and marker scans precede publication. Corrected foundation integration,
+fresh hosted API observation, reviewed source-bound SPA import/receiver, all15 required-context
+equivalents and all applicable whole workflows are still required on the revised source. Runtime
+closure is not verified here. Stop for independent review; no merge, version/release cut, signing,
+physical field qualification or publication is authorized. All14 external gates remain pending.

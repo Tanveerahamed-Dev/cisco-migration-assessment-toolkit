@@ -1,4 +1,7 @@
 // Typed client for the AssessHub backend. One origin in prod; Vite proxies /api -> :8000 in dev.
+import { designRequirementsContract } from "./generated/openapi";
+import type { DesignRequirements } from "./generated/openapi";
+export { designRequirementsContract } from "./generated/openapi";
 
 export interface Summary {
   version: string;
@@ -1451,36 +1454,21 @@ export interface SavedPlanState {
   selected_revision: number | null;
   revisions: SavedPlanMeta[];
 }
-/** These are the engine's nine requirement keys; normalization remains server-owned. */
-export interface SavedPlanRequirements {
-  availability_tier?: string;
-  critical_apps?: string | string[];
-  convergence_budget_ms?: number | string;
-  growth_horizon?: string;
-  fabric_operating_model?: string;
-  constraints?: string | string[];
-  data_classification?: string | string[];
-  address_space?: string;
-  vlan_zones?: Record<string, string | Array<string | number>>;
-}
+/** Generated from the engine-owned strict admission profile; normalization stays server-owned. */
+export type SavedPlanRequirements = DesignRequirements;
 export interface SavedPlanRecord extends SavedPlanMeta, SavedPlanPin {
   assessment: SavedPlanAssessment;
   projection: {
-    schema: "atlas.saved_plan_projection/1";
+    schema: "atlas.saved_plan_projection/2";
     requirements: SavedPlanRequirements;
     sections: {
       requirements_register: SavedPlanRequirements;
       design_blueprint: DesignBlueprint;
       design_nrfu: DesignNrfu;
-      architecture_coverage: ArchitectureCoverage;
-      coverage_matrix: Record<string, unknown>;
-      unknown_evidence: Record<string, unknown>;
-      schema_census: Record<string, unknown>;
-      fact_lineage: Record<string, unknown>;
-      executive_brief?: Record<string, unknown>;
     };
     derivation: {
-      schema: "atlas.saved_plan_derivation/1";
+      schema: "atlas.saved_plan_derivation/2";
+      profile: "saved_plan";
       owners: string[];
       engine_schema_version: string;
       implementation_identity: null;
@@ -1626,10 +1614,9 @@ const SAVED_PLAN_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SAVED_PLAN_ASSESSMENT_KEYS = ["source", "sha256", "bytes", "snapshot_id", "campaign_id",
   "engagement_id", "label", "script_version"] as const;
 const SAVED_PLAN_META_KEYS = ["schema", "revision", "label", "created_at", "sha256", "status"] as const;
-const SAVED_PLAN_REQUIREMENT_KEYS = new Set(["availability_tier", "critical_apps", "convergence_budget_ms",
-  "growth_horizon", "fabric_operating_model", "constraints", "data_classification", "address_space", "vlan_zones"]);
-const SAVED_PLAN_SECTION_KEYS = ["requirements_register", "design_blueprint", "design_nrfu",
-  "architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage"];
+const SAVED_PLAN_REQUIREMENT_KEYS = new Set<string>(designRequirementsContract.keys);
+const SAVED_PLAN_LIST_FIELDS = new Set<string>(designRequirementsContract.list_fields);
+const SAVED_PLAN_SECTION_KEYS = ["requirements_register", "design_blueprint", "design_nrfu"];
 const SAVED_PLAN_DOCUMENT_LIMIT = 32 * 1024 * 1024;
 export const SAVED_PLAN_MAX_CONVERGENCE_MS = "9007199254740991";
 const SAVED_PLAN_DOCUMENT_TYPES = {
@@ -1701,7 +1688,7 @@ function validPlanRequirements(value: unknown, input = false): value is SavedPla
   return Object.entries(value).every(([key, item]) => {
     if (!SAVED_PLAN_REQUIREMENT_KEYS.has(key)) return false;
     if (input && item === undefined) return true;
-    if (["critical_apps", "constraints", "data_classification"].includes(key)) return planString(item) || planStrings(item);
+    if (SAVED_PLAN_LIST_FIELDS.has(key)) return planString(item) || planStrings(item);
     if (key === "convergence_budget_ms") return validPlanConvergence(item);
     if (key === "vlan_zones") return planObject(item) && Object.values(item).every((zone) =>
       planString(zone) || (Array.isArray(zone) && zone.every((id) => planString(id) || planInteger(id))));
@@ -1754,15 +1741,15 @@ function checkedPlan(value: unknown, sid: number, pin?: SavedPlanPin): SavedPlan
     && value.selection_id === pin.selection_id, "The response belongs to a different saved-plan selection");
   const projection = value.projection;
   planAssert(planObject(projection) && planKeys(projection, ["schema", "requirements", "sections", "derivation"])
-    && projection.schema === "atlas.saved_plan_projection/1" && validPlanRequirements(projection.requirements)
+    && projection.schema === "atlas.saved_plan_projection/2" && validPlanRequirements(projection.requirements)
     && planObject(projection.sections), "The saved-plan projection is invalid");
   const sections = projection.sections, derivation = projection.derivation;
-  planAssert(Object.keys(sections).every((key) => SAVED_PLAN_SECTION_KEYS.includes(key) || key === "executive_brief")
+  planAssert(Object.keys(sections).every((key) => SAVED_PLAN_SECTION_KEYS.includes(key))
     && SAVED_PLAN_SECTION_KEYS.every((key) => planObject(sections[key]))
-    && (sections.executive_brief === undefined || planObject(sections.executive_brief))
     && validPlanRequirements(sections.requirements_register)
     && validPlanBlueprint(sections.design_blueprint) && validPlanNrfu(sections.design_nrfu)
-    && planObject(derivation) && derivation.schema === "atlas.saved_plan_derivation/1"
+    && planObject(derivation) && derivation.schema === "atlas.saved_plan_derivation/2"
+    && derivation.profile === "saved_plan"
     && planStrings(derivation.owners) && derivation.owners.length > 0 && planNonempty(derivation.engine_schema_version)
     && derivation.implementation_identity === null && derivation.implementation_identity_status === "not_established"
     && derivation.authority === "none" && planString(derivation.note), "The saved-plan content or posture is invalid");

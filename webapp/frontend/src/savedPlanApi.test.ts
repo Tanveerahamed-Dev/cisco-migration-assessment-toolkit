@@ -16,7 +16,7 @@ function record(): SavedPlanRecord {
     schema: "atlas.saved_plan/1", revision: 1, label: "EXAMPLE plan", created_at: "2026-10-15T12:30:00.123456+00:00",
     sha256: "sha256:" + "b".repeat(64), status: "UNAPPROVED_DRAFT", selection_id: 11, assessment: assessment(),
     projection: {
-      schema: "atlas.saved_plan_projection/1", requirements: { convergence_budget_ms: 0 },
+      schema: "atlas.saved_plan_projection/2", requirements: { convergence_budget_ms: 0 },
       sections: {
         requirements_register: { convergence_budget_ms: 0 },
         design_blueprint: {
@@ -27,11 +27,8 @@ function record(): SavedPlanRecord {
           coverage: { inventory: 1, collected: 1, not_collected: 0, caveat: "Captured evidence only" },
         },
         design_nrfu: { items: [], n_items: 0, note: "EXAMPLE checklist" },
-        architecture_coverage: { classes: [], summary: { n_classes: 0, n_observed: 0, n_not_observed: 0,
-          n_with_findings: 0, n_clean: 0, by_channel: { ssh: 0, json: 0 } } },
-        coverage_matrix: {}, unknown_evidence: {}, schema_census: {}, fact_lineage: {},
       },
-      derivation: { schema: "atlas.saved_plan_derivation/1", owners: ["EXAMPLE-owner"], engine_schema_version: "3.23.0",
+      derivation: { schema: "atlas.saved_plan_derivation/2", profile: "saved_plan", owners: ["EXAMPLE-owner"], engine_schema_version: "3.23.0",
         implementation_identity: null, implementation_identity_status: "not_established", authority: "none", note: "EXAMPLE" },
     },
   };
@@ -210,6 +207,12 @@ describe("saved-plan JSON client", () => {
       { ...plan, selection_id: 12 }, { ...plan, revision: 2 }, { ...plan, sha256: "sha256:" + "c".repeat(64) },
       { ...plan, status: "APPROVED" }, { ...plan, created_at: "not a date" },
       { ...plan, projection: { ...plan.projection, sections: {} } },
+      { ...plan, projection: { ...plan.projection, schema: "atlas.saved_plan_projection/1" } },
+      { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, schema: "atlas.saved_plan_derivation/1" } } },
+      { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, profile: "assessment" } } },
+      ...["architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage", "executive_brief"].map((field) => ({
+        ...plan, projection: { ...plan.projection, sections: { ...plan.projection.sections, [field]: {} } },
+      })),
       { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, authority: "approved" } } },
     ]) {
       fetch.mockResolvedValueOnce(jsonResponse(wrong));

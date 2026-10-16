@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useParams } from "react-router";
-import { api, ApiError, SAVED_PLAN_MAX_CONVERGENCE_MS } from "../api";
+import { api, ApiError, SAVED_PLAN_MAX_CONVERGENCE_MS, designRequirementsContract } from "../api";
 import type {
   Deliverable, Meta, SavedPlanPin, SavedPlanRecord, SavedPlanRequirements, SavedPlanState,
 } from "../api";
@@ -65,10 +65,13 @@ function formRequirements(draft: Draft): SavedPlanRequirements {
       const separator = line.indexOf("=");
       const vid = line.slice(0, separator).trim();
       const zone = line.slice(separator + 1).trim();
-      if (separator < 1 || !/^[1-9][0-9]{0,3}$/.test(vid) || !zone) {
+      const { minimum, maximum } = designRequirementsContract.vlan_id;
+      if (separator < 1 || vid.length > String(maximum).length || !/^[1-9][0-9]*$/.test(vid) || !zone) {
         throw new Error(`VLAN zones line ${index + 1}: use one VLAN number without leading zeros, then = and a zone name.`);
       }
-      if (Number(vid) > 4094) throw new Error(`VLAN zones line ${index + 1}: VLAN numbers must be between 1 and 4094.`);
+      if (Number(vid) < minimum || Number(vid) > maximum) {
+        throw new Error(`VLAN zones line ${index + 1}: VLAN numbers must be between ${minimum} and ${maximum}.`);
+      }
       // Detect duplicate lines before constructing an object could silently replace an earlier zone.
       if (seen.has(vid)) throw new Error(`VLAN ${vid} appears twice. Keep one zone assignment per VLAN.`);
       seen.add(vid);
@@ -384,13 +387,13 @@ function SavedPlanWorkspace({ snapshotId, activeSource }: {
             <label htmlFor={`${formId}-name`}>Plan name<input id={`${formId}-name`} value={draft.label} maxLength={200} required onChange={(event) => change("label", event.target.value)} /></label>
             <div className="saved-plan-select-field"><label htmlFor={`${formId}-tier`}>Availability tier</label>
               <select id={`${formId}-tier`} value={draft.tier} onChange={(event) => change("tier", event.target.value)}>
-                <option value="">Not specified</option><option value="gold">Gold</option><option value="silver">Silver</option><option value="bronze">Bronze</option></select></div>
+                <option value="">Not specified</option>{designRequirementsContract.availability_tiers.map((tier) => <option key={tier} value={tier}>{tier[0].toUpperCase() + tier.slice(1)}</option>)}</select></div>
             <label htmlFor={`${formId}-apps`}>Critical applications<input id={`${formId}-apps`} value={draft.apps} placeholder="voice, video, ERP" onChange={(event) => change("apps", event.target.value)} /></label>
             <div className="saved-plan-field"><label htmlFor={`${formId}-convergence`}>Convergence budget (ms)<input id={`${formId}-convergence`} inputMode="numeric" value={draft.convergence} placeholder="0 is retained" aria-describedby={`${formId}-convergence-limit`} onChange={(event) => change("convergence", event.target.value)} /></label><p className="dim saved-plan-help" id={`${formId}-convergence-limit`}>Whole milliseconds, from 0 to {SAVED_PLAN_MAX_CONVERGENCE_MS}.</p></div>
             <label htmlFor={`${formId}-growth`}>Growth horizon<input id={`${formId}-growth`} value={draft.growth} onChange={(event) => change("growth", event.target.value)} /></label>
             <div className="saved-plan-select-field"><label htmlFor={`${formId}-fabric`}>Fabric operating model</label>
               <select id={`${formId}-fabric`} value={draft.fabric} onChange={(event) => change("fabric", event.target.value)}>
-                <option value="">Not specified</option><option value="aci">Cisco ACI</option><option value="nxos-evpn">NX-OS VXLAN-EVPN</option></select></div>
+                <option value="">Not specified</option>{designRequirementsContract.fabric_models.map((model) => <option key={model} value={model}>{model === "aci" ? "Cisco ACI" : model === "nxos-evpn" ? "NX-OS VXLAN-EVPN" : model}</option>)}</select></div>
             <label htmlFor={`${formId}-constraints`}>Constraints<input id={`${formId}-constraints`} value={draft.constraints} placeholder="budget, installed base" onChange={(event) => change("constraints", event.target.value)} /></label>
             <label htmlFor={`${formId}-classification`}>Data classification<input id={`${formId}-classification`} value={draft.classification} placeholder="restricted, internal" onChange={(event) => change("classification", event.target.value)} /></label>
             <label htmlFor={`${formId}-address`}>Target IPv4 address space<input id={`${formId}-address`} value={draft.address} placeholder="10.0.0.0/16" onChange={(event) => change("address", event.target.value)} /></label>

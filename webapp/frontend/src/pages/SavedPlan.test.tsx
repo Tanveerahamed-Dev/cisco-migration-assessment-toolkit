@@ -28,11 +28,9 @@ function record(revision = 1, selection = 3, sid = 1): SavedPlanRecord {
     sha256: `sha256:${String(revision).repeat(64)}`, status: "UNAPPROVED_DRAFT", selection_id: selection,
     assessment: { source: "persisted snapshots.snapshot_json blob", sha256: `sha256:${"a".repeat(64)}`,
       bytes: 100, snapshot_id: sid, campaign_id: 7, engagement_id: "EXAMPLE-engagement", label: `EXAMPLE source ${sid}`, script_version: "3.23.0" },
-    projection: { schema: "atlas.saved_plan_projection/1", requirements,
-      sections: { requirements_register: requirements, design_blueprint: blueprint, design_nrfu: nrfu,
-        architecture_coverage: { classes: [], summary: { n_classes: 0, n_observed: 0, n_with_findings: 0, n_clean: 0, n_not_observed: 0, by_channel: { ssh: 0, json: 0 } } },
-        coverage_matrix: {}, unknown_evidence: {}, schema_census: {}, fact_lineage: {} },
-      derivation: { schema: "atlas.saved_plan_derivation/1", owners: ["EXAMPLE-owner"], engine_schema_version: "3.23.0",
+    projection: { schema: "atlas.saved_plan_projection/2", requirements,
+      sections: { requirements_register: requirements, design_blueprint: blueprint, design_nrfu: nrfu },
+      derivation: { schema: "atlas.saved_plan_derivation/2", profile: "saved_plan", owners: ["EXAMPLE-owner"], engine_schema_version: "3.23.0",
         implementation_identity: null, implementation_identity_status: "not_established", authority: "none", note: "EXAMPLE persisted projection" } },
   } as SavedPlanRecord;
 }

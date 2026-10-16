@@ -1377,7 +1377,7 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "e5c0296f3473ec0a36a9fb63816bc27fad90e4be",
+    "webapp/frontend/src/api.ts": "e8ece5229ae9816b98f1b80bfa9cee9291777b38",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
