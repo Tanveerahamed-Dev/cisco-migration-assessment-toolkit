@@ -31,10 +31,11 @@ were already safe; they are kept as regression anchors, not claimed as pre-fix f
 The fix routes every read through ``summary._as_list`` / a local ``_as_dict`` (the same coercers
 ``webapp/backend/cutover.py`` uses, mirroring ``cisco_toolkit.docmeta.as_dict``/``as_list``). For every
 well-formed value those are IDENTICAL to the ``or {}`` / ``or []`` they replace, so a good snapshot
-renders the same document: rendering ``_WELLFORMED`` with the pre-fix and post-fix writer produced 199
-identical text segments (timestamps normalised). That is pinned here by
-``test_wellformed_nrfu_render_unchanged`` — which PASSES against the pre-fix writer too, so it is a real
-baseline and not a post-hoc restatement — and by the algebraic equivalence check at the bottom.
+rendered the same document at the original guard change: its historical comparison produced 199
+identical text segments (timestamps normalised). The regression below retains those guarded metadata
+and baseline-phase assertions. The saved-plan NRFU correction subsequently extends its complete
+acceptance fixture and total to include the newly rendered design case; that additive content is not
+claimed byte-identical to the historical writer. The algebraic coercion control remains unchanged.
 
 OUT OF SCOPE (deliberately not fixed here, different bug class — see the PR body): ``len({(s.get("service"),
 s.get("category")) for s in services})`` raises ``TypeError: unhashable type`` when a ``service_map.services``
@@ -243,9 +244,11 @@ def _nrfu_cells(client, snap):
 
 
 def test_wellformed_nrfu_render_unchanged(client):
-    """Every value the guarded reads feed, pinned. These are exactly the strings the PRE-guard writer
-    produced for this fixture -- this test passes against both writers (the full 199-segment normalised
-    text diff was identical), so the coercion cannot have silently changed a well-formed render."""
+    """Preserve guarded metadata/baseline rows and include the persisted design acceptance case.
+
+    The historical guard-only comparison was identical; the later saved-plan correction intentionally
+    adds its acceptance body and includes that new case in both document totals.
+    """
     paras, cells = _nrfu_cells(client, _WELLFORMED)
     text = "\n".join(paras)
 

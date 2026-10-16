@@ -514,3 +514,32 @@ def test_nrfu_commands_sheet_writer(tmp_path):
     assert wb.sheetnames.count(NRFU_COMMANDS_SHEET_NAME) == 1
     # tolerant of an empty compute result
     write_nrfu_commands_sheet(wb, {})
+
+
+
+def test_document_composer_consumes_design_owner_rows_and_exact_counts(monkeypatch):
+    import copy
+
+    from cisco_toolkit import nrfu_export
+
+    owner = {
+        "design_rows": [["EXAMPLE-owner-case-1"], ["EXAMPLE-owner-case-2"]],
+        "evpn_rows": [["EXAMPLE-owner-evpn"]],
+        "trace": [["EXAMPLE owner trace"]], "limits": ["EXAMPLE owner scope"], "omitted_trace": 9,
+    }
+    calls = []
+
+    def owned(snapshot):
+        calls.append(copy.deepcopy(snapshot))
+        return owner
+
+    monkeypatch.setattr(nrfu_export, "design_nrfu_document_view", owned)
+    snap = {"design_nrfu": {"items": [{"decision_id": "EXAMPLE-consumer-must-not-rederive"}]}}
+    before = copy.deepcopy(snap)
+    result = nrfu_export.nrfu_document_view(snap)
+    assert calls == [before] and snap == before
+    for key in ("design_rows", "evpn_rows", "trace", "limits"):
+        assert result[key] is owner[key]
+    assert result["omitted_trace"] == 9
+    assert [row[2] for row in result["summary_rows"]] == [0, 0, 0, 2, 1, 3]
+    assert [row[1] for row in result["result_rows"]] == [0, 0, 0, 2, 1, 3]

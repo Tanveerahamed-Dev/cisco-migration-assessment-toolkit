@@ -299,3 +299,30 @@ was restored in this push under the supervisor-only board rule. Feature status i
 in this PR instead. The cutover Go/No-Go duplication remains deferred to RC8-P1-H PR-2;
 cutover.py is untouched. PR667 remains parked. No gate, budget, timeout, product/schema
 version, golden/sample byte, external acceptance, release or publication authority changes.
+
+
+## Hosted carrier-ownership counterexample and owner correction
+
+Head12240195733ff0259ffdc32ada4b89505557c3a2 failed Python3.13 in CI38914837890,
+job117019536457, step `Run the complete default suite`. The unchanged
+`test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_proof`
+rejects nrfu_export's new collection-completeness `not_collected` key read because
+that module is classified as a protocol-receipt carrier. The actual field was the
+assessment collection census, not a protocol receipt row; adding its interpretation
+inside that carrier crossed the enforced module boundary. The complete143,215-byte
+log has SHA-25672b87a11aeb14a4c5473155462d98115c44951102cb0762d8bf0c5164c29ac44
+and reports1failed/19,614passed/164skipped/3xfailed/26subtests in41m08s.
+The full application workflow and frozen saved-plan receipt passed on that head,
+but those narrower positives do not close the failed full-suite gate.
+
+The correction places retained design/EVPN acceptance projection, coverage and
+assessment scope limits together in the existing design acceptance owner,
+`design_advisor.design_nrfu_document_view`. The document model in nrfu_export
+composes that owner's projection with its three existing baseline row lists and
+owns both exact-list summaries. Its command-pack and protocol-carrying functions
+remain unchanged. This follows the already permitted deliverables-to-design edge;
+no new module, receipt vocabulary, test exception, scanner change or carrier
+reclassification is introduced. The actual P1 body/count/negative controls remain
+unchanged. Local validation is static only; fresh final-head hosted gates and the
+same independent re-review remain required. Earlier failures and any superseded
+running jobs remain historical evidence, not new-head validation.

@@ -3011,3 +3011,37 @@ def test_strict_saved_plan_metadata_does_not_change_legacy_register_coercion():
         "data_classification": ["restricted", "internal"],
         "vlan_zones": {0: "legacy-zero", 4095: "legacy-high"},
     }
+
+
+
+def test_persisted_nrfu_subview_owns_collection_and_software_scope_without_receipt_interpretation():
+    import copy
+
+    from cisco_toolkit.design_advisor import design_nrfu_document_view
+
+    case = {"decision_id": "EXAMPLE-acceptance", "title": "EXAMPLE retained case",
+            "description": "EXAMPLE retained description", "setup": "EXAMPLE retained setup",
+            "pass_criteria": "EXAMPLE retained pass criteria", "devices": ["EXAMPLE-SW"]}
+    snap = {
+        "design_nrfu": {"items": [case], "evpn_acceptance": []},
+        "design_blueprint": {"decisions": [{"id": case["decision_id"], "status": "recommended"}]},
+        "collection_completeness": {"summary": {"not_collected": 0}},
+        "software_risk": {"summary": {"n_config_not_assessable": 0}},
+    }
+    before = copy.deepcopy(snap)
+    view = design_nrfu_document_view(snap)
+    assert view["limits"] == [] and view["trace"][0][2].startswith("Tested — ")
+    # Receipt state vocabulary belongs to the protocol owner, never this design projection.
+    for receipt in (None, 7, {"rows": [{"state": "not_running"}]},
+                    {"rows": [{"state": "capture_error"}]}, {"rows": [{"state": "assessed"}]}):
+        changed = {**snap, "protocol_assessability": receipt}
+        assert design_nrfu_document_view(changed) == view
+    changed = copy.deepcopy(snap)
+    changed["collection_completeness"]["summary"]["not_collected"] = 3
+    changed["software_risk"]["summary"]["n_config_not_assessable"] = 2
+    changed_before = copy.deepcopy(changed)
+    scoped = design_nrfu_document_view(changed)
+    assert scoped["design_rows"] == view["design_rows"] and scoped["trace"] == view["trace"]
+    assert any("3 device(s) were not collected" in limit for limit in scoped["limits"])
+    assert any("2 device(s) had configuration that could not be assessed" in limit for limit in scoped["limits"])
+    assert snap == before and changed == changed_before

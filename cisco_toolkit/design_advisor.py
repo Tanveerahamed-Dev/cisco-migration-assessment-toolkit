@@ -5417,6 +5417,76 @@ def compute_design_nrfu(design_blueprint):
     }
 
 
+def design_nrfu_document_view(snapshot: dict) -> dict:
+    """Project retained design acceptance, decision coverage and assessment scope for exports.
+
+    The design owner already owns acceptance instructions and collection-completeness
+    coverage. Keep those concerns here; the separate NRFU command-pack carrier must
+    not acquire another vocabulary alongside protocol receipt transport. This read
+    view neither derives a blueprint nor recomputes any saved acceptance instruction.
+    """
+    snap_dict = _as_dict(snapshot)
+    design = _as_dict(snap_dict.get("design_nrfu"))
+    nrfu_items = [item for item in _as_list(design.get("items")) if isinstance(item, dict)]
+    evpn_items = [item for item in _as_list(design.get("evpn_acceptance")) if isinstance(item, dict)]
+    design_rows = [_document_acceptance_row(item) for item in nrfu_items]
+    evpn_rows = [_document_acceptance_row(item) for item in evpn_items]
+    bp_decisions = [d for d in _as_list(_as_dict(snap_dict.get("design_blueprint")).get("decisions"))
+                    if isinstance(d, dict)]
+    coll = _as_dict(_as_dict(snap_dict.get("collection_completeness")).get("summary"))
+    swrisk = _as_dict(_as_dict(snap_dict.get("software_risk")).get("summary"))
+    rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+    needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
+    nc = coll.get("not_collected") or 0
+    n_na = swrisk.get("n_config_not_assessable") or 0
+    limits = []
+    if nc:
+        limits.append(f"{nc} device(s) were not collected at assessment — their post-cutover state is NOT "
+                      "validated here; re-collect and run Phase I against them before sign-off.")
+    if n_na:
+        limits.append(f"{n_na} device(s) had configuration that could not be assessed for software-advisory "
+                      "exposure — NOT validated here.")
+    if needs:
+        limits.append(f"{len(needs)} target-state design area(s) still need a requirement before they can be "
+                      "designed and acceptance-tested — see the design blueprint's open questions.")
+    # A trace label requires the complete, actually rendered acceptance body.
+    phase_by = {str(item.get("decision_id")): item.get("phase", "") for item in nrfu_items
+                if _document_acceptance_complete(item)}
+    uncovered = [d for d in rec if str(d.get("id")) not in phase_by]
+    if uncovered:
+        limits.append(f"{len(uncovered)} recommended design decision(s) have NO acceptance test with complete rendered "
+                      "content in the design NRFU — they are NOT validated by this plan; supply the "
+                      "description, setup, pass criteria and device scope before sign-off.")
+    trace = [[d.get("title", d.get("id", "")), d.get("priority", ""),
+              ("Tested — " + (str(phase_by[str(d.get("id"))]).strip()
+                              or "phase not stated in the design NRFU"))
+              if str(d.get("id")) in phase_by else
+              "NOT COVERED — no complete acceptance test rendered for this decision"] for d in rec]
+    trace += [[d.get("title", d.get("id", "")), d.get("priority", ""),
+               "Not testable until the requirement is supplied"] for d in needs]
+    return {"design_rows": design_rows, "evpn_rows": evpn_rows,
+            "trace": trace[:40], "limits": limits, "omitted_trace": max(0, len(trace) - 40)}
+
+
+def _document_acceptance_complete(item: dict) -> bool:
+    """Only explicit persisted instructions and device scope establish coverage."""
+    return (all(isinstance(item.get(key), str) and item[key].strip()
+                for key in ("description", "setup", "pass_criteria"))
+            and isinstance(item.get("devices"), list) and bool(item["devices"])
+            and all(isinstance(device, str) and device.strip() for device in item["devices"]))
+
+
+def _document_acceptance_row(item: dict) -> list:
+    """Keep every retained acceptance entry, even incomplete ones, without inventing content."""
+    missing = "Not supplied in persisted acceptance content"
+    return [item.get("decision_id", ""),
+            f"{item.get('title', '')}\nPriority: {item.get('priority', '')}\n"
+            f"Source: {item.get('principle_citation', '')}",
+            item.get("phase", ""), item.get("description") or missing,
+            item.get("setup") or missing, item.get("pass_criteria") or missing,
+            "\n".join(str(device) for device in _as_list(item.get("devices"))) or missing, ""]
+
+
 # Architecture-coverage registry: every architecture CLASS the engine assesses, mapped to its snapshot axis,
 # its ingestion channel (ssh show-text vs json controller-REST export), and its detector ids. The authoritative
 # architecture -> detector map; compute_architecture_coverage reads it to publish the coverage-honesty SSOT.
