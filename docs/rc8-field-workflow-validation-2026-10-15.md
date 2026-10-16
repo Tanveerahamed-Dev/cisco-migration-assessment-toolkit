@@ -342,3 +342,40 @@ Linux3.12/Python3.13/Coverage progress is65%/18%/1%/32%/35%. Windows' partial3,6
 annotations support supersession, not timeout. The separate negative-closure record has SHA-256
 19367b22972469ebcced9c98cd71552f9319ec7c005f2324d9e443d4fa7b0d1b; the earlier Reference
 architecture failure remains an independent failed gate. None transfers to0b48 readiness.
+
+## Canonical generated requirements contract: bounded source-edit import
+
+Run38872276264/attempt1/frontend116880486439 checks out the frozen old mergec3cb790c,
+ordered parentsfb6+2cde, and finishes FAILURE at08:55:02Z on generated-API drift. Its observer
+and upload steps succeed, with OBSERVED_REVIEW_REQUIRED/errors[]; all20 generation-policy
+tests pass before the required byte comparison refuses. The complete114,385-byte EOF log has
+SHA-256 2402f84273058d35498b7549c91f98824b02dbc23db02d25f9e45e26f58fe029. No frontend or
+whole-workflow pass is inferred.
+
+Artifact12036006113 is selected before its single download:456,852 bytes, SHA-256
+b12e3e7a8aac20cd5e839d175405b15ab68a2536e3d8b0ee91a63009d0ffe8da, matching the API and
+terminal upload log. Its exact nine regular members pass complete raw local/central/descriptor/
+deflate/CRC closure, source-before/source-after byte identity to the independently frozen1,836-file
+Git ledger (82,258,309 bytes), the full eight-member observation hash ledger, four unchanged native
+literal pins, actual requirements-owner metadata and all12 current marker rules. GitHub's untruncated
+tree separately agrees with every path/mode/blob. No archive code or project generator executes.
+
+The first scratch suffix expectation incorrectly followed alphabetical schema JSON order. The
+reviewer's correction follows the already-reviewed generator's explicit seven-field order and
+retains exact byte comparison; it changes no artifact, source, policy or gate. The initial refusal
+and its diagnosis are preserved. Independent review confirms current local integrationa69724fe
+has the same generation-owner whole-file/AST closure after the helper relocation. This does not
+relabel the old-base observation as current-source validation.
+
+ONLY openapi.ts is imported:542,034 bytes, SHA-256
+1828bcc99911d4a5756d376ab1d4aa9f19e079cdcf0727139970c580db9f3981. Its original540,981-byte
+generated prefix is unchanged; the1053-byte suffix contains exactly the generator-owned requirements
+constant and mapped type. No schema JSON, native pin or other artifact member is imported.
+The first DATA proof has SHA-256 db6c013fc1c450eb45f99b6f61856c3c2b2bf387f671dd936a70b3a57a14c033;
+the independent6,619-byte proof has SHA-256
+64ac614145b14c4f962033321913e8104db1337a0a3fd03c6697164d47bbf528.
+
+Fresh current-source api:check and all Scope/backend/visual/browser/portable checks must close the
+actual missing-export and additional type diagnostics. New SPA producer/receiver/import and all15
+required-context equivalents/applicable whole workflows remain mandatory. The import is reviewable
+source-edit data, not runtime success, approval, signing, field qualification or release authority.
