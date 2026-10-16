@@ -54,30 +54,49 @@ These findings were fact-checked against primary sources:
    **Default-deny:** a command is allowed only when it resolves to a registered form for that platform.
    Anything else is refused, whatever the block list says.
    - **Registered forms.** Each is a policy ID with a command template and typed parameters (an
-     interface, a VLAN, a peer address), not an arbitrary string.
-   - **Evaluation order for a candidate command:**
+     interface, a VLAN, a peer address), not an arbitrary string. A printed form may also use a
+     *placeholder* parameter, for example `<vlan-N-gateway-ip>` or `<chosen-native-vlan>`. The output
+     marks it as a value the engineer supplies. A sent form never has one.
+   - **Classes:**
+     - `read`;
+     - `session_setup`: the exact strings in `TERMINAL_SETUP_CMDS`, sent only by the transport at
+       session start;
+     - `active_probe`: ping and traceroute;
+     - `change`: configuration lines;
+     - `never`.
+   - **Channels.** The catalogue today mixes SSH CLI commands, controller REST paths and offline-only
+     names. The registry keys every form by channel:
+     - SSH CLI forms follow the rules below;
+     - REST forms follow the existing GET-only controller boundary;
+     - offline-only names are never sent.
+   - **Sent versus printed.** The registry distinguishes commands Atlas *sends* to a device from commands
+     it only *prints* for an engineer to run.
+     - **Sent** (the collector catalogue, the console and `next_evidence`): `read` forms, plus
+       `session_setup` matched as exact strings. Only these classes may be sent. `active_probe` is never
+       sent until a separate decision, and `change` and `never` are never sent at all.
+     - **Printed** (NRFU exports, the validation plan, `compute_remediation_plan`, MOP steps and
+       confirm-on-device text): every printed command is a registered form and never `never`.
+       `active_probe` and `change` are allowed only here, because the engineer runs them under the
+       change process. This keeps today's printed ping, traceroute and remediation lines, and the golden
+       output, unchanged.
+   - **Evaluation order.** Steps 1 and 2 apply to every command; steps 3 to 5 apply to sent SSH CLI
+     commands only:
      1. canonicalize aliases;
-     2. resolve it to a registered form, and refuse it if none matches;
-     3. apply the existing whole-string grammar as a floor;
+     2. resolve the command to a registered form and class for its channel, and refuse it if none
+        matches;
+     3. apply the existing whole-string grammar as a floor (`session_setup` uses its exact-string
+        allowlist instead);
      4. apply the per-platform block list (write-inside-read forms such as `show tech-support` to a file
         or URL, and shell escapes such as guestshell, app-hosting, run bash and tclsh);
      5. apply argument rules to each pipe stage.
-   - **Classes:** `read`; `active_probe` (ping and traceroute); `never`.
-   - **Sent versus printed.** The registry distinguishes commands Atlas *sends* to a device from commands
-     it only *prints* for an engineer to run.
-     - **Sent:** the collector catalogue, the console and `next_evidence`. These may use only `read`
-       forms that pass both gates. `active_probe` is never sent until a separate decision.
-     - **Printed:** NRFU exports, the validation plan, MOP steps and confirm-on-device text. Every
-       printed command must also be a registered form and never `never`. `active_probe` is allowed
-       there, because the engineer runs it. This keeps today's printed ping and traceroute checks, and
-       the golden output, unchanged.
    - **Verifier.** `attestation.is_read_only_command` remains the independent second verifier for sent
-     commands.
+     commands. The Wave 0 PR gives it the same exact `session_setup` allowlist, as a reviewed change.
    - **Class tests.** Producers declare themselves to the registry, and the tests enumerate those
      declarations; they never use a hand-named list.
-     - Every command a *sending* producer can emit passes both gates.
-     - Every command a *printing* producer can emit is a registered, non-`never` form. This includes
-       `compute_validation_plan` and the NRFU export.
+     - Every command a *sending* producer can emit passes both gates for its class and channel.
+     - Every command a *printing* producer can emit is a registered, non-`never` form. Printing
+       producers include `compute_validation_plan`, `compute_remediation_plan`, the NRFU export and the
+       MOP.
      - A structural scan fails if any module builds a device command string outside a declared producer.
    - **Rules and edits.** Rules are written from Cisco documentation and verified against real device
      output, never copied from another vendor's policy files. There is no operator-editable policy in
@@ -91,8 +110,8 @@ These findings were fact-checked against primary sources:
    - **analysis of the original captures first, then secret scrubbing with independent verification**.
      Scrubbed copies are never re-analyzed, because scrubbing can change a verdict, for example the
      SNMP default-community severity;
-   - one live job at a time;
-   - no unattended retries.
+   - no unattended retries;
+   - added by this record: one live job at a time.
 
    Additions:
    - the command catalogue comes from the policy registry and the packs;
@@ -130,8 +149,9 @@ These findings were fact-checked against primary sources:
    - **Local model.** It is optional and off by default. A model on 127.0.0.1 may only rephrase the
      engine's explanation. It never selects, ranks or adds commands, and its text is never a run button.
      Its text is labeled "model-phrased, not authoritative" (ADR 0008: the engine's result is the
-     answer). Enabling it is disclosed in the run's attestation rather than silently changing the
-     `no_llm_runtime` claim.
+     answer). The model client lives outside `cisco_toolkit` and the collector, so the static
+     `no_llm_runtime` and no-egress import scans stay true for the engine. Its use in a run is
+     disclosed in a new per-run attestation field, shown in the Trust drawer.
 5. **An application pack**, registered in `docs/ssot.md` as the owner of the declared application map.
    - **Input.** An operator-declared inventory (CSV or JSON keyed by external id, shaped compatibly with
      AIM), hashed and bound to the snapshot.
@@ -160,7 +180,7 @@ These findings were fact-checked against primary sources:
   - The ACL counter fix (decision 6) lands before the application pack.
   - Decision 2 follows ADR 0008 and RC8-P1-H; decision 3 follows decision 2.
   - Decision 4 is populated in Wave 1.
-  - Application pack v1 takes the engine slot after Wave 1. Its `unsupported(vrf)` and
+  - Application pack v1 follows Wave 1 in stream order (`docs/NOW.md` rule 9). Its `unsupported(vrf)` and
     `unsupported(nat)` states lift as Waves 2 and 3 land.
 - **Workspaces:**
   - Investigate: the console, the root-cause answer and application paths.

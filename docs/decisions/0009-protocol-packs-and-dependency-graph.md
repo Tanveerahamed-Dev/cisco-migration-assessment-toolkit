@@ -33,8 +33,9 @@ Measured on `main` at `9112a16e`, the answer is **no, not at that depth**:
   - `analyze.compute_cross_layer_correlations` applies ten hand-written rules, CL-01 to CL-10, over the
     L1–L3 dependency map. Examples: a single-fiber uplink in front of a sole gateway, a sole gateway with
     no FHRP, an FHRP gateway with a tracked object down, and one switch implicated across several layers.
-  - The STP election check, and architecture-review check L3-4 (`archreview.py`), report an STP root
-    that is not on the VLAN's active gateway.
+  - The STP election check (`stp_root_findings`) reports a root that is not on any switch holding the
+    VLAN's gateway SVI, and feeds the remediation plan. Architecture-review check L3-4 (`archreview.py`)
+    separately compares the root with the FHRP active switch.
   - `protocol_kb` maps one protocol's observed state to its likely cause, for example OSPF EXSTART to an
     MTU mismatch.
   - `causal.compute_causal_flows` re-renders existing findings as trigger → mechanism → impact. It does
@@ -101,8 +102,9 @@ repository keeps relearning, a named subset standing in for the class.
 4. **One event timeline.** Packs contribute state-change signatures to the one syslog classifier, which
    also parses the device timestamp. Events are ordered per object, and only inside the collected log
    window. Ordering across devices is claimed only when NTP evidence shows the clocks synchronized and
-   the timestamp format carries the year and time zone (the logging-timestamp configuration, or
-   `show clock`); otherwise it is `unknown`. Nothing is inferred outside the buffer.
+   the parsed `service timestamps` configuration shows log stamps that carry the year and time zone.
+   That configuration is already in the collected running-config. Otherwise the ordering is `unknown`.
+   Nothing is inferred outside the buffer.
 
 5. **Asymmetry is a correlated finding, not only a declared-flow result.** For each gateway subnet, the
    FHRP active gateway is compared with the upstream routers' collected routes back to that subnet, and
@@ -120,7 +122,7 @@ repository keeps relearning, a named subset standing in for the class.
    - **Wave 1: correlation on evidence already collected.** This answers the owner's example. It covers
      state-change events and timestamps, the per-object timeline, the dependency graph and correlation
      pass, the gateway/return asymmetry check, and the STP-root / FHRP-active / track chain. That chain
-     absorbs archreview L3-4 rather than adding a second owner. It feeds the Investigate workspace's
+     absorbs both existing owners, `stp_root_findings` and archreview L3-4, rather than adding a third. It feeds the Investigate workspace's
      root-cause answer (ADR 0008).
    - **Wave 2: routing depth on a VRF foundation.** A VRF-aware RIB and Traffic Assurance; OSPF expected
      neighbors from configuration, plus areas, DR/BDR and MTU; BGP per VRF and address family, plus
@@ -229,15 +231,15 @@ real device output before its fix lands.
    - **Wave 1** first builds the roots from evidence already collected: `interface`, `transceiver` (from
      the current commands), `neighbor_discovery`, `link`, `mtu`, `chassis_environment`, `vlan_trunk`,
      `vpc_mlag`, `object_tracking`, `address_tables` (MAC and ARP from the collected tables; IPv6 ND
-     joins in Wave 2) and `time_sync` (ordering events across devices needs NTP and timestamp-format
-     evidence). The
+     joins in Wave 2) and `time_sync`. `time_sync` parses NTP state and the `service timestamps`
+     configuration from the collected running-config, which ordering events across devices needs. The
      EtherChannel pack gains a member physical-diversity check from member names. The correlation work
      decided above follows. Until Wave 2 adds the NX-OS commands, the track and FHRP-detail chain is
      IOS-only and reads `unknown` on NX-OS.
    - **Wave 2** opens with new read-only commands. Each gets a parser contract in
      `cmdio.PARSER_CONTRACTS` and a not-observed state: transceiver detail with thresholds, UDLD neighbors,
      err-disabled ports and recovery, stack and supervisor redundancy, NX-OS HSRP detail and `show track`,
-     MAC-table counts, IPv6 neighbors, `show clock`, and the logging-timestamp configuration. It then
+     MAC-table counts, and IPv6 neighbors. It then
      adds `udld`, `errdisable`, `stack_redundancy`, `hardware_lifecycle` (which also needs component rows
      in the EoL registry), IPv6 ND in `address_tables`, `ip_addressing`, `static_rib`, `route_policy`,
      `bfd` and `control_plane_health`, alongside the VRF foundation and routing depth.
