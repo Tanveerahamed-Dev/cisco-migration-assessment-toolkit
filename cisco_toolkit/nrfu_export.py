@@ -60,6 +60,7 @@ from cisco_toolkit.analyze import (
     _vtp_safety_consumer_view,
     validate_etherchannel_baseline,
 )
+from cisco_toolkit.design_advisor import design_nrfu_document_view
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.parse import _parse_fhrp
@@ -136,6 +137,119 @@ def _as_list(v) -> list:
     for one malformed leaf. A malformed list-shaped block reads as absent (its cases abstain), never
     a crash."""
     return v if isinstance(v, list) else []
+
+
+def nrfu_document_view(snapshot: dict) -> dict:
+    """Project persisted assessment/plan content into the exact DOCX row lists.
+
+    This retires the interface's independent row/count/coverage calculations. It
+    never derives a new design or acceptance criterion: missing plan content is
+    displayed as missing and cannot establish decision coverage. Counts include
+    precisely the rows supplied to the renderer, including design/EVPN acceptance.
+    """
+    snap_dict = _as_dict(snapshot)
+    per_device = [d for d in _as_list(_as_dict(snap_dict.get("lifecycle_risk")).get("per_device"))
+                  if isinstance(d, dict)]
+    val_items = [i for i in _as_list(_as_dict(snap_dict.get("validation_plan")).get("items"))
+                 if isinstance(i, dict)]
+    services = [s for s in _as_list(_as_dict(snap_dict.get("service_map")).get("services"))
+                if isinstance(s, dict)]
+    domains = [d for d in _as_list(_as_dict(snap_dict.get("application_intelligence")).get("domains"))
+               if isinstance(d, dict)]
+    mcast = snap_dict.get("multicast_intelligence")
+    rows1: list = []
+    for n, d in enumerate(per_device, start=1):
+        host = d.get("host", "")
+        model = d.get("model", "") or "—"
+        ver = d.get("sw_version", "") or "—"
+        band = d.get("band", "")
+        if band == "Past-LDoS":
+            note = "Past last-day-of-support — replacement, not just verification"
+        elif band == "Past-EoS":
+            note = ("Past end-of-sale with LDoS still future — plan refresh; this date band does not "
+                    "establish support entitlement")
+        elif band == "Near-LDoS":
+            note = "Within one year of LDoS — schedule refresh before the recorded deadline"
+        elif band == "Active":
+            note = "Pre-EoS date band (schema: Active); support entitlement not assessed"
+        elif band == "Unknown":
+            note = ("NOT ASSESSED — either no exact EoX row matched or the matched row's retained "
+                    "source/date authority was withheld or incomplete")
+        else:
+            note = band or ""
+        rows1.append([f"NRFU-I-{n:03d}", host,
+                      "Device reachable; model & software match the as-built baseline",
+                      "show version | i Model number|Version|System image",
+                      f"Model {model}; IOS {ver}", "", note])
+    validation_rows = []
+    for n, it in enumerate(val_items, start=1):
+        evidence_state = it.get("evidence_state") or "not published"
+        custody = it.get("projection_custody") or "custody not published"
+        source = it.get("source_key") or "source not published"
+        validation_rows.append({"category": str(it.get("category", "") or "—"), "cells": [
+            f"NRFU-II-{n:03d}", it.get("device", ""),
+            f"{it.get('category', '')}\n{it.get('severity', '')}",
+            it.get("check", ""), it.get("command", ""), it.get("expect", ""),
+            evidence_state, f"{custody}\n{source}", "",
+        ]})
+    rows2 = [row["cells"] for row in validation_rows]
+    rows3: list = []
+    seen: set = set()
+    n3 = 0
+    for s in services:
+        # str(): an unhashable service/category/port would 500 both the `in seen` test and seen.add()
+        key = (str(s.get("service")), str(s.get("category")), str(s.get("port")))
+        if key in seen:
+            continue
+        seen.add(key)
+        n3 += 1
+        svc = s.get("service", "") or "service"
+        port = s.get("port", "")
+        proto = s.get("proto", "")
+        rows3.append([f"NRFU-III-{n3:03d}", f"{svc} ({s.get('category', '') or '—'})",
+                      f"{svc} reachable end-to-end on {proto}/{port}",
+                      f"telnet <server> {port}  /  show ip access-list (verify {svc} permitted)",
+                      f"{svc} session establishes; permitted by ACL", ""])
+    for d in domains:
+        n3 += 1
+        dom = d.get("domain", "") or d.get("id", "")
+        # _as_list, not `or []`: a well-formed domains list whose ROW carries a scalar `switches`
+        # (a truthy non-list) survives the row's isinstance(dict) filter and 500s the len() below.
+        sw = _as_list(d.get("switches"))
+        rows3.append([f"NRFU-III-{n3:03d}", f"App domain: {dom}",
+                      "Intra-domain reachability after cutover",
+                      "ping / traceroute between two endpoints in the domain",
+                      f"Endpoints across the {len(sw)} switch(es) in this domain reach each other", ""])
+    if mcast:
+        n3 += 1
+        rows3.append([f"NRFU-III-{n3:03d}", "Multicast / timing",
+                      "Multicast forwarding & clock health (if in use)",
+                      "show ip mroute / show ip pim neighbor / show ptp clock",
+                      "PIM neighbors up; mroutes present; clock locked (if PTP/NTP in use)", ""])
+    # Category identity belongs to each rendered row model, never parsed back from display text.
+    val_by_cat = dict(Counter(row["category"] for row in validation_rows))
+    categories = " · ".join(f"{key} {count}" for key, count in
+                            sorted(val_by_cat.items(), key=lambda pair: -pair[1]))
+    # Design acceptance and assessment scope have a distinct owner from protocol receipt transport.
+    plan = design_nrfu_document_view(snap_dict)
+    design_rows, evpn_rows = plan["design_rows"], plan["evpn_rows"]
+    phases = [
+        ("Phase I — Device readiness", "Per-device inventory, software & lifecycle", rows1),
+        ("Phase II — Logical config & connectivity", "FHRP / gateway / reachability / routing / STP / link", rows2),
+        ("Phase III — Service & traffic", "Detected services, application domains, multicast/timing", rows3),
+        ("Design-driven acceptance", "Persisted design NRFU items", design_rows),
+        ("EVPN migration acceptance", "Persisted EVPN guardrails", evpn_rows),
+    ]
+    total = sum(len(rows) for _, _, rows in phases)
+    return {
+        "rows1": rows1, "rows2": rows2, "rows3": rows3,
+        "design_rows": design_rows, "evpn_rows": evpn_rows,
+        "summary_rows": [[name, scope, len(rows)] for name, scope, rows in phases] + [["Total", "", total]],
+        "result_rows": [[name, len(rows), "", "", ""] for name, _, rows in phases]
+                       + [["Overall", total, "", "", ""]],
+        "categories": categories, "trace": plan["trace"], "limits": plan["limits"],
+        "omitted_trace": plan["omitted_trace"],
+    }
 
 
 def _fld(rec, name: str) -> str:

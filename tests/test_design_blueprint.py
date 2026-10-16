@@ -2970,3 +2970,78 @@ def test_replacement_bom_keeps_real_replacements_separate_from_undetermined():
     b = _bom_for([("Past-LDoS", "WS-C2960-24TT-L"), ("Unknown", "WS-C6509-E")])
     assert b["n_replace"] == 1 and b["n_undetermined"] == 1, b
     assert ["WS-C2960-24TT-L", 1] in b["replace_now"]
+
+
+def test_saved_plan_requirements_metadata_is_owner_scoped_and_cannot_poison_options():
+    from cisco_toolkit import design_advisor as owner
+
+    first = owner.requirements_contract()
+    assert first["scope"] == "saved_plan_admission"
+    assert first["schema"] == "atlas.requirements-contract/1"
+    assert first["keys"] == list(owner.REQUIREMENTS_KEYS)
+    assert first["list_fields"] == list(owner.REQUIREMENTS_LIST_KEYS)
+    assert first["availability_tiers"] == ["gold", "silver", "bronze"]
+    assert first["fabric_models"] == ["nxos-evpn", "aci"]
+    assert first["vlan_id"] == {"minimum": 1, "maximum": 4094}
+    fields = {row["key"]: row for row in owner._requirements_model([], {})["fields"]}
+    assert fields["availability_tier"]["options"] == first["availability_tiers"]
+    assert fields["fabric_operating_model"]["options"] == first["fabric_models"]
+    first["keys"].clear()
+    first["availability_tiers"].append("foreign-tier")
+    first["vlan_id"]["maximum"] = 100000
+    fields["fabric_operating_model"]["options"].clear()
+    second = owner.requirements_contract()
+    assert second["keys"] == list(owner.REQUIREMENTS_KEYS)
+    assert second["availability_tiers"] == list(owner.REQUIREMENTS_AVAILABILITY_TIERS)
+    assert second["fabric_models"] == list(owner.REQUIREMENTS_FABRIC_MODELS)
+    assert second["vlan_id"]["maximum"] == owner.REQUIREMENTS_VLAN_MAX
+
+
+def test_strict_saved_plan_metadata_does_not_change_legacy_register_coercion():
+    from cisco_toolkit import design_advisor as owner
+
+    assert owner.requirements_from_interview({
+        "availability_tier": " Custom-Tier ", "convergence_budget_ms": 0,
+        "critical_apps": "voice, video", "constraints": ["budget"],
+        "data_classification": "restricted, internal",
+        "vlan_zones": {"0": "legacy-zero", "4095": "legacy-high"},
+    }) == {
+        "availability_tier": "custom-tier", "critical_apps": ["voice", "video"],
+        "convergence_budget_ms": 0, "constraints": ["budget"],
+        "data_classification": ["restricted", "internal"],
+        "vlan_zones": {0: "legacy-zero", 4095: "legacy-high"},
+    }
+
+
+
+def test_persisted_nrfu_subview_owns_collection_and_software_scope_without_receipt_interpretation():
+    import copy
+
+    from cisco_toolkit.design_advisor import design_nrfu_document_view
+
+    case = {"decision_id": "EXAMPLE-acceptance", "title": "EXAMPLE retained case",
+            "description": "EXAMPLE retained description", "setup": "EXAMPLE retained setup",
+            "pass_criteria": "EXAMPLE retained pass criteria", "devices": ["EXAMPLE-SW"]}
+    snap = {
+        "design_nrfu": {"items": [case], "evpn_acceptance": []},
+        "design_blueprint": {"decisions": [{"id": case["decision_id"], "status": "recommended"}]},
+        "collection_completeness": {"summary": {"not_collected": 0}},
+        "software_risk": {"summary": {"n_config_not_assessable": 0}},
+    }
+    before = copy.deepcopy(snap)
+    view = design_nrfu_document_view(snap)
+    assert view["limits"] == [] and view["trace"][0][2].startswith("Tested — ")
+    # Receipt state vocabulary belongs to the protocol owner, never this design projection.
+    for receipt in (None, 7, {"rows": [{"state": "not_running"}]},
+                    {"rows": [{"state": "capture_error"}]}, {"rows": [{"state": "assessed"}]}):
+        changed = {**snap, "protocol_assessability": receipt}
+        assert design_nrfu_document_view(changed) == view
+    changed = copy.deepcopy(snap)
+    changed["collection_completeness"]["summary"]["not_collected"] = 3
+    changed["software_risk"]["summary"]["n_config_not_assessable"] = 2
+    changed_before = copy.deepcopy(changed)
+    scoped = design_nrfu_document_view(changed)
+    assert scoped["design_rows"] == view["design_rows"] and scoped["trace"] == view["trace"]
+    assert any("3 device(s) were not collected" in limit for limit in scoped["limits"])
+    assert any("2 device(s) had configuration that could not be assessed" in limit for limit in scoped["limits"])
+    assert snap == before and changed == changed_before
