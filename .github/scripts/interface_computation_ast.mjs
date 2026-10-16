@@ -431,7 +431,14 @@ function discoverSourcePaths(files, names) {
     const deps = {...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies};
     return pkg.browser || ['react-dom', 'vite', 'vinext', 'next', 'webpack', 'vue', 'svelte'].some(name => name in deps);
   }).map(([root]) => root);
-  const authored = path => !/(?:^|\/)(?:node_modules|dist|dist-hub|build|\.next|test|tests|__tests__|fixtures)(?:\/|$)/.test(path) && !/\.(?:test|spec)\./.test(path);
+  // A directory named build can contain authored build tools (as in the
+  // reference project). Compiler-declared output directories are generated;
+  // generic build-named source is fully inspected rather than silently skipped.
+  const outputRoots = [...configurations.keys()].map(path => options(path))
+    .filter(opts => opts.outDir && !opts.noEmit).map(opts => relative(opts.outDir).replace(/\/$/, '') + '/');
+  const generated = new Set([...paths].filter(path =>
+    /(?:^|\/)(?:dist|dist-hub|\.next)(?:\/|$)/.test(path) || outputRoots.some(root => path.startsWith(root))));
+  const authored = path => !generated.has(path) && !/(?:^|\/)(?:node_modules|test|tests|__tests__|fixtures)(?:\/|$)/.test(path) && !/\.(?:test|spec)\./.test(path);
   for (const path of paths) {
     if (path.toLowerCase().endsWith('.html') || (script(path) && authored(path) && browserRoots.some(root => path.startsWith(root + '/')))) pending.push(path);
   }
@@ -505,7 +512,7 @@ function discoverSourcePaths(files, names) {
   }
   while (pending.length) {
     const path = pending.pop();
-    if (selected.has(path) || (compiledPaths.has(path) && !path.toLowerCase().endsWith('.html'))) continue;
+    if (selected.has(path) || (generated.has(path) && !path.toLowerCase().endsWith('.html'))) continue;
     if (!(path in files)) throw new Error('Executable source is unavailable: ' + path);
     selected.add(path);
     let fragments;
@@ -558,7 +565,7 @@ function discoverSourcePaths(files, names) {
       visit(file);
     }
   }
-  return [...selected].sort();
+  return {paths: [...selected].sort(), generated: [...generated].filter(path => script(path) || path.toLowerCase().endsWith('.html')).sort()};
 }
 
 if (input.mode === 'discover') {

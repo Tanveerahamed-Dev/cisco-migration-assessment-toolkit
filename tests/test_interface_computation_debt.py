@@ -717,7 +717,7 @@ def test_a_report_writer_cannot_hide_behind_engine_role(writer):
         python_closure(sources, sources.__getitem__)
 
 
-@pytest.mark.parametrize("path", ["new/dist/index.html", "new/build/bundle.js", "webapp/frontend/dist-hub/app.js"])
+@pytest.mark.parametrize("path", ["new/dist/index.html", "new/dist-hub/bundle.js", "webapp/frontend/dist-hub/app.js"])
 def test_uncovered_checked_in_generated_entry_or_bundle_refuses(path):
     with pytest.raises(ValueError, match="no source-to-dist gate"):
         compiled_coverage([path], lambda name: "")
@@ -725,7 +725,9 @@ def test_uncovered_checked_in_generated_entry_or_bundle_refuses(path):
 
 def test_compiled_exclusion_requires_the_named_enforced_build_comparison():
     names = ["webapp/frontend/dist/index.html", "webapp/frontend/dist/assets/app.js"]
-    read = lambda path: (guard.ROOT / path).read_text(encoding="utf-8")
+    def read(path):
+        return (guard.ROOT / path).read_text(encoding="utf-8")
+
     assert compiled_coverage(names, read) == set(names)
     for before, after in [
         ("Prove the SPA build reproduced the immutable source", "Removed gate"),
@@ -765,3 +767,25 @@ def test_a_package_initializer_cannot_substitute_for_an_absent_registered_writer
     }
     with pytest.raises(ValueError, match="writer source is absent"):
         python_closure(sources, sources.__getitem__)
+
+
+
+def test_compiler_declared_build_output_without_a_byte_gate_refuses(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()",
+        "new/tsconfig.json": '{"compilerOptions":{"outDir":"build"}}',
+        "new/build/bundle.js": "export const minified = 1",
+    })
+    with pytest.raises(ValueError, match="no source-to-dist gate"):
+        guard.source_map()
+
+
+def test_authored_build_tools_are_scanned_instead_of_mistaken_for_compiled_output(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()",
+        "client/package.json": '{"dependencies":{"vite":"1"}}',
+        "client/build/tool.mjs": "export function answer(rows) { return rows.length }",
+    })
+    selected = guard.source_map()
+    assert "client/build/tool.mjs" in selected
+    refuse_unregistered(selected, "count")

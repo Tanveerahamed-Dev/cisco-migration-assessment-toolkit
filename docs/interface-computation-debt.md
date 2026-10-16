@@ -64,7 +64,7 @@ calculations: an entry is an exact legacy footprint, not an assertion that every
 length check is a network fact. This does not prove arbitrary program semantics
 or eliminate the independent review requirement.
 
-Version 2's source ceiling is initial boundary `cb9bee1840dd29dfffc5bfefc697dcd62dbb82ca` (foundation main `5f1e067c` plus this PR's guard, role metadata and build-equality gate). This explicitly widens
+Version 2's source ceiling is initial boundary `7d9f83639eccb12915f2686aae13a47b44d50df1` (foundation main `5f1e067c` plus this PR's guard, role metadata and existing build-proof binding). This explicitly widens
 the proposed v1 footprint and changes lexical identities; its before/after counts
 must be disclosed with the hosted admission evidence. This permission applies
 only to the still-unmerged PR-0 proposal, not future feature exemptions.
@@ -383,7 +383,7 @@ including ignored output. Only `webapp/frontend/node_modules` is exempted as an
 installation tree; compiled output is not allowlisted. Thus extra, removed or
 changed compiled members fail, including an out-of-project source helper changed
 during the build. Its existing refusal controls are in
-`tests/test_verify_checkout_immutable.py`; no verifier or gate is weakened.
+`tests/test_release_supply_chain.py`; no verifier or gate is weakened.
 
 The existing **Full source and frontend gate (unprivileged runner)** and
 **Build and qualify Atlas.exe** in `.github/workflows/portable-release.yml` also
@@ -396,7 +396,7 @@ The guard requires that named job/proof to be unconditional, after the immutable
 identity capture and locked source build, with only its existing node_modules
 installation allowance. Missing/conditional proof, changed build/source binding
 or allowing compiled output refuse. Any checked-in executable under another
-`dist`, `dist-hub`, `build` or `.next` tree fails as uncovered; new roots require a
+`dist`, `dist-hub`, `.next` or compiler-declared output tree fails as uncovered; new roots require a
 reviewed source-to-dist gate. Third-party bundle contents follow the source's
 package-lock terminal rule. Their minified identities never enter the register.
 Negative controls cover uncovered bundles/entries, absent/conditional gates,
@@ -409,3 +409,9 @@ The complete class boundary is pinned by `ORIGIN` before its hosted capture;
 contains the foundation code, role metadata and this CI guard; engine-owned
 values and golden/sample bytes remain unchanged. After admission every active v2
 ancestor constrains the register, with all merge parents retained.
+
+Generated-output discovery also reads TypeScript compiler `outDir` metadata.
+An authored build-tool folder is not classified as compiled merely because it is
+named `build` (the reference project has such source). Those authored modules
+remain fully scanned; a declared `outDir: "build"` still requires its byte gate.
+Controls exercise both sides, so this distinction is not a filename exception.

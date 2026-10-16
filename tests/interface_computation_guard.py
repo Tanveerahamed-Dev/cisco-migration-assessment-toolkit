@@ -25,7 +25,7 @@ from interface_computation_sources import SCRIPT_SUFFIXES, compiled_coverage, py
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
-ORIGIN = "cb9bee1840dd29dfffc5bfefc697dcd62dbb82ca"
+ORIGIN = "7d9f83639eccb12915f2686aae13a47b44d50df1"
 SCHEMA = "interface-computation-debt/2"
 ROLE_ORIGIN = "7117ca872198c412ff664f0b32d715aaac3bd3ab"  # Reviewed initial roles, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
@@ -76,11 +76,11 @@ def source_map(revision=None):
     # immutable Git source, never inferred from future module names or current roles.
     role_read = (lambda p: git("show", ROLE_ORIGIN + ":" + p).decode("utf-8")) if revision and ROLE_ORIGIN else None
     selected = python_closure(names, read, role_read)
-    compiled = compiled_coverage(names, read if not revision else lambda p: (ROOT / p).read_text(encoding="utf-8"))
     candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
-    if candidates:
-        selected.update(node_reply(dict(mode="discover", files=candidates, names=names, compiled=sorted(compiled))))
+    discovered = node_reply(dict(mode="discover", files=candidates, names=names)) if candidates else {"paths": [], "generated": []}
+    compiled = compiled_coverage(names, read if not revision else lambda p: (ROOT / p).read_text(encoding="utf-8"), discovered["generated"])
+    selected.update(path for path in discovered["paths"] if path not in compiled or path.lower().endswith(".html"))
     return SourceMap({path: read(path) for path in sorted(selected)}, compiled)
 
 

@@ -174,16 +174,17 @@ DIST_COMMAND = ('python .github/scripts/verify_checkout_immutable.py '
                 '--allow-untracked-prefix webapp/frontend/node_modules')
 
 
-def compiled_coverage(names, read):
+def compiled_coverage(names, read, generated=None):
     """Require the existing whole-checkout build proof before excluding imports.
 
     Every compiled entry stays inspected. The required Distribution contract
     compares all tracked bytes and refuses every unapproved output (ignored too).
     It therefore closes minified imports without ratcheting generated identities.
     """
-    generated = {path for path in names if any(part in {"dist", "dist-hub", "build", ".next"}
-                 for part in PurePosixPath(path).parts[:-1])
-                 and path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))}
+    if generated is None:
+        generated = {path for path in names if any(part in {"dist", "dist-hub", ".next"}
+                     for part in PurePosixPath(path).parts[:-1])
+                     and path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))}
     if not generated:
         return set()
     uncovered = sorted(path for path in generated if not path.startswith(COMPILED_ROOT))
