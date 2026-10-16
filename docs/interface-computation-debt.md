@@ -156,3 +156,23 @@ URL languages while retaining JavaScript-body inspection. Negative controls
 remain executable. This only tightens source admission, leaving the inspected
 application/report corpus unchanged. Fresh CodeQL and all protected/applicable
 checks are required on the final combined head; no alert is waived.
+
+
+## Complete-suite archive-order regression
+
+Admission head `df239f4b`, CI `38885820994`, Python 3.11 job `116923345485`,
+completed with **1 failed / 19,239 passed / 288 skipped / 3 xfailed** plus
+26 passing subtests in **3,241.59 s**. The failure is the existing
+`test_distribution_confidentiality_audit_stays_in_every_archive_workflow`:
+the temporary census artifact upload preceded the required distribution audit
+in `ci.yml`. Focused census passes did not close this broader failure.
+
+The bootstrap captures above remain retained and the active inventory is
+committed. The correction removes only that temporary early upload. Every
+matrix leg still executes census observation (including its log fingerprint),
+the active current/origin/history comparison, canonical mutations and the
+complete default suite. The original package build/audit/source-binding,
+pre-preservation recheck and archive upload remain unchanged. The two existing
+archive-order/source-binding assertions now also run early, without changing
+their bodies. No audit is bypassed, mocked or relocated to satisfy a text check.
+Fresh full validation is required on the corrected head.

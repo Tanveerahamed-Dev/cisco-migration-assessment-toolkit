@@ -105,6 +105,11 @@ jobs:
         run: python -m pytest tests/test_client_artifact_census.py
       - name: Knowledge export admission and workflow contracts
         run: python -m pytest tests/test_knowledge_export.py tests/test_knowledge_export_workflow.py
+      - name: Archive confidentiality ordering and source-binding contracts
+        run: >-
+          python -m pytest
+          tests/test_ci_gates.py::test_distribution_confidentiality_audit_stays_in_every_archive_workflow
+          tests/test_ci_gates.py::test_distribution_source_binding_is_fail_closed_in_every_archive_workflow
       # Fail promptly on receive liveness regressions; the unchanged complete
       # suite below still collects these transport contracts on every platform.
       - name: Debug helper receive deadline contracts
@@ -132,14 +137,6 @@ jobs:
         run: npm ci
       - name: Observe exact interface computation sites for review
         run: python tests/interface_computation_guard.py --observe "${{ runner.temp }}/interface-debt-observed.json"
-      - name: Retain interface computation observation
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: interface-debt-observed-${{ github.sha }}-${{ matrix.os }}-${{ matrix.python-version }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/interface-debt-observed.json
-          if-no-files-found: error
-          retention-days: 14
       - name: Every canonical fact has an executed real-producer reconcile check
         run: python -m pytest tests/test_pipeline_inprocess.py::test_pipeline_inprocess_builds_all_three_deliverables
       - name: Closed interface computation ratchet and mutation controls
