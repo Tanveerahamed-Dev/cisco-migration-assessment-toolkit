@@ -2234,7 +2234,9 @@ def test_nrfu_coverage_column_requires_a_derived_test(tmp_path):
              "status": "recommended"},
             {"id": "uncovered-decision", "title": "Uncovered decision", "priority": "Critical",
              "status": "recommended"}]},
-        "design_nrfu": {"items": [{"decision_id": "covered-decision", "phase": "pre-cutover"}]},
+        "design_nrfu": {"items": [{"decision_id": "covered-decision", "phase": "pre-cutover",
+            "description": "EXAMPLE retained acceptance", "setup": "EXAMPLE capture source evidence",
+            "pass_criteria": "EXAMPLE expected source-bound result", "devices": ["a"]}]},
     }
     out = str(tmp_path / "nrfu_cov.docx")
     write_nrfu_docx(out, snap, "Coverage Fleet")

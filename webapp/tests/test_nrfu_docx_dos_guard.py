@@ -226,7 +226,9 @@ _WELLFORMED = {
         {"id": "D1", "title": "Collapsed-core to spine/leaf", "status": "recommended", "priority": "High"},
         {"id": "D2", "title": "Wireless controller placement", "status": "needs-requirement",
          "priority": "Medium"}]},
-    "design_nrfu": {"items": [{"decision_id": "D1", "phase": "post-cutover-routing"}]},
+    "design_nrfu": {"items": [{"decision_id": "D1", "phase": "post-cutover-routing",
+        "description": "EXAMPLE persisted routing acceptance", "setup": "EXAMPLE establish both routed peers",
+        "pass_criteria": "EXAMPLE both peers retain their captured adjacency", "devices": ["sw1", "sw2"]}]},
 }
 
 
@@ -271,9 +273,9 @@ def test_wellformed_nrfu_render_unchanged(client):
     assert any("App domain: voice" in c for c in cells)
     assert any("Endpoints across the 2 switch(es) in this domain" in c for c in cells)
     assert any("Multicast / timing" in c for c in cells)
-    # test-summary totals: 1 device + 1 validation item + (1 service + 1 domain + 1 multicast) = 5
+    # Summary includes the newly rendered persisted design case as well as the five baseline cases.
     j = next(k for k, c in enumerate(cells) if c == "Total")
-    assert cells[j + 2] == "5"
+    assert cells[j + 2] == "6"
 
 
 def test_guarded_read_matches_or_form_on_every_wellformed_value():
@@ -359,7 +361,9 @@ def test_nrfu_traceability_lookup_still_resolves(client):
     # fix: with a string id, str("d1") == "d1", both sides agree, and the bug is invisible. With 7,
     # str()-ing only the comprehension makes the keys "7" while the lookup still passes 7 -> miss.
     snap = _base(design_blueprint={"decisions": [dict(_REC, id=7)]},
-                 design_nrfu={"items": [{"decision_id": 7, "phase": "pre-cutover-baseline"}]})
+                 design_nrfu={"items": [{"decision_id": 7, "phase": "pre-cutover-baseline",
+                     "description": "EXAMPLE retained check", "setup": "EXAMPLE capture before cutover",
+                     "pass_criteria": "EXAMPLE baseline retained", "devices": ["sw1"]}]})
     _paras, cells = _nrfu_cells(client, snap)
     joined = "\n".join(cells)
     assert "pre-cutover-baseline" in joined, (

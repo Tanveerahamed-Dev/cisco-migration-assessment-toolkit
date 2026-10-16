@@ -267,3 +267,35 @@ push; all15 required contexts and every applicable whole workflow must pass on t
 The earlier B4f actual-document/SPA reviews remain source-edit DATA, not integrated-source
 readiness or a replacement for the final source-bound rebuild/receipt. No existing test, verifier,
 budget, timeout, golden/sample byte, product/schema version or external gate is relaxed.
+
+
+## Supervisor NRFU P1 correction after the blocked independent review
+
+The independent review of 4d140ea9 was BLOCKED: the saved-plan NRFU document claimed
+coverage without rendering its retained acceptance instructions, and the service summary
+counted service/category pairs while its test rows distinguished ports. That old head's
+hosted success does not close these findings.
+
+The existing engine export owner `cisco_toolkit.nrfu_export.nrfu_document_view` now owns
+the document row lists, coverage and both summaries. The interface retires its duplicate
+row/coverage/count computations and only renders the returned view. The separate four-phase
+command pack and snapshot pipeline remain unchanged. Every persisted design NRFU and EVPN
+acceptance entry is rendered without recomputing the selected design, including description,
+setup, pass criteria, devices, phase, priority and citation when retained. Missing fields are
+explicit; only complete rendered instructions with a device scope can support the historical
+`Tested` coverage label, which is explicitly disclosed as unexecuted test coverage. Execution
+results remain blank. Both summaries include the exact baseline, design and EVPN case lists.
+
+Hosted tests now assert actual saved setup/pass-criteria text and EVPN acceptance, incomplete
+field negatives, all 45 retained design cases beyond the traceability display cap, forbidden
+acceptance recomputation, input immutability, and the same-service/category two-port
+counterexample against native DOCX rows and both summaries. Existing malformed-input,
+source-custody, blocker, positive coverage and baseline-output controls remain in force.
+No runtime tests ran locally. Fresh final-head hosted validation and the same independent
+reviewer are required; this record is implementation scope, not validation or review approval.
+
+Current main was merged locally (already an ancestor at d73d33e2), and its exact docs/NOW.md
+was restored in this push under the supervisor-only board rule. Feature status is recorded
+in this PR instead. The cutover Go/No-Go duplication remains deferred to RC8-P1-H PR-2;
+cutover.py is untouched. PR667 remains parked. No gate, budget, timeout, product/schema
+version, golden/sample byte, external acceptance, release or publication authority changes.

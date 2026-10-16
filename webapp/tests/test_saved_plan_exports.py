@@ -495,6 +495,8 @@ def test_mop_wave_and_nrfu_coverage_consume_the_same_persisted_selected_design()
     assert baseline_gate["summary"]["n_blockers"] == 1
     plan = _plan(snapshot, {"fabric_operating_model": "nxos-evpn", "data_classification": ["restricted"]})
     rendered = deliverables.render_saved_plan(snapshot, plan)
+    plan_before = copy.deepcopy(plan)
+    snapshot_before = copy.deepcopy(dict(snapshot))
     blueprint = plan["projection"]["sections"]["design_blueprint"]
     waves = blueprint["target_state"]["wave_plan"]["waves"]
     assert [len(wave["switches"]) for wave in waves] == [40, 5]
@@ -519,9 +521,40 @@ def test_mop_wave_and_nrfu_coverage_consume_the_same_persisted_selected_design()
                 assert recommended[0]["title"] in text
                 assert "Tested — " in text
                 assert "NO acceptance test derived" not in text
+                from docx import Document
+
+                persisted = plan["projection"]["sections"]["design_nrfu"]
+                coverage_table = next(table for table in Document(path).tables
+                                      if [cell.text for cell in table.rows[0].cells] ==
+                                      ["Target-state design decision", "Priority", "NRFU coverage"])
+                coverage = {row.cells[0].text: row.cells[2].text for row in coverage_table.rows[1:]}
+                for decision in recommended:
+                    case = next(item for item in persisted["items"] if item["decision_id"] == decision["id"])
+                    complete = all(isinstance(case.get(key), str) and case[key].strip()
+                                   for key in ("description", "setup", "pass_criteria"))
+                    complete = complete and bool(case["devices"]) and all(
+                        isinstance(device, str) and device.strip() for device in case["devices"])
+                    if complete:
+                        assert coverage[decision["title"]].startswith("Tested — ")
+                    else:
+                        assert "NOT COVERED" in coverage[decision["title"]]
+                        assert "Tested" not in coverage[decision["title"]]
+                assert persisted["items"] and persisted["evpn_acceptance"]
+                # Assert real saved instructions, not merely titles/coverage labels.
+                for item in persisted["items"]:
+                    assert item["description"] and item["setup"] and item["pass_criteria"]
+                    for field in ("description", "setup", "pass_criteria"):
+                        assert item[field] in text
+                    for device in item["devices"]:
+                        assert device in text
+                for item in persisted["evpn_acceptance"]:
+                    assert item["description"] in text
+                    assert item["pass_criteria"] in text
             assert "PRE-CUTOVER DEGRADED" in text
         finally:
             Path(path).unlink()
+    assert plan == plan_before
+    assert dict(snapshot) == snapshot_before
 
 
 def test_malformed_original_baseline_stays_indeterminate_in_selected_plan_mop():

@@ -138,6 +138,173 @@ def _as_list(v) -> list:
     return v if isinstance(v, list) else []
 
 
+def nrfu_document_view(snapshot: dict) -> dict:
+    """Project persisted assessment/plan content into the exact DOCX row lists.
+
+    This retires the interface's independent row/count/coverage calculations. It
+    never derives a new design or acceptance criterion: missing plan content is
+    displayed as missing and cannot establish decision coverage. Counts include
+    precisely the rows supplied to the renderer, including design/EVPN acceptance.
+    """
+    snap_dict = _as_dict(snapshot)
+    per_device = [d for d in _as_list(_as_dict(snap_dict.get("lifecycle_risk")).get("per_device"))
+                  if isinstance(d, dict)]
+    val_items = [i for i in _as_list(_as_dict(snap_dict.get("validation_plan")).get("items"))
+                 if isinstance(i, dict)]
+    services = [s for s in _as_list(_as_dict(snap_dict.get("service_map")).get("services"))
+                if isinstance(s, dict)]
+    domains = [d for d in _as_list(_as_dict(snap_dict.get("application_intelligence")).get("domains"))
+               if isinstance(d, dict)]
+    mcast = snap_dict.get("multicast_intelligence")
+    rows1: list = []
+    for n, d in enumerate(per_device, start=1):
+        host = d.get("host", "")
+        model = d.get("model", "") or "—"
+        ver = d.get("sw_version", "") or "—"
+        band = d.get("band", "")
+        if band == "Past-LDoS":
+            note = "Past last-day-of-support — replacement, not just verification"
+        elif band == "Past-EoS":
+            note = ("Past end-of-sale with LDoS still future — plan refresh; this date band does not "
+                    "establish support entitlement")
+        elif band == "Near-LDoS":
+            note = "Within one year of LDoS — schedule refresh before the recorded deadline"
+        elif band == "Active":
+            note = "Pre-EoS date band (schema: Active); support entitlement not assessed"
+        elif band == "Unknown":
+            note = ("NOT ASSESSED — either no exact EoX row matched or the matched row's retained "
+                    "source/date authority was withheld or incomplete")
+        else:
+            note = band or ""
+        rows1.append([f"NRFU-I-{n:03d}", host,
+                      "Device reachable; model & software match the as-built baseline",
+                      "show version | i Model number|Version|System image",
+                      f"Model {model}; IOS {ver}", "", note])
+    validation_rows = []
+    for n, it in enumerate(val_items, start=1):
+        evidence_state = it.get("evidence_state") or "not published"
+        custody = it.get("projection_custody") or "custody not published"
+        source = it.get("source_key") or "source not published"
+        validation_rows.append({"category": str(it.get("category", "") or "—"), "cells": [
+            f"NRFU-II-{n:03d}", it.get("device", ""),
+            f"{it.get('category', '')}\n{it.get('severity', '')}",
+            it.get("check", ""), it.get("command", ""), it.get("expect", ""),
+            evidence_state, f"{custody}\n{source}", "",
+        ]})
+    rows2 = [row["cells"] for row in validation_rows]
+    rows3: list = []
+    seen: set = set()
+    n3 = 0
+    for s in services:
+        # str(): an unhashable service/category/port would 500 both the `in seen` test and seen.add()
+        key = (str(s.get("service")), str(s.get("category")), str(s.get("port")))
+        if key in seen:
+            continue
+        seen.add(key)
+        n3 += 1
+        svc = s.get("service", "") or "service"
+        port = s.get("port", "")
+        proto = s.get("proto", "")
+        rows3.append([f"NRFU-III-{n3:03d}", f"{svc} ({s.get('category', '') or '—'})",
+                      f"{svc} reachable end-to-end on {proto}/{port}",
+                      f"telnet <server> {port}  /  show ip access-list (verify {svc} permitted)",
+                      f"{svc} session establishes; permitted by ACL", ""])
+    for d in domains:
+        n3 += 1
+        dom = d.get("domain", "") or d.get("id", "")
+        # _as_list, not `or []`: a well-formed domains list whose ROW carries a scalar `switches`
+        # (a truthy non-list) survives the row's isinstance(dict) filter and 500s the len() below.
+        sw = _as_list(d.get("switches"))
+        rows3.append([f"NRFU-III-{n3:03d}", f"App domain: {dom}",
+                      "Intra-domain reachability after cutover",
+                      "ping / traceroute between two endpoints in the domain",
+                      f"Endpoints across the {len(sw)} switch(es) in this domain reach each other", ""])
+    if mcast:
+        n3 += 1
+        rows3.append([f"NRFU-III-{n3:03d}", "Multicast / timing",
+                      "Multicast forwarding & clock health (if in use)",
+                      "show ip mroute / show ip pim neighbor / show ptp clock",
+                      "PIM neighbors up; mroutes present; clock locked (if PTP/NTP in use)", ""])
+    # Category identity belongs to each rendered row model, never parsed back from display text.
+    val_by_cat = dict(Counter(row["category"] for row in validation_rows))
+    categories = " · ".join(f"{key} {count}" for key, count in
+                            sorted(val_by_cat.items(), key=lambda pair: -pair[1]))
+    design = _as_dict(snap_dict.get("design_nrfu"))
+    nrfu_items = [item for item in _as_list(design.get("items")) if isinstance(item, dict)]
+    evpn_items = [item for item in _as_list(design.get("evpn_acceptance")) if isinstance(item, dict)]
+    design_rows = [_document_acceptance_row(item) for item in nrfu_items]
+    evpn_rows = [_document_acceptance_row(item) for item in evpn_items]
+    bp_decisions = [d for d in _as_list(_as_dict(snap_dict.get("design_blueprint")).get("decisions"))
+                    if isinstance(d, dict)]
+    coll = _as_dict(_as_dict(snap_dict.get("collection_completeness")).get("summary"))
+    swrisk = _as_dict(_as_dict(snap_dict.get("software_risk")).get("summary"))
+    rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+    needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
+    nc = coll.get("not_collected") or 0
+    n_na = swrisk.get("n_config_not_assessable") or 0
+    limits = []
+    if nc:
+        limits.append(f"{nc} device(s) were not collected at assessment — their post-cutover state is NOT "
+                      "validated here; re-collect and run Phase I against them before sign-off.")
+    if n_na:
+        limits.append(f"{n_na} device(s) had configuration that could not be assessed for software-advisory "
+                      "exposure — NOT validated here.")
+    if needs:
+        limits.append(f"{len(needs)} target-state design area(s) still need a requirement before they can be "
+                      "designed and acceptance-tested — see the design blueprint's open questions.")
+    # A trace label requires the complete, actually rendered acceptance body.
+    phase_by = {str(item.get("decision_id")): item.get("phase", "") for item in nrfu_items
+                if _document_acceptance_complete(item)}
+    uncovered = [d for d in rec if str(d.get("id")) not in phase_by]
+    if uncovered:
+        limits.append(f"{len(uncovered)} recommended design decision(s) have NO acceptance test with complete rendered "
+                      "content in the design NRFU — they are NOT validated by this plan; supply the "
+                      "description, setup, pass criteria and device scope before sign-off.")
+    trace = [[d.get("title", d.get("id", "")), d.get("priority", ""),
+              ("Tested — " + (str(phase_by[str(d.get("id"))]).strip()
+                              or "phase not stated in the design NRFU"))
+              if str(d.get("id")) in phase_by else
+              "NOT COVERED — no complete acceptance test rendered for this decision"] for d in rec]
+    trace += [[d.get("title", d.get("id", "")), d.get("priority", ""),
+               "Not testable until the requirement is supplied"] for d in needs]
+    phases = [
+        ("Phase I — Device readiness", "Per-device inventory, software & lifecycle", rows1),
+        ("Phase II — Logical config & connectivity", "FHRP / gateway / reachability / routing / STP / link", rows2),
+        ("Phase III — Service & traffic", "Detected services, application domains, multicast/timing", rows3),
+        ("Design-driven acceptance", "Persisted design NRFU items", design_rows),
+        ("EVPN migration acceptance", "Persisted EVPN guardrails", evpn_rows),
+    ]
+    total = sum(len(rows) for _, _, rows in phases)
+    return {
+        "rows1": rows1, "rows2": rows2, "rows3": rows3,
+        "design_rows": design_rows, "evpn_rows": evpn_rows,
+        "summary_rows": [[name, scope, len(rows)] for name, scope, rows in phases] + [["Total", "", total]],
+        "result_rows": [[name, len(rows), "", "", ""] for name, _, rows in phases]
+                       + [["Overall", total, "", "", ""]],
+        "categories": categories, "trace": trace[:40], "limits": limits,
+        "omitted_trace": max(0, len(trace) - 40),
+    }
+
+
+def _document_acceptance_complete(item: dict) -> bool:
+    """Only explicit persisted instructions and device scope establish coverage."""
+    return (all(isinstance(item.get(key), str) and item[key].strip()
+                for key in ("description", "setup", "pass_criteria"))
+            and isinstance(item.get("devices"), list) and bool(item["devices"])
+            and all(isinstance(device, str) and device.strip() for device in item["devices"]))
+
+
+def _document_acceptance_row(item: dict) -> list:
+    """Keep every retained acceptance entry, even incomplete ones, without inventing content."""
+    missing = "Not supplied in persisted acceptance content"
+    return [item.get("decision_id", ""),
+            f"{item.get('title', '')}\nPriority: {item.get('priority', '')}\n"
+            f"Source: {item.get('principle_citation', '')}",
+            item.get("phase", ""), item.get("description") or missing,
+            item.get("setup") or missing, item.get("pass_criteria") or missing,
+            "\n".join(str(device) for device in _as_list(item.get("devices"))) or missing, ""]
+
+
 def _fld(rec, name: str) -> str:
     """Field access tolerant of both the snapshot's dict-shaped interface records and live
     InterfaceData objects (and of sparse snapshots, where empty fields are omitted entirely)."""
