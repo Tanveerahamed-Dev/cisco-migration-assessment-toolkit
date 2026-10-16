@@ -64,7 +64,7 @@ def source_map(revision=None):
     read = (lambda p: git("show", revision + ":" + p).decode("utf-8")) if revision else lambda p: (ROOT / p).read_text(encoding="utf-8")
     names = sorted(set(names) - {""})
     selected = python_closure(names, read)
-    candidates = {path: read(path) for path in names if path.endswith((*SCRIPT_SUFFIXES, ".html"))
+    candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
     if candidates:
         selected.update(node_reply(dict(mode="discover", files=candidates, names=names)))
@@ -265,7 +265,12 @@ def scan(sources):
         if path.endswith(".py"):
             sites.extend(python_sites(path, text))
             tree = ast.parse(text, filename=path)
-            streams.append(dict(path=path, symbol="<forbidden-pattern>", tokens=python_stream(text, tree)))
+            try:
+                tokens = python_stream(text, tree)
+            except Exception:
+                print(f"{path}: Python token normalization failed", file=sys.stderr)
+                raise
+            streams.append(dict(path=path, symbol="<forbidden-pattern>", tokens=tokens))
             for payload, line in string_payloads(tree):
                 if not re.search(r"len|sum|Counter|length|size|filter|eval|exec|Function|queue|visited|adjacency|neighbors|neighbours|[<>]", payload):
                     continue

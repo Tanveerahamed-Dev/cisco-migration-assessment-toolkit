@@ -124,8 +124,9 @@ function propertyResolver(file) {
 }
 
 function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver = null) {
+  const lowerPath = path.toLowerCase();
   const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true,
-    path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    lowerPath.endsWith('.tsx') ? ts.ScriptKind.TSX : lowerPath.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(lowerPath) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
   if (file.parseDiagnostics.length) throw new Error(`${path}: source parse failed: ${file.parseDiagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')).join('; ')}`);
   const rows = [];
   const tokenCache = new WeakMap();
@@ -242,7 +243,7 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
 
 export function scan(path, text) {
   const occurrences = new Map();
-  if (!path.endsWith('.html')) return scanJavaScript(path, text, occurrences);
+  if (!path.toLowerCase().endsWith('.html')) return scanJavaScript(path, text, occurrences);
   const fragments = htmlSources(text, 0, 0, value => scriptIsClosed(path, value));
   // Classic scripts and inline handlers share document scope. Bind static count
   // property aliases across every fragment, then retain each fragment's source line.
@@ -281,8 +282,9 @@ function scriptIsClosed(path, value) {
 
 function tokenStreams(path, text, symbol = '<forbidden-pattern>', lineOffset = 0, depth = 0) {
   if (depth > 8) throw new Error('Generated payload exceeds static census depth');
+  const lowerPath = path.toLowerCase();
   const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true,
-    path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    lowerPath.endsWith('.tsx') ? ts.ScriptKind.TSX : lowerPath.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(lowerPath) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
   const masks = new Map(), payloads = [];
   function collect(node) {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -292,7 +294,8 @@ function tokenStreams(path, text, symbol = '<forbidden-pattern>', lineOffset = 0
     }
     if (ts.isTemplateExpression(node)) {
       masks.set(node.getStart(file), {end: node.end, text: '<interpolated-payload>'});
-      for (const part of [node.head, ...node.templateSpans.map(span => span.literal)]) payloads.push({text: part.text, line: lineOffset + file.getLineAndCharacterOfPosition(part.getStart(file)).line});
+      payloads.push({text: node.head.text + node.templateSpans.map(span => '__census_interpolation__' + span.literal.text).join(''),
+        line: lineOffset + file.getLineAndCharacterOfPosition(node.getStart(file)).line});
     }
     if (ts.isRegularExpressionLiteral(node) || ts.isJsxText(node)) masks.set(node.getStart(file), {end: node.end, text: null});
     ts.forEachChild(node, collect);
@@ -320,15 +323,19 @@ function tokenStreams(path, text, symbol = '<forbidden-pattern>', lineOffset = 0
 }
 
 function payloadStreams(path, text, line = 0, depth = 0) {
-  if (/<(?:!doctype|html|script|body|div|button|iframe)\b/i.test(text)) {
-    return htmlSources(text, depth, line, value => scriptIsClosed(path, value))
-      .flatMap(fragment => tokenStreams(path, fragment.text, '<generated-payload>', fragment.line, depth + 1));
+  try {
+    if (/<(?:!doctype|html|script|body|div|button|iframe)\b/i.test(text)) {
+      return htmlSources(text, depth, line, value => scriptIsClosed(path, value))
+        .flatMap(fragment => tokenStreams(path, fragment.text, '<generated-payload>', fragment.line, depth + 1));
+    }
+    return tokenStreams(path, text, '<generated-payload>', line, depth);
+  } catch (error) {
+    throw new Error(`${path}:${line + 1}: generated-payload inspection failed`, {cause: error});
   }
-  return tokenStreams(path, text, '<generated-payload>', line, depth);
 }
 
 function discoverSourcePaths(files, names) {
-  const script = path => /\.(?:[mc]?[jt]s|[jt]sx)$/.test(path);
+  const script = path => /\.(?:[mc]?[jt]s|[jt]sx)$/i.test(path);
   const paths = new Set(names), selected = new Set(), pending = [];
   const packages = new Map(), locks = new Map(), configurations = new Map(), optionCache = new Map();
   const absolute = path => '/repo/' + path;
@@ -373,7 +380,7 @@ function discoverSourcePaths(files, names) {
   }).map(([root]) => root);
   const authored = path => !/(?:^|\/)(?:node_modules|dist|dist-hub|build|\.next|test|tests|__tests__|fixtures)(?:\/|$)/.test(path) && !/\.(?:test|spec)\./.test(path);
   for (const path of paths) {
-    if (path.endsWith('.html') || (script(path) && authored(path) && browserRoots.some(root => path.startsWith(root + '/')))) pending.push(path);
+    if (path.toLowerCase().endsWith('.html') || (script(path) && authored(path) && browserRoots.some(root => path.startsWith(root + '/')))) pending.push(path);
   }
   const directories = new Set(['.']);
   for (const path of paths) {
@@ -449,7 +456,7 @@ function discoverSourcePaths(files, names) {
     if (!(path in files)) throw new Error('Executable source is unavailable: ' + path);
     selected.add(path);
     let fragments;
-    if (path.endsWith('.html')) {
+    if (path.toLowerCase().endsWith('.html')) {
       fragments = htmlSources(files[path], 0, 0, value => {
         pending.push(...dependency(path, value, true)); return true;
       });
@@ -507,7 +514,7 @@ if (input.mode === 'discover') {
 }
 
 const sites = (input.sources ?? []).flatMap(source => scan(source.path, source.text));
-const streams = (input.sources ?? []).flatMap(source => source.path.endsWith('.html')
+const streams = (input.sources ?? []).flatMap(source => source.path.toLowerCase().endsWith('.html')
   ? htmlSources(source.text, 0, 0, value => scriptIsClosed(source.path, value)).flatMap(fragment => tokenStreams(source.path, fragment.text, '<forbidden-pattern>', fragment.line))
   : tokenStreams(source.path, source.text));
 for (const payload of input.payloads ?? []) streams.push(...payloadStreams(payload.path, payload.text, payload.line));

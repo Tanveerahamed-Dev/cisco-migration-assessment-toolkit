@@ -135,6 +135,13 @@ jobs:
       - name: Install Atlas Scope's locked toolchain
         working-directory: atlas-scope
         run: npm ci
+      - name: Synthetic detected-form refusal and stability controls
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+        run: >-
+          python -m pytest -k
+          "not test_current_interface_has_only_registered_exact_sites and not test_registry_paths_and_symbols_are_closed_not_whole_file_exemptions and not test_source_discovery_includes_new_interface_modules_and_registry_writers"
+          tests/test_interface_computation_debt.py
       - name: Observe exact interface computation sites for review
         run: python tests/interface_computation_guard.py --observe "${{ runner.temp }}/interface-debt-observed.json"
       - name: Every canonical fact has an executed real-producer reconcile check

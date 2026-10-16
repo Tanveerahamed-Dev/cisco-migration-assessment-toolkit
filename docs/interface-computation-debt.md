@@ -262,3 +262,22 @@ packages are terminals; file-linked workspace dependencies are traversed as
 repository source. Positive transitive-terminal and negative file-linked-helper
 controls accompany the correction. No file-name exception, skipped edge, raised
 limit or valid-capture claim replaces this failed evidence.
+
+Head `324c5341`, CI `38953846389`, Linux Python 3.12 job `117152253379`,
+passes discovery and then fails Python token normalization with an indentation
+error before `cisco_toolkit/html.py :: redact_snapshot._mac`. The source itself
+is unchanged and valid. F-string masks could reuse overlapping/equal format-spec
+spans and splice a range repeatedly. The correction unions those spans before
+masking; a nested formatted literal plus following function, with deliberately
+overlapping AST locations, must retain the same token stream. Normalization
+errors now name their source file. No producer/redactor or timeout is changed;
+fresh hosted capture/control evidence is still required.
+
+Synthetic refusal/stability controls now also execute **before** repository
+observation, so a refused real-source edge cannot hide their results. This
+additional selection excludes only the two real-register admission assertions
+and the real-repository discovery assertion. The original unconditional full
+guard, real producer mutation check, complete default suite and all limits remain
+unchanged afterward. Interpolated HTML templates are stitched into one static
+payload with opaque interpolation markers before inspection; their static code
+is not dropped or misread as separate unclosed documents.

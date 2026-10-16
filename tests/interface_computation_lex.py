@@ -24,11 +24,15 @@ def python_stream(text, tree):
         # AST columns are UTF-8 byte offsets, unlike tokenize's character columns.
         return offsets[line - 1] + len(lines[line - 1].encode("utf-8")[:column].decode("utf-8"))
 
-    masks = sorted((position(n.lineno, n.col_offset), position(n.end_lineno, n.end_col_offset))
-                   for n in ast.walk(tree) if isinstance(n, ast.JoinedStr))
+    spans = sorted({(position(n.lineno, n.col_offset), position(n.end_lineno, n.end_col_offset))
+                    for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)})
+    masks = []
+    for start, end in spans:
+        if masks and start < masks[-1][1]:
+            masks[-1] = (masks[-1][0], max(end, masks[-1][1]))
+        else:
+            masks.append((start, end))
     for start, end in reversed(masks):
-        if any(a < start and end <= b for a, b in masks):
-            continue
         old = text[start:end]
         text = text[:start] + "('__census_payload__'" + "\n" * old.count("\n") + ")" + text[end:]
     ignored = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
@@ -57,8 +61,27 @@ def string_payloads(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
                 docstrings.add(id(node.body[0].value))
-    return [(node.value, node.lineno) for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings]
+    result = []
+
+    def visit(node):
+        if isinstance(node, ast.JoinedStr):
+            # A template is one payload, not several falsely unclosed HTML
+            # documents. Interpolations stay opaque; their expressions are
+            # independently visited by the normal AST rules.
+            text = "".join(value.value if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                           else "__census_interpolation__" for value in node.values)
+            result.append((text, node.lineno))
+            for value in node.values:
+                if isinstance(value, ast.FormattedValue):
+                    visit(value.value)
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            result.append((node.value, node.lineno))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return result
 
 
 def lexical_sites(path, tokens, symbol, digest, occurrences):

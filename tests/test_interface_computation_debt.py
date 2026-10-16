@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 import interface_computation_guard as guard
+from interface_computation_lex import python_stream
 from ssot_contract_guard import require_canonical_checks
 from cisco_toolkit import ssot
 
@@ -344,7 +345,7 @@ def test_moving_a_registered_computation_into_a_helper_and_removing_old_rows_ref
         guard.validate(guard.proposal(current), current, original_sites)
 
 
-@pytest.mark.parametrize("path", ["webapp/frontend/index.html", "atlas-scope/index.html", "other-client/entry.html", "client/entry with space.html", "client/é.html"])
+@pytest.mark.parametrize("path", ["webapp/frontend/index.html", "atlas-scope/index.html", "other-client/entry.html", "client/entry with space.html", "client/é.html", "client/PREVIEW.HTML"])
 def test_entry_document_computation_is_discovered_and_refused(parser, tmp_path, monkeypatch, path):
     source_fixture(tmp_path, monkeypatch, {
         "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
@@ -518,6 +519,21 @@ def test_python_ast_and_lexical_identities_survive_harmless_edits(before, after)
     assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
 
 
+def test_nested_format_spec_spans_are_masked_once_without_corrupting_indentation():
+    source = "def f(value, width):\n text = f'{value:0{width}d}'\n def following(rows):\n  return len(rows)\n return text\n"
+    tree = ast.parse(source)
+    joined = [node for node in ast.walk(tree) if isinstance(node, ast.JoinedStr)]
+    assert len(joined) > 1
+    outer = joined[0]
+    for node in joined[1:]:
+        # Some supported AST versions reuse the whole literal's span for a
+        # format-spec JoinedStr. Exercise equal/overlapping spans everywhere.
+        ast.copy_location(node, outer)
+    actual = python_stream(source, tree)
+    assert any(token[1] == "len" for token in actual)
+    assert actual == python_stream(source, ast.parse(source))
+
+
 @pytest.mark.parametrize("before,after", [
     ("function f(rows) { return rows.length; }", "// len(rows), queue.pop(), a >= 1\nfunction f ( rows ) { return rows /* len(rows) */ . length; }"),
     ("function f(a,b) { return a + b; }", "function f(a,b) { return a /* health queue visited */ + b; }"),
@@ -544,6 +560,14 @@ def test_generated_payloads_remain_inspected_while_their_comments_are_ignored(pa
     two = guard.scan({"webapp/frontend/new.js": after})
     assert any(row["rule"] == "raw-count" and row["symbol"] == "<generated-payload>" for row in one)
     assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
+@pytest.mark.parametrize("path,source", [
+    ("webapp/backend/template.py", 'template = f"<script>function f(rows) {{ return rows.length + {extra}; }}</script>"\n'),
+    ("webapp/frontend/template.js", 'const template = `<script>function f(rows) { return rows.length + ${extra}; }</script>`;'),
+])
+def test_interpolated_html_templates_remain_one_inspected_payload(parser, path, source):
+    refuse_unregistered({path: source}, "raw-count")
 
 
 def test_unknown_historical_policy_cannot_reset_the_ceiling():
@@ -597,3 +621,11 @@ def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite(
     assert any(s.get("run") == "npm ci" and s.get("working-directory") == "atlas-scope" for s in steps[:index])
     assert any("python -m pytest --durations=40" == s.get("run") for s in steps[index + 1:])
     assert any("test_pipeline_inprocess.py::test_pipeline_inprocess_builds_all_three_deliverables" in s.get("run", "") for s in steps[:index])
+    synthetic = [(i, s) for i, s in enumerate(steps) if s.get("name") == "Synthetic detected-form refusal and stability controls"]
+    assert len(synthetic) == 1
+    synthetic_index, synthetic_step = synthetic[0]
+    assert "if" not in synthetic_step and not synthetic_step.get("continue-on-error", False)
+    assert synthetic_step["env"]["ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN"] == "1"
+    observation = next(i for i, s in enumerate(steps) if s.get("name") == "Observe exact interface computation sites for review")
+    assert synthetic_index < observation < index
+    assert any(s.get("run") == "npm ci" and s.get("working-directory") == "atlas-scope" for s in steps[:synthetic_index])
