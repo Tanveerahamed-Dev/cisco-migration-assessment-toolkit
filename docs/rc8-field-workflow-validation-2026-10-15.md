@@ -166,6 +166,35 @@ source must independently rebuild these committed bytes and pass every applicabl
   app, frozen Windows, reference and frontend receipt successes remain bounded to those sources;
   no failure is waived. The corrected combined head needs fresh full hosted gates before review.
 
+## Windows framework setup failure and bounded case identities
+
+Foundation `8fca0ddd` source/frontend run `38823760099`, attempt 1/job `116726629411`,
+ends CANCELLED at 2026-10-16 01:34:27 UTC with the unchanged two-hour job-limit annotation.
+Dependent `bf2f0af6` run `38824182870`, attempt 1/job `116727926794`, separately has that
+timeout at 01:38:20 UTC. The initial archives omit those job logs, so they do not establish a last
+test or rule out preceding failures. One independently reviewed selected-job debug observation per
+head changes logging only; it does not change source, commands, tests, budgets or deadlines.
+
+A's attempt 2/job `116769652905` reaches 100% at 02:57:38 UTC, then renders errors until the
+03:57:34 UTC timeout. Its recovered raw job log is 2,356,969 bytes, SHA-256
+`c2545b7229a10231fe8e36adbbc5230a8b51fe94c2a706004a84cbae14309ae8`.
+Pytest's setup writes `PYTEST_CURRENT_TEST` and raises
+`ValueError: the environment variable is longer than 32767 characters`. The automatic ID embeds
+the 1 MiB plain-string parameter; the setup header alone is 1,048,708 characters. A later teardown
+header is observed, but its complete traceback and the final suite aggregate are absent. Reaching
+100% is not a pass. The separately downloaded attempt archive is an empty ZIP; the recovered raw
+job log, not that archive, supplies this diagnosis.
+
+The correction adds only `plain-1mib-repeated-1024` and `nul-4096-repeated-1024` as explicit IDs
+for the two existing alias-overflow cases. Their exact payload expressions/counts, fixtures, function
+body, forbidden-encoder guard, 4 MiB refusal and all 106 module assertions are preserved by static
+AST comparison. There is no product, gate, timeout, budget, version, golden or sample change.
+The shared correction must be integrated from #666, with fresh final-head Windows/default/source,
+application, reference, frontend producer/receipt and frozen checks. Earlier positives and every
+timeout/cancellation remain source-bound evidence; B's diagnostic and original Windows matrix
+results are separate and cannot be inferred from A's trace. No repeated same-head diagnostic
+attempt is authorized by this correction.
+
 ## Review and delivery boundary
 
 Require all 15 live protected contexts on each final head, complete applicable application/visual/
