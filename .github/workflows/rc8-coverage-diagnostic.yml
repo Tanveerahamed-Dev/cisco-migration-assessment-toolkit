@@ -41,6 +41,8 @@ jobs:
           import sys
           import time
 
+          import pytest
+
           _log = None
           _patterns = None
 
@@ -104,10 +106,16 @@ jobs:
                           seconds=report.duration, outcome=report.outcome)
 
           def pytest_sessionfinish(session, exitstatus):
-              faulthandler.cancel_dump_traceback_later()
               if _log is None:
                   return
               _record("session_finish", exitstatus=int(exitstatus))
+
+          @pytest.hookimpl(trylast=True)
+          def pytest_unconfigure(config):
+              faulthandler.cancel_dump_traceback_later()
+              if _log is None:
+                  return
+              _record("unconfigure")
               _log.close()
           PY
       - name: Original coverage command with traceback instrumentation
