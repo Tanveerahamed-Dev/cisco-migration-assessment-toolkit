@@ -129,7 +129,7 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
     lowerPath.endsWith('.tsx') ? ts.ScriptKind.TSX : lowerPath.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(lowerPath) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
   if (file.parseDiagnostics.length) throw new Error(`${path}: source parse failed: ${file.parseDiagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')).join('; ')}`);
   const rows = [];
-  const tokenCache = new WeakMap();
+  const structural = new WeakMap();
   const keyOf = sharedResolver ?? propertyResolver(file);
   function name(node) {
     if (node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))) return node.name.text;
@@ -138,18 +138,40 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
     return '<callback>';
   }
   function stable(node) {
-    return JSON.stringify(semanticTokens(node));
+    return structure(node).fingerprint;
   }
-  function semanticTokens(node) {
-    if (tokenCache.has(node)) return tokenCache.get(node);
-    // Token spelling without comments/whitespace; strings and numeric thresholds stay exact.
-    const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, file.languageVariant, node.getText(file));
-    const tokens = [];
-    for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) tokens.push([token, tokenValue(scanner, token)]);
-    tokenCache.set(node, tokens);
-    return tokens;
+  function structure(root) {
+    if (structural.has(root)) return structural.get(root);
+    // Merkle fingerprints/features visit a subtree once, rather than rescanning
+    // its complete spelling for every ancestor expression in a minified bundle.
+    const pending = [[root, false]];
+    while (pending.length) {
+      const [node, visited] = pending.pop();
+      if (structural.has(node)) continue;
+      const children = [];
+      ts.forEachChild(node, child => { children.push(child); });
+      if (!visited) {
+        pending.push([node, true]);
+        for (const child of children) if (!structural.has(child)) pending.push([child, false]);
+        continue;
+      }
+      let value = typeof node.text === 'string' ? node.text : '';
+      if (ts.isNumericLiteral(node)) value = String(Number(node.text.replaceAll('_', '')));
+      if (ts.isBigIntLiteral(node)) value = String(BigInt(node.text.replaceAll('_', '').replace(/n$/, ''))) + 'n';
+      let features = (domain.test(value) ? 1 : 0) |
+        (/adjacen|\badj\b|\bnbrs?\b|\bqueue\b|\bvisited\b|\bneighbou?rs\b/i.test(value) ? 2 : 0) |
+        (/\d/.test(value) ? 4 : 0) |
+        (/Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy/.test(value) ? 8 : 0);
+      const hashes = [];
+      for (const child of children) {
+        const entry = structural.get(child);
+        hashes.push(entry.fingerprint); features |= entry.features;
+      }
+      const declarationFlags = node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using | ts.NodeFlags.AwaitUsing);
+      structural.set(node, {fingerprint: hash(JSON.stringify([node.kind, declarationFlags, value, hashes])), features});
+    }
+    return structural.get(root);
   }
-  const semantic = node => semanticTokens(node).map(token => token[1]).join(' ');
   function literal(node) {
     return ts.isLiteralExpression(node) || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword].includes(node.kind) ||
       (ts.isPrefixUnaryExpression(node) && ts.isNumericLiteral(node.operand));
@@ -221,20 +243,20 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
     if (ts.isBinaryExpression(node)) {
       const op = node.operatorToken.kind;
       if (op === ts.SyntaxKind.SlashToken && !literal(node.left) && !literal(node.right)) emit(node, symbol, 'ratio-arithmetic');
-      if (op === ts.SyntaxKind.EqualsToken && ts.isBinaryExpression(node.right) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.right.operatorToken.kind) && semantic(node.right.left) === semantic(node.left)) emit(node, symbol, 'counter-update');
+      if (op === ts.SyntaxKind.EqualsToken && ts.isBinaryExpression(node.right) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.right.operatorToken.kind) && stable(node.right.left) === stable(node.left)) emit(node, symbol, 'counter-update');
       if (op === ts.SyntaxKind.EqualsToken && ts.isElementAccessExpression(node.left) && ts.isBinaryExpression(node.right) && node.right.operatorToken.kind === ts.SyntaxKind.PlusToken) emit(node, symbol, 'indexed-counter-update');
-      if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(op) && ts.isNumericLiteral(node.right) && node.right.text === '0' && domain.test(semantic(node.left))) emit(node, symbol, 'fact-default-zero');
+      if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(op) && ts.isNumericLiteral(node.right) && node.right.text === '0' && (structure(node.left).features & 1)) emit(node, symbol, 'fact-default-zero');
       if ([ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken].includes(op)
-          && /\d/.test(semantic(node))) emit(node, symbol, 'fact-threshold');
+          && (structure(node).features & 4)) emit(node, symbol, 'fact-threshold');
       if ([ts.SyntaxKind.PlusEqualsToken, ts.SyntaxKind.MinusEqualsToken].includes(op)) emit(node, symbol, 'counter-update');
       if ([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken].includes(op)
-          && domain.test(semantic(node))) emit(node, symbol, 'fact-arithmetic');
+          && (structure(node).features & 1)) emit(node, symbol, 'fact-arithmetic');
     }
     if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
         [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) emit(node, symbol, 'counter-update');
-    if (ts.isConditionalExpression(node) && /Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy/.test(semantic(node.whenTrue) + semantic(node.whenFalse))) emit(node.condition, symbol, 'fact-decision');
+    if (ts.isConditionalExpression(node) && ((structure(node.whenTrue).features | structure(node.whenFalse).features) & 8)) emit(node.condition, symbol, 'fact-decision');
     if ((ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) &&
-        /adjacen|\badj\b|\bnbrs?\b|\bqueue\b|\bvisited\b|\bneighbou?rs\b/i.test(semantic(node))) emit(node, symbol, 'graph-traversal');
+        (structure(node).features & 2)) emit(node, symbol, 'graph-traversal');
     ts.forEachChild(node, child => walk(child, symbol));
   }
   walk(file);
@@ -513,9 +535,16 @@ if (input.mode === 'discover') {
   process.exit(0);
 }
 
-const sites = (input.sources ?? []).flatMap(source => scan(source.path, source.text));
-const streams = (input.sources ?? []).flatMap(source => source.path.toLowerCase().endsWith('.html')
-  ? htmlSources(source.text, 0, 0, value => scriptIsClosed(source.path, value)).flatMap(fragment => tokenStreams(source.path, fragment.text, '<forbidden-pattern>', fragment.line))
-  : tokenStreams(source.path, source.text));
+const sites = [], streams = [];
+for (const source of input.sources ?? []) {
+  process.stderr.write('DEBT_AST_START ' + source.path + '\n');
+  sites.push(...scan(source.path, source.text));
+  process.stderr.write('DEBT_LEX_START ' + source.path + '\n');
+  const observed = source.path.toLowerCase().endsWith('.html')
+    ? htmlSources(source.text, 0, 0, value => scriptIsClosed(source.path, value)).flatMap(fragment => tokenStreams(source.path, fragment.text, '<forbidden-pattern>', fragment.line))
+    : tokenStreams(source.path, source.text);
+  streams.push(...observed);
+  process.stderr.write('DEBT_FILE_DONE ' + source.path + '\n');
+}
 for (const payload of input.payloads ?? []) streams.push(...payloadStreams(payload.path, payload.text, payload.line));
 process.stdout.write(JSON.stringify({sites, streams}));

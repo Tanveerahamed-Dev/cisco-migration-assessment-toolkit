@@ -293,3 +293,13 @@ offset map between lexical masking and AST diagnostics, preserving Unicode data
 inside strings. Its regression places those characters before a formatted
 literal and following function, and requires stable detected identities. Hosted
 real-source evidence is still required; no producer source or limit changes.
+
+Head `8dea129b`, CI `38958193538`, Linux Python 3.12 job `117166434807`,
+passes **163 synthetic controls / 3 deselected** and gets beyond Python
+normalization, but JavaScript inspection exceeds the existing **90-second**
+subprocess limit. The limit remains unchanged. The next source replaces repeated
+subtree spelling rescans with cached structural AST Merkle fingerprints and
+cached identifier/literal feature bits, while lexical identities remain token
+normalized. File/phase stderr markers identify the active unit if a refusal or
+timeout remains. The v2 fingerprints are reindexed before initial admission;
+no old observation is transferred as validation of this implementation.
