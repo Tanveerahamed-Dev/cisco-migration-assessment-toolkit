@@ -415,3 +415,15 @@ An authored build-tool folder is not classified as compiled merely because it is
 named `build` (the reference project has such source). Those authored modules
 remain fully scanned; a declared `outDir: "build"` still requires its byte gate.
 Controls exercise both sides, so this distinction is not a filename exception.
+
+
+Head `7bed352b`, CI `38969214299`, Linux 3.12 job `117203575813`,
+stops before census: **658 passed / 2 failed** in the existing client artifact
+census. The role-only declarations invalidate the exact source blob binding for
+`webapp/backend/app.py`, `webapp/backend/deliverables.py`, and
+`cisco_toolkit/docmeta.py`. Their diffs against `56f79667` contain only the role
+constant and blank lines. The full caller/import/URL/catalogue/route/header chain
+is unchanged. The three Git blob pins are reconciled to those inspected sources;
+no browser source, response suffix, catalogue member, classification, exemption
+or refusal control changes. All source-drift mutations remain mandatory. This
+failed bootstrap supplies no v2 capture or admission evidence.

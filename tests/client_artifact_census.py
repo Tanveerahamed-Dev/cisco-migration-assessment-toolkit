@@ -1382,11 +1382,12 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    # Multipart cleanup shields spool closure and unconditionally releases its heavy-work token.
-    # The complete download caller/route/catalogue/_send_file chain retains its same name owners.
-    "webapp/backend/app.py": "d6c905f222cc8baeb9d1e70b1772180b4d894226",
-    "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
-    "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
+    # ADR 0008 adds only the reviewed module role to these three Python sources.
+    # The complete caller/route/catalogue/header chain retains the same name owners;
+    # every existing source-drift mutation and implicit-name refusal stays enforced.
+    "webapp/backend/app.py": "ed868ab1ed5e5f6bd3ff50c4d75c160aaddbda26",
+    "webapp/backend/deliverables.py": "2d21e801ad62283988f9f4d08131ff9ee740e40b",
+    "cisco_toolkit/docmeta.py": "14c4ae43c88d6465312ed1054e423b7f6e970a20",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {
     ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
