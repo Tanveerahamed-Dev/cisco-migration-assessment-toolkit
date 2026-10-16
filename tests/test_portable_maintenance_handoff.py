@@ -32,6 +32,10 @@ def fake_verified(monkeypatch):
     monkeypatch.setattr(maintenance, "_process_identity", lambda pid: pid + 1000)
 
 
+def helper_paths(root):
+    return sorted(path for path in root.iterdir() if maintenance._HELPER.fullmatch(path.name))
+
+
 def bound_helper(root, monkeypatch, *, nonce="a" * 32, result_parent=None):
     fake_verified(monkeypatch)
     helper = root / f"Atlas.maintenance-{nonce}"
@@ -99,7 +103,7 @@ def test_copy_refuses_changed_source_bytes_before_writing_them(tmp_path, monkeyp
     monkeypatch.setattr(release_contract, "verified_application_entries", lambda _root: snapshot)
     member.write_bytes(b"substituted bytes")
     destination = tmp_path / "copy"
-    with pytest.raises(ValueError, match="changed"):
+    with pytest.raises(release_contract.PortableReleaseError, match="changed before open"):
         maintenance._copy_installed_application(source, destination)
     assert not destination.exists()
 
@@ -120,6 +124,33 @@ def test_failed_copy_cleanup_preserves_unknown_destination_bytes(tmp_path, monke
         maintenance._copy_installed_application(source, destination)
     assert (destination / "unowned.txt").read_bytes() == b"never remove unknown content"
     assert not (destination / "Atlas.exe").exists()
+
+
+def test_copy_keeps_windows_handle_and_path_attribute_identities_separate(tmp_path, monkeypatch):
+    """Windows FSTAT can omit path attributes without changing the opened file."""
+    source = tmp_path / "source"
+    source.mkdir()
+    member = source / "Atlas.exe"
+    member.write_bytes(b"synthetic application bytes")
+    fake_verified(monkeypatch)
+    original_fstat = maintenance.os.fstat
+    observed = []
+
+    def windows_handle_metadata(descriptor):
+        actual = original_fstat(descriptor)
+        attributes = {name: getattr(actual, name) for name in dir(actual) if name.startswith("st_")}
+        attributes["st_file_attributes"] = getattr(actual, "st_file_attributes", 0) ^ 0x20
+        proxy = SimpleNamespace(**attributes)
+        assert release_contract._installed_file_identity(proxy) == release_contract._installed_file_identity(actual)
+        assert release_contract._installed_stat_identity(proxy) != release_contract._installed_stat_identity(actual)
+        observed.append(descriptor)
+        return proxy
+
+    monkeypatch.setattr(maintenance.os, "fstat", windows_handle_metadata)
+    destination = tmp_path / "copy"
+    maintenance._copy_installed_application(source, destination)
+    assert observed
+    assert (destination / "Atlas.exe").read_bytes() == member.read_bytes()
 
 
 @pytest.mark.parametrize("unexpected", ["root-file", "root-directory", "data", "DATA"])
@@ -176,8 +207,9 @@ def test_original_refusal_receipt_retains_helper_after_separate_recovery(tmp_pat
 
 @pytest.mark.parametrize("malformed", ["not JSON", "[]", "null", '{"parent_pid":true}'])
 def test_malformed_worker_request_uses_independent_pointer_bound_refusal(tmp_path, monkeypatch, capsys, malformed):
-    output = tmp_path / "outside"
+    output = tmp_path.parent / (tmp_path.name + "-outside")
     output.mkdir()
+    assert not output.is_relative_to(tmp_path)
     helper, executable, result = bound_helper(tmp_path, monkeypatch, result_parent=output)
     (helper / "request.json").write_text(malformed, encoding="utf-8")
     monkeypatch.setattr(maintenance.sys, "executable", str(executable))
@@ -258,7 +290,7 @@ def test_journal_refusal_happens_under_lock_before_copy_or_pointer_rewrite(tmp_p
     assert maintenance.main(argv) == 1
     assert held == [tmp_path]
     assert pointer.read_bytes() == b"original recovery authority"
-    assert not list(tmp_path.glob("Atlas.maintenance-*"))
+    assert not helper_paths(tmp_path)
 
 
 @pytest.mark.parametrize("argv", [
@@ -353,11 +385,11 @@ def test_preparation_source_refusal_leaves_no_helper_then_repair_retries(tmp_pat
     monkeypatch.setattr(release_contract, "verified_application_entries", invalid)
     argv = ["--update", str(package), "--expected-sha256", hashlib.sha256(package.read_bytes()).hexdigest()]
     assert maintenance.main(argv) == 1
-    assert not list(tmp_path.glob("Atlas.maintenance-*"))
+    assert not helper_paths(tmp_path)
     assert not (tmp_path / "Atlas.maintenance.json").exists()
     monkeypatch.setattr(release_contract, "verified_application_entries", entries)
     assert maintenance.main(argv) == 0
-    assert len(list(tmp_path.glob("Atlas.maintenance-*"))) == 1
+    assert len(helper_paths(tmp_path)) == 1
 
 
 def test_partial_retirement_never_blocks_next_safe_maintenance(tmp_path, monkeypatch, capsys):
@@ -415,7 +447,7 @@ def test_preparation_metadata_failure_cleans_only_new_verified_code(tmp_path, mo
     monkeypatch.setattr(maintenance.subprocess, "Popen", lambda *a, **kw: pytest.fail("failed preparation launched"))
     assert maintenance.main(["--update", str(package), "--expected-sha256",
                              hashlib.sha256(package.read_bytes()).hexdigest()]) == 1
-    assert not list(tmp_path.glob("Atlas.maintenance-*"))
+    assert not helper_paths(tmp_path)
     assert evidence.read_bytes() == b"retained data"
     assert (source / "Atlas.exe").read_bytes() == b"approved application"
 
@@ -443,7 +475,7 @@ def test_live_prejournal_worker_refuses_second_launch_before_copy_or_pointer_cha
     assert not result.exists()
     assert (tmp_path / "Atlas.maintenance.json").read_bytes() == original_pointer
     assert (helper / "request.json").read_bytes() == original_request
-    assert len(list(tmp_path.glob("Atlas.maintenance-*"))) == 1
+    assert len(helper_paths(tmp_path)) == 1
 
 
 @pytest.mark.parametrize("stage", ["worker", "launcher", "reused-pid"])
@@ -473,11 +505,14 @@ def test_spawn_failure_restores_only_this_attempt_pointer_and_allows_retry(tmp_p
     fake_verified(monkeypatch)
     prior = None
     old_helper = None
+    prior_receipt = None
+    old_result = None
     if previous:
         old_helper, _exe, result = bound_helper(tmp_path, monkeypatch)
         complete = maintenance._outcome("a" * 32)
         complete.update(status="complete", exit_code=0)
         result.write_text(json.dumps(complete), encoding="utf-8")
+        old_result, prior_receipt = result, result.read_bytes()
         prior = (tmp_path / "Atlas.maintenance.json").read_bytes()
     argv = main_update(tmp_path, monkeypatch)
 
@@ -488,11 +523,15 @@ def test_spawn_failure_restores_only_this_attempt_pointer_and_allows_retry(tmp_p
     assert maintenance.main(argv) == 1
     pointer_path = tmp_path / "Atlas.maintenance.json"
     assert pointer_path.read_bytes() == prior if previous else not pointer_path.exists()
-    assert list(tmp_path.glob("Atlas.maintenance-*")) == ([old_helper] if previous else [])
+    assert helper_paths(tmp_path) == ([old_helper] if previous else [])
+    if previous:
+        assert old_result.read_bytes() == prior_receipt
     monkeypatch.setattr(maintenance.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(pid=123))
     assert maintenance.main(argv) == 0
     pointer = json.loads(pointer_path.read_text())
     assert pointer["worker_pid"] == 123 and pointer["worker_creation"] == 1123
+    if previous:
+        assert old_result.read_bytes() == prior_receipt
 
 
 def test_pointer_cleanup_does_not_erase_a_superseding_writer(tmp_path):

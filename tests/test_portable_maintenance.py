@@ -112,13 +112,13 @@ def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monk
     (source / "_internal" / "payload.bin").write_bytes(b"runtime")
     (source / "data" / "nested").mkdir(parents=True)
     (source / "data" / "nested" / "evidence.bin").write_bytes(b"DO NOT COPY")
-    original = release_contract._same_read
+    original = release_contract._read_installed_regular
     reads = []
 
-    def read(path):
+    def read(path, metadata, maximum, what):
         assert "data" not in path.relative_to(source).parts
         reads.append(path)
-        return original(path)
+        return original(path, metadata, maximum, what)
 
     verified = []
     censused = []
@@ -134,7 +134,7 @@ def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monk
                     root, _skip_root_data=True)[0]]
 
     monkeypatch.setattr(release_contract, "verified_application_entries", census)
-    monkeypatch.setattr(release_contract, "_same_read", read)
+    monkeypatch.setattr(release_contract, "_read_installed_regular", read)
     monkeypatch.setattr(release_contract, "verify_installed_bundle", lambda root: verified.append(root))
     target = tmp_path / "helper"
     maintenance._copy_installed_application(source, target)
@@ -156,8 +156,9 @@ def test_helper_refuses_a_redirected_application_member(tmp_path, monkeypatch):
         alias.symlink_to(outside)
     except OSError as exc:
         pytest.skip(f"symlink privilege unavailable: {exc}")
-    with pytest.raises(ValueError, match="reparse"):
+    with pytest.raises(release_contract.PortableReleaseError, match="link/reparse"):
         maintenance._copy_installed_application(source, tmp_path / "helper")
+    assert not (tmp_path / "helper").exists()
 
 
 def test_transaction_uses_the_selected_executable_and_bundled_script(monkeypatch, tmp_path):

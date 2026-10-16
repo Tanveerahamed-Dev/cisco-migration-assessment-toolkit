@@ -298,7 +298,8 @@ def _remove_created(files: list[tuple[Path, os.stat_result]], directories: list[
 
 def _copy_installed_application(source: Path, destination: Path) -> list:
     from portable.release_contract import (
-        _installed_stat_identity, _same_read, verified_application_entries, verify_installed_bundle,
+        MAX_ZIP_MEMBER_BYTES, _installed_stat_identity, _read_installed_regular,
+        verified_application_entries, verify_installed_bundle,
     )
 
     _physical(source)
@@ -317,9 +318,10 @@ def _copy_installed_application(source: Path, destination: Path) -> list:
                 target.mkdir()
                 created_directories.append(target)
             else:
-                raw, current = _same_read(path)
-                if (_installed_stat_identity(current) != _installed_stat_identity(metadata)
-                        or hashlib.sha256(raw).hexdigest() != expected_digest):
+                raw = _read_installed_regular(
+                    path, metadata, MAX_ZIP_MEMBER_BYTES, "installed maintenance application member",
+                )
+                if hashlib.sha256(raw).hexdigest() != expected_digest:
                     raise ValueError("installed application changed during maintenance copy")
                 with target.open("xb") as stream:
                     created_files.append((target, os.fstat(stream.fileno())))

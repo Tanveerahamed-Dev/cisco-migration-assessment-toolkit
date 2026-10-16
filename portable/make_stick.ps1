@@ -1,5 +1,6 @@
 <#
 Optional PowerShell 5.1 wrapper; no repository or host Python is used.
+powershell -File portable\make_stick.ps1 -Dest C:\AtlasField -Package C:\release\Atlas-3.33.0rc7-windows-x64.zip -ExpectedSha256 <published-sha256>
 First install: -Dest C:\AtlasField -AtlasExe C:\extracted\Atlas\Atlas.exe -Package ZIP -ExpectedSha256 SHA
 Update: -Dest C:\AtlasField -Package ZIP -ExpectedSha256 SHA
 Rollback: -Dest C:\AtlasField -Rollback [-RestorePreUpdateDatabase]
