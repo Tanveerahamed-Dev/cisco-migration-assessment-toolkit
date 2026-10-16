@@ -31,10 +31,11 @@ were already safe; they are kept as regression anchors, not claimed as pre-fix f
 The fix routes every read through ``summary._as_list`` / a local ``_as_dict`` (the same coercers
 ``webapp/backend/cutover.py`` uses, mirroring ``cisco_toolkit.docmeta.as_dict``/``as_list``). For every
 well-formed value those are IDENTICAL to the ``or {}`` / ``or []`` they replace, so a good snapshot
-renders the same document: rendering ``_WELLFORMED`` with the pre-fix and post-fix writer produced 199
-identical text segments (timestamps normalised). That is pinned here by
-``test_wellformed_nrfu_render_unchanged`` — which PASSES against the pre-fix writer too, so it is a real
-baseline and not a post-hoc restatement — and by the algebraic equivalence check at the bottom.
+rendered the same document at the original guard change: its historical comparison produced 199
+identical text segments (timestamps normalised). The regression below retains those guarded metadata
+and baseline-phase assertions. The saved-plan NRFU correction subsequently extends its complete
+acceptance fixture and total to include the newly rendered design case; that additive content is not
+claimed byte-identical to the historical writer. The algebraic coercion control remains unchanged.
 
 OUT OF SCOPE (deliberately not fixed here, different bug class — see the PR body): ``len({(s.get("service"),
 s.get("category")) for s in services})`` raises ``TypeError: unhashable type`` when a ``service_map.services``
@@ -226,7 +227,9 @@ _WELLFORMED = {
         {"id": "D1", "title": "Collapsed-core to spine/leaf", "status": "recommended", "priority": "High"},
         {"id": "D2", "title": "Wireless controller placement", "status": "needs-requirement",
          "priority": "Medium"}]},
-    "design_nrfu": {"items": [{"decision_id": "D1", "phase": "post-cutover-routing"}]},
+    "design_nrfu": {"items": [{"decision_id": "D1", "phase": "post-cutover-routing",
+        "description": "EXAMPLE persisted routing acceptance", "setup": "EXAMPLE establish both routed peers",
+        "pass_criteria": "EXAMPLE both peers retain their captured adjacency", "devices": ["sw1", "sw2"]}]},
 }
 
 
@@ -241,9 +244,11 @@ def _nrfu_cells(client, snap):
 
 
 def test_wellformed_nrfu_render_unchanged(client):
-    """Every value the guarded reads feed, pinned. These are exactly the strings the PRE-guard writer
-    produced for this fixture -- this test passes against both writers (the full 199-segment normalised
-    text diff was identical), so the coercion cannot have silently changed a well-formed render."""
+    """Preserve guarded metadata/baseline rows and include the persisted design acceptance case.
+
+    The historical guard-only comparison was identical; the later saved-plan correction intentionally
+    adds its acceptance body and includes that new case in both document totals.
+    """
     paras, cells = _nrfu_cells(client, _WELLFORMED)
     text = "\n".join(paras)
 
@@ -271,9 +276,9 @@ def test_wellformed_nrfu_render_unchanged(client):
     assert any("App domain: voice" in c for c in cells)
     assert any("Endpoints across the 2 switch(es) in this domain" in c for c in cells)
     assert any("Multicast / timing" in c for c in cells)
-    # test-summary totals: 1 device + 1 validation item + (1 service + 1 domain + 1 multicast) = 5
+    # Summary includes the newly rendered persisted design case as well as the five baseline cases.
     j = next(k for k, c in enumerate(cells) if c == "Total")
-    assert cells[j + 2] == "5"
+    assert cells[j + 2] == "6"
 
 
 def test_guarded_read_matches_or_form_on_every_wellformed_value():
@@ -359,7 +364,9 @@ def test_nrfu_traceability_lookup_still_resolves(client):
     # fix: with a string id, str("d1") == "d1", both sides agree, and the bug is invisible. With 7,
     # str()-ing only the comprehension makes the keys "7" while the lookup still passes 7 -> miss.
     snap = _base(design_blueprint={"decisions": [dict(_REC, id=7)]},
-                 design_nrfu={"items": [{"decision_id": 7, "phase": "pre-cutover-baseline"}]})
+                 design_nrfu={"items": [{"decision_id": 7, "phase": "pre-cutover-baseline",
+                     "description": "EXAMPLE retained check", "setup": "EXAMPLE capture before cutover",
+                     "pass_criteria": "EXAMPLE baseline retained", "devices": ["sw1"]}]})
     _paras, cells = _nrfu_cells(client, snap)
     joined = "\n".join(cells)
     assert "pre-cutover-baseline" in joined, (

@@ -4082,7 +4082,7 @@ def _requirements_model(decisions, req):
     req = req or {}
     fields = [
         {"key": "availability_tier", "label": "Target availability tier",
-         "options": ["gold", "silver", "bronze"], "value": req.get("availability_tier")},
+         "options": list(REQUIREMENTS_AVAILABILITY_TIERS), "value": req.get("availability_tier")},
         {"key": "critical_apps", "label": "Business-critical applications",
          "example": ["voice", "video", "ERP"], "value": req.get("critical_apps")},
         {"key": "convergence_budget_ms", "label": "Max tolerable convergence (ms)",
@@ -4090,7 +4090,7 @@ def _requirements_model(decisions, req):
         {"key": "growth_horizon", "label": "Growth horizon / forecast", "value": req.get("growth_horizon")},
         {"key": "fabric_operating_model",
          "label": "DC fabric operating model (standalone NX-OS VXLAN-EVPN vs Cisco ACI)",
-         "options": ["nxos-evpn", "aci"], "value": req.get("fabric_operating_model")},
+         "options": list(REQUIREMENTS_FABRIC_MODELS), "value": req.get("fabric_operating_model")},
         {"key": "constraints", "label": "Fixed constraints (budget / installed-base / regulatory)",
          "value": req.get("constraints")},
         {"key": "data_classification", "label": "Data-security classification / zones",
@@ -4161,6 +4161,59 @@ def _doctrine_catalog():
 REQUIREMENTS_KEYS = ("availability_tier", "critical_apps", "convergence_budget_ms",
                      "growth_horizon", "constraints", "data_classification", "address_space",
                      "vlan_zones", "fabric_operating_model")
+REQUIREMENTS_LIST_KEYS = ("critical_apps", "constraints", "data_classification")
+REQUIREMENTS_AVAILABILITY_TIERS = ("gold", "silver", "bronze")
+REQUIREMENTS_FABRIC_MODELS = ("nxos-evpn", "aci")
+REQUIREMENTS_VLAN_MIN = 1
+REQUIREMENTS_VLAN_MAX = 4094
+PLAN_SECTION_KEYS = frozenset({"requirements_register", "design_blueprint", "design_nrfu"})
+
+
+def derive_plan_sections(snapshot, requirements, *, profile, compute_blueprint=None,
+                         compute_nrfu=None, requirements_published=None):
+    """Publish the one requirements -> blueprint -> NRFU sequence into a caller-owned copy.
+
+    ``assessment`` preserves the CLI's absent-empty register policy and reports a supplied
+    register through its existing logging callback before computing the blueprint.
+    ``saved_plan`` always publishes the selected register, including an explicit empty one.
+    Both profiles propagate errors; the CLI owns its historical fail-soft boundary, while
+    saved-plan admission refuses a failed derivation. Assessment-only coverage, integrity,
+    lineage and census remain in the CLI and are never recomputed by this plan producer.
+    Optional compute injections preserve the CLI's existing monkeypatch sites.
+    """
+    if profile not in {"assessment", "saved_plan"}:
+        raise ValueError("Unsupported plan derivation profile")
+    if profile == "assessment" and requirements_published is None:
+        raise ValueError("Assessment plan derivation requires a requirements publication callback")
+    register = requirements or {}
+    if register or profile == "saved_plan":
+        snapshot["requirements_register"] = register
+    if register and profile == "assessment":
+        requirements_published(register)
+    if compute_blueprint is None:
+        compute_blueprint = compute_design_blueprint
+    if compute_nrfu is None:
+        compute_nrfu = compute_design_nrfu
+    snapshot["design_blueprint"] = compute_blueprint(snapshot, register or None)
+    snapshot["design_nrfu"] = compute_nrfu(snapshot["design_blueprint"])
+
+
+def requirements_contract():
+    """Fresh metadata for strict saved-plan admission, not the coercive legacy CLI profile.
+
+    The legacy register loaders retain their existing fail-soft treatment of arbitrary tier
+    text and numeric VLAN IDs. Saved-plan validators consume this owner's explicit domain;
+    the hosted OpenAPI generator carries the same metadata to the browser.
+    """
+    return {
+        "schema": "atlas.requirements-contract/1",
+        "scope": "saved_plan_admission",
+        "keys": list(REQUIREMENTS_KEYS),
+        "list_fields": list(REQUIREMENTS_LIST_KEYS),
+        "availability_tiers": list(REQUIREMENTS_AVAILABILITY_TIERS),
+        "fabric_models": list(REQUIREMENTS_FABRIC_MODELS),
+        "vlan_id": {"minimum": REQUIREMENTS_VLAN_MIN, "maximum": REQUIREMENTS_VLAN_MAX},
+    }
 
 
 def _norm_fabric_model(v):
@@ -4240,7 +4293,7 @@ def requirements_from_interview(answers):
             continue
         if k == "availability_tier":
             out[k] = str(v).strip().lower()
-        elif k in ("critical_apps", "constraints", "data_classification"):
+        elif k in REQUIREMENTS_LIST_KEYS:
             out[k] = _to_list(v)
         elif k == "convergence_budget_ms":
             iv = _as_int(v, None)                  # keep a legitimate 0; fall back to raw only if unparseable
@@ -5362,6 +5415,76 @@ def compute_design_nrfu(design_blueprint):
             "→ post-cutover-operational."
         ),
     }
+
+
+def design_nrfu_document_view(snapshot: dict) -> dict:
+    """Project retained design acceptance, decision coverage and assessment scope for exports.
+
+    The design owner already owns acceptance instructions and collection-completeness
+    coverage. Keep those concerns here; the separate NRFU command-pack carrier must
+    not acquire another vocabulary alongside protocol receipt transport. This read
+    view neither derives a blueprint nor recomputes any saved acceptance instruction.
+    """
+    snap_dict = _as_dict(snapshot)
+    design = _as_dict(snap_dict.get("design_nrfu"))
+    nrfu_items = [item for item in _as_list(design.get("items")) if isinstance(item, dict)]
+    evpn_items = [item for item in _as_list(design.get("evpn_acceptance")) if isinstance(item, dict)]
+    design_rows = [_document_acceptance_row(item) for item in nrfu_items]
+    evpn_rows = [_document_acceptance_row(item) for item in evpn_items]
+    bp_decisions = [d for d in _as_list(_as_dict(snap_dict.get("design_blueprint")).get("decisions"))
+                    if isinstance(d, dict)]
+    coll = _as_dict(_as_dict(snap_dict.get("collection_completeness")).get("summary"))
+    swrisk = _as_dict(_as_dict(snap_dict.get("software_risk")).get("summary"))
+    rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+    needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
+    nc = coll.get("not_collected") or 0
+    n_na = swrisk.get("n_config_not_assessable") or 0
+    limits = []
+    if nc:
+        limits.append(f"{nc} device(s) were not collected at assessment — their post-cutover state is NOT "
+                      "validated here; re-collect and run Phase I against them before sign-off.")
+    if n_na:
+        limits.append(f"{n_na} device(s) had configuration that could not be assessed for software-advisory "
+                      "exposure — NOT validated here.")
+    if needs:
+        limits.append(f"{len(needs)} target-state design area(s) still need a requirement before they can be "
+                      "designed and acceptance-tested — see the design blueprint's open questions.")
+    # A trace label requires the complete, actually rendered acceptance body.
+    phase_by = {str(item.get("decision_id")): item.get("phase", "") for item in nrfu_items
+                if _document_acceptance_complete(item)}
+    uncovered = [d for d in rec if str(d.get("id")) not in phase_by]
+    if uncovered:
+        limits.append(f"{len(uncovered)} recommended design decision(s) have NO acceptance test with complete rendered "
+                      "content in the design NRFU — they are NOT validated by this plan; supply the "
+                      "description, setup, pass criteria and device scope before sign-off.")
+    trace = [[d.get("title", d.get("id", "")), d.get("priority", ""),
+              ("Tested — " + (str(phase_by[str(d.get("id"))]).strip()
+                              or "phase not stated in the design NRFU"))
+              if str(d.get("id")) in phase_by else
+              "NOT COVERED — no complete acceptance test rendered for this decision"] for d in rec]
+    trace += [[d.get("title", d.get("id", "")), d.get("priority", ""),
+               "Not testable until the requirement is supplied"] for d in needs]
+    return {"design_rows": design_rows, "evpn_rows": evpn_rows,
+            "trace": trace[:40], "limits": limits, "omitted_trace": max(0, len(trace) - 40)}
+
+
+def _document_acceptance_complete(item: dict) -> bool:
+    """Only explicit persisted instructions and device scope establish coverage."""
+    return (all(isinstance(item.get(key), str) and item[key].strip()
+                for key in ("description", "setup", "pass_criteria"))
+            and isinstance(item.get("devices"), list) and bool(item["devices"])
+            and all(isinstance(device, str) and device.strip() for device in item["devices"]))
+
+
+def _document_acceptance_row(item: dict) -> list:
+    """Keep every retained acceptance entry, even incomplete ones, without inventing content."""
+    missing = "Not supplied in persisted acceptance content"
+    return [item.get("decision_id", ""),
+            f"{item.get('title', '')}\nPriority: {item.get('priority', '')}\n"
+            f"Source: {item.get('principle_citation', '')}",
+            item.get("phase", ""), item.get("description") or missing,
+            item.get("setup") or missing, item.get("pass_criteria") or missing,
+            "\n".join(str(device) for device in _as_list(item.get("devices"))) or missing, ""]
 
 
 # Architecture-coverage registry: every architecture CLASS the engine assesses, mapped to its snapshot axis,

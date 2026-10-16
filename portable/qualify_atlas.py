@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
+import io
 import json
 import os
 import re
@@ -15,6 +17,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -29,6 +36,7 @@ from portable.release_contract import (
     collect_members,
     digest_object,
     source_identity,
+    _validate_saved_plan_documents_evidence,
 )
 
 
@@ -454,6 +462,9 @@ def _database_preflight(
             "snapshots": 0,
             "executions": 0,
             "execution_comparisons": 0,
+            "plan_revisions": 0,
+            "plan_revision_authority": 0,
+            "plan_selection_events": 0,
         },
         expect_migration=False,
     )
@@ -491,6 +502,9 @@ def _database_preflight(
             "snapshots": 1,
             "executions": 1,
             "execution_comparisons": 0,
+            "plan_revisions": 0,
+            "plan_revision_authority": 0,
+            "plan_selection_events": 0,
         },
         expect_migration=True,
     )
@@ -498,6 +512,311 @@ def _database_preflight(
     prior_result["fixture_source_commit"] = "47a1ff993f3bb9c9b2e4a138be6f073c8614498e"
     prior_result["fixture_source_tree"] = "d4f9db52c0703ab02f25c3f4913d53baac8ddb60"
     return {"same_version": current, "prior_release_v3_32_1": prior_result}
+
+
+_JOURNEY_RESPONSE_LIMIT = 32 * 1024 * 1024
+_JOURNEY_XML_LIMIT = 4 * 1024 * 1024
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _saved_plan_http(base: str, path: str, *, method: str = "GET", body: bytes | None = None,
+                     content_type: str = "application/json", status: int = 200) -> tuple[bytes, dict[str, str]]:
+    request = urllib.request.Request(
+        base + path, data=body, method=method,
+        headers={"Origin": base, "Sec-Fetch-Site": "same-origin", "Content-Type": content_type},
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as refused:
+        response = refused
+    with response:
+        if response.status != status:
+            raise PortableReleaseError(f"offline saved-plan request returned {response.status}, expected {status}")
+        payload = response.read(_JOURNEY_RESPONSE_LIMIT + 1)
+        if len(payload) > _JOURNEY_RESPONSE_LIMIT:
+            raise PortableReleaseError("offline saved-plan response exceeds the qualification read bound")
+        return payload, {key.lower(): value for key, value in response.headers.items()}
+
+
+def _saved_plan_json(base: str, path: str, *, method: str = "GET", body: dict | None = None,
+                     status: int = 200) -> dict[str, Any]:
+    payload, _ = _saved_plan_http(
+        base, path, method=method,
+        body=None if body is None else json.dumps(body, allow_nan=False).encode("utf-8"), status=status,
+    )
+    try:
+        value = json.loads(payload)
+    except (UnicodeError, ValueError) as error:
+        raise PortableReleaseError("offline saved-plan response is not JSON") from error
+    if not isinstance(value, dict):
+        raise PortableReleaseError("offline saved-plan response is not an object")
+    return value
+
+
+@contextmanager
+def _saved_plan_server(exe: Path, database: Path, environment: dict[str, str]):
+    """Own one nonce-identified frozen process; never attach to another listener."""
+    base = f"http://127.0.0.1:{_port()}"
+    nonce = secrets.token_hex(24)
+    child_environment = dict(environment)
+    for key in ("ASSESSHUB_TOKEN", "ASSESSHUB_TLS_CERT", "ASSESSHUB_TLS_KEY"):
+        child_environment.pop(key, None)
+    child_environment["ASSESSHUB_INSTANCE_NONCE"] = nonce
+    database.parent.mkdir(parents=True, exist_ok=True)
+    # An unread PIPE can block Windows' child before readiness or during a renderer warning burst.
+    # This owned disk-backed sink stays open until the exact child is reaped; diagnostics read only
+    # a bounded tail afterward, so logging cannot turn a healthy HTTP operation into a pipe deadlock.
+    with tempfile.NamedTemporaryFile(mode="w+b", prefix="atlas-saved-plan-server-", suffix=".log",
+                                     dir=environment["TEMP"]) as output:
+        server = subprocess.Popen(
+            [str(exe), "--no-browser", "--host", "127.0.0.1", "--port", base.rsplit(":", 1)[1], "--db", str(database)],
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            env=child_environment, cwd=str(exe.parent),
+        )
+        failure: BaseException | None = None
+        try:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if server.poll() is not None:
+                    raise PortableReleaseError("offline saved-plan frozen server exited before readiness")
+                try:
+                    with urllib.request.urlopen(base + "/api/health", timeout=3) as response:
+                        health = json.loads(response.read(65537))
+                    if isinstance(health, dict) and health.get("instance_nonce") == nonce and server.poll() is None:
+                        break
+                except (OSError, ValueError):
+                    pass
+                time.sleep(0.5)
+            else:
+                raise PortableReleaseError("offline saved-plan frozen server did not identify itself")
+            yield base
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            try:
+                build_atlas._stop_server(server)
+            except BaseException as error:
+                if failure is None:
+                    failure = error
+                    raise
+                print(f"offline saved-plan server cleanup also failed: {type(error).__name__}", file=sys.stderr)
+            finally:
+                if failure is not None:
+                    output.seek(0, os.SEEK_END)
+                    total = output.tell()
+                    output.seek(max(0, total - 4096))
+                    tail = output.read(4096).decode("utf-8", errors="replace")
+                    for private_root in (str(exe.parent), environment["TEMP"], environment.get("USERPROFILE", "")):
+                        if private_root:
+                            for spelling in (private_root, private_root.replace("\\", "/")):
+                                tail = re.sub(re.escape(spelling), "<QUALIFICATION_ROOT>", tail, flags=re.IGNORECASE)
+                    print(f"offline saved-plan server log ({total} bytes; at most final 4096 bytes):\n"
+                          f"{tail or '[empty]'}", file=sys.stderr)
+
+
+def _saved_plan_record(value: dict[str, Any], assessment: dict[str, Any], requested: dict[str, Any]) -> None:
+    projection = value.get("projection")
+    requirements = projection.get("requirements") if isinstance(projection, dict) else None
+    if (
+        value.get("schema") != "atlas.saved_plan/1"
+        or digest_object(value.get("assessment")) != digest_object(assessment)
+        or value.get("status") != "UNAPPROVED_DRAFT"
+        or type(value.get("revision")) is not int or value["revision"] <= 0
+        or type(value.get("selection_id")) is not int or value["selection_id"] <= 0
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(value.get("sha256")))
+        or not isinstance(requirements, dict)
+        or type(requirements.get("convergence_budget_ms")) is not int
+        or requirements["convergence_budget_ms"] != 0
+        or any(digest_object(requirements.get(key)) != digest_object(item) for key, item in requested.items())
+    ):
+        raise PortableReleaseError("offline saved-plan record lost source, selection or zero requirement")
+
+
+def _saved_plan_document_evidence(payload: bytes, headers: dict[str, str], kind: str,
+                                  assessment: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """Inspect actual downloaded DOCX and identity headers without Office or rendering."""
+    expected_headers = {
+        "x-atlas-assessment-sha256": assessment["sha256"],
+        "x-atlas-plan-revision": str(plan["revision"]),
+        "x-atlas-plan-sha256": plan["sha256"],
+        "x-atlas-plan-selection": str(plan["selection_id"]),
+    }
+    if (
+        not payload or len(payload) > _JOURNEY_RESPONSE_LIMIT
+        or headers.get("content-type", "").split(";", 1)[0].strip() != _DOCX_MEDIA
+        or any(headers.get(key) != value for key, value in expected_headers.items())
+    ):
+        raise PortableReleaseError("offline saved-plan document headers or bytes differ")
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            members = archive.infolist()
+            names = [item.filename for item in members]
+            if (
+                len(members) > 512 or len(names) != len(set(names))
+                or any(name not in names for name in ("[Content_Types].xml", "_rels/.rels", "word/document.xml"))
+                or sum(item.file_size for item in members) > 64 * 1024 * 1024
+            ):
+                raise PortableReleaseError("offline saved-plan DOCX member denominator is invalid")
+            def read_xml(name: str):
+                with archive.open(name) as source:
+                    xml = source.read(_JOURNEY_XML_LIMIT + 1)
+                if len(xml) > _JOURNEY_XML_LIMIT:
+                    raise PortableReleaseError("offline saved-plan DOCX text exceeds qualification bound")
+                return ET.fromstring(xml)
+
+            tree = read_xml("word/document.xml")
+            content_types = read_xml("[Content_Types].xml")
+            relationships = read_xml("_rels/.rels")
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, ET.ParseError) as error:
+        raise PortableReleaseError("offline saved-plan download is not a bounded valid DOCX") from error
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    if (
+        tree.tag != namespace + "document" or tree.find(namespace + "body") is None
+        or content_types.tag != "{http://schemas.openxmlformats.org/package/2006/content-types}Types"
+        or not any(element.get("PartName") == "/word/document.xml"
+                   and element.get("ContentType") == _DOCX_MEDIA + ".main+xml"
+                   for element in content_types)
+        or relationships.tag != "{http://schemas.openxmlformats.org/package/2006/relationships}Relationships"
+        or not any(element.get("Type") == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+                   and element.get("Target") == "word/document.xml" and element.get("TargetMode") != "External"
+                   for element in relationships)
+    ):
+        raise PortableReleaseError("offline saved-plan download has no valid main DOCX relationship")
+    text = " ".join(element.text or "" for element in tree.iter()
+                    if element.tag == "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+    required = (
+        "UNAPPROVED DRAFT", f"Original assessment SHA-256: {assessment['sha256']}",
+        f"Selected plan SHA-256: {plan['sha256']}",
+        f"Revision {plan['revision']} · Selection {plan['selection_id']}",
+    )
+    if any(value not in text for value in required):
+        raise PortableReleaseError("offline saved-plan DOCX lost visible source, plan or unapproved provenance")
+    return {
+        "kind": kind, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        "assessment_sha256": assessment["sha256"], "plan_revision": plan["revision"],
+        "plan_sha256": plan["sha256"], "selection_id": plan["selection_id"],
+        "unapproved_draft": True, "provenance_bound": True,
+    }
+
+
+def _offline_saved_plan_documents(exe: Path, root: Path, environment: dict[str, str]) -> dict[str, Any]:
+    """Upload bundled sanitized evidence, save/select, restart and verify exact-plan downloads."""
+    fixture = exe.parent / build_atlas.BUNDLE_CONTENTS_DIR / "webapp/sample_data/sample_fleet.snapshot.json"
+    upload = fixture.read_bytes()
+    if not upload or len(upload) > _JOURNEY_RESPONSE_LIMIT:
+        raise PortableReleaseError("offline saved-plan bundled upload fixture is absent or oversized")
+    database = root / "saved-plan-data" / "hub.db"
+    if database.exists():
+        raise PortableReleaseError("offline saved-plan qualification database is not fresh")
+    with _saved_plan_server(exe, database, environment) as base:
+        campaign = _saved_plan_json(base, "/api/campaigns", method="POST",
+                                    body={"name": "RC8 offline qualification", "description": "synthetic only"}, status=201)
+        campaign_id = campaign.get("id")
+        if type(campaign_id) is not int or campaign_id <= 0:
+            raise PortableReleaseError("offline saved-plan campaign identity is invalid")
+        boundary = "atlas-qualification-" + secrets.token_hex(16)
+        body = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="synthetic.snapshot.json"\r\n'
+            "Content-Type: application/json\r\n\r\n"
+        ).encode("ascii") + upload + f"\r\n--{boundary}--\r\n".encode("ascii")
+        payload, _ = _saved_plan_http(base, f"/api/campaigns/{campaign_id}/snapshots", method="POST",
+                                      body=body, content_type=f"multipart/form-data; boundary={boundary}", status=201)
+        snapshot = json.loads(payload)
+        snapshot_id = snapshot.get("id")
+        if type(snapshot_id) is not int or snapshot_id <= 0:
+            raise PortableReleaseError("offline saved-plan upload did not create a snapshot")
+        prefix = f"/api/snapshots/{snapshot_id}"
+        before, _ = _saved_plan_http(base, prefix + "/raw")
+        catalogue = _saved_plan_json(base, prefix + "/plans")
+        assessment = catalogue.get("assessment")
+        if (
+            not isinstance(assessment, dict)
+            or set(assessment) != {"source", "sha256", "bytes", "snapshot_id", "campaign_id",
+                                   "engagement_id", "label", "script_version"}
+            or assessment.get("source") != "persisted snapshots.snapshot_json blob"
+            or assessment.get("sha256") != "sha256:" + hashlib.sha256(before).hexdigest()
+            or type(assessment.get("bytes")) is not int or assessment["bytes"] != len(before)
+            or type(assessment.get("snapshot_id")) is not int or type(assessment.get("campaign_id")) is not int
+            or assessment.get("snapshot_id") != snapshot_id or assessment.get("campaign_id") != campaign_id
+            or any(not isinstance(assessment.get(key), str) or not assessment[key]
+                   for key in ("engagement_id", "label", "script_version"))
+            or catalogue.get("selection_id") != 0 or catalogue.get("selected_revision") is not None
+            or catalogue.get("revisions") != []
+        ):
+            raise PortableReleaseError("offline saved-plan initial assessment binding or empty selection differs")
+        requirements = {"fabric_operating_model": "aci", "convergence_budget_ms": 0,
+                        "constraints": ["RC8 offline qualification"]}
+        first = _saved_plan_json(base, prefix + "/plans", method="POST", status=201, body={
+            "label": "Selected qualification plan", "requirements": requirements,
+            "assessment": assessment, "expected_selection_id": 0,
+        })
+        _saved_plan_record(first, assessment, requirements)
+        alternative_requirements = {**requirements, "fabric_operating_model": "nxos-evpn"}
+        alternative = _saved_plan_json(base, prefix + "/plans", method="POST", status=201, body={
+            "label": "Alternative qualification plan", "requirements": alternative_requirements,
+            "assessment": assessment, "expected_selection_id": first["selection_id"],
+        })
+        _saved_plan_record(alternative, assessment, alternative_requirements)
+        if alternative["revision"] == first["revision"] or alternative["sha256"] == first["sha256"]:
+            raise PortableReleaseError("offline saved-plan alternate revision did not change identity")
+        selected = _saved_plan_json(base, prefix + f"/plans/{first['revision']}/select", method="POST", body={
+            "plan_sha256": first["sha256"], "expected_selection_id": alternative["selection_id"],
+        })
+        _saved_plan_record(selected, assessment, requirements)
+        if (
+            selected["revision"] != first["revision"] or selected["sha256"] != first["sha256"]
+            or selected["selection_id"] <= max(first["selection_id"], alternative["selection_id"])
+        ):
+            raise PortableReleaseError("offline saved-plan explicit selection did not retain its revision identity")
+        pinned_path = prefix + f"/plans/{selected['revision']}?" + urllib.parse.urlencode({
+            "plan_sha256": selected["sha256"], "selection_id": selected["selection_id"],
+        })
+        pinned = _saved_plan_json(base, pinned_path)
+        if digest_object(pinned) != digest_object(selected):
+            raise PortableReleaseError("offline saved-plan selected response differs from its pinned read")
+        stale = prefix + f"/plans/{selected['revision']}/deliverable/mop?" + urllib.parse.urlencode({
+            "plan_sha256": selected["sha256"], "selection_id": first["selection_id"],
+        })
+        _saved_plan_http(base, stale, status=409)
+        wrong = prefix + f"/plans/{selected['revision']}?" + urllib.parse.urlencode({
+            "plan_sha256": alternative["sha256"], "selection_id": selected["selection_id"],
+        })
+        _saved_plan_http(base, wrong, status=409)
+    with _saved_plan_server(exe, database, environment) as base:
+        reopened = _saved_plan_json(base, pinned_path)
+        _saved_plan_record(reopened, assessment, requirements)
+        if digest_object(reopened) != digest_object(pinned):
+            raise PortableReleaseError("offline saved-plan identity changed after frozen server restart")
+        documents = []
+        for kind in ("mop", "nrfu"):
+            path = prefix + f"/plans/{selected['revision']}/deliverable/{kind}?" + urllib.parse.urlencode({
+                "plan_sha256": selected["sha256"], "selection_id": selected["selection_id"],
+            })
+            payload, headers = _saved_plan_http(base, path)
+            documents.append(_saved_plan_document_evidence(payload, headers, kind, assessment, selected))
+        after, _ = _saved_plan_http(base, prefix + "/raw")
+        if after != before:
+            raise PortableReleaseError("offline saved-plan export mutated the original assessment bytes")
+    database_copy = _database_preflight_case(
+        exe, database, root / "saved-plan-copy" / "hub.db", environment,
+        expected_counts={"campaigns": 1, "snapshots": 1, "plan_revisions": 2,
+                         "plan_revision_authority": 2, "plan_selection_events": 3},
+        expect_migration=False,
+    )
+    evidence = {
+        "status": "pass", "campaign_id": campaign_id, "snapshot_id": snapshot_id,
+        "upload_sha256": hashlib.sha256(upload).hexdigest(), "upload_bytes": len(upload),
+        "assessment_sha256": assessment["sha256"], "assessment_bytes": len(before),
+        "assessment_binding_sha256": digest_object(assessment), "plan_revision": selected["revision"],
+        "plan_sha256": selected["sha256"], "selection_id": selected["selection_id"], "saved_revision_count": 2,
+        "selected_record_sha256": digest_object(pinned), "reopened_record_sha256": digest_object(reopened),
+        "server_restarted": True, "assessment_unchanged": True, "zero_requirement_preserved": True,
+        "stale_selection_refused": True, "wrong_plan_refused": True,
+        "database_copy": database_copy, "documents": documents,
+    }
+    _validate_saved_plan_documents_evidence(evidence)
+    return evidence
 
 
 def qualify(repository_root: str | Path, bundle_root: str | Path, *, run_redaction: bool = True) -> dict[str, Any]:
@@ -543,6 +862,7 @@ def qualify(repository_root: str | Path, bundle_root: str | Path, *, run_redacti
             if run_redaction
             else {"status": "not_run"}
         )
+        saved_plan = _offline_saved_plan_documents(relocated / "Atlas.exe", root, environment)
         final_directories = build_atlas._bundle_directory_state(relocated)
         directory_gap = build_atlas._directory_gap(
             relocated_directories,
@@ -575,6 +895,7 @@ def qualify(repository_root: str | Path, bundle_root: str | Path, *, run_redacti
             "evidence": database["prior_release_v3_32_1"],
         },
         {"id": "frozen_redaction_and_manifest", "status": redaction["status"], "evidence": redaction},
+        {"id": "offline_saved_plan_documents", "status": saved_plan["status"], "evidence": saved_plan},
     ]
     if any(item["status"] != "pass" for item in checks):
         raise PortableReleaseError("automated portable qualification did not pass every requested check")

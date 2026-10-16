@@ -173,8 +173,12 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
   (today the bundler's runtime modules), derived from the built module graph and reviewed against
   `release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES`. Release metadata carries
   `atlas.portable-third-party-notices/2` alongside `atlas.portable-toolchain-receipt/2` and
-  `atlas.portable-qualification/3`, whose closed database census includes the versioned stored carriage
-  preparation tables. A package carrying a `/1` document of any of these, or a `/2` qualification
+  `atlas.portable-qualification/4`, whose closed database census includes versioned stored carriage
+  preparation, immutable saved-plan revisions and append-only selections. Its dedicated offline saved-plan
+  document check uploads the bundled synthetic snapshot through the ordinary API, saves/selects a plan,
+  restarts the frozen server and verifies matching MOP/NRFU identities. This is hosted synthetic evidence,
+  not a Python-absent physical-host or operator acceptance receipt. A package carrying a `/1` document of
+  any of these, or a `/2` or `/3` qualification
   receipt, is refused as superseded, with the stated reason, never migrated: verify it with the
   checkout that built it, or rebuild it. Python/npm package license
   texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE

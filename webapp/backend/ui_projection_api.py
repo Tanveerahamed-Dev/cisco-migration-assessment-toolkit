@@ -1249,6 +1249,12 @@ def install_routes(app: FastAPI, store: Any) -> None:
                 schemas[name] = _rewrite_refs({key: value for key, value in source.items() if key != "$defs"})
                 schemas[name]["x-engine-schema-id"] = _OWNER["$id"]
             app.openapi_schema = api
+        # This is the final installed OpenAPI boundary, including cache hits. Keep the
+        # expensive native schemas cached, but never retain consumer-mutated or stale
+        # planning metadata instead of the engine owner's fresh admission contract.
+        from cisco_toolkit.design_advisor import requirements_contract
+
+        app.openapi_schema["x-atlas-requirements-contract"] = requirements_contract()
         return app.openapi_schema
 
     app.openapi = projection_openapi

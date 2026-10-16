@@ -58,6 +58,20 @@ def test_empty_multichassis_producer_is_not_published_as_runtime_support():
 
 
 def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch):
+    from cisco_toolkit import design_advisor
+
+    late_calls = []
+    original_late = design_advisor.derive_plan_sections
+
+    def counted_late(snapshot, requirements, **kwargs):
+        assert kwargs["profile"] == "assessment"
+        assert kwargs["compute_blueprint"] is cp.compute_design_blueprint
+        assert kwargs["compute_nrfu"] is cp.compute_design_nrfu
+        assert callable(kwargs["requirements_published"])
+        late_calls.append(snapshot)
+        return original_late(snapshot, requirements, **kwargs)
+
+    monkeypatch.setattr(design_advisor, "derive_plan_sections", counted_late)
     collection = fx.write_collection(str(tmp_path / "collection"))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
@@ -120,6 +134,7 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     ])
 
     cp.main()   # the actual console entry point — exercises build/excel/html/runbook in-process
+    assert len(late_calls) == 1 and late_calls[0] is final_snapshots[0]
 
     # Capture-integrity custody is computed exactly once before the protocol denominator and every
     # readiness consumer; its workbook sheet may remain later without recomputing the evidence.

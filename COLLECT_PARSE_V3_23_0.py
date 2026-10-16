@@ -5498,17 +5498,14 @@ def main():
     # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
     # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
     try:
-        _req = _validated_inputs.get("requirements") or {}
-        if _req:
-            snap_dict["requirements_register"] = _req                 # stored so the blueprint stays reproducible from the snapshot alone
-            logger.info(f"  [design] requirements register supplied ({', '.join(sorted(_req))}) -> blueprint right-sized")
-        # design_blueprint INCLUDES the gated EVPN-migration guardrails (compute_design_blueprint folds them in
-        # so the published blueprint stays reproducible from the snapshot + the same requirements register).
-        snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict, _req or None)
-        # design-driven NRFU/ATP checklist, published canonically so the OFFLINE explorer and the webapp
-        # read ONE set of phased acceptance items (and their phases) instead of re-deriving them in JS.
-        # Derived purely from design_blueprint -> excluded from the golden + publish-locked alongside it.
-        snap_dict["design_nrfu"] = compute_design_nrfu(snap_dict["design_blueprint"])
+        from cisco_toolkit import design_advisor as _design_advisor
+        _design_advisor.derive_plan_sections(
+            snap_dict, _validated_inputs.get("requirements"), profile="assessment",
+            compute_blueprint=compute_design_blueprint,
+            compute_nrfu=compute_design_nrfu,
+            requirements_published=lambda register: logger.info(
+                f"  [design] requirements register supplied ({', '.join(sorted(register))}) -> blueprint right-sized"),
+        )
         # Architecture-coverage SSOT: which architecture CLASSES were observed vs not, and what fired -- one
         # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
         # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
