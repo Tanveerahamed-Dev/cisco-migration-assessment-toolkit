@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 import zipfile
 
 import pytest
@@ -176,3 +178,33 @@ def test_runtime_smoke_copy_preserves_package_and_excludes_only_root_metadata(tm
     assert not (runtime / "release-metadata").exists()
     assert (runtime / "_internal" / "release-metadata" / "runtime.bin").read_bytes() == b"nested runtime bytes"
     assert (runtime / "Atlas.exe").read_bytes() == b"synthetic application bytes"
+
+
+@pytest.mark.parametrize("valid_schema", [True, False])
+def test_database_observer_releases_its_handle_on_success_and_query_failure(tmp_path: Path, monkeypatch,
+                                                                          valid_schema: bool) -> None:
+    database = tmp_path / "synthetic.db"
+    original_connect = sqlite3.connect
+    with closing(original_connect(database)) as connection:
+        if valid_schema:
+            connection.execute("CREATE TABLE snapshots(id, campaign_id, label, snapshot_json)")
+            connection.execute("INSERT INTO snapshots VALUES(1, 1, 'synthetic', '{}')")
+        else:
+            connection.execute("CREATE TABLE different_table(id)")
+        connection.commit()
+    held = []
+
+    def observed_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        held.append(connection)  # keep it alive: garbage collection cannot mask a leaked handle
+        return connection
+
+    monkeypatch.setattr(proof.sqlite3, "connect", observed_connect)
+    if valid_schema:
+        assert proof.database_state(database)["rows"] == [(1, 1, "synthetic", "{}")]
+    else:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            proof.database_state(database)
+    assert len(held) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        held[0].execute("SELECT 1")

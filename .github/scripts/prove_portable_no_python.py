@@ -8,6 +8,7 @@ This simulated absence does not replace qualification on an actual disconnected 
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -92,7 +93,8 @@ def validate_result(value: object, expected_code: int) -> dict:
     require(isinstance(value, dict), "maintenance result is not an object")
     require(value.get("schema") == "atlas.maintenance-result/1", "unknown maintenance result schema")
     require(type(value.get("exit_code")) is int and value["exit_code"] == expected_code,
-            "maintenance worker failed or reported an unexpected exit code")
+            "maintenance worker failed or reported an unexpected exit code: "
+            f"expected={expected_code}, observed={value.get('exit_code')}, detail={str(value.get('error', ''))[-2048:]}")
     require(value.get("status") == ("complete" if expected_code == 0 else "refused"),
             "maintenance status contradicts its worker exit code")
     require(value.get("verifier_origin") == "installed_atlas", "update did not use installed verifier")
@@ -138,7 +140,9 @@ def tree_digest(root: Path) -> str:
 
 def database_state(path: Path) -> dict:
     require(path.is_file(), "installed application did not create its real database")
-    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+    # A sqlite3 Connection context commits/rolls back; it does not close its OS
+    # handle. The observer must release it before the updater moves client data.
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         require(connection.execute("PRAGMA quick_check").fetchall() == [("ok",)],
                 "installed database failed quick_check")
         rows = connection.execute("SELECT id, campaign_id, label, snapshot_json FROM snapshots ORDER BY id").fetchall()
