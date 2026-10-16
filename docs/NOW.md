@@ -26,11 +26,16 @@ There is **one application**: the `main` branch of this repository on GitHub.
     The engine computes and the interface displays. The rule is enforced in CI by a canonical-fact
     reconcile ratchet and a closed interface-computation debt register, which may only shrink.
     RC8-P1-H retires the audited duplicates.
-- **The one door:** AssessHub (`webapp/`). Atlas Scope (`atlas-scope/`) is its integrated
-  preview 3-D investigation module.
+- **The one front end (ADR 0008, 2026-10-16):** the Atlas app, which is AssessHub (`webapp/frontend`)
+  in the native Atlas window. It has six tabs per snapshot: Network (topology-first workspace),
+  Findings, Inventory, Plan, Change and Reports.
+  - The HTML explorer and Atlas Scope are no longer separate user-facing front ends. Their best
+    views are rebuilt inside the app on engine data.
+  - The `/scope` entry and the explorer link leave the app.
+  - This supersedes ADR 0007's "Scope as integrated preview module" and "explorer as offline
+    deliverable".
 - **Other surfaces:**
-  - The engine HTML explorer stays an offline deliverable.
-  - Atlas (`portable/`) packages AssessHub for the USB stick.
+  - Atlas (`portable/`) packages the app for the USB stick or a local folder.
   - `master-reference/` and the MCP server are existing derivatives, not further products.
 - **Not allowed:** a new app, repository, product line or long-lived parallel branch.
 
