@@ -9,14 +9,12 @@ from __future__ import annotations
 import ast
 from collections import Counter
 import hashlib
-from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
-from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = "docs/interface-computation-debt.json"
@@ -55,7 +53,7 @@ def source_map(revision=None):
         if path in SPECIAL or path in writers:
             selected.add(path)
         elif path.startswith(ROOTS) and path.endswith((".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")):
-            if path == "webapp/backend/engine.py" or "/generated/" in path or "/test/" in path or "/__tests__/" in path or re.search(r"\.(?:test|spec)\.", path):
+            if path == "webapp/backend/engine.py" or "/test/" in path or "/__tests__/" in path or re.search(r"\.(?:test|spec)\.", path):
                 continue
             selected.add(path)
     return {path: read(path) for path in sorted(selected)}
@@ -104,69 +102,6 @@ def ast_form(value):
     return value
 
 
-class ScriptSources(HTMLParser):
-    """Use HTML parsing, not a filtering regexp, for the Explorer's script census."""
-
-    def __init__(self, depth=0):
-        super().__init__(convert_charrefs=False)
-        self.scripts = []
-        self.active = None
-        self.line = 0
-        self.depth = depth
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "script":
-            if any(name == "src" for name, _value in attrs):
-                raise ValueError("External Explorer scripts cannot escape the source census")
-            self.active = []
-            self.line = self.getpos()[0] - 1
-        # Attribute values are entity-decoded by HTMLParser. Scan inline event
-        # bodies as functions too; inspected bodies are never evaluated.
-        for name, value in attrs:
-            if name.startswith("on") and value:
-                symbol = "html_event_" + name + "_" + digest(value)[:16]
-                self.scripts.append("\n" * (self.getpos()[0] - 1) + f"function {symbol}() {{\n{value}\n}}")
-            if name in ("href", "xlink:href", "action", "formaction") and value:
-                normalized = value.translate({9: None, 10: None, 13: None}).lstrip("".join(chr(i) for i in range(33)))
-                url = urlsplit(normalized)
-                if url.scheme.lower() == "javascript":
-                    body = unquote(normalized.partition(":")[2], errors="strict")
-                    symbol = "html_url_" + digest(body)[:16]
-                    self.scripts.append(f"function {symbol}() {{\n{body}\n}}")
-            if name == "srcdoc" and value:
-                if self.depth >= 8:
-                    raise ValueError("Nested HTML source exceeds the static census depth")
-                nested = ScriptSources(self.depth + 1)
-                nested.feed(value)
-                nested.close()
-                if nested.active is not None:
-                    raise ValueError("Nested HTML has an unclosed script")
-                self.scripts.extend(nested.scripts)
-
-    def handle_startendtag(self, tag, attrs):
-        if tag == "script":
-            raise ValueError("Self-closing script syntax is ambiguous and cannot be omitted")
-        self.handle_starttag(tag, attrs)
-
-    def handle_data(self, data):
-        if self.active is not None:
-            self.active.append(data)
-
-    def handle_endtag(self, tag):
-        if tag == "script" and self.active is not None:
-            self.scripts.append("\n" * self.line + "".join(self.active))
-            self.active = None
-
-
-def html_scripts(text):
-    parser = ScriptSources()
-    parser.feed(text)
-    parser.close()
-    if parser.active is not None or not parser.scripts:
-        raise ValueError("Explorer script census is absent or unclosed")
-    return "\n".join(parser.scripts)
-
-
 def python_sites(path, text):
     result, counts = [], Counter()
 
@@ -193,7 +128,7 @@ def python_sites(path, text):
 
         def visit_Call(self, node):
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
-            if name in {"len", "sum", "Counter", "mean", "average", "count", "count_by", "_count_by"}:
+            if name in {"len", "sum", "any", "all", "Counter", "mean", "average", "count", "count_by", "_count_by"}:
                 self.emit(node, "aggregate")
             if name in {"bfs", "dfs", "shortest_path", "dijkstra", "reachable", "flood_fill"}:
                 self.emit(node, "graph-call")
@@ -251,8 +186,6 @@ def scan(sources):
         if path.endswith(".py"):
             sites.extend(python_sites(path, text))
         else:
-            if path.endswith(".html"):
-                text = html_scripts(text)
             javascript.append(dict(path=path, text=text))
     if javascript:
         node = shutil.which("node")

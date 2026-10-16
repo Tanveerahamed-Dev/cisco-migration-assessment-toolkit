@@ -1,23 +1,58 @@
 // Parse source as data. Never import, evaluate or execute an inspected application.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 const require = createRequire(resolve(process.cwd(), 'atlas-scope/package.json'));
 const ts = require('typescript');
 if (ts.version !== '5.9.3') throw new Error('The interface detector requires the locked TypeScript 5.9.3 parser');
+const parse5Entry = require.resolve('parse5');
+const parse5Package = JSON.parse(readFileSync(resolve(dirname(parse5Entry), '..', 'package.json'), 'utf8'));
+if (parse5Package.version !== '8.0.1') throw new Error('The interface detector requires the locked parse5 8.0.1 HTML5 parser');
+const { parse: parseHtml } = await import(pathToFileURL(parse5Entry).href);
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const domain = /health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage/i;
 const ownerName = /^(?:counterfactualFailure|failureImpact|tracePath|flowBetween|evalAcl|linkCarries|causalFlows|fleetHealthState|scoreToken|HEALTH_TONE|GAUGE_COLOR|(?:compute|calculate|recount|simulate|evaluate|classify|qualify|count|trace)[A-Z_].*)$/;
 const verdicts = new Set(['READY', 'NOT READY', 'CAUTION', 'GO', 'NO-GO', 'CONDITIONAL GO', 'Critical', 'Excellent', 'Good', 'Fair', 'Poor', 'ok', 'watch', 'risk', 'crit', 'healthy', 'permit', 'deny', 'allow', 'block', 'reached', 'unreachable']);
 const hash = text => createHash('sha256').update(text).digest('hex');
 
-export function scan(path, text) {
-  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true,
-    path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
-  if (file.parseDiagnostics.length) throw new Error(`${path}: source parse failed: ${file.parseDiagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')).join('; ')}`);
-  const rows = [], occurrences = new Map();
+function htmlSources(text, depth = 0, baseLine = 0) {
+  if (depth > 8) throw new Error('Nested HTML exceeds the static census depth');
+  const document = parseHtml(text, { sourceCodeLocationInfo: true });
+  const fragments = [];
+  function visit(node) {
+    const attrs = node.attrs ?? [];
+    if (node.tagName === 'script') {
+      if (attrs.some(attr => attr.name === 'src')) throw new Error('External Explorer scripts cannot escape the census');
+      const location = node.sourceCodeLocation;
+      if (!location?.startTag) throw new Error('Script source location is unavailable');
+      if (text.slice(location.startTag.startOffset, location.startTag.endOffset).trimEnd().endsWith('/>')) throw new Error('Self-closing script syntax is ambiguous');
+      if (!location.endTag) throw new Error('Unclosed Explorer script');
+      fragments.push({ text: (node.childNodes ?? []).filter(child => child.nodeName === '#text').map(child => child.value).join(''),
+        line: baseLine + location.startTag.endLine - 1 });
+    }
+    for (const attr of attrs) {
+      const line = baseLine + (node.sourceCodeLocation?.attrs?.[attr.name]?.startLine ?? node.sourceCodeLocation?.startLine ?? 1);
+      if (attr.name.startsWith('on') && attr.value) fragments.push({ text: `function html_event_${attr.name}_${hash(attr.value).slice(0,16)}() {\n${attr.value}\n}`, line: line - 2 });
+      if (['href', 'action', 'formaction'].includes(attr.name) && attr.value) {
+        const url = new URL(attr.value, 'https://static-census.invalid/');
+        if (url.protocol === 'javascript:') {
+          const body = decodeURIComponent(url.href.slice(url.protocol.length));
+          fragments.push({ text: `function html_url_${hash(body).slice(0,16)}() {\n${body}\n}`, line: line - 2 });
+        }
+      }
+      if (attr.name === 'srcdoc' && attr.value) fragments.push(...htmlSources(attr.value, depth + 1, line - 1));
+    }
+    for (const child of node.childNodes ?? []) visit(child);
+    if (node.content) visit(node.content);
+  }
+  visit(document);
+  return fragments;
+}
+
+function propertyResolver(file) {
   const constantKeys = new Map(), declarations = [];
   function remember(name, value) {
     const values = constantKeys.get(name) ?? new Set();
@@ -56,6 +91,15 @@ export function scan(path, text) {
     }
     if (!changed) break;
   }
+  return keyOf;
+}
+
+function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver = null) {
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+  if (file.parseDiagnostics.length) throw new Error(`${path}: source parse failed: ${file.parseDiagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')).join('; ')}`);
+  const rows = [];
+  const keyOf = sharedResolver ?? propertyResolver(file);
   function name(node) {
     if (node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))) return node.name.text;
     if (node.parent && ts.isVariableDeclaration(node.parent)) return node.parent.name.getText(file);
@@ -73,7 +117,7 @@ export function scan(path, text) {
     const fingerprint = hash(stable(node)), key = `${symbol}:${rule}:${fingerprint}`;
     const occurrence = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, occurrence);
     rows.push({ path, symbol, rule, fingerprint, occurrence,
-      line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
+      line: lineOffset + file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
       expression: node.getText(file).replace(/\s+/g, ' ').slice(0, 240) });
   }
   function walk(node, scope = '<module>') {
@@ -99,7 +143,7 @@ export function scan(path, text) {
       const called = ts.isPropertyAccessExpression(callee) ? callee.name.text :
         ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text :
         ts.isIdentifier(callee) ? callee.text : '';
-      if (['reduce', 'reduceRight', 'count', 'countBy', 'groupBy', 'sum', 'sumBy', 'mean', 'average'].includes(called)) emit(node, symbol, 'aggregate');
+      if (['reduce', 'reduceRight', 'some', 'every', 'count', 'countBy', 'groupBy', 'sum', 'sumBy', 'mean', 'average'].includes(called)) emit(node, symbol, 'aggregate');
       if (['bfs', 'dfs', 'shortestPath', 'dijkstra', 'reachable', 'floodFill'].includes(called)) emit(node, symbol, 'graph-call');
       if (['eval', 'Function', 'exec', 'compile'].includes(called)) emit(node, symbol, 'dynamic-code');
       if (ts.isPropertyAccessExpression(callee) && ['Reflect', 'Object'].includes(callee.expression.getText(file)) && ['get', 'getOwnPropertyDescriptor'].includes(called) && ['length', 'size'].includes(keyOf(node.arguments[1]))) emit(node, symbol, 'count');
@@ -109,6 +153,7 @@ export function scan(path, text) {
     if (ts.isNewExpression(node) && node.expression.getText(file) === 'Function') emit(node, symbol, 'dynamic-code');
     if (ts.isBinaryExpression(node)) {
       const op = node.operatorToken.kind;
+      if (op === ts.SyntaxKind.EqualsToken && ts.isBinaryExpression(node.right) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.right.operatorToken.kind) && node.right.left.getText(file) === node.left.getText(file)) emit(node, symbol, 'counter-update');
       if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(op) && ts.isNumericLiteral(node.right) && node.right.text === '0' && domain.test(node.left.getText(file))) emit(node, symbol, 'fact-default-zero');
       if ([ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken].includes(op)
           && /\d/.test(node.getText(file))) emit(node, symbol, 'fact-threshold');
@@ -125,6 +170,17 @@ export function scan(path, text) {
   }
   walk(file);
   return rows;
+}
+
+export function scan(path, text) {
+  const occurrences = new Map();
+  if (!path.endsWith('.html')) return scanJavaScript(path, text, occurrences);
+  const fragments = htmlSources(text);
+  // Classic scripts and inline handlers share document scope. Bind static count
+  // property aliases across every fragment, then retain each fragment's source line.
+  const whole = ts.createSourceFile(path, fragments.map(fragment => fragment.text).join('\n'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const resolver = propertyResolver(whole);
+  return fragments.flatMap(fragment => scanJavaScript(path, fragment.text, occurrences, fragment.line, resolver));
 }
 
 process.stdout.write(JSON.stringify(input.sources.flatMap(source => scan(source.path, source.text))));

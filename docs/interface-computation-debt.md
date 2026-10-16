@@ -9,7 +9,7 @@ hosted observation and review. The initial `observation_required` stage fails CI
 
 The scanner discovers authored modules under `webapp/frontend/src`,
 `webapp/backend` (excluding the engine adapter), and `atlas-scope/src`.
-Generated types and test fixtures are excluded by explicit path/type rules.
+Generated TypeScript is scanned too; test modules/fixtures have explicit path/type exclusions.
 It also scans the Explorer HTML script, workbook writer, document metadata and
 all `writer_module` owners declared in the artifact SPECS registry, plus Scope's
 `tools/lib/compile-model.mjs` coverage compiler and the Python HTML report writer.
@@ -104,11 +104,10 @@ baseline; neither source qualifies an active debt inventory or the later tests.
 CodeQL check `116878334766` on that subject found one high-severity
 `Bad HTML filtering regexp` alert at the script-element end-tag matcher: an HTML
 end tag with whitespace/attributes could escape that regular expression.
-The correction uses `HTMLParser`, scans entity-decoded event bodies, JavaScript
+The first correction used `HTMLParser`, scanning entity-decoded event bodies, JavaScript
 URL bodies and nested srcdoc, and refuses external, unclosed or self-closing
 script sources. Dedicated malformed-end-tag and attribute controls accompany it.
-Its resolution remains **not verified** until the corrected head's CodeQL and
-hosted controls pass. No alert is dismissed and no checker is suppressed.
+CodeQL passes on `32c858fb`, but Windows job `116893331963` reports **91 passed / 3 failed**: the two intentional admission failures and the retained malformed-end-tag count assertion. The real-producer canonical mutation step passes in **20.18 s** on that source. Python's CDATA parser retained the malformed end tag as JavaScript, so the current correction uses the already locked `parse5` **8.0.1** HTML5 parser alongside TypeScript **5.9.3**, with no dependency change. Script, decoded attribute, URL and srcdoc controls remain intact. Fresh hosted evidence is required; no alert is dismissed and no checker is suppressed.
 
 The corrected observation must bind its source commit/tree and both detector
 digests before its candidate inventory is reviewed. Initial observations are not

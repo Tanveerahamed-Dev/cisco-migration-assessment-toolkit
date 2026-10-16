@@ -101,6 +101,7 @@ def test_ambiguous_registry_json_refuses(text):
     ("def f(xs):\n n = 0\n for x in xs:\n  n += 1\n return n\n", "counter-update"),
     ("def f(x):\n return 'ok' if x >= 80 else 'risk'\n", "fact-threshold"),
     ("def f(x):\n if x:\n  return 'NO-GO'\n return 'GO'\n", "fact-decision"),
+    ("def f(rows):\n return all(row.ready for row in rows)\n", "aggregate"),
 ])
 def test_python_ast_catches_counts_bands_and_traversal(text, rule):
     assert any(row["rule"] == rule for row in guard.python_sites("webapp/backend/new.py", text))
@@ -138,6 +139,9 @@ def test_python_ast_fingerprint_has_a_fixed_cross_version_structure():
     ("function f(xs) { const {length: n} = xs; return n; }", "count"),
     ("function f(xs) { const {'length': n} = xs; return n; }", "count"),
     ("function f(xs) { return Reflect.get(xs, 'length'); }", "count"),
+    ("function f(xs) { let n = 0; for (const x of xs) n = n + 1; return n; }", "counter-update"),
+    ("function f(xs) { return xs.every(x => x.ready); }", "aggregate"),
+    ("function f(xs) { return xs.some(x => x.n_fail); }", "aggregate"),
 ])
 def test_typescript_ast_and_html_scripts_catch_new_computations(parser, path, source, rule):
     text = f"<script>{source}</script>" if path.endswith("html") else source
@@ -160,6 +164,11 @@ def test_html_script_end_tags_preserve_all_following_scripts(parser, end):
     assert any(row["rule"] == "count" and row["symbol"] == "f" for row in guard.scan({"cisco_toolkit/blast_radius_explorer.html": source}))
 
 
+def test_static_count_property_aliases_cross_html_scripts(parser):
+    source = "<script>const field = 'length';</script><script>function f(xs) { return xs[field]; }</script>"
+    assert any(row["rule"] == "count" and row["symbol"] == "f" for row in guard.scan({"cisco_toolkit/blast_radius_explorer.html": source}))
+
+
 def test_html_event_bodies_are_parsed_not_discarded(parser):
     source = '<button onclick="return rows[&quot;length&quot;]">x</button><script>const safe = 1;</script>'
     assert any(row["rule"] == "count" and row["symbol"].startswith("html_event_") for row in guard.scan({"cisco_toolkit/blast_radius_explorer.html": source}))
@@ -176,9 +185,10 @@ def test_executable_html_attributes_cannot_hide_counts(parser, source):
 
 
 @pytest.mark.parametrize("source", ['<script src="other.js"></script>', '<script/>return rows.length;', '<script>return rows.length;'])
-def test_omitted_external_or_unclosed_script_sources_refuse(source):
-    with pytest.raises(ValueError):
-        guard.html_scripts(source)
+def test_omitted_external_or_unclosed_script_sources_refuse(parser, source):
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        guard.scan({"cisco_toolkit/blast_radius_explorer.html": source})
+    assert any(word in refused.value.stderr for word in ("External", "Self-closing", "Unclosed"))
 
 
 def test_renderer_without_computation_does_not_create_a_debt(parser):
@@ -212,7 +222,7 @@ def test_source_discovery_includes_new_interface_modules_and_registry_writers():
     assert "webapp/backend/engine.py" not in sources
 
 
-@pytest.mark.parametrize("path", ["webapp/backend/new.py", "webapp/frontend/src/New.tsx", "atlas-scope/src/new.ts", "cisco_toolkit/new_report.py"])
+@pytest.mark.parametrize("path", ["webapp/backend/new.py", "webapp/frontend/src/New.tsx", "webapp/frontend/src/generated/new.ts", "atlas-scope/src/new.ts", "cisco_toolkit/new_report.py"])
 def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, path):
     sources = {"cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.new_report')\n",
                path: "def f(rows):\n return len(rows)\n" if path.endswith("py") else "function f(rows) { return rows.length; }"}
