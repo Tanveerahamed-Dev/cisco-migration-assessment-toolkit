@@ -480,7 +480,7 @@ export default function CoreSnapshot() {
       return;
     }
     loadProjection(sid, view, host, controller.signal).then((document) => {
-      if (expectedSource !== null && (document.identity.sha256 !== expectedSource || String(document.identity.bytes) !== expectedBytes)) {
+      if ((expectedSource !== null || expectedBytes !== null) && (document.identity.sha256 !== expectedSource || String(document.identity.bytes) !== expectedBytes)) {
         throw new Error("The referenced record belongs to a different stored snapshot. Return to Inventory and select it again.");
       }
       if (!controller.signal.aborted) setResult({ key, document });
@@ -490,10 +490,14 @@ export default function CoreSnapshot() {
     return () => controller.abort();
   }, [key, sid, view, host, valid, retry, expectedSource, expectedBytes]);
   const document = result?.key === key ? result.document : null;
+  const networkParams = new URLSearchParams(params); networkParams.delete("view"); networkParams.delete("tab");
+  if (document) { networkParams.set("source", document.identity.sha256); networkParams.set("source_bytes", String(document.identity.bytes)); }
+  const networkQuery = networkParams.toString();
   return <main className="container projection-shell">
     <div className="breadcrumb"><Link to="/campaigns">Campaigns</Link> / Snapshot {id}</div>
     <header className="page-head"><div><h1>{view === "device" ? host ?? "Device" : `Snapshot ${id}`}</h1>
       <p className="sub">Evidence-led migration assessment</p></div><span className="spacer" /><ScopeLink key={sid} sid={sid} />
+      <Link className="btn" to={`/snapshots/${id}${networkQuery ? `?${networkQuery}` : ""}`}>Network workspace</Link>
       <Link className="btn" to={`/snapshots/${id}/tools`}>Tools and downloads</Link></header>
     <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings", "topology"] as const).map((item) =>
       <Link key={item} aria-current={view === item || (view === "device" && item === "inventory") ? "page" : undefined}

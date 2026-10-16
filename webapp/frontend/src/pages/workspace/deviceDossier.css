@@ -1,0 +1,11 @@
+.device-dossier { min-width: 0; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-wrap: anywhere; }
+.device-dossier > header { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 14px; }
+.device-dossier > header h2 { margin: 0; font-size: 1.3rem; }
+.device-dossier-eyebrow { margin: 0 0 5px; color: var(--text-dim); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+.device-dossier section { margin-top: 18px; }
+.device-dossier section > h3 { margin: 0 0 10px; }
+.device-dossier .projection-fact-grid { grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); }
+.device-dossier .panel { padding: 10px; box-shadow: none; }
+.device-dossier > details { margin-top: 16px; }
+.device-dossier summary { cursor: pointer; }
+.device-dossier code { white-space: pre-wrap; overflow-wrap: anywhere; }

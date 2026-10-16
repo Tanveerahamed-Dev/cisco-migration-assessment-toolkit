@@ -12,6 +12,27 @@ function Harness() {
 const show = (path = "/snapshots/1") => render(<MemoryRouter initialEntries={[path]}><Harness /></MemoryRouter>);
 describe("Core snapshot route", () => {
   afterEach(() => vi.restoreAllMocks());
+  it.each(["source-only", "bytes-only", "mismatch"])("keeps a refused %s custody reference intact when returning to Network", async (shape) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).endsWith("/scope-view") ? { available: false } : overviewFixture())));
+    const query = new URLSearchParams({ view: "overview", tab: "reports", ref: "/synthetic/4", row: "4" });
+    if (shape !== "bytes-only") query.set("source", overviewFixture().identity.sha256);
+    if (shape !== "source-only") query.set("source_bytes", "999");
+    show(`/snapshots/1?${query}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("different stored snapshot");
+    expect(screen.queryByText("Synthetic fleet needs review")).not.toBeInTheDocument();
+    const href = new URL(screen.getByRole("link", { name: "Network workspace", exact: true }).getAttribute("href")!, "http://localhost");
+    expect(href.searchParams.get("source")).toBe(query.get("source")); expect(href.searchParams.get("source_bytes")).toBe(query.get("source_bytes"));
+    expect(href.searchParams.get("ref")).toBe("/synthetic/4"); expect(href.searchParams.get("row")).toBe("4");
+    expect(href.searchParams.has("view")).toBe(false); expect(href.searchParams.has("tab")).toBe(false);
+  });
+  it("binds the Network return link to the admitted Classic source identity", async () => {
+    const doc = overviewFixture();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).endsWith("/scope-view") ? { available: false } : doc)));
+    show("/snapshots/1?view=overview&ref=%2Fsynthetic%2F8&row=8"); await screen.findByText("Synthetic fleet needs review");
+    const href = new URL(screen.getByRole("link", { name: "Network workspace", exact: true }).getAttribute("href")!, "http://localhost");
+    expect(href.searchParams.get("source")).toBe(doc.identity.sha256); expect(href.searchParams.get("source_bytes")).toBe(String(doc.identity.bytes));
+    expect(href.searchParams.get("ref")).toBe("/synthetic/8"); expect(href.searchParams.get("row")).toBe("8");
+  });
   it("uses the projection alone for core facts and preserves published zero", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);

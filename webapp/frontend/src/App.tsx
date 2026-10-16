@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, NavLink, Route, Routes, useLocation } from "react-router";
+import { Link, NavLink, Route, Routes, useLocation, matchRoutes } from "react-router";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import CampaignPage from "./pages/Campaign";
@@ -11,6 +11,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useViewTransition } from "./components/ui";
 import { api, ApiError } from "./api";
 import type { AppIdentity } from "./api";
+import SnapshotWorkspace from "./pages/SnapshotWorkspace";
+import Engagements from "./pages/Engagements";
+import { AtlasRail } from "./pages/workspace/AtlasRail";
+import "./pages/snapshotWorkspace.css";
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => localStorage.getItem("assesshub-theme") || "dark");
@@ -67,6 +71,11 @@ export default function App() {
   const [token, setToken] = useState("");
   const [authError, setAuthError] = useState("");
   const [authGeneration, setAuthGeneration] = useState(0);
+  const snapshot = matchRoutes([{ path: "/snapshots/:id" }], shown)?.[0]?.params.id;
+  const classicView = new URLSearchParams(shown.search).has("view");
+  const nativeSnapshot = snapshot !== undefined && !classicView;
+  const nativeShell = nativeSnapshot || matchRoutes([{ path: "/engagements" }, { path: "/engagements/:id" }], shown) !== null;
+  const boundaryKey = nativeSnapshot && /^\d+$/.test(snapshot) && Number.isSafeInteger(Number(snapshot)) ? `network:${Number(snapshot)}` : shown.pathname;
 
   const applyIdentity = (identity: AppIdentity | null) => {
     setApp(identity);
@@ -102,8 +111,8 @@ export default function App() {
   }
 
   return (
-    <>
-      <TopBar app={app} />
+    <div className={nativeShell ? "atlas-app" : undefined}>
+      {nativeShell ? <AtlasRail key={authGeneration} app={app} /> : <TopBar app={app} />}
       {authRequired && (
         <div className="auth-overlay">
           <form className="auth-card" role="dialog" aria-modal="true"
@@ -126,18 +135,20 @@ export default function App() {
           it fresh and clears a prior error. Keyed to `shown` (the LAGGED pathname), never `location` directly —
           keying to `location` would remount the boundary, and destroy the outgoing page, before the view
           transition below gets to snapshot it, silently defeating the whole mechanism. */}
-      <ErrorBoundary key={`${shown.pathname}:${authGeneration}`}>
+      <div className={nativeShell ? "atlas-main" : undefined}><ErrorBoundary key={`${boundaryKey}:${authGeneration}`}>
         <Routes location={shown}>
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />
           <Route path="/campaigns/:id" element={<CampaignPage />} />
-          <Route path="/snapshots/:id" element={<CoreSnapshot />} />
+          <Route path="/engagements" element={<Engagements />} />
+          <Route path="/engagements/:id" element={<Engagements />} />
+          <Route path="/snapshots/:id" element={classicView ? <CoreSnapshot /> : <SnapshotWorkspace />} />
           <Route path="/snapshots/:id/tools" element={<SnapshotPage />} />
           <Route path="/executions/:id" element={<ExecutionPage />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="*" element={<div className="container"><div className="empty">Not found. <Link to="/">Go home</Link></div></div>} />
         </Routes>
-      </ErrorBoundary>
-    </>
+      </ErrorBoundary></div>
+    </div>
   );
 }
