@@ -6,16 +6,21 @@ Claude-only. Before substantive work:
 
 1. Read `docs/NOW.md` first, from `main`: the one live work board. There is
    one application (GitHub `main`). Work only on a branch listed in its Active
-   table, one writer per workstream. New work gets its row in the same pull
-   request, never an unlisted branch, worktree or project. In the Codex app,
-   use Local mode in the folder where that branch is already checked out; Git
-   will not check it out a second time. Before the session ends, or a quota
-   runs out: commit to that branch and update the board's row and handoff log.
+   table, one writer per workstream; never an unlisted branch, worktree or
+   project. The supervisor is the board's single writer: feature pull requests
+   do not edit `docs/NOW.md`, and new work gets its row from the supervisor
+   first. In the Codex app, use Local mode in the folder where that branch is
+   already checked out; Git will not check it out a second time. Before the
+   session ends, or a quota runs out: commit to that branch and report status
+   and the next step in its pull request; the supervisor updates the board.
    Push only under the explicit-authority rule at the end of this file, and
    never for a row marked local-only.
 2. Read `CLAUDE.md` completely.
 3. Read `docs/ssot.md` before using or repeating a shared fact. Read the fact
-   from the owner named there rather than from a cached count or plan.
+   from the owner named there rather than from a cached count or plan. Follow
+   `docs/decisions/0008-engine-computes-interface-displays.md`: the engine
+   computes every fact and analysis, and interfaces and documents only display
+   engine output. A new value goes into the engine first, never into a screen.
 4. Read `docs/quality/learnings.md` when its verified engine lessons are
    relevant to the task.
 5. Inspect the live repository with `git status --short --branch` and recent
