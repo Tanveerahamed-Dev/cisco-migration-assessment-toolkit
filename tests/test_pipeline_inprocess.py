@@ -563,6 +563,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # gap that let the n_past_eos/n_past_ldos conflation slip surface-by-surface. See ssot.reconcile.
     from cisco_toolkit import ssot
     assert ssot.reconcile(snap) == [], f"engine published SSOT-inconsistent facts: {ssot.reconcile(snap)}"
+    from ssot_contract_guard import require_canonical_checks
+    require_canonical_checks(snap)
     # The runtime SSOT self-check and independent data-authority gates are clean:
     # OUI/port packs chain to retained hash-pinned IEEE/IANA inputs, while every
     # represented EoL scope is bound to an exact Cisco bulletin.
