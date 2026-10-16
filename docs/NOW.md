@@ -69,13 +69,22 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| RC8-P1-F | In-app read-only device collection: design and threat model | `codex/rc8-p1-f-collection-design`; isolated `.codex/worktrees/rc8-p1-f/engine-defects` | Codex | **PROPOSED design (2026-10-16)** from main `3401627f`; [design and threat model](rc8-p1-f-in-app-collection-design.md). Docs only: New assessment, memory-only credentials, target-confined child authorization, progress/cancel/partial outcomes, verified scrub/ingest, D10-amended retention and hosted fake-SSH/leak/refusal tests. Implementation and runtime readiness NOT VERIFIED. | Complete Rule-7 publication scans and all 15 protected contexts on the final PR head, post terminal evidence and STOP for independent design approval. Reconcile G/desktop interfaces below before any later implementation. W59 #636 is unmerged; W60c residuals remain open. No merge/release/device contact. |
+| RC8-P1-F | In-app read-only device collection: design and threat model | `codex/rc8-p1-f-collection-design`; [PR #668](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/668); isolated `.codex/worktrees/rc8-p1-f/engine-defects` | Codex | **ADR 0008-aligned PROPOSED design (2026-10-16)** from main `3401627f`, with `9112a16e` integrated; [design/threat model](rc8-p1-f-in-app-collection-design.md). Collection, job states/progress and coverage are engine-owned; app displays typed engine projections and handles process/HTTP/storage mechanics only. Docs only; implementation/runtime readiness NOT VERIFIED. | Finish ONLY this phase-1 PR: Rule-7 scans, all 15 final-head protected contexts, terminal summary and STOP for independent review. **No implementation PR until F0 / ADR 0008 and RC8-P1-H have merged, design approval is recorded and the supervisor resumes this row.** G/desktop interfaces remain proposals; W59/W60c limits remain open. No merge/release/device contact. |
 | K1 | Hosted RC7 Graphify and fresh Obsidian review artifact | `codex/knowledge-export-hosted`; isolated task checkout | Codex (owner-authorized repair, 2026-10-15) | Draft #665 at `4216cc91` reproduced one missing write-site classification failure with 659 census passes on hosted Linux. Four controller writers are now explicitly classified with exact counts and source/privacy restrictions; the generic JSON writer remains delegated. Early hosted knowledge-contract checks are added without removing full-suite collection. No generation or dispatch has run; verifier safeguards remain unchanged. | Require corrected exact-head hosted checks and independent review. Supervisor merge and separate manual dispatch remain human decisions. JSON verifier capacity may still block actual generation. |
 | W10b | Atlas Scope O79 repairs and blocked A6 diagnostic | `codex/scope-a6` in `.claude/worktrees/ui-projection-2` | Codex | **A6 diagnostic BLOCKED.** #604 stays open as a parked draft at failed `29ee4816`, with all failed observations and the absent camera-decay series preserved. W16 and W18 bounded repairs are owner-merged; neither re-grades A3/A6. | Do not push, close/delete or resume #604. Other O79 repairs proceed separately from current main by readiness, one repair per PR. Off-path ACL eligibility, other refusal classes and remaining O79 repairs keep their separate evidence and scope. |
 | RC7 | Atlas 3.33.0rc7 release-candidate preparation including G14 | `codex/release-3.33.0rc7`; isolated `.codex/worktrees/release-3-33-0rc7/engine-defects` checkout | Codex | **Prepared from main `89d214ea` (2026-10-15).** All five prerequisite main workflows are terminal SUCCESS. Mirrors #662 across the same eight surfaces; product3.33.0rc7/schema3.23.0. Rule-7 publication scans and final PR-head hosted checks precede review; final Checks and closing summary own terminal status. | Require all15 protected contexts SUCCESS on the final PR head, post summary and STOP for independent review and supervisor merge. After supervisor confirms merge, freeze other merges and wait for exact merged-main checks; only then dispatch draft producer with that source, `v3.33.0-rc.7`, attach=true, followed by receiver with the same source/tag. Report ZIP name/bytes/SHA-256 and both run IDs. Permanently draft_only, unsigned, all14 external_pending; no PR merge or public promotion. |
 
 ### RC8-P1-F coordination packet (2026-10-16, design proposal)
 
+- **F0 / ADR 0008 and RC8-P1-H:** the supervisor's foundation hold supersedes starting
+  implementation merely after design approval. Collection policy, job-state reduction (including
+  dead-child/restart observations), totals/progress and coverage belong to engine owners/tests
+  and typed projections registered in SSOT. The app displays them; backend Python is not an
+  alternative fact owner. Finish this docs PR at 15/15 and STOP. No implementation PR until
+  both foundation workstreams have merged and the supervisor resumes F; H's first PR alone
+  does not establish the whole workstream merged. F0's owner draft was read from
+  `claude/foundation-adr-0008`; its ADR is not yet on inspected main. No other holder's files
+  are edited or copied into this PR.
 - **RC8-P1-G:** return committed campaign/snapshot IDs, persisted-byte digest form, verification
   scope and the complete seed-outcome provenance to the canonical topology workspace. G owns
   routing/rendering; F owns no topology inference. Until its route is accepted, use the existing
@@ -210,6 +219,14 @@ These exact former rows are historical, not an implementation queue. RC5/#658 is
 | RC5 | Atlas 3.33.0rc5 release-candidate preparation | `codex/release-3.33.0rc5`; [PR #658](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/658); isolated `.codex/worktrees/release-3.33.0rc5/engine-defects` checkout | Codex | **Prep published as PR #658** from exact main `c543f0a181e8db2700007f1658ae0d856dfbbbcd` (2026-10-12). Independent static scope review and Rule-7 scans passed before publication; runtime validation belongs to the final published head. Product version `3.33.0rc5` maps to `v3.33.0-rc.5`; schema stays `3.23.0`. [Validation](atlas-3.33.0rc5-validation-2026-10-12.md). Final PR head, hosted verdicts and handoff belong to the PR Checks and closing summary; earlier receipts do not transfer. | Require all 15 protected contexts on the final PR head, post the summary and STOP for supervisor independent check/merge. Only after the owner reports that merge: dispatch `portable-release.yml` on exact merged main with `draft_tag=v3.33.0-rc.5` and `attach_draft=true`, then independently verify downloaded draft assets. W60c remains deferred; no public promotion or other tag push. |
 
 ## Owner decisions
+
+**Decided — one foundation; RC8-P1-F finishes design only (owner/supervisor, 2026-10-16):**
+Follow F0's `docs/decisions/0008-engine-computes-interface-displays.md` on
+`claude/foundation-adr-0008`: collection, job states and coverage are engine-owned; the
+application only displays their typed projections. Finish ONLY phase-1 design/threat-model
+PR #668 and stop at all 15 final-head contexts for review. No implementation PR until F0
+and RC8-P1-H have merged; the supervisor resumes this row. This strengthens the earlier
+design-approval prerequisite and authorizes no foundation edits, merge, release or device contact.
 
 **Decided — RC8-P1-F design before implementation (owner, relayed by supervisor 2026-10-16):**
 Atlas must support a real read-only brownfield collection inside New assessment without a
@@ -422,6 +439,19 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-16, Codex (RC8-P1-F foundation alignment): Read ADR 0008's uncommitted owner
+  draft on `claude/foundation-adr-0008` (Git blob `34b958fef535dc1c3429b366787128141d425ca1`),
+  without changing that checkout. Revised only this design and board: the engine owns seed
+  validation/plans, collection, job-state reduction including OS failure/restart observations,
+  progress/totals, coverage and admission facts; the application relays/displays them and owns
+  mechanical process/HTTP/storage operations. Added owner/consumer tests and SSOT/debt/parity
+  obligations; removed the proposed implementation PR sequence. Old head `ea94997d` had 10/15
+  SUCCESS when the owner steered this alignment; that evidence does not qualify the new head.
+  Fresh scans and final-head hosted results belong to #668 Checks/closing summary. STOP at
+  15/15 for independent design review. Implementation is held until F0 and RC8-P1-H merge,
+  design approval is recorded and the supervisor explicitly resumes F. No implementation,
+  other-stream edit, local test/build/engine run, merge/release or device contact.
 
 - 2026-10-16, Codex (RC8-P1-F design): Preserved the old engine-defects checkout and unrelated
   untracked agent directories; created the isolated listed branch from main `3401627f`.

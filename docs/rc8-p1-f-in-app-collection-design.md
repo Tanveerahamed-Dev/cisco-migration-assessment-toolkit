@@ -1,12 +1,15 @@
 # RC8-P1-F: collect a brownfield assessment inside Atlas
 
-**Status: PROPOSED — independent design approval required before implementation.**
+**Status: PROPOSED — docs-only review; implementation held for the foundation.**
 Owner decision: 2026-10-16, relayed by the supervisor. Holder: Codex.
 Source baseline: `3401627f6fd69bb838a2c921d7f95c77b2373623` on GitHub `main`.
 Integrated main `9112a16e4e4d91674ba5cb2881f0d75071c7d78c` with a merge commit;
 its knowledge-export changes do not alter the collection owners described here.
 This PR contains documentation only. It authorizes no live collection, implementation,
 merge, release, device change, or field-qualification claim.
+The supervisor's 2026-10-16 foundation decision applies immediately: no implementation PR
+until **F0 / ADR 0008 and RC8-P1-H have merged**, this design has independent approval, and
+the supervisor explicitly resumes RC8-P1-F. A green design PR alone does not lift that hold.
 
 ## Outcome and scope
 
@@ -21,6 +24,52 @@ routes remain offline and cannot acquire network authority. This phase covers Ci
 and NX-OS SSH collection through the existing engine; controller REST collection, discovery
 sweeps, arbitrary commands, configuration mode, device writes, saved credentials, scheduled
 collection and unattended retries are outside this design.
+
+## ADR 0008: the engine computes, the interface displays
+
+This design follows `docs/decisions/0008-engine-computes-interface-displays.md` from F0's
+`claude/foundation-adr-0008` branch. At inspection it is an uncommitted owner draft, not a
+merged main artifact (observed Git blob `34b958fef535dc1c3429b366787128141d425ca1`).
+The supervisor's current instruction binds this design; re-read the approved merged ADR and
+RC8-P1-H contracts before any resumed implementation. Do not copy F0's draft into this PR.
+
+**Collection, job states and coverage have one engine owner.** That includes seed validation
+and canonical plans, target counts, consent/policy decisions, per-device outcomes, aggregate
+progress, timeouts/cancellation disposition, partial-result eligibility, evidence verification
+and coverage/retention facts. Neither browser code nor `webapp/backend` may compute a parallel
+version. A Python function in the webapp backend is still interface code, not the engine.
+
+| Concern | Engine-owned contract | Application responsibility |
+|---|---|---|
+| Inputs and authorization | Shared devices normalization, validated plan/digest, full roster and counts, effective trust/transport policy and per-job consent | Collect form values, enforce unchanged HTTP security/body admission, forward bounded inputs, display engine validation/results verbatim |
+| Collection and lifecycle | Existing collector plus one engine job-state owner; ordered events, transitions, reason codes, deadlines, all-device outcomes and aggregate totals | Spawn/own/reap the child and drain pipes; pass typed OS/control observations to the engine owner; persist/relay its state projection |
+| Coverage and partial results | Engine collection-integrity/completeness and verification owners; failed/not-collected denominator, usable-evidence/partial-admission decision | Display the engine's counts, qualifiers and available actions; forward the consultant's choice without recounting or deciding readiness |
+| Snapshot, retention and audit | Engine evidence/custody/verification results, digest forms, event/audit facts and admission decision | Perform the approved atomic filesystem/database operations, store the engine result, and navigate using committed IDs |
+
+The engine job-state owner must also run in the supervisor context so it can consume typed
+process-exit, bootstrap-failure, deadline, cancellation, cleanup and restart observations when
+the child is dead or has emitted nothing. OS process management stays in the application;
+the interpretation as failed/interrupted/cancelled/completed and its coverage consequences
+stays in engine code. The app must not infer an assessment result from exit code, log text,
+event silence or array length. Missing engine status is shown as unavailable, without a
+fabricated outcome, zero count or healthy default.
+
+Every new user-visible fact must first gain an engine owner and test, be registered in
+`docs/ssot.md` with a reconcile/owner guard, then be exposed through a typed engine projection
+and displayed. Persisted assessment facts use the engine snapshot/`ui_projection`; ephemeral
+job facts use the same engine-first contract discipline through a versioned job projection.
+The application may format, sort, filter and lay out those facts. It must not calculate
+percentages, recount devices, merge outcomes into a new verdict or simulate coverage. Job
+policy limits likewise come from the engine contract; interface controls display those limits.
+
+RC8-P1-H owns the foundation enforcement and existing summary/topology duplicates. Existing
+`summary.py` or interface graph logic is not a model for new collection facts. This feature
+must add no interface-computation debt; any temporary existing duplicate stays under F0/H's
+closed shrinking debt register and executed two-sided parity gate, without an F exception.
+Current verifier helpers below are baseline location pointers, not permission to create new
+webapp-owned verification facts. The resumed engine/verification owners must expose the
+canonical admission result through the engine contract while preserving producer/verifier
+independence; any owner relocation requires explicit registry/tests, not a second implementation.
 
 ## Current owners and gaps
 
@@ -53,7 +102,7 @@ graph refresh, engine run, local test/build or device contact was performed for 
    device/group. Import trusted public host-key entries or enter independently verified SHA-256
    fingerprints per target. The supported first increment is password authentication only;
    arbitrary key paths, SSH-agent forwarding and enable secrets are unavailable.
-4. **Review and authorize.** Show the final device count and expanded table, platform hints,
+4. **Review and authorize.** Show the engine's final device count and expanded table, platform hints,
    SSH port 22, trusted key bindings, standard/legacy profiles, concurrency and time limits,
    capture handling, and incomplete-evidence implications. An unchecked acknowledgement and
    **Authorize and collect once** are required. Cancel/back makes no connection. Changing any
@@ -73,14 +122,16 @@ graph refresh, engine run, local test/build or device contact was performed for 
 
 ### Seed conversion and validation
 
-The browser parses pasted text/CSV in memory and sends a bounded JSON body, not a multipart
-upload that can spool to disk. Proposed limits: 1 MiB seed import, 300 rows, one active live job
+The browser may split pasted lines/decode CSV cells in memory as input handling; the engine
+alone maps aliases, validates devices, supplies preview labels/counts and returns row errors.
+The app sends a bounded JSON body, not a multipart upload that can spool to disk.
+Proposed engine-owned limits: 1 MiB seed import, 300 rows, one active live job
 per Atlas process, at most four collector workers. These are new job caps, not changes to any
 existing budget. Larger imports refuse with a split-job instruction; they never truncate.
 
 CSV headers map to the engine's existing canonical fields `ip`, `hostname`, `platform`, with
 the engine's existing address/name/platform aliases resolved by that same owner. A pasted
-target supplies `ip`; Atlas offers a unique safe hostname label when one is absent, displayed
+target supplies `ip`; the engine offers a unique safe hostname label when one is absent, displayed
 for confirmation. Credentials are supplied in step 3, resolving engine-required `username`
 in memory. Do not infer inventory facts from a label or hint. Unknown platform input follows
 the owner's current `auto` normalization and is explicitly shown for confirmation; the UI
@@ -101,7 +152,8 @@ Reject unspecified, multicast, broadcast, loopback, link-local and metadata dest
 including mapped-address equivalents. Private unicast networks are allowed. No implicit
 neighbor expansion, external web fetch, reverse lookup or target derived from capture text.
 Refuse duplicate safe-filename/case/Unicode-normalized labels instead of overwriting captures.
-Validate again in the server and child; client validation is convenience, never authority.
+The server calls the same engine validation owner and the child revalidates the bound plan;
+the interface must not implement another semantic validator or infer a successful validation.
 
 ## Job and credential boundary
 
@@ -115,8 +167,9 @@ The following route names and protocol are proposed, not implemented API claims:
 | Cancel | `POST /api/campaigns/{id}/collection-jobs/{job_id}/cancel`: same access/CSRF checks, idempotent cancellation acknowledgement; completion is reported only after child exit and cleanup. |
 | Partial admission | `POST /api/campaigns/{id}/collection-jobs/{job_id}/accept-partial`: accepts an already verified result, never reauthorizes SSH. |
 
-Preparations expire after five minutes; accepted jobs use a server-generated random identity
-and monotonic deadline. Bind the grant to campaign, exact canonical device set, credential
+The engine preparation contract expires after five minutes; application-generated opaque
+job identities and typed clock observations are inputs to its monotonic-deadline owner.
+The engine binds the grant to campaign, exact canonical device set, credential
 assignments (opaque references only), trust policy, effective profiles, limits, plan digest and
 one child instance. Consume atomically; duplicate Start returns the existing job identity or
 409 without another child. Concurrent conflicting starts refuse under the existing admission
@@ -210,13 +263,16 @@ to enable the feature. Bind effective profile and negotiation evidence to each d
 
 ## Supervision, progress and failure semantics
 
-The approved implementation needs typed progress events at the existing engine collection
-boundaries. Never parse human logs to establish success. Events carry protocol version,
+The approved implementation needs engine-owned typed progress events and a job projection
+at the existing engine collection boundaries. Never parse human logs to establish success.
+The engine computes event/state transitions, aggregate progress and coverage. Events carry protocol version,
 job/device opaque IDs, strictly increasing sequence, stage, attempt/command counts, time and
 closed reason codes; no passwords, usernames, raw outputs or arbitrary exceptions. Browser
 labels are mapped from the validated plan. Event size is capped at 16 KiB, retained status at
 2 MiB; coalesce progress updates while preserving each device's final outcome and cancellation.
 Pipe drains must run while the child runs so a full progress/stderr pipe cannot deadlock it.
+Coalescing may relay a newer complete engine projection; transport code must not fold events
+into its own job state, progress counter or coverage verdict.
 
 Keep existing per-connect/auth/command deadlines and authentication-no-retry behavior. Add
 an explicit typed terminal-failure path for auto-detection: baseline `autodetect_platform`
@@ -241,20 +297,22 @@ cleanup and records `partial_acceptance_expired`; a disconnected tab cannot hold
 
 The supervisor owns a hidden child and descendant process group (Windows Job Object with
 kill-on-close; equivalent process-group ownership on POSIX), working directory and generation
-slot until exit and cleanup. Cancel stops scheduling, requests cooperative connection close,
-then enforces the hard reap deadline. Parent exit, child crash, broken pipe, malformed events,
+slot until exit and cleanup. It forwards Cancel to the engine owner, which stops scheduling
+and requests cooperative connection close; process management enforces the hard reap deadline.
+Parent exit, child crash, broken pipe, malformed events,
 missing terminal event and lost child identity cannot become success. Watchdog and restart
 recovery must handle a process dying during bootstrap/import; no unbounded wait/receive.
-After restart mark nonterminal durable job records interrupted; never resume collection or
+After restart the engine owner marks nonterminal durable job records interrupted; never resume collection or
 recover credentials from disk. A disconnected browser does not transfer supervision.
 
-Job states: `prepared → authorized → starting → collecting → scrubbing → verifying →
+Proposed engine-owned job states: `prepared → authorized → starting → collecting → scrubbing → verifying →
 awaiting_partial_acceptance (if needed) → ingesting → completed | completed_partial`.
 Refusal/failure/cancellation/interruption are terminal; timeout is a distinct failure reason.
 No terminal cancellation transitions to completed when a late child exits. A final atomic
 commit point arbitrates cancel versus ingest: cancellation winning the lock prevents commit;
 commit winning returns the committed snapshot and rejects further cancellation as already
-complete. Counts always include all original seeds, including failed/skipped/cancelled ones.
+complete. Engine-published counts always include all original seeds, including
+failed/skipped/cancelled ones. The interface consumes projected state/totals without recomputation.
 
 Only existing engine read-only command vocabulary and session preparation may reach the wire.
 Use least-privilege AAA with show/operational access, no enable escalation, config mode,
@@ -408,7 +466,12 @@ GitHub-hosted runners, with synthetic inputs only and **no real device contact e
 6. **Regression and packaging.** Existing shared-device-loader inputs must retain parity;
    current offline ingest never connects. Require unchanged golden/sample bytes, complete
    current Python/frontend/distribution/portable gates, closed route/write-site inventories,
-   OpenAPI types when routes exist, and independent applied-source refutation. Keep every
+   OpenAPI types when routes exist, and independent applied-source refutation. Add executed
+   owner/consumer tests that forge interface totals, reorder/drop events, supply missing engine
+   status and kill the child before its first event: only the engine owner may produce state,
+   progress and coverage, and every display must equal its bound projection. Pin each new fact
+   to the SSOT registry/reconcile or owner guard and F0/H's shrinking interface-debt/parity gates.
+   A backend Python recount is a failing duplicate just as a browser recount is. Keep every
    existing guard/test/budget. Packaging proof never substitutes for live field acceptance.
 
 For this docs-only PR: Rule-7 privacy and commit/message/per-parent/publication marker scans
@@ -416,8 +479,9 @@ before each push; all 15 current protected contexts SUCCESS on the exact final P
 its verified tree-equivalent GitHub test merge). CodeQL and every applicable workflow retain
 their own terminal results. Post final check evidence on the PR, then **STOP for independent
 design review**. Green CI checks documentation integration, not implemented collection or
-design approval. Implementation PRs may start only after the supervisor records approval of
-this exact design and its open decisions; each must independently stop at 15/15. No merge,
+design approval. Implementation PRs may start only after **F0 / ADR 0008 and RC8-P1-H have
+merged**, independent approval of this exact design/open decisions is recorded, and the
+supervisor explicitly resumes this row; each must independently stop at 15/15. No merge,
 release, real-network trial or golden/sample regeneration is authorized here.
 
 ## Coordination and implementation seams after approval
@@ -432,17 +496,19 @@ heads before implementing, and preserve every board handoff during main integrat
 
 | Workstream | Handoff and ownership boundary | Required reconciliation |
 |---|---|---|
+| F0 / ADR 0008 and RC8-P1-H, foundation | F consumes the merged engine-first/SSOT enforcement, projection and shrinking-debt/parity contracts. Collection, job states and coverage remain engine-owned. | Hard implementation hold until both foundation workstreams have merged; supervisor resumes F. Design approval or one foundation PR alone is insufficient. Reconcile H's complete workstream status, not merely its first summary PR. |
 | RC8-P1-G, topology workspace | F returns committed campaign/snapshot identity, verification scope and complete collection-outcome provenance. G owns canonical navigation/rendering and engine fact projection. | Confirm route/partial-warning contract in NOW; fallback to existing snapshot page until G is ready. No snapshot schema or topology fact invented by F. |
 | RC8-P0-C/P1-E, desktop packaging | Desktop holder owns frozen bootstrap entry, inherited stdin handles, hidden child/process group, private data paths, restart recovery and installed capability admission. F owns collection protocol and gate semantics. | Confirm Windows pipe/Job Object behavior, loopback server profile, early target guard and default-denied offline child in NOW. Missing packaged capability disables Collect with an actionable explanation. |
 | W59 #636 | SSH owner supplies approved profile/consent/negotiation semantics. F renders and binds them. | Re-read merged owner, pins and consent restrictions; no silent transport import or separate algorithm policy. |
 | Redaction/custody owners | Existing producer, independent verifier, raw-input/finalization and store bindings remain authoritative. | Resolve recognition limits and metadata member coverage without waiving tests or certifying excluded files. |
 
-Recommended later PR boundaries (not started): shared pure devices normalization and secret-safe
-bootstrap; supervised confined collector with fake-SSH refusal/leak tests; verified retention/
-offline ingest/audit integration; app flow and G navigation; packaged end-to-end admission with
-the desktop holder. Reconcile shared files with their holders before edits; one writer per seam.
+Implementation decomposition is deferred to the supervisor after the foundation hold is lifted.
+This row finishes only this phase-1 design/threat-model PR and stops at 15/15 for review.
+No implementation PR or new workstream starts here; shared-file assignments are reconciled
+only when the supervisor resumes the row.
 
 Independent review must decide the proposed numeric caps, strict out-of-band host-key workflow,
 supported credential mode and W59 dependency, desktop confinement feasibility, and treatment of
 the preserved W60c privacy limits. Until that review is approved, implementation and runtime
-readiness are **not verified**. Approval of a design is not authority for live field collection.
+readiness are **not verified**. Even an approved design stays on hold until F0 and RC8-P1-H
+have merged and the supervisor resumes this row. Approval is not authority for live field collection.
