@@ -557,3 +557,18 @@ local custody verification. All closing custody and receipt checks are hosted.
 The complete exact-head gates and the same independent reviewer remain required.
 
 The immutable companion/unchanged-source migration snapshot is `2efe2fd77a1e67ea3c298408141a466e65cf3945`; its role values are compared with literal-assignment snapshot `97813d79` by a hosted control.
+
+
+Head `1d468ecc`, CI `38978164332`, passes the installed transition smoke
+(job `117233534144`) and Distribution contract, preserving the frozen source
+bindings without TCB regeneration. Every required matrix leg also passes the
+complete active debt guard with companions. Required compiler/reference run
+`38978164321`, job `117232584447`, then fails the existing architecture ownership
+check because exact Python-module path rules did not yet name their new
+companions. The downstream compiler/capacity walls remain **unmeasured**, not
+passed or waived. The correction adds each companion beside its source in the
+same existing component record; prefix-owned files already retain their owner.
+No broad exclusion, new component, source edge permission, gate or budget change
+is introduced. A Git-derived companion class parity control refuses missing,
+unowned, ambiguous or different component mappings; unknown files remain
+unmapped. Fresh complete exact-head evidence is required.
