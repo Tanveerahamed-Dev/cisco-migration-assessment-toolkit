@@ -72,6 +72,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -p no:cacheprovider tests/test_portable_maintenance.py tests/test_portable_desktop_proof.py tests/test_make_stick.py tests/test_readme_field.py tests/test_atlas_bundle.py tests/test_registry_freshness.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q -p no:cacheprovider --durations=40
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm install --global npm@11.16.0

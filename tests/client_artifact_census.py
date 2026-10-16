@@ -3072,15 +3072,15 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
     "portable/maintenance.py::_write_result": (
-        2, DELEGATED, (), "atomic maintenance protocol metadata; each caller owns its path"),
+        2, DELEGATED, ("atomic-staging",), "atomic maintenance protocol metadata; each caller owns its path"),
     "portable/maintenance.py::_copy_installed_application": (
         1, NON_CLIENT, (), "installed application code copied to a private helper; top-level data is never traversed"),
     "portable/maintenance.py::_worker": (
-        1, NON_CLIENT, (), "maintenance exit status, policy and nonce; no client evidence"),
+        1, NON_CLIENT, ("atomic-staging",), "maintenance exit status, policy and nonce; no client evidence"),
     "portable/maintenance.py::main": (
-        6, NON_CLIENT, (), "maintenance request metadata and application-only helper; data is excluded"),
+        6, NON_CLIENT, ("atomic-staging",), "maintenance request metadata and application-only helper; data is excluded"),
     "portable/maintenance.py::_recover": (
-        1, NON_CLIENT, (), "maintenance result for the retained installed-code recovery request"),
+        1, NON_CLIENT, ("atomic-staging",), "maintenance result for the retained installed-code recovery request"),
     "portable/database_preflight.py::_open_readonly": (
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
