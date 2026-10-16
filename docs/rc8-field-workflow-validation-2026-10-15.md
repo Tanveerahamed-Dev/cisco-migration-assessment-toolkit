@@ -379,3 +379,47 @@ Fresh current-source api:check and all Scope/backend/visual/browser/portable che
 actual missing-export and additional type diagnostics. New SPA producer/receiver/import and all15
 required-context equivalents/applicable whole workflows remain mandatory. The import is reviewable
 source-edit data, not runtime success, approval, signing, field qualification or release authority.
+
+## B738 cold-path successes, warm-cache failure and corrected owner
+
+On source9bc8a1be (head73841b7d/base0b48), frontend116905035462 succeeds at09:42:28Z:
+fresh api:check,41files/627tests,TypeScript/Vite, index/tree privacy and the immutable SPA
+handoff all pass. Its full143,135-byte log has SHA-256
+e3f58db69a6b6b15a28df5275800c377c6d4b34e325ed8b34d4f10fdf7a77fdc. Visual116905035739
+passes22 cases (36,684 bytes, SHA-2569e7e2fce9506861c735ba6de239c0830fab61028f97ca43465ecf59a34856777).
+Real-browser116905035465 passes all3 specs at09:42:50Z, including saved plans and MOP/NRFU
+downloads (102,273 bytes, SHA-256dab8b420eb7fa85e53fb818bb481c1d78efc0daaf03fa2a9734410cdfb518e7d).
+Their actual document/archive contents are not independently intaken or qualified here.
+Scope38880134949/job116904601039 is wholeSUCCESS:256files/7,633passes/27existing skips,
+followed by its mutation/browser/focus/build checks;518,658-byte EOF log SHA-256
+af9636b74713f4bbd38b5430eedc300a85b2b51822f22c05925cdcc708a1741a. These are source-bound
+positives, not a complete producer or current-source readiness claim.
+
+Portable38880135046/job116904710445 fails step7 after successful TypeScript/Vite compilation:
+git diff --exit-code refuses the rebuilt output against stale tracked dist. Its2,258,848-byte log
+has SHA-2561c28da627ad040ea839c54a202bbdf41109eac5e10bd0ed05430cf296c8c81f0; no frozen
+package is produced. Distribution116905069122 similarly passes41files/627tests and compilation,
+then fails its immutable-checkout step8 on actual dist drift (46,123-byte EOF, SHA-256
+50caa56e41dc20147fd49c8032537a34fa5ea987d0605fc3280748926bc5ef63). Installed-transition
+116911207845 isSKIPPED because Distribution fails; it does not satisfy its required context.
+No reproducibility gate is waived.
+
+Backend116905035547 independently fails step11 at10:01:46Z on test_saved_plan_api.py302:
+consumer_only survives a second app.openapi() call. The complete94,536-byte log has SHA-256
+e61fb13bf1ee9e50328e21d4ad79729aea4e98c973d5a652039d01889c6c4f37. No numeric aggregate is
+printed. Gate116918755633 fails at10:01:51Z (3,642 bytes, SHA-256
+92ac55f29f8539870401fa2ba267968a33a5ca34d117393c10e316705baf9f19), making whole producer
+38880135003FAILURE. Consequently no SPA artifact is selected/downloaded and no receiver is
+dispatched from this producer, despite the frontend job's success. Its165/7/5 pre-intake ledger
+remains historical. The old2cde supersession record also retains20negative jobs/17EOF logs plus
+3no-step/runner404 cases, SHA-256a8afad0be104bd70d0a9c8938b429b970d3cde73f6299e200006279dd7c0cbcd;
+none is a full-suite pass or inferred timeout.
+
+Foundatione695f445 fixes the final OpenAPI wrapper that bypassed the constructor refresh on
+warm reads. It removes the redundant subclass and replaces only engine metadata after the
+unchanged native-cache boundary. Original assertions remain, with nested mutation, native identity/
+content and per-app construction-count controls. Native pins, canonical cold schema/generated
+TypeScript bytes and all limits remain unchanged. Independent static review and fresh Rule7 precede
+publication; new-source warm/cold schema/backend, complete successful SPA producer/receipt,
+all15/applicable whole workflows and native/frozen checks remain required. No local test/build/
+engine run, PR merge, version/golden/sample change, signing or release is performed.

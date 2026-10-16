@@ -1384,7 +1384,7 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/pages/Snapshot.tsx": "a15c2317b74338c001ec843aaf1d9754fc7784f1",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
-    "webapp/backend/app.py": "b67333da3d8ef2d90caf17641b73aa5dfbf506c4",
+    "webapp/backend/app.py": "5c8021b0f960d1f5ad2fc99fa2fbeb27404e6ebe",
     "webapp/backend/deliverables.py": "2934411b5768c67c2a78a35176d7f1c638d1b9fb",
     "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
 }
