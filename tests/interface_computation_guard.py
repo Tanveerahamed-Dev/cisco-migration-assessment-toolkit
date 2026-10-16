@@ -258,7 +258,9 @@ def check():
     subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ORIGIN, "HEAD"], check=True)
     current, origin = scan(source_map()), scan(source_map(ORIGIN))
     previous = []
-    for commit in git("log", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
+    # Default path history can prune a merge parent when the result matches the
+    # other parent, hiding a removal that the merge resurrected.
+    for commit in git("log", "--full-history", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
         previous.append(read_registry(git("show", commit + ":" + REGISTRY)))
     validate(registry, current, origin, previous)
     return len(current)

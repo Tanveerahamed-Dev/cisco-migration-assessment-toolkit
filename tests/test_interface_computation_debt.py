@@ -68,6 +68,47 @@ def test_removed_entry_cannot_be_restored_with_its_old_allowance():
     guard.validate(previous, [], [site], [guard.proposal([site])])
 
 
+def test_merge_cannot_hide_a_removed_allowance_on_its_other_parent(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
+             "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
+             "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "--initial-branch=keep")
+    (tmp_path / "basis.txt").write_text("source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    site = sample_site()
+    registry_path = tmp_path / guard.REGISTRY
+    registry_path.parent.mkdir(parents=True)
+    retained = json.dumps(guard.proposal([site]))
+    registry_path.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Admit one exact site")
+    git("checkout", "-b", "remove")
+    registry_path.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Remove the site and allowance")
+    removed = git("rev-parse", "HEAD")
+    git("checkout", "keep")
+    (tmp_path / "basis.txt").write_text("unrelated edit\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Advance the other parent")
+    git("merge", "--no-ff", "--no-commit", "remove")
+    registry_path.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Resurrect the allowance in a merge")
+    assert removed in git("rev-list", "HEAD").splitlines()
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [site])
+    with pytest.raises(ValueError, match="reappeared"):
+        guard.check()
+
+
 def test_stale_allowance_and_reclassification_are_rejected():
     site = sample_site()
     with pytest.raises(ValueError, match="stale"):

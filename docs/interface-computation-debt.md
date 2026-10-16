@@ -176,3 +176,13 @@ pre-preservation recheck and archive upload remain unchanged. The two existing
 archive-order/source-binding assertions now also run early, without changing
 their bodies. No audit is bypassed, mocked or relocated to satisfy a text check.
 Fresh full validation is required on the corrected head.
+
+## Merge-parent resurrection control
+
+Source review on `fc2ef115` found that Git's default path-history simplification
+could omit a removal on one merge parent when the merged register matches the
+other parent. The history check now uses `--full-history`. An executed synthetic
+Git merge removes an allowance on one branch, restores it at the merge, and
+requires the real history reader to reject that resurrection. Existing
+current/origin/ancestor comparisons and every CI gate remain intact. Fresh
+exact-head hosted evidence is required for this correction.
