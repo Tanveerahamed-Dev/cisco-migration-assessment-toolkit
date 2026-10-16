@@ -140,3 +140,87 @@ repository keeps relearning, a named subset standing in for the class.
   "not observed" never becomes "explained".
 - The order puts what consultants meet most in brownfield campus and data-center work (L2/FHRP/IGP
   interaction, asymmetry, VRFs) ahead of SP-only depth.
+
+## Amendment 1 (2026-10-16): every OSI layer
+
+**Status:** accepted · **Decided by:** Claude Code under the owner's delegation · **Evidence:** a read-only
+code audit of `main` at `9112a16e`. An independent refuter pass checked Layers 1 to 3; Layer 4 was mapped but
+not refuted. Nothing was executed. Every defect below was found by reading code and must be reproduced on
+real device output before its fix lands.
+
+### What the audit found
+
+- **Layer 1 is the shallowest layer.** Interface state, error counters, duplex, PoE and power supplies are
+  judged, but never against an expected value. `_ARCH_COVERAGE_REGISTRY` has no Layer 1 class.
+- **Optics are collected and never parsed.** `show interface transceiver` (NX-OS) and `show interfaces
+  transceiver` (IOS) have no parser, and `parse_show_inventory` drops optic entries. The only optic signal
+  is a syslog mnemonic. Module and PSU part numbers are parsed but unused; lifecycle covers the chassis only.
+- **Not collected:** UDLD state, stack members and ring, supervisor redundancy, the err-disable cause,
+  transceiver thresholds, MAC-table counts, DHCP-snooping and DAI state, and the IPv6 neighbor table.
+- **In the collected running-config but not parsed:** UDLD, loop guard, BPDU filter, MST region,
+  errdisable recovery, DAI, IP Source Guard, private VLANs, CDP/LLDP enablement, and configured speed,
+  duplex, negotiation and `shutdown`. PortFast is parsed and then dropped.
+- **MTU.** The `MTU N bytes` line of `show interface(s)` is not parsed. A bare `mtu` line is stored, but
+  `fib._hop_mtu` reads only `ip_mtu` or an `effective_ipv4_mtu` token that no producer emits. The only
+  both-ends MTU check is explorer JavaScript, and it treats an unset MTU as 1500.
+- **CDP/LLDP.** The advertised native VLAN, duplex and VTP domain are not parsed. An LLDP-only neighbor
+  that was not collected never enters the topology, and CDP phones and APs are classified as switches.
+- **Both-ends checks have competing owners.** Native VLAN is compared in `excel.py`, where a blank end
+  becomes VLAN 1, and in `analyze.compute_findings`, which abstains on blanks. Allowed-VLAN asymmetry and
+  link MTU are compared only in the explorer.
+- **Absence or failure that can read as health:** absent and failed PSU rows count as supplies, so `RES-3`
+  can grade a chassis redundant. `normalize_duplex` maps `a-half` and `a-full` to `Auto`, so
+  auto-negotiated ends drop out of the duplex checks while the link still counts as compared. PoE `Deny`
+  and `errdisable` rows escape the fault test. Root guard is written `Disable` where nothing was observed.
+- **Wrong verdicts:** output drops are flagged as a cable or optic fault. LACP passive and PAgP members
+  become static `On`, which can raise the static-EtherChannel decision. VRF-lite address reuse raises
+  the duplicate-IP decision.
+
+### Decision
+
+1. **Every pack declares its OSI layer, and physical packs are the roots of the graph.** A chain that
+   needs a physical fact that was not observed ends as an *unknown link*.
+2. **Roster.** In addition to the eight families moved in Wave 0 (STP, EtherChannel, VTP, OSPF, BGP,
+   EIGRP, FHRP, IPv6 routing):
+   - **L1:** `interface` (state, configured and negotiated speed/duplex, every counter), `transceiver`
+     (type, part number, serial, vendor, DOM), `chassis_environment` (PSU per bay, fans, temperature,
+     PoE), `hardware_lifecycle`, `stack_redundancy`, `udld`, `errdisable`.
+   - **L1/L2:** `neighbor_discovery` (CDP/LLDP), `link` (both ends), `mtu`.
+   - **L2:** `vlan_trunk`, `vpc_mlag`, `storm_control`, `port_security`, `dhcp_snooping_dai_ipsg`,
+     `dot1x_mab`, `ipv6_first_hop_security`. **L2/L3:** `address_tables` (MAC, ARP, IPv6 ND).
+   - **L3:** `ip_addressing`, `vrf`, `static_rib`, `route_policy`, `object_tracking`, `bfd`, `isis`,
+     `segment_routing`, `mpls`, `vxlan_evpn`, `multicast`, `wan_tunnels`, `lisp_sda`.
+   - **L4:** `acl_filters`, `nat`, `qos`, `copp`, `stateful_firewall`.
+   - **Services the timeline and posture need:** `time_sync` (NTP, PTP), `control_plane_health`,
+     `management_security`.
+   - **Out of scope:** cable diagnostics (TDR). On many platforms the test disrupts the port, which
+     conflicts with read-only collection. Ingesting results an operator captured needs a separate decision.
+3. **The `link` pack owns both ends.** A link is a pair of interfaces joined by CDP/LLDP. For speed,
+   duplex and negotiation, trunk mode, native VLAN, allowed VLANs, LACP mode pairing, and description
+   against neighbor, it returns `problem`, `ok`, `unknown` (an end or the value was not captured) or
+   `not_applicable`. A blank value is never filled with a default. The denominator is links with both ends
+   collected and the attribute captured, against all links observed. The `mtu` pack applies the same rule
+   to MTU on the same link objects. Together they replace the competing native-VLAN owner and the
+   explorer-only comparisons, and the explorer then displays the engine's result (ADR 0008).
+4. **Waves.**
+   - **Wave 0** is unchanged and its output stays byte-identical. None of the defect fixes above ride in
+     it; each lands as its own PR with a test on real device output and a reviewed golden regeneration.
+   - **Wave 1** first builds the roots from evidence already collected: `interface`, `transceiver` (from
+     the current commands), `neighbor_discovery`, `link`, `mtu`, `chassis_environment`, `vlan_trunk`,
+     `vpc_mlag`, `object_tracking` and `time_sync` (ordering events across devices needs NTP evidence). The
+     EtherChannel pack gains a member physical-diversity check from member names. The correlation work
+     decided above follows. Until Wave 2 adds the NX-OS commands, the track and FHRP-detail chain is
+     IOS-only and reads `unknown` on NX-OS.
+   - **Wave 2** opens with new read-only commands. Each gets a parser contract in
+     `cmdio.PARSER_CONTRACTS` and a not-observed state: transceiver detail with thresholds, UDLD neighbors,
+     err-disabled ports and recovery, stack and supervisor redundancy, NX-OS HSRP detail and `show track`,
+     MAC-table counts, and IPv6 neighbors. It then adds `udld`, `errdisable`, `stack_redundancy`,
+     `hardware_lifecycle` (which also needs component rows in the EoL registry), `address_tables`,
+     `ip_addressing`, `static_rib`, `route_policy`, `bfd` and `control_plane_health`, alongside the VRF
+     foundation and routing depth.
+   - **Wave 3** adds the L2 security packs, `acl_filters`, `stateful_firewall` and `management_security`
+     to the services already listed. **Wave 4** is unchanged.
+5. **Guards.** Every command in `COMMANDS_NXOS` and `COMMANDS_IOS` is claimed by at least one pack or is
+   on an explicit unclaimed list with a reason, so evidence that is collected but not parsed stays
+   visible. The depth matrix gains an OSI-layer column generated from pack registrations, and an area with
+   no pack reads `missing`.
