@@ -102,8 +102,12 @@ repository keeps relearning, a named subset standing in for the class.
 4. **One event timeline.** Packs contribute state-change signatures to the one syslog classifier, which
    also parses the device timestamp. Events are ordered per object, and only inside the collected log
    window. Ordering across devices is claimed only when NTP evidence shows the clocks synchronized and
-   the parsed `service timestamps` configuration shows log stamps that carry the year and time zone.
-   That configuration is already in the collected running-config. Otherwise the ordering is `unknown`.
+   the log stamps carry the year and time zone. The evidence rule is per platform:
+   - **IOS/IOS-XE:** the parsed `service timestamps` configuration;
+   - **NX-OS:** the log line itself carries the year, and the zone comes from the `clock timezone`
+     configuration.
+
+   Both are already in the collected evidence. Otherwise the ordering is `unknown`.
    Nothing is inferred outside the buffer.
 
 5. **Asymmetry is a correlated finding, not only a declared-flow result.** For each gateway subnet, the
@@ -116,7 +120,10 @@ repository keeps relearning, a named subset standing in for the class.
 6. **Order of work.** Each wave is a series of small, independently reviewed PRs. The number of
    concurrent streams follows `docs/NOW.md` rule 9.
    - **Wave 0: the contract, with no behavior change.** The registry, the pack contract, and generated
-     depth rows. The eight existing families move into packs with the golden output byte-identical.
+     depth rows. The eight existing families move into packs with **no change to any analysis output**.
+     The attestation pins the number of engine modules, so the only golden and sample-fleet change is
+     those module counts, plus any attestation method text Wave 0 touches. Both are regenerated and
+     reviewed in the same PR.
      Guards: every family `compute_protocol_health` emits has a pack, every pack has a generated
      matrix row, and every catalog protocol cell that a pack claims points to it.
    - **Wave 1: correlation on evidence already collected.** This answers the owner's example. It covers
@@ -148,8 +155,9 @@ repository keeps relearning, a named subset standing in for the class.
 - The protocol-depth matrix and the catalog's protocol cells come from pack registrations instead of
   parallel hand-kept lists. A missing cell stays `missing` until a pack lands. A changed denominator is
   disclosed as scope evolution, per the catalog's own rule.
-- Wave 0 keeps the golden and sample outputs byte-identical. Every later wave adds snapshot fields and
-  lands with a reviewed golden regeneration.
+- Wave 0 changes no analysis output. Its only golden and sample-fleet change is the attestation's module
+  counts and any attestation text it touches, regenerated and reviewed in that PR. Every later wave adds
+  snapshot fields and lands with a reviewed golden regeneration.
 - Correlated chains are *Inferred*. Evidence is shown at every hop, and an unknown hop is visible, so
   "not observed" never becomes "explained".
 - The order puts what consultants meet most in brownfield campus and data-center work (L2/FHRP/IGP
@@ -225,14 +233,16 @@ real device output before its fix lands.
    explorer-only comparisons, and the explorer then displays the engine's result (ADR 0008).
 4. **Waves.**
    - **Wave 0** is unchanged, except that ADR 0010 adds the command-policy registry and an empty
-     `next_evidence` contract field to it; its output stays byte-identical. None of the defect fixes
+     `next_evidence` contract field to it. No analysis output changes; the attestation-count exception
+     in Decision 6 applies. None of the defect fixes
      above ride in it. Each lands as its own PR with a test on real device output and a reviewed golden
      regeneration.
    - **Wave 1** first builds the roots from evidence already collected: `interface`, `transceiver` (from
      the current commands), `neighbor_discovery`, `link`, `mtu`, `chassis_environment`, `vlan_trunk`,
      `vpc_mlag`, `object_tracking`, `address_tables` (MAC and ARP from the collected tables; IPv6 ND
-     joins in Wave 2) and `time_sync`. `time_sync` parses NTP state and the `service timestamps`
-     configuration from the collected running-config, which ordering events across devices needs. The
+     joins in Wave 2) and `time_sync`. `time_sync` parses NTP state and the per-platform timestamp
+     evidence (IOS `service timestamps`; NX-OS log-line year and `clock timezone`), which ordering
+     events across devices needs. The
      EtherChannel pack gains a member physical-diversity check from member names. The correlation work
      decided above follows. Until Wave 2 adds the NX-OS commands, the track and FHRP-detail chain is
      IOS-only and reads `unknown` on NX-OS.

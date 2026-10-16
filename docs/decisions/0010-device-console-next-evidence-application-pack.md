@@ -59,45 +59,59 @@ These findings were fact-checked against primary sources:
      marks it as a value the engineer supplies. A sent form never has one.
    - **Classes:**
      - `read`;
-     - `session_setup`: the exact strings in `TERMINAL_SETUP_CMDS`, sent only by the transport at
-       session start;
+     - `session_control`: exact strings the SSH transport sends to manage the session. These are
+       `TERMINAL_SETUP_CMDS` at session start and the transport's `exit` at teardown, and nothing
+       else;
      - `active_probe`: ping and traceroute;
      - `change`: configuration lines;
      - `never`.
    - **Channels.** The catalogue today mixes SSH CLI commands, controller REST paths and offline-only
      names. The registry keys every form by channel:
      - SSH CLI forms follow the rules below;
-     - REST forms follow the existing GET-only controller boundary;
+     - REST forms follow the existing controller boundary: GET requests only, after one authentication
+       login per controller;
      - offline-only names are never sent.
    - **Sent versus printed.** The registry distinguishes commands Atlas *sends* to a device from commands
      it only *prints* for an engineer to run.
      - **Sent** (the collector catalogue, the console and `next_evidence`): `read` forms, plus
-       `session_setup` matched as exact strings. Only these classes may be sent. `active_probe` is never
-       sent until a separate decision, and `change` and `never` are never sent at all.
+       `session_control` matched as exact strings. Only these classes may be sent. `active_probe` is
+       never sent until a separate decision, and `change` and `never` are never sent at all.
+       - Today the command-line collector's `platform: auto` path also sends SSHDetect probes. Decision
+         2's gated detection therefore replaces autodetect in the shared collector, so the command line
+         and the app both use it. Until it lands, those probes are a disclosed exception and the only
+         one.
      - **Printed** (NRFU exports, the validation plan, `compute_remediation_plan`, MOP steps and
        confirm-on-device text): every printed command is a registered form and never `never`.
        `active_probe` and `change` are allowed only here, because the engineer runs them under the
-       change process. This keeps today's printed ping, traceroute and remediation lines, and the golden
-       output, unchanged.
+       change process.
+       - Comment lines (starting with `!`) are explanatory text, not commands, and are exempt.
+       - This keeps today's printed ping, traceroute, remediation and comment lines unchanged.
+     - **Provenance references** are not producers. These are engine strings that only name the
+       command a fact came from, such as the capture labels in baseline rows, capture integrity and
+       parse yield. Each must resolve to a catalogue form, and the structural scan accepts it on that
+       basis.
    - **Evaluation order.** Steps 1 and 2 apply to every command; steps 3 to 5 apply to sent SSH CLI
      commands only:
      1. canonicalize aliases;
      2. resolve the command to a registered form and class for its channel, and refuse it if none
         matches;
-     3. apply the existing whole-string grammar as a floor (`session_setup` uses its exact-string
+     3. apply the existing whole-string grammar as a floor (`session_control` uses its exact-string
         allowlist instead);
      4. apply the per-platform block list (write-inside-read forms such as `show tech-support` to a file
         or URL, and shell escapes such as guestshell, app-hosting, run bash and tclsh);
      5. apply argument rules to each pipe stage.
    - **Verifier.** `attestation.is_read_only_command` remains the independent second verifier for sent
-     commands. The Wave 0 PR gives it the same exact `session_setup` allowlist, as a reviewed change.
+     commands. The Wave 0 PR gives it the same exact `session_control` allowlist, as a reviewed change.
+     Any change to attestation method text is part of Wave 0's reviewed attestation regeneration
+     (ADR 0009 Decision 6).
    - **Class tests.** Producers declare themselves to the registry, and the tests enumerate those
      declarations; they never use a hand-named list.
      - Every command a *sending* producer can emit passes both gates for its class and channel.
      - Every command a *printing* producer can emit is a registered, non-`never` form. Printing
        producers include `compute_validation_plan`, `compute_remediation_plan`, the NRFU export and the
        MOP.
-     - A structural scan fails if any module builds a device command string outside a declared producer.
+     - A structural scan fails if any module builds a device command string outside a declared producer,
+       except provenance references that resolve to a catalogue form.
    - **Rules and edits.** Rules are written from Cisco documentation and verified against real device
      output, never copied from another vendor's policy files. There is no operator-editable policy in
      v1: a policy change is code plus review, and the block list is a floor nothing can relax.
@@ -115,8 +129,8 @@ These findings were fact-checked against primary sources:
 
    Additions:
    - the command catalogue comes from the policy registry and the packs;
-   - a gated `show version` detection replaces the autodetect probes, so a failed login is never
-     retried on a second connection;
+   - a gated `show version` detection replaces the autodetect probes in the shared collector, used by
+     both the app and the command line, so a failed login is never retried on a second connection;
    - each device's failure reason (auth-failed, timeout, host-key-refused, unreachable,
      refused-by-guard) becomes an engine fact in `collection_completeness`;
    - CDP/LLDP peers that were not collected are offered as seeds to tick for the next job, never
@@ -150,8 +164,9 @@ These findings were fact-checked against primary sources:
      engine's explanation. It never selects, ranks or adds commands, and its text is never a run button.
      Its text is labeled "model-phrased, not authoritative" (ADR 0008: the engine's result is the
      answer). The model client lives outside `cisco_toolkit` and the collector, so the static
-     `no_llm_runtime` and no-egress import scans stay true for the engine. Its use in a run is
-     disclosed in a new per-run attestation field, shown in the Trust drawer.
+     `no_llm_runtime` and no-egress import scans stay true for the engine. The engine snapshot is
+     produced before any rephrasing can happen, so the snapshot's attestation is unchanged. Model use is
+     recorded in the app session or investigation record and shown in the Trust drawer.
 5. **An application pack**, registered in `docs/ssot.md` as the owner of the declared application map.
    - **Input.** An operator-declared inventory (CSV or JSON keyed by external id, shaped compatibly with
      AIM), hashed and bound to the snapshot.
@@ -176,7 +191,9 @@ These findings were fact-checked against primary sources:
 ## Consequences
 
 - **Order of work:**
-  - Decision 1 and an empty `next_evidence` field land with ADR 0009 Wave 0, golden output unchanged.
+  - Decision 1 and an empty `next_evidence` field land with ADR 0009 Wave 0. No analysis output
+    changes; the only golden change is the reviewed attestation regeneration (module counts and the
+    `session_control` method text).
   - The ACL counter fix (decision 6) lands before the application pack.
   - Decision 2 follows ADR 0008 and RC8-P1-H; decision 3 follows decision 2.
   - Decision 4 is populated in Wave 1.
