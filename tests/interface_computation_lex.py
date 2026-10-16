@@ -11,14 +11,20 @@ import json
 import tokenize
 
 
-def python_stream(text, tree):
-    """Keep semantic tokens; mask f-strings for identical 3.10--3.14 tokenization."""
-    lines = text.splitlines(keepends=True)
+def python_source(text):
+    """Python physical lines, not Unicode data separators accepted inside strings."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
     offsets, offset = [], 0
     for line in lines:
         offsets.append(offset)
-        offset += len(line)
-    offsets.append(offset)
+        offset += len(line) + 1
+    return text, lines, offsets
+
+
+def python_stream(text, tree):
+    """Keep semantic tokens; mask f-strings for identical 3.10--3.14 tokenization."""
+    text, lines, offsets = python_source(text)
 
     def position(line, column):
         # AST columns are UTF-8 byte offsets, unlike tokenize's character columns.

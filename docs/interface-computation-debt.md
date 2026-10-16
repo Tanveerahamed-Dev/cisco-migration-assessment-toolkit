@@ -281,3 +281,15 @@ guard, real producer mutation check, complete default suite and all limits remai
 unchanged afterward. Interpolated HTML templates are stitched into one static
 payload with opaque interpolation markers before inspection; their static code
 is not dropped or misread as separate unclosed documents.
+
+Head `c92989f6`, CI `38956633278`, Python 3.14 job `117161179308`, passes
+**162 synthetic controls / 3 deselected**, but the real `html.py` normalization
+still raises the same indentation error. This preserves the narrower pass and
+the broader failure: the overlap control did not close the real-file failure.
+Source inspection identifies literal Unicode U+2028/U+2029 data at `html.py`
+lines 4645/4647. `str.splitlines()` counted them as source lines, unlike Python's
+parser, shifting all later masks. The correction shares a physical-newline-only
+offset map between lexical masking and AST diagnostics, preserving Unicode data
+inside strings. Its regression places those characters before a formatted
+literal and following function, and requires stable detected identities. Hosted
+real-source evidence is still required; no producer source or limit changes.

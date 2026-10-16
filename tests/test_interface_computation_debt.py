@@ -534,6 +534,15 @@ def test_nested_format_spec_spans_are_masked_once_without_corrupting_indentation
     assert actual == python_stream(source, ast.parse(source))
 
 
+def test_unicode_data_separators_do_not_shift_python_source_lines():
+    source = "separators = '" + "\u2028\u2029" + "'\ndef f(value):\n text = f'{value:08d}'\n def following(rows):\n  return len(rows)\n return text\n"
+    plain = source.replace("\u2028\u2029", "unicode-data")
+    one = guard.scan({"webapp/backend/lines.py": source})
+    two = guard.scan({"webapp/backend/lines.py": plain})
+    assert any(site["rule"] == "aggregate" for site in one)
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
 @pytest.mark.parametrize("before,after", [
     ("function f(rows) { return rows.length; }", "// len(rows), queue.pop(), a >= 1\nfunction f ( rows ) { return rows /* len(rows) */ . length; }"),
     ("function f(a,b) { return a + b; }", "function f(a,b) { return a /* health queue visited */ + b; }"),

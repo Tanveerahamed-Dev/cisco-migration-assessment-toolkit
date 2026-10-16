@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 
-from interface_computation_lex import lexical_counter, lexical_sites, python_stream, string_payloads
+from interface_computation_lex import lexical_counter, lexical_sites, python_source, python_stream, string_payloads
 from interface_computation_sources import SCRIPT_SUFFIXES, python_closure
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,11 +116,7 @@ def ast_form(value):
 
 def python_sites(path, text):
     result, counts = [], Counter()
-    lines = text.splitlines(keepends=True)
-    offsets, offset = [], 0
-    for line in lines:
-        offsets.append(offset)
-        offset += len(line)
+    text, lines, offsets = python_source(text)
 
     def segment(node):
         start = offsets[node.lineno - 1] + len(lines[node.lineno - 1].encode()[:node.col_offset].decode())
