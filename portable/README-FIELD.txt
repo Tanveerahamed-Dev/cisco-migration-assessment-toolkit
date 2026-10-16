@@ -578,9 +578,22 @@ Managed-policy acceptance remains an external field gate.
 For this fallback, Expand-Archive the hash-checked ZIP into the fresh
 AtlasNext folder, then run its verifier before copying any data:
   C:\AtlasNext\Atlas\Atlas.exe --verify-release --zip C:\Downloads\Atlas-new.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
-Require SELF_CONSISTENCY_PASS and exit 0. Run --selftest before continuing
-with VERIFIED REINSTALL step 3. If the new data directory is absent, create
-it empty; never use an existing populated directory as the fresh destination.
+Require SELF_CONSISTENCY_PASS and exit 0. Selftest MUST use a fresh database in
+a separate disposable directory, outside BOTH kits and the reserved offline
+backup/staging paths. Do not run default --selftest here: it creates data\backups
+in the new kit, which step 5 correctly refuses as nonempty. For the example paths:
+  $ErrorActionPreference = 'Stop'
+  $selftestRoot = 'C:\AtlasSelftest'
+  if (Test-Path -LiteralPath $selftestRoot) { throw 'Choose a fresh external selftest directory' }
+  New-Item -ItemType Directory -Path $selftestRoot | Out-Null
+  & C:\AtlasNext\Atlas\Atlas.exe --selftest --db ($selftestRoot + '\selftest.db')
+  if ($LASTEXITCODE -ne 0) { throw 'Candidate selftest refused' }
+  if (Test-Path -LiteralPath C:\AtlasNext\Atlas\data) { throw 'Extracted kit unexpectedly contains data' }
+  New-Item -ItemType Directory -Path C:\AtlasNext\Atlas\data | Out-Null
+Continue with VERIFIED REINSTALL step 3, then its preflight and adoption steps.
+Keep the disposable selftest directory separate; never reuse it as the backup,
+staging or new data directory, or adopt any data from it. The new data directory
+must remain empty until step 5; never use a populated directory as the destination.
 
 OFFLINE / LIVE NETWORK BOUNDARY
 -------------------------------

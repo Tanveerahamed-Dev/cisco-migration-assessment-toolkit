@@ -325,6 +325,11 @@ def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
     Each check names the field symptom its failure would cause; returns 0 only when all pass. A check
     that does not apply to this install form is printed as ``[ -- ]`` with the reason and is counted
     as neither passing nor failing — never as ``[ ok ]``."""
+    # The writability probes create directories. Default/env-selected and kit-local
+    # stores must not recreate detached data or pollute a recorded recovery helper.
+    # Transaction selftests explicitly select a disposable DB outside the kit.
+    if _maintenance_write_refused(external_db=db_path):
+        return 1
     checks = []
     not_applicable = []
 
@@ -842,7 +847,7 @@ def main(argv=None) -> int:
             os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = prior_live
 
 
-def _maintenance_write_refused() -> bool:
+def _maintenance_write_refused(*, external_db=None) -> bool:
     """Fence every writable door, including a private recovery-helper executable."""
     if not _frozen():
         return False
@@ -854,6 +859,27 @@ def _maintenance_write_refused() -> bool:
     pending = os.path.lexists(root / "Atlas.update-state.json")
     if not pending and not helper:
         return False
+    if external_db is not None:
+        try:
+            database = Path(external_db)
+            external = True
+            # DEST may be a drive root, with the transaction's TEMP directory
+            # elsewhere on that drive. Fence Atlas and its reserved Atlas.*
+            # custody paths, not every directory beneath DEST. Both probes
+            # must be external, including an existing redirected backups dir.
+            for path in (database, database.parent, database.parent / "backups"):
+                resolved = path.resolve()
+                if resolved.is_relative_to(application.resolve()):
+                    external = False
+                if resolved.is_relative_to(root.resolve()):
+                    relative = resolved.relative_to(root.resolve()).parts
+                    if relative and (relative[0].casefold() == "atlas"
+                                     or relative[0].casefold().startswith(("atlas.", ".atlas."))):
+                        external = False
+        except (OSError, ValueError):
+            external = False
+        if external:
+            return False
     reason = "portable maintenance is incomplete" if pending else "private maintenance helpers are code-only"
     print(f"{APP_TITLE}: refusing to write - {reason}.\n"
           "  Preserve every Atlas* path and explicitly recover with the recorded "

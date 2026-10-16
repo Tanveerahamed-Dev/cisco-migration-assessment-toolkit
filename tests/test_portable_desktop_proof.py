@@ -129,6 +129,83 @@ def test_verified_reinstall_copy_retains_hidden_files_and_empty_directories(tmp_
     assert proof.data_inventory(original) == inventory == proof.data_inventory(backup)
 
 
+@pytest.mark.parametrize("contaminate_kit", [False, True])
+def test_managed_fallback_extracts_selftests_external_and_adopts_preserved_data(
+    tmp_path, monkeypatch, contaminate_kit,
+):
+    old = tmp_path / "old/Atlas"
+    (old / "data/retained-empty").mkdir(parents=True)
+    (old / "Atlas.exe").write_bytes(b"old synthetic executable")
+    with closing(sqlite3.connect(old / "data/assesshub.db")) as connection:
+        connection.execute("CREATE TABLE snapshots(id, campaign_id, label, snapshot_json)")
+        connection.execute("INSERT INTO snapshots VALUES(1, 1, 'retained', '{}')")
+        connection.commit()
+    before = proof.data_inventory(old)
+    package = tmp_path / "candidate.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Atlas/Atlas.exe", b"new synthetic executable")
+    bootstrap = proof.extract_bootstrap(package, tmp_path / "bootstrap")
+    expected_sha = proof.digest(package)
+    calls = []
+
+    def run(executable, arguments, environment, cwd, **kwargs):
+        calls.append(arguments[0])
+        candidate = cwd / "verified-reinstall/Atlas"
+        if arguments[0] == "-NoProfile":
+            assert "Expand-Archive -LiteralPath" in arguments[-1]
+            assert environment["ATLAS_PROOF_PACKAGE"] == str(package)
+            proof.extract_bootstrap(package, Path(environment["ATLAS_PROOF_DESTINATION"]))
+        elif arguments[0] == "--verify-release":
+            assert arguments == ["--verify-release", "--zip", str(package), "--expected-sha256", expected_sha]
+            return subprocess.CompletedProcess([], 0, '{"status":"SELF_CONSISTENCY_PASS"}', "")
+        elif arguments[0] == "--selftest":
+            assert arguments[1] == "--db"
+            database = Path(arguments[2])
+            assert database == cwd / "candidate-selftest/selftest.db"
+            assert not database.is_relative_to(candidate)
+            assert not (candidate / "data").exists()
+            (database.parent / "backups").mkdir()
+            if contaminate_kit:
+                (candidate / "data/backups").mkdir(parents=True)
+        elif arguments[0] == "--database-preflight":
+            assert not any((candidate / "data").iterdir())
+            database = Path(arguments[1])
+            marker = database.parent / "atlas-db-preflight.json"
+            request = json.loads(marker.read_bytes())
+            receipt = {"schema": "atlas.database-preflight/1", "status": "pass", "quick_check": "ok",
+                       "request_nonce": request["nonce"], "request_sha256": proof.digest(marker),
+                       "input_copy_binding": {"database_name": database.name,
+                                              "bytes": request["input_copy_bytes"],
+                                              "sha256": request["input_copy_sha256"]},
+                       "migrated_copy_sha256": proof.digest(database),
+                       "migrated_copy_bytes": database.stat().st_size,
+                       "logical_migration": {"status": "pass", "prior_table_preservation": [{"status": "preserved"}]}}
+            return subprocess.CompletedProcess([], 0, json.dumps(receipt), "")
+        else:
+            pytest.fail("managed fallback invoked an unexpected command: " + arguments[0])
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(proof, "run", run)
+    monkeypatch.setattr(proof, "windows_system_search_directories", lambda: (tmp_path / "system32",))
+    monkeypatch.setattr(proof, "seed_database", lambda *a, **k: None)
+    if contaminate_kit:
+        with pytest.raises(RuntimeError, match="selftest populated"):
+            proof.prove_verified_reinstall(bootstrap, package, expected_sha, old, {}, tmp_path,
+                                          managed_policy=True)
+        assert calls == ["-NoProfile", "--verify-release", "--selftest"]
+    else:
+        result = proof.prove_verified_reinstall(bootstrap, package, expected_sha, old, {}, tmp_path,
+                                               managed_policy=True)
+        assert result["status"] == "PASS"
+        assert result["preparation"] == "expand_archive_verify_external_db_selftest_adopt"
+        assert calls == ["-NoProfile", "--verify-release", "--selftest", "--database-preflight"]
+        adopted = tmp_path / "managed-policy-reinstall/verified-reinstall/Atlas/data"
+        assert proof.database_state(adopted / "assesshub.db")["rows"] == [(1, 1, "retained", "{}")]
+        assert (adopted / "retained-empty").is_dir()
+        assert not (adopted / "backups").exists()
+    assert proof.data_inventory(old) == before
+
+
 @pytest.mark.parametrize("mutation", [
     {"status": "scheduled"}, {"exit_code": True}, {"exit_code": 70},
     {"schema": "atlas.maintenance-result/2"}, {"verifier_origin": "repository_python"},

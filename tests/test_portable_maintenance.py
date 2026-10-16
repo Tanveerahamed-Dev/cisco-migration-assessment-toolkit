@@ -70,6 +70,7 @@ def test_pending_maintenance_refuses_server_before_creating_an_empty_store(tmp_p
 @pytest.mark.parametrize("helper", [None, "Atlas.maintenance-", "aTlAs.MaInTeNaNcE-"])
 @pytest.mark.parametrize("argv", [
     ["--no-browser"],
+    ["--selftest"],
     ["--run-engine", "--help"],
     ["--redact-folder", "synthetic-collection", "--out", "synthetic-output"],
 ])
@@ -90,7 +91,7 @@ def test_pending_journal_fences_every_writable_door_in_active_and_helper_apps(
     assert not (application / "data").exists()
 
 
-@pytest.mark.parametrize("argv", [["--no-browser"], ["--run-engine", "--help"],
+@pytest.mark.parametrize("argv", [["--no-browser"], ["--selftest"], ["--run-engine", "--help"],
                                    ["--redact-folder", "synthetic-input", "--out", "synthetic-output"]])
 def test_completed_private_helpers_are_never_writable_application_doors(tmp_path, monkeypatch, capsys, argv):
     helper = tmp_path / ("ATLAS.MAINTENANCE-" + "a" * 32) / "Atlas"
@@ -103,6 +104,79 @@ def test_completed_private_helpers_are_never_writable_application_doors(tmp_path
     assert serve._main_scoped(argv) == 1
     assert "code-only" in capsys.readouterr().err
     assert not (helper / "data").exists()
+
+
+@pytest.mark.parametrize("helper", [False, True])
+@pytest.mark.parametrize("selection", ["default", "local", "relative", "env_external", "active_from_helper",
+                                       "reserved_preflight"])
+def test_selftest_fences_default_and_kit_local_db_before_any_asset_or_write(
+    tmp_path, monkeypatch, capsys, helper, selection,
+):
+    installation = tmp_path / "installed"
+    application = installation / (("Atlas.maintenance-" + "a" * 32 + "/Atlas") if helper else "Atlas")
+    application.mkdir(parents=True)
+    (installation / "Atlas.update-state.json").write_text("interrupted", encoding="ascii")
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(serve, "_explorer_template_path", lambda: pytest.fail("selftest reached assets before fence"))
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("selftest reached a write probe"))
+    monkeypatch.chdir(application)
+    database = None
+    if selection == "local":
+        database = str(application / "data/assesshub.db")
+    elif selection == "relative":
+        database = "../Atlas/data/assesshub.db"
+    elif selection == "env_external":
+        monkeypatch.setenv("ASSESSHUB_DB", str(tmp_path / "external/env.db"))
+    elif selection == "active_from_helper":
+        database = str(installation / "Atlas/data/assesshub.db")
+    elif selection == "reserved_preflight":
+        database = str(installation / ".Atlas.database-preflight/assesshub.db")
+    assert serve.run_selftest(db_path=database) == 1
+    assert "portable maintenance is incomplete" in capsys.readouterr().err
+    assert not (application / "data").exists()
+    assert not (installation / "Atlas/data").exists()
+    assert not (tmp_path / "external").exists()
+
+
+@pytest.mark.parametrize("helper", [False, True])
+@pytest.mark.parametrize("location", ["outside_destination", "temp_beneath_destination"])
+def test_journaled_selftest_allows_explicit_external_db_only(tmp_path, monkeypatch, helper, location):
+    installation = tmp_path / "installed"
+    application = installation / (("Atlas.maintenance-" + "b" * 32 + "/Atlas") if helper else "Atlas")
+    application.mkdir(parents=True)
+    (installation / "Atlas.update-state.json").write_text("interrupted", encoding="ascii")
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+
+    class AssetsReached(Exception):
+        pass
+
+    def assets():
+        raise AssetsReached
+
+    monkeypatch.setattr(serve, "_explorer_template_path", assets)
+    temporary = installation if location == "temp_beneath_destination" else tmp_path
+    with pytest.raises(AssetsReached):
+        serve.run_selftest(db_path=str(temporary / "disposable/selftest.db"))
+    assert not (application / "data").exists()
+
+
+def test_journaled_selftest_refuses_external_db_with_backups_redirected_into_kit(tmp_path, monkeypatch):
+    application = tmp_path / "Atlas"
+    (application / "data").mkdir(parents=True)
+    disposable = tmp_path / "disposable"
+    disposable.mkdir()
+    try:
+        (disposable / "backups").symlink_to(application / "data", target_is_directory=True)
+    except OSError as error:
+        pytest.skip(str(error))
+    (tmp_path / "Atlas.update-state.json").write_text("interrupted", encoding="ascii")
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("redirected write probe reached"))
+    assert serve.run_selftest(db_path=str(disposable / "selftest.db")) == 1
+    assert list((application / "data").iterdir()) == []
 
 
 def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monkeypatch):

@@ -3142,7 +3142,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/prove_portable_no_python.py::prove_verified_reinstall": (
         14, NON_CLIENT, ("database",), "synthetic legacy kit, exact offline backup and candidate-copy preflight evidence"),
     ".github/scripts/prove_portable_no_python.py::prove": (
-        20, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
+        22, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups, interrupted selftest recovery and both reinstall paths"),
     ".github/scripts/prove_portable_no_python.py::main": (
         2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (

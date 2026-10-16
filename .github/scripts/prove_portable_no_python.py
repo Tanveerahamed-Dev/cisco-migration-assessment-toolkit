@@ -382,10 +382,13 @@ def copy_data_verified(source: Path, destination: Path) -> dict:
 
 
 def prove_verified_reinstall(bootstrap: Path, package: Path, expected_sha: str,
-                            old_application: Path, environment: dict[str, str], scratch: Path) -> dict:
+                            old_application: Path, environment: dict[str, str], scratch: Path,
+                            *, managed_policy: bool = False) -> dict:
     """Prove the separate-install path without relying on the old verifier's pins."""
     from portable.release_contract import canonical_json
 
+    scratch = scratch / ("managed-policy-reinstall" if managed_policy else "transaction-reinstall")
+    scratch.mkdir()
     source_inventory = data_inventory(old_application)
     legacy = scratch / "synthetic-legacy-without-updater" / "Atlas"
     copy_data_verified(old_application, legacy)
@@ -400,9 +403,35 @@ def prove_verified_reinstall(bootstrap: Path, package: Path, expected_sha: str,
     backup = scratch / "offline-backup" / "data"
     retained = copy_data_verified(old_data, backup)
     destination = scratch / "verified-reinstall"
-    run(bootstrap, ["--install", str(destination), "--package", str(package),
-                    "--expected-sha256", expected_sha], environment, scratch)
     candidate = destination / "Atlas"
+    if managed_policy:
+        # Exercise the documented no-transaction extraction, verification and
+        # external-DB selftest before the same backup/preflight/adoption below.
+        powershell = windows_system_search_directories()[0] / "WindowsPowerShell/v1.0/powershell.exe"
+        run(powershell, ["-NoProfile", "-NonInteractive", "-Command",
+                        "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath "
+                        "$env:ATLAS_PROOF_PACKAGE -DestinationPath $env:ATLAS_PROOF_DESTINATION"],
+            {**environment, "ATLAS_PROOF_PACKAGE": str(package),
+             "ATLAS_PROOF_DESTINATION": str(destination)}, scratch)
+        require(files(candidate) == files(bootstrap.parent), "fallback extraction differs from the verified bootstrap")
+        verified = run(candidate / "Atlas.exe", ["--verify-release", "--zip", str(package),
+                       "--expected-sha256", expected_sha], environment, scratch)
+        require(json.loads(verified.stdout.strip().splitlines()[-1]).get("status") == "SELF_CONSISTENCY_PASS",
+                "extracted fallback candidate did not verify its release")
+        selftest_root = scratch / "candidate-selftest"
+        require(not selftest_root.exists(), "fallback selftest directory is not fresh")
+        require(all(not selftest_root.is_relative_to(path) and not path.is_relative_to(selftest_root)
+                    for path in (legacy.parent, destination, backup.parent,
+                                 scratch / "reinstall-staging", scratch / "reinstall-database-preflight")),
+                "fallback selftest directory overlaps a kit or reserved backup/staging path")
+        selftest_root.mkdir()
+        run(candidate / "Atlas.exe", ["--selftest", "--db", str(selftest_root / "selftest.db")],
+            environment, scratch, timeout=180)
+        require(not (candidate / "data").exists(), "fallback selftest populated the new application data")
+        (candidate / "data").mkdir()
+    else:
+        run(bootstrap, ["--install", str(destination), "--package", str(package),
+                        "--expected-sha256", expected_sha], environment, scratch)
     staged = scratch / "reinstall-staging" / "data"
     copy_data_verified(backup, staged)
     preflight = scratch / "reinstall-database-preflight"
@@ -449,6 +478,7 @@ def prove_verified_reinstall(bootstrap: Path, package: Path, expected_sha: str,
             and data_inventory(old_application) == source_inventory,
             "verified reinstall changed the retained old kit or offline backup")
     return {"status": "PASS", "old_kit_and_offline_backup": "byte_and_directory_exact",
+            "preparation": "expand_archive_verify_external_db_selftest_adopt" if managed_policy else "install_adopt",
             "candidate_copy_preflight": "all_prior_columns_and_rows_preserved",
             "legacy_path": "synthetic_nonexecutable_old_kit_and_root_capture_retained; old_updater_never_invoked",
             "scope": "synthetic_legacy_no_updater; actual_RC7_or_distinct_security_toolchain_successor_not_qualified"}
@@ -531,6 +561,8 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
         baseline = database_state(database)
         baseline_files = files(data)
         reinstall = prove_verified_reinstall(bootstrap, package, expected_sha, active, environment, scratch)
+        managed_reinstall = prove_verified_reinstall(
+            bootstrap, package, expected_sha, active, environment, scratch, managed_policy=True)
         run(executable, ["--selftest", "--db", str(database)], environment, scratch, timeout=180)
         require(database_state(database) == baseline, "frozen selftest mutated the installed database")
 
@@ -561,6 +593,36 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
                 "candidate was not established before interruption drills")
         unchanged_data(baseline_files, data)
         require(database_state(database) == baseline, "candidate preparation changed baseline data")
+        maintenance(executable, [*update_arguments, "--test-fail-after", "data_moved"],
+                    environment, scratch, expected_code=70)
+        journal = destination / "Atlas.update-state.json"
+        require(journal.is_file() and json.loads(journal.read_text(encoding="utf-8"))["phase"] == "data_moved",
+                "selftest fence drill did not retain its exact data_moved journal")
+        handoff = destination / "Atlas.data-handoff"
+        require(handoff.is_dir() and not data.exists(), "selftest fence drill did not detach active data")
+        detached = data_inventory(handoff)
+        helper = recovery_helper(destination)
+        interrupted_tree = data_inventory(destination)
+        for selected in (executable, helper):
+            for arguments in (["--selftest"], ["--selftest", "--db", str(selected.parent / "data/assesshub.db")]):
+                refused = subprocess.run([str(selected), *arguments], env=environment, cwd=scratch,
+                                         capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                         timeout=180, check=False)
+                require(refused.returncode != 0 and "portable maintenance is incomplete" in refused.stderr,
+                        "default/application-local selftest bypassed the maintenance write fence")
+                require(not (selected.parent / "data").exists(), "fenced selftest created application/helper data")
+                require(data_inventory(destination) == interrupted_tree,
+                        "fenced selftest changed interrupted application, helper or authority bytes")
+        run(helper, ["--selftest", "--db", str(scratch / "recovery-helper-check/selftest.db")],
+            environment, scratch, timeout=180)
+        require(data_inventory(destination) == interrupted_tree,
+                "explicit external selftest changed interrupted installation bytes")
+        maintenance(executable, ["--recover", str(destination)], environment, scratch)
+        require(not journal.exists() and not handoff.exists(), "selftest fence drill did not finish recovery")
+        require(data_inventory(data) == detached, "recovery did not reattach the exact detached data tree")
+        require(files(active, exclude_data=True) == expected_application, "selftest fence drill changed application code")
+        unchanged_data(baseline_files, data)
+        require(database_state(database) == baseline, "selftest fence recovery changed prior client data")
         maintenance(executable, [*update_arguments, "--test-fail-after", "activated"],
                     environment, scratch, expected_code=70)
         journal = destination / "Atlas.update-state.json"
@@ -648,7 +710,9 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
             "four_step_smoke": "canonical_portable.build_atlas.smoke",
             "first_install_missing_active_recovery": "PASS",
             "verified_fresh_reinstall": reinstall,
-            "interruption_phases": ["activated", "active_moved", "rollback_active_moved"],
+            "managed_policy_fallback": managed_reinstall,
+            "selftest_write_fence": "active_and_recorded_helper_default_and_local_db_refused_external_db_passed_data_reattached",
+            "interruption_phases": ["data_moved", "activated", "active_moved", "rollback_active_moved"],
             "install_update_interruption_recovery_rollback_database_restore": "PASS",
             "qualification_limit": "host interpreter remains installed; disconnected Python-free host remains external"}
 
