@@ -380,7 +380,10 @@ def test_cycles_depth_and_payload_limits_refuse_without_rows(seeded):
     assert _counts(store) == (0, 0, 0)
 
 
-@pytest.mark.parametrize("text,count", [("x" * (1024 * 1024), 1024), ("\x00" * 4096, 1024)])
+@pytest.mark.parametrize(
+    "text,count", [("x" * (1024 * 1024), 1024), ("\x00" * 4096, 1024)],
+    ids=("plain-1mib-repeated-1024", "nul-4096-repeated-1024"),
+)
 def test_aggregate_and_escaped_alias_overflow_refuse_before_encoder_allocation(monkeypatch, text, count):
     def forbidden(*_args, **_kwargs):
         raise AssertionError("oversized aggregate reached the JSON encoder")

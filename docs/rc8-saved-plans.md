@@ -107,3 +107,10 @@ remain. Golden and sample outputs stay byte-identical.
 
 Frontend changes use the existing GitHub-hosted API observation and source-bound SPA handoff/receiver
 workflow. No local application tests, builds, engine runs, browsers or verification controllers run.
+
+The hostile alias-allocation cases retain a 1 MiB plain string and a 4096-NUL string, each repeated
+1024 times. Their explicit short pytest IDs keep the framework's `PYTEST_CURRENT_TEST` value below
+Windows' environment-variable limit without putting the payload itself into the case name. Both
+original encoder-allocation guards, payload expressions and 4 MiB refusal assertions remain intact.
+This corrects framework setup/reporting; fresh hosted results must still prove both cases and the
+complete source/frontend gate on the final head. Earlier timed-out runs remain negative evidence.
