@@ -585,3 +585,20 @@ inheritance while refusing a component-owned module's metadata-only exemption.
 No source module is newly excluded, no blanket rule or edge permission is added,
 and unknown metadata stays unmapped. Downstream capacity walls in the failed run
 remain unmeasured; no bound or timeout changes. Fresh full validation is required.
+
+
+Current main advanced to saved-plan merge `fdd6a7de` (#666), making head
+`15bba79f` conflicted and preventing normal PR workflows. Local integration
+`2920e79b` preserves the saved-plan source and both SSOT registry rows; main's
+`docs/NOW.md` is restored in the same integration. Existing role declarations
+remain mandatory; fresh hosted observations must determine the updated source
+footprint. No earlier source-ceiling result certifies the new main.
+
+Separately, prior webapp run `38981238995`, backend job `117244082337`, reports
+the Scope workflow-contract failure: the synthetic command's quoted `-k` value
+hid its trailing test path from the shared invocation reader, which therefore
+conservatively inferred the default suite and demanded the markup-oracle switch.
+The correction places the unchanged exact target before `-k`, and its workflow
+control asserts the shared reader returns only that target. The full debt gate
+is identified by its exact complete command. No Scope test, browser requirement,
+command selection, oracle switch, budget or timeout is weakened or skipped.

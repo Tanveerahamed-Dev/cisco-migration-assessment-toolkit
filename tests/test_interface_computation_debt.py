@@ -17,6 +17,7 @@ import interface_computation_guard as guard
 from interface_computation_lex import python_stream
 from interface_computation_sources import compiled_coverage, module_roles, python_closure, role_required
 from ssot_contract_guard import require_canonical_checks
+from pytest_invocation_reader import pytest_invocations
 from cisco_toolkit import ssot
 
 
@@ -657,7 +658,7 @@ def test_v1_register_cannot_be_reintroduced_after_the_authorized_cutoff(tmp_path
 def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite():
     workflow = yaml.safe_load((guard.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"]["test"]["steps"]
-    guards = [(i, step) for i, step in enumerate(steps) if "pytest tests/test_interface_computation_debt.py" in step.get("run", "")]
+    guards = [(i, step) for i, step in enumerate(steps) if step.get("run") == "python -m pytest tests/test_interface_computation_debt.py"]
     assert len(guards) == 1
     index, step = guards[0]
     assert "if" not in step and not step.get("continue-on-error", False)
@@ -672,6 +673,9 @@ def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite(
     assert synthetic_step["env"]["ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN"] == "1"
     observation = next(i for i, s in enumerate(steps) if s.get("name") == "Observe exact interface computation sites for review")
     assert synthetic_index < observation < index
+    # The shared reader must see the actual file before a quoted -k expression;
+    # no default-suite/Scope oracle obligation is invented by command spelling.
+    assert pytest_invocations(synthetic_step["run"]) == [["tests/test_interface_computation_debt.py"]]
     assert any(s.get("run") == "npm ci" and s.get("working-directory") == "atlas-scope" for s in steps[:synthetic_index])
 
 
