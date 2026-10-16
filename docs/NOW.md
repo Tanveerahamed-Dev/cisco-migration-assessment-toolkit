@@ -69,8 +69,26 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
+| RC8-P1-F | In-app read-only device collection: design and threat model | `codex/rc8-p1-f-collection-design`; isolated `.codex/worktrees/rc8-p1-f/engine-defects` | Codex | **PROPOSED design (2026-10-16)** from main `3401627f`; [design and threat model](rc8-p1-f-in-app-collection-design.md). Docs only: New assessment, memory-only credentials, target-confined child authorization, progress/cancel/partial outcomes, verified scrub/ingest, D10-amended retention and hosted fake-SSH/leak/refusal tests. Implementation and runtime readiness NOT VERIFIED. | Complete Rule-7 publication scans and all 15 protected contexts on the final PR head, post terminal evidence and STOP for independent design approval. Reconcile G/desktop interfaces below before any later implementation. W59 #636 is unmerged; W60c residuals remain open. No merge/release/device contact. |
 | W10b | Atlas Scope O79 repairs and blocked A6 diagnostic | `codex/scope-a6` in `.claude/worktrees/ui-projection-2` | Codex | **A6 diagnostic BLOCKED.** #604 stays open as a parked draft at failed `29ee4816`, with all failed observations and the absent camera-decay series preserved. W16 and W18 bounded repairs are owner-merged; neither re-grades A3/A6. | Do not push, close/delete or resume #604. Other O79 repairs proceed separately from current main by readiness, one repair per PR. Off-path ACL eligibility, other refusal classes and remaining O79 repairs keep their separate evidence and scope. |
 | RC7 | Atlas 3.33.0rc7 release-candidate preparation including G14 | `codex/release-3.33.0rc7`; isolated `.codex/worktrees/release-3-33-0rc7/engine-defects` checkout | Codex | **Prepared from main `89d214ea` (2026-10-15).** All five prerequisite main workflows are terminal SUCCESS. Mirrors #662 across the same eight surfaces; product3.33.0rc7/schema3.23.0. Rule-7 publication scans and final PR-head hosted checks precede review; final Checks and closing summary own terminal status. | Require all15 protected contexts SUCCESS on the final PR head, post summary and STOP for independent review and supervisor merge. After supervisor confirms merge, freeze other merges and wait for exact merged-main checks; only then dispatch draft producer with that source, `v3.33.0-rc.7`, attach=true, followed by receiver with the same source/tag. Report ZIP name/bytes/SHA-256 and both run IDs. Permanently draft_only, unsigned, all14 external_pending; no PR merge or public promotion. |
+
+### RC8-P1-F coordination packet (2026-10-16, design proposal)
+
+- **RC8-P1-G:** return committed campaign/snapshot IDs, persisted-byte digest form, verification
+  scope and the complete seed-outcome provenance to the canonical topology workspace. G owns
+  routing/rendering; F owns no topology inference. Until its route is accepted, use the existing
+  snapshot page with an explicit workspace-unavailable message. G's local board currently names
+  `codex/rc8-topology-workspace` and an Explorer-centred workspace; its row is not yet on main.
+- **RC8-P0-C/P1-E:** desktop holder owns frozen bootstrap/pipe and hidden child/Job Object,
+  private data locations and restart recovery. The GUI/controller stays loopback-only and
+  outbound-denied; only the validated job child receives live intent plus target confinement.
+  Missing capability disables Collect. The desktop local board names `codex/rc8-desktop-installer`
+  (P0-C in progress) and `codex/rc8-desktop-window` (P1-E queued); those rows are not yet on main.
+- These are pending interface contracts, not approvals or reassignment of companion work.
+  Record holder acceptance here before implementation; preserve all rows/handoffs on integration.
+  D10 Amendment 1 keeps manual disposal/no in-app purge or retention indicator. W59 #636 and
+  the W60c residuals require exact-source reconciliation, with no dependency/gate/test waiver.
 
 ### RC5 owner-held external gates
 
@@ -191,6 +209,17 @@ These exact former rows are historical, not an implementation queue. RC5/#658 is
 | RC5 | Atlas 3.33.0rc5 release-candidate preparation | `codex/release-3.33.0rc5`; [PR #658](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/658); isolated `.codex/worktrees/release-3.33.0rc5/engine-defects` checkout | Codex | **Prep published as PR #658** from exact main `c543f0a181e8db2700007f1658ae0d856dfbbbcd` (2026-10-12). Independent static scope review and Rule-7 scans passed before publication; runtime validation belongs to the final published head. Product version `3.33.0rc5` maps to `v3.33.0-rc.5`; schema stays `3.23.0`. [Validation](atlas-3.33.0rc5-validation-2026-10-12.md). Final PR head, hosted verdicts and handoff belong to the PR Checks and closing summary; earlier receipts do not transfer. | Require all 15 protected contexts on the final PR head, post the summary and STOP for supervisor independent check/merge. Only after the owner reports that merge: dispatch `portable-release.yml` on exact merged main with `draft_tag=v3.33.0-rc.5` and `attach_draft=true`, then independently verify downloaded draft assets. W60c remains deferred; no public promotion or other tag push. |
 
 ## Owner decisions
+
+**Decided — RC8-P1-F design before implementation (owner, relayed by supervisor 2026-10-16):**
+Atlas must support a real read-only brownfield collection inside New assessment without a
+terminal or hand-written devices file. Phase 1 is docs only, including a threat model and
+hosted fake-SSH, credential-leak and refusal test contracts. Credentials remain per-job process
+memory and cross child IPC outside argv; live permission is scoped to that child/job, with
+existing loopback, CSRF and Host protection unchanged. Existing engine commands only; verified
+redaction before retention/ingest and topology navigation. Coordinate with RC8-P1-G and
+RC8-P0-C/P1-E through this board. Require all 15 exact-head checks and STOP for independent
+design approval; implementation follows only after approval. No local tests/builds/engine runs,
+real device contact, merge, release, test/budget weakening or golden/sample changes.
 
 **Current — four owner decisions for the next release candidate (2026-10-09, relayed by the supervisor; recorded by Claude on W62):**
 - **Atlas Scope ships as a labelled preview**, not an accepted product. Scope's status bar and every AssessHub entry to Scope carry the Preview label (W62).
@@ -392,6 +421,19 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-16, Codex (RC8-P1-F design): Preserved the old engine-defects checkout and unrelated
+  untracked agent directories; created the isolated listed branch from main `3401627f`.
+  Authored the proposed collection flow, child/credential/trust threat boundaries, redaction and
+  custody admission, manual disposal and audit, plus hosted synthetic whole-job/refusal/leak
+  tests. Current source confirms file/env credentials and process-wide live permission need new
+  approved adapters; these are not implemented. W59 #636 remains open, D10's Amendment 1 forbids
+  the old purge/retention indicator, and W60c's residuals remain open. G/desktop local board
+  interfaces are recorded above without editing their worktrees or claiming their approval.
+  Publication/terminal hosted evidence belongs to the final PR Checks and closing comment;
+  until then 15/15 is NOT VERIFIED. Graphify was navigation only; no local producer/refresh,
+  tests/builds/engine runs, device contact, merge, release or golden/sample change. Stop after
+  green for independent design review; implementation is gated on that review.
 
 - **2026-10-15 (Codex, RC7 preparation and W52 closure):** W52 G14 #652 is supervisor-merged as `89d214ea698e8cb48c124f3d5acb4ad2af101a3c` at07:01:36Z; retire its active row under rule8, preserving all historical rows, failures and handoffs. Main's own CI38696029644, webapp38696029640, Scope38696029665, Master Reference38696029650 and CodeQL38696029529 are all terminal SUCCESS before RC7 work begins. New `codex/release-3.33.0rc7` starts at that exact current main and mirrors #662's eight-file prep. Product3.33.0rc7/schema3.23.0; merged golden/sample/frontend bytes remain unchanged by prep. RC6 closeout #663 and G14 #652 are the first-parent changes since RC6 source7fa74f53. Fresh Rule7 precedes every push; final exact-head15/15 and closing summary precede STOP for independent review/supervisor merge. After confirmed merge, freeze other merges, require green exact merged-main checks, then draft-only producer and receiver with the same SHA/tag. Existing limitations and all14 external gates stay open; no local runtime, test, build, Graphify, PR merge or public publication.
 - **2026-10-14 (Codex, W52 round-4 hosted test-boundary correction):** `510a92c5` passes whole webapp `38520450353` and the new admission/disconnect cases there; Linux 3.11/3.13/3.14 also pass. Windows source job `115708700346` fails only the final ordinary retry's immediate free-slot check after 201, before frontend/build. The real disconnected request had passed atomic publication, both spool closures and free slots. Response receipt is not proof that outer middleware cleanup has returned. The new test now captures request-specific completion events at ASGI entry for initial/retry uploads and waits before unchanged resource assertions. All 67 old assertions and 14 wait/timeout calls remain; four assertions/two 20-second completion waits are additive. Product source, every budget/timeout/golden/sample and historical binding are unchanged. Backend RSS observation is a shared-process highest sample of 1,471,537,152 bytes, not the 53 MB stage or a RAM bound. Failed Windows evidence and unreached tail are retained. Independent source review clears the synchronization correction; fresh Rule-7, all 15/complete workflows and final summary precede independent re-review.
