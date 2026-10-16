@@ -6,8 +6,9 @@ an approval of the computations it records. Initial admission requires the
 hosted observation and review. The v1 proposal at `db5f5675` passed 15/15 but
 independent review blocked discovery, detection and lexical identities. The
 supervisor's ruling in #673 comment `6218966243` authorizes a wider, reindexed
-initial register in this PR. Version 2 is currently `observation_required`;
-this deliberately fails admission until fresh hosted captures are imported.
+initial register in this PR. The active v2 proposal imports 45,940 exact records
+from six matching hosted captures at `34d62535`; final-head 15/15 and independent
+re-review remain required. It is not in force on main before reviewed merge.
 
 ## What the gate checks
 
@@ -406,8 +407,9 @@ Fresh hosted captures and final-head gates remain required.
 
 Initial role metadata, including the mixed comparison correction, is frozen in
 `97813d794f8cb8d61b206ba49a52aa4f9142b8e6`.
-The complete class boundary is pinned by `ORIGIN` before its hosted capture;
-`ROLE_ORIGIN` independently pins the reviewed role assignments. The source ceiling
+`ORIGIN` pins the initial application fact source; `ROLE_ORIGIN` independently
+pins the reviewed role assignments. The actual detector bytes are bound separately
+in every observation, rather than inferred from the source ceiling revision. The source ceiling
 contains the foundation code, role metadata and this CI guard; engine-owned
 values and golden/sample bytes remain unchanged. After admission every active v2
 ancestor constrains the register, with all merge parents retained.
@@ -455,3 +457,57 @@ keeps `comparison.py` interface until its named fact-owner extraction; those
 computations enter the register instead of gaining an engine exception. The
 initial role basis is repinned to include this correction. No function body or
 fact value changes, and this failed census supplies no admission evidence.
+
+
+## V2 admission evidence (2026-10-17)
+
+CI **38972829234**, head `34d62535c816b8af0e00709b864a4a156db4ea19`,
+produced six identical proposals of **45,940** records. The tested synthetic merge
+was `d573b5fb8a260574a5cd882282097386554a383a`, tree
+`b7813c97286b857ae00fa1c563ba16b73e23a5d4`, identical to the PR head's tree.
+Proposal SHA-256:
+`4f8f0458786a89f2ea1152ec2b2346463f0938d72658734b3b7f32c030341cb0`.
+
+| Hosted interpreter/platform | Job | Early synthetic controls | Real producer mutation | Full focused bootstrap |
+|---|---|---|---|---|
+| Linux 3.10.22 | 117215561327 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+| Linux 3.11.17 | 117215561545 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+| Linux 3.12.15 | 117215561484 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+| Linux 3.13.16 | 117215561492 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+| Linux 3.14.8 | 117215561346 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+| Windows 3.12.10 | 117215561360 | 209 passed / 3 deselected | pass | 210 passed / 2 admission failures |
+
+The only focused failures are the deliberately inactive current-register and
+active-entry assertions. Real class discovery and every refusal/stability control
+pass. These bootstrap results are **not full-suite validation or 15/15**; importing
+the proposal requires a fresh complete exact-head run, including origin/history
+checks that the inactive stage had not reached.
+
+The reviewed initial proposal grows/reindexes from v1's **20,619** records to
+**45,940** (**+25,321**). This is a conservative detector-footprint count, not
+25,321 new semantic defects. The wider class closure, named forms and normalized
+identities explain the supervised reindex. Pure engine roles and compiled module
+identities are excluded under the approved boundary; mixed modules remain visible
+debt. This growth permission applies only to this unmerged proposal. Every active
+v2 ancestor constrains subsequent data, including removals on all merge parents.
+
+### Detector byte custody
+
+The six proposals and source Git identities agree. Windows' four **raw detector**
+digests differ because its checkout used CRLF. Inspection of Git object bytes
+proves each Linux digest equals SHA-256(Git blob) and each Windows digest equals
+SHA-256(the same Git blob with LF converted to CRLF), without invoking the source
+inspector locally. There is no unexplained detector difference. The admission
+adds four exact `text eol=lf` attributes and a CI check deriving the byte-owner
+set from the observer's actual metadata producer. Both HEAD/worktree attribute
+policy must forbid filters, ident and encoding transformations, and every
+executing detector must equal its raw committed bytes. No existing R1/R2 policy,
+fixture, budget or timeout changes. The final head must demonstrate this stronger
+byte gate and matching raw observations on every required leg.
+
+| Detector | Canonical Git/LF SHA-256 | Bootstrap Windows/CRLF SHA-256 |
+|---|---|---|
+| `tests/interface_computation_guard.py` | `189ff4404e7c74a5506091175669d155cc332c000ae8b80f756f81da8a3bff3e` | `9bdce5e14c0fd9336204190d64f0b3b77e942aeeebeeebef760ad2f188f2525e` |
+| `tests/interface_computation_lex.py` | `9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c` | `0518e718deeeb7c7ac1842df4fefc2f1621fc7a2193d01244eef5803535e316e` |
+| `tests/interface_computation_sources.py` | `3899f64555b04c0a5159cd5dfe34c07df50548a479a085b41577b2e6959d79ee` | `0c4b44a16dc22b263b1dd30b2d8452389571ea7c3f1f458cc3e83f99994eca0a` |
+| `.github/scripts/interface_computation_ast.mjs` | `bc76ad9baddabf1b63611ad916812283d00cf8008c19df2a4aad205c8a26e2f9` | `0c7c6bf888f38c8142cf96936ad0d2893ac0364be2f2df62ccc037f0575131ff` |

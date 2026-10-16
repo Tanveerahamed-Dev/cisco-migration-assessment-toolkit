@@ -817,3 +817,28 @@ def test_report_library_use_without_the_closed_read_only_form_cannot_be_engine(b
     }
     with pytest.raises(ValueError, match="writer cannot declare engine"):
         python_closure(sources, sources.__getitem__)
+
+
+
+def test_every_observed_detector_has_identical_committed_and_executing_bytes():
+    # Derive the byte-owner class from the observer's actual metadata producer;
+    # a newly added detector cannot escape through a second hand-kept file list.
+    owner = ast.parse((guard.DETECTOR_ROOT / "tests/interface_computation_guard.py").read_text(encoding="utf-8"))
+    entries = [value for node in ast.walk(owner) if isinstance(node, ast.Dict)
+               for key, value in zip(node.keys, node.values)
+               if isinstance(key, ast.Constant) and key.value == "detectors"]
+    assert len(entries) == 1 and isinstance(entries[0], ast.DictComp)
+    paths = ast.literal_eval(entries[0].generators[0].iter)
+    assert paths and len(paths) == len(set(paths))
+    expected = {"text": "set", "eol": "lf", "filter": "unspecified",
+                "ident": "unspecified", "working-tree-encoding": "unspecified"}
+    for source in ((), ("--source=HEAD",)):
+        raw = guard.git("check-attr", *source, "-z", *expected, "--", *paths).decode("utf-8").split("\0")
+        assert raw.pop() == "" and len(raw) % 3 == 0
+        attributes = {}
+        for index in range(0, len(raw), 3):
+            path, attribute, value = raw[index:index + 3]
+            attributes.setdefault(path, {})[attribute] = value
+        assert attributes == {path: expected for path in paths}
+    for path in paths:
+        assert (guard.DETECTOR_ROOT / path).read_bytes() == guard.git("cat-file", "blob", "HEAD:" + path), path

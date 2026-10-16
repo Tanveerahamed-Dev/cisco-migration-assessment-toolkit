@@ -135,3 +135,11 @@ master-reference/vendor/bounded-braces/** text eol=lf
 /devices.json export-ignore
 /compass_artifact_* export-ignore
 /scratch_* export-ignore
+
+# ADR 0008 detector observations bind the RAW executing parser bytes on every
+# required matrix leg. Keep these four exact source owners identical on Windows
+# and Linux; this does not change the R1/R2 byte-custody policy or fixture bytes.
+tests/interface_computation_guard.py text eol=lf
+tests/interface_computation_lex.py text eol=lf
+tests/interface_computation_sources.py text eol=lf
+.github/scripts/interface_computation_ast.mjs text eol=lf
