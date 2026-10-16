@@ -1,6 +1,7 @@
 """Refutation controls for the hosted knowledge handoff; no full corpus generation."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -291,7 +292,11 @@ def test_probe_attributes_real_auditor_refusals_without_changing_verdict_or_sour
     assert result["status"] == "observed_block" and result["promotes_export"] is False
     assert result["probe_audited_graph"] == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
     assert "CANARY_NEVER_EXPOSED" not in json.dumps(result)
-    assert set(result["first_refusal"]) == {"function", "line", "code", "counters"}
+    assert set(result["first_refusal"]) == {"function", "line", "code", "counters", "sub_reason"}
+    assert result["first_refusal"]["sub_reason"] == {
+        "values": "json_lexical_value_limit", "depth": "json_lexical_depth_limit",
+        "malformed": "json_decode_or_resource_failure", "duplicate": "json_duplicate_object_key",
+        "identifier": "graph_identifier_invalid"}[case]
     if case == "values":
         assert result["first_refusal"]["counters"]["values"] == 5
         assert result["first_refusal"]["counters"]["container_depth"] <= auditor.MAX_JSON_DEPTH
@@ -303,6 +308,102 @@ def test_probe_attributes_real_auditor_refusals_without_changing_verdict_or_sour
     if case == "identifier":
         assert result["first_refusal"]["function"] == "_identifier"
     assert hashlib.sha256(auditor_path.read_bytes()).hexdigest() == diagnostic.AUDITOR_SHA256
+
+
+def test_fixed_sub_reason_map_covers_every_pinned_graph_refusal_site(diagnostic):
+    source = (ROOT / "tools/verify_graph_report.py").read_bytes()
+    assert hashlib.sha256(source).hexdigest() == diagnostic.AUDITOR_SHA256
+    found = set()
+
+    class Calls(ast.NodeVisitor):
+        function = ""
+
+        def visit_FunctionDef(self, node):
+            previous, self.function = self.function, node.name
+            self.generic_visit(node)
+            self.function = previous
+
+        def visit_Lambda(self, node):
+            previous, self.function = self.function, "<lambda>"
+            self.generic_visit(node)
+            self.function = previous
+
+        def visit_Call(self, node):
+            if isinstance(node.func, ast.Name) and node.func.id == "_fail" and node.args:
+                code = node.args[0]
+                if ((isinstance(code, ast.Constant) and code.value == "graph_report_graph_invalid")
+                        or (isinstance(code, ast.Name) and code.id == "failure_code"
+                            and self.function in {"_preflight_json_bytes", "count_value"})):
+                    found.add((self.function, node.lineno))
+            self.generic_visit(node)
+
+    Calls().visit(ast.parse(source))
+    assert found == set(diagnostic.GRAPH_REFUSAL_SITES)
+    assert len(found) == 45
+    reasons = list(diagnostic.GRAPH_REFUSAL_SITES.values())
+    assert len(set(reasons)) == len(reasons)
+
+
+@pytest.mark.parametrize("raw,reason,limits", [
+    (b']', "json_container_close_mismatch", {}),
+    (b'"\x01"', "json_string_control_character", {}),
+    (b'"\\', "json_string_escape_truncated", {}),
+    (b'"\\uZZZZ"', "json_unicode_escape_invalid", {}),
+    (b'"\\x"', "json_string_escape_invalid", {}),
+    (b'"long"', "json_string_token_limit_during_scan", {"MAX_JSON_STRING_CHARS": 2}),
+    (b'"abc', "json_string_unterminated", {}),
+    (b'-', "json_number_minus_truncated", {}),
+    (b'01', "json_number_leading_zero", {}),
+    (b'-x', "json_number_integer_invalid", {}),
+    (b'0.', "json_number_fraction_invalid", {}),
+    (b'0e', "json_number_exponent_invalid", {}),
+    (b'1234', "json_number_token_limit", {"MAX_JSON_NUMBER_BYTES": 2}),
+    (b'0x', "json_number_delimiter_invalid", {}),
+    (b'truex', "json_literal_delimiter_invalid", {}),
+    (b'x', "json_token_unrecognized", {}),
+    (b'', "json_document_incomplete_or_empty", {}),
+    (b'[]', "json_root_not_object", {}),
+    (b'18446744073709551616', "json_decoded_integer_limit", {}),
+    (b'1e999', "json_decoded_float_not_finite", {}),
+])
+def test_probe_names_actual_lexical_and_root_refusal_sites(tmp_path, monkeypatch, diagnostic, raw, reason, limits):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    for name, value in limits.items():
+        monkeypatch.setattr(auditor, name, value)  # Synthetic boundary control only.
+    graph_path, report = audit_inputs(tmp_path, raw)
+    before = auditor.audit_graph_report(graph_path, report).as_dict()
+    result = diagnostic.observe(auditor, graph_path, report)
+    assert before["error_codes"] == ["graph_report_graph_invalid"]
+    assert auditor.audit_graph_report(graph_path, report).as_dict() == before
+    assert result["first_refusal"]["sub_reason"] == reason
+    assert result["promotes_export"] is False and result["audit_status"] == "block"
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ({"directed": True}, "graph_directed_or_multigraph_flags_invalid"),
+    ({"nodes": {}}, "graph_nodes_or_links_type_invalid"),
+    ({"nodes": [0]}, "graph_node_type_invalid"),
+    ({"nodes": [{"id": "a", "community": -1}]}, "graph_community_id_invalid"),
+    ({"nodes": [{"id": "a", "community": 1}] * 2}, "graph_duplicate_node_id"),
+    ({"links": [0]}, "graph_link_type_invalid"),
+    ({"links": [{"source": "a", "target": "missing"}]}, "graph_edge_endpoint_missing"),
+    ({"links": [{"source": "a", "target": "a"}] * 2}, "graph_duplicate_edge"),
+    ({"nodes": [{"id": "a", "community": 1, "label": 0}]}, "graph_node_label_type_invalid"),
+    ({"nodes": [{"id": "a", "community": 1, "label": "x", "source_file": 0}]},
+     "graph_source_file_type_invalid"),
+])
+def test_probe_names_actual_graph_shape_refusal_sites(tmp_path, diagnostic, mutation, reason):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    graph = {"directed": False, "multigraph": False, "nodes": [{"id": "a", "community": 1}], "links": []}
+    graph.update(mutation)
+    raw = json.dumps(graph).encode()
+    graph_path, report = audit_inputs(tmp_path, raw)
+    before = auditor.audit_graph_report(graph_path, report).as_dict()
+    result = diagnostic.observe(auditor, graph_path, report)
+    assert before["error_codes"] == ["graph_report_graph_invalid"]
+    assert auditor.audit_graph_report(graph_path, report).as_dict() == before
+    assert result["first_refusal"]["sub_reason"] == reason
+    assert result["promotes_export"] is False and result["audit_status"] == "block"
 
 
 def test_probe_refuses_unknown_auditor_before_executing_it(tmp_path, diagnostic):
