@@ -27,22 +27,25 @@ Measured on `main` at `9112a16e`, the answer is **no, not at that depth**:
 - **Forwarding.** `traffic_assurance._BASE_LIMITATIONS` states that routing is not VRF-aware, that
   tunnels stop at the overlay RIB, that PBR and uRPF abstain, and that NAT, stateful sessions, zones and
   service chains are not modeled. `parse.py` accounts for every NAT statement, but no forwarding model
-  consumes them. QoS is posture hints only.
+  consumes them. QoS is assessed for MQC and trust posture and runtime drop counters, without a policy
+  model.
 - **Correlation.**
-  - `analyze.compute_cross_layer_correlations` applies ten hand-written pairwise rules, CL-01 to CL-10,
-    over the L1–L3 dependency map. Examples: a single-fiber uplink in front of a sole gateway, a sole
-    gateway with no FHRP, an FHRP gateway with a tracked object down, and one switch implicated across
-    several layers.
-  - The STP election check reports a root bridge that is not the VLAN's gateway.
+  - `analyze.compute_cross_layer_correlations` applies ten hand-written rules, CL-01 to CL-10, over the
+    L1–L3 dependency map. Examples: a single-fiber uplink in front of a sole gateway, a sole gateway with
+    no FHRP, an FHRP gateway with a tracked object down, and one switch implicated across several layers.
+  - The STP election check, and architecture-review check L3-4 (`archreview.py`), report an STP root
+    that is not on the VLAN's active gateway.
   - `protocol_kb` maps one protocol's observed state to its likely cause, for example OSPF EXSTART to an
     MTU mismatch.
   - `causal.compute_causal_flows` re-renders existing findings as trigger → mechanism → impact. It does
     not infer causes across protocols.
   - Traffic Assurance reports `symmetric`/`asymmetry` only for a declared five-tuple.
-- **Time.** `parse.parse_syslog_events` keeps facility, severity, mnemonic and message but **no
-  timestamp**. Its classifier has 14 kinds (MAC flap, err-disable, link flap and so on), and none of
-  them is a protocol state change. So OSPF/EIGRP/BGP adjacency changes, HSRP/VRRP state changes, STP
-  topology changes and line-protocol transitions cannot be ordered into a chain.
+- **Time.** `parse.parse_syslog_events` keeps facility, severity, mnemonic, message and the raw line
+  (which contains the timestamp text), but parses **no timestamp**. The classifier in
+  `analyze.compute_syslog_intelligence` has 14 kinds (MAC flap, err-disable, link flap and so on). A
+  few are protocol events (STP guard, LACP error), but none records an adjacency, FHRP or STP
+  topology change. So OSPF/EIGRP/BGP adjacency changes, HSRP/VRRP state changes, STP topology changes
+  and line-protocol transitions cannot be ordered into a chain.
 
 There is also a structural problem. Protocol depth lives in several hand-maintained lists: the CL
 rules, the `protocol_kb` table, `protocol-depth.json`, and the catalog. That is the defect shape this
@@ -50,18 +53,23 @@ repository keeps relearning, a named subset standing in for the class.
 
 ## Decision
 
-1. **Release 1 ships today's depth, stated honestly.** The Atlas scope band and the Trust drawer name
-   the limits above. Deeper protocol modeling and cross-protocol correlation are the engine's next
+1. **Release 1 ships today's depth, stated honestly.** Each answer's stated limits and the Trust
+   drawer (ADR 0008) name the limits above. Deeper protocol modeling and cross-protocol correlation are the engine's next
    program. They are built modularly, not as a rewrite, and they are not interface work (ADR 0008).
 
-2. **Each protocol family becomes one protocol pack.** Packs live in `cisco_toolkit/packs/` behind one
-   registry, `PROTOCOL_PACKS`. A pack is the single owner of its family and declares:
+2. **Each protocol family becomes one protocol pack.** Protocol packs live in `cisco_toolkit/packs/`
+   behind one registry, `PROTOCOL_PACKS`. They are distinct from the existing `domain_packs.PACKS`,
+   `docs/packs/` and the NRFU certification pack, so this record always says *protocol pack*. A
+   protocol pack is the single owner of its family and declares:
    1. its read-only commands per platform, which feed the one collector command catalogue;
-   2. a parser to a typed, normalized state model, tested against **real device output**, never a
-      hand-made fixture;
+   2. a parser to a typed, normalized state model. Each new parser is tested against **real device
+      output** from a non-client, sanitized source (a lab capture or a published vendor example),
+      recorded with its provenance. Synthetic fixtures, including today's Wave 0 ones, may remain as
+      extra coverage but never replace that test;
    3. a denominator, *expected* (from configuration) against *observed* (runtime). Absent evidence is
       `unknown`, never healthy;
-   4. checks, each returning `problem`, `ok`, `unknown` or `not_applicable` with evidence pointers;
+   4. checks, each returning `problem`, `ok`, `unknown` or `not_applicable` with evidence pointers.
+      `not_applicable` requires positive evidence that the feature does not apply;
    5. the objects it binds to (interface, VLAN, VRF, prefix, peer) and the facts it depends on from other
       packs: the **dependency edges**;
    6. the syslog signatures of its state changes;
@@ -92,29 +100,33 @@ repository keeps relearning, a named subset standing in for the class.
 
 4. **One event timeline.** Packs contribute state-change signatures to the one syslog classifier, which
    also parses the device timestamp. Events are ordered per object, and only inside the collected log
-   window. Ordering across devices is claimed only when the NTP evidence shows the clocks synchronized;
-   otherwise it is `unknown`. Nothing is inferred outside the buffer.
+   window. Ordering across devices is claimed only when NTP evidence shows the clocks synchronized and
+   the timestamp format carries the year and time zone (the logging-timestamp configuration, or
+   `show clock`); otherwise it is `unknown`. Nothing is inferred outside the buffer.
 
 5. **Asymmetry is a correlated finding, not only a declared-flow result.** For each gateway subnet, the
    FHRP active gateway is compared with the upstream routers' collected routes back to that subnet, and
    with STP root and firewall placement. *Outbound through A, return through B* is reported with
    evidence from both directions. Traffic Assurance's per-direction verdict still answers exact flows.
+   Only default-VRF routes are collected today and Traffic Assurance is not VRF-aware, so until Wave 2 a
+   subnet in a non-default VRF reads `unknown`.
 
-6. **Order of work.** Each wave is a series of small, independently reviewed PRs. At most one engine
-   protocol stream runs at a time, alongside the interface stream.
+6. **Order of work.** Each wave is a series of small, independently reviewed PRs. The number of
+   concurrent streams follows `docs/NOW.md` rule 9.
    - **Wave 0: the contract, with no behavior change.** The registry, the pack contract, and generated
      depth rows. The eight existing families move into packs with the golden output byte-identical.
      Guards: every family `compute_protocol_health` emits has a pack, every pack has a generated
      matrix row, and every catalog protocol cell that a pack claims points to it.
    - **Wave 1: correlation on evidence already collected.** This answers the owner's example. It covers
      state-change events and timestamps, the per-object timeline, the dependency graph and correlation
-     pass, the gateway/return asymmetry check, and the STP-root / FHRP-active / track chain. It feeds
-     the plan's Phase 3 "Why" view.
+     pass, the gateway/return asymmetry check, and the STP-root / FHRP-active / track chain. That chain
+     absorbs archreview L3-4 rather than adding a second owner. It feeds the Investigate workspace's
+     root-cause answer (ADR 0008).
    - **Wave 2: routing depth on a VRF foundation.** A VRF-aware RIB and Traffic Assurance; OSPF expected
      neighbors from configuration, plus areas, DR/BDR and MTU; BGP per VRF and address family, plus
      policy presence; EIGRP; static routes and redistribution.
    - **Wave 3: services in the path.** NAT inside Traffic Assurance (IOS and ASA/FTD, from the existing
-     NAT accounting); a QoS model of MQC policies, the trust boundary and drop counters; CoPP; storm
+     NAT accounting); a QoS model that absorbs today's MQC/trust audit and drop counters; CoPP; storm
      control, port security and IPv6 first-hop security.
    - **Wave 4: SP and data-center fabrics.** The MPLS LDP/L3VPN label path, IS-IS, SR-MPLS and TI-LFA,
      VXLAN-EVPN route types and VTEPs, and PIM/RPF depth.
@@ -140,6 +152,9 @@ repository keeps relearning, a named subset standing in for the class.
   "not observed" never becomes "explained".
 - The order puts what consultants meet most in brownfield campus and data-center work (L2/FHRP/IGP
   interaction, asymmetry, VRFs) ahead of SP-only depth.
+- Each new owner (`PROTOCOL_PACKS`, `protocol_graph`, the event timeline) is registered in
+  `docs/ssot.md` in the PR that lands it. When cross-layer results move to `protocol_graph`, the CL ids
+  stay stable and the existing cross-layer row in `docs/ssot.md` is updated in that same PR.
 
 ## Amendment 1 (2026-10-16): every OSI layer
 
@@ -153,10 +168,14 @@ real device output before its fix lands.
 - **Layer 1 is the shallowest layer.** Interface state, error counters, duplex, PoE and power supplies are
   judged, but never against an expected value. `_ARCH_COVERAGE_REGISTRY` has no Layer 1 class.
 - **Optics are collected and never parsed.** `show interface transceiver` (NX-OS) and `show interfaces
-  transceiver` (IOS) have no parser, and `parse_show_inventory` drops optic entries. The only optic signal
-  is a syslog mnemonic. Module and PSU part numbers are parsed but unused; lifecycle covers the chassis only.
-- **Not collected:** UDLD state, stack members and ring, supervisor redundancy, the err-disable cause,
-  transceiver thresholds, MAC-table counts, DHCP-snooping and DAI state, and the IPv6 neighbor table.
+  transceiver` (IOS) have no parser, and `parse_show_inventory` drops optic entries. The only optic
+  *health* signal is a syslog mnemonic; the interface-status Type column still feeds fiber
+  classification. Module and PSU part numbers are parsed but unused; lifecycle covers the chassis only.
+- **Not collected:** UDLD state, stack members and ring, supervisor redundancy, transceiver thresholds,
+  MAC-table counts, DAI state, and the IPv6 neighbor table.
+- **Collected but under-used:** the err-disable cause appears only in collected logs. NX-OS `show
+  module` is parsed only as a slot count. The full MAC table is collected. The DHCP-snooping binding
+  table is collected and parsed.
 - **In the collected running-config but not parsed:** UDLD, loop guard, BPDU filter, MST region,
   errdisable recovery, DAI, IP Source Guard, private VLANs, CDP/LLDP enablement, and configured speed,
   duplex, negotiation and `shutdown`. PortFast is parsed and then dropped.
@@ -203,24 +222,31 @@ real device output before its fix lands.
    to MTU on the same link objects. Together they replace the competing native-VLAN owner and the
    explorer-only comparisons, and the explorer then displays the engine's result (ADR 0008).
 4. **Waves.**
-   - **Wave 0** is unchanged and its output stays byte-identical. None of the defect fixes above ride in
-     it; each lands as its own PR with a test on real device output and a reviewed golden regeneration.
+   - **Wave 0** is unchanged, except that ADR 0010 adds the command-policy registry and an empty
+     `next_evidence` contract field to it; its output stays byte-identical. None of the defect fixes
+     above ride in it. Each lands as its own PR with a test on real device output and a reviewed golden
+     regeneration.
    - **Wave 1** first builds the roots from evidence already collected: `interface`, `transceiver` (from
      the current commands), `neighbor_discovery`, `link`, `mtu`, `chassis_environment`, `vlan_trunk`,
-     `vpc_mlag`, `object_tracking` and `time_sync` (ordering events across devices needs NTP evidence). The
+     `vpc_mlag`, `object_tracking`, `address_tables` (MAC and ARP from the collected tables; IPv6 ND
+     joins in Wave 2) and `time_sync` (ordering events across devices needs NTP and timestamp-format
+     evidence). The
      EtherChannel pack gains a member physical-diversity check from member names. The correlation work
      decided above follows. Until Wave 2 adds the NX-OS commands, the track and FHRP-detail chain is
      IOS-only and reads `unknown` on NX-OS.
    - **Wave 2** opens with new read-only commands. Each gets a parser contract in
      `cmdio.PARSER_CONTRACTS` and a not-observed state: transceiver detail with thresholds, UDLD neighbors,
      err-disabled ports and recovery, stack and supervisor redundancy, NX-OS HSRP detail and `show track`,
-     MAC-table counts, and IPv6 neighbors. It then adds `udld`, `errdisable`, `stack_redundancy`,
-     `hardware_lifecycle` (which also needs component rows in the EoL registry), `address_tables`,
-     `ip_addressing`, `static_rib`, `route_policy`, `bfd` and `control_plane_health`, alongside the VRF
-     foundation and routing depth.
+     MAC-table counts, IPv6 neighbors, `show clock`, and the logging-timestamp configuration. It then
+     adds `udld`, `errdisable`, `stack_redundancy`, `hardware_lifecycle` (which also needs component rows
+     in the EoL registry), IPv6 ND in `address_tables`, `ip_addressing`, `static_rib`, `route_policy`,
+     `bfd` and `control_plane_health`, alongside the VRF foundation and routing depth.
    - **Wave 3** adds the L2 security packs, `acl_filters`, `stateful_firewall` and `management_security`
-     to the services already listed. **Wave 4** is unchanged.
-5. **Guards.** Every command in `COMMANDS_NXOS` and `COMMANDS_IOS` is claimed by at least one pack or is
-   on an explicit unclaimed list with a reason, so evidence that is collected but not parsed stays
-   visible. The depth matrix gains an OSI-layer column generated from pack registrations, and an area with
-   no pack reads `missing`.
+     to the services already listed. **Wave 4** adds `wan_tunnels` and `lisp_sda` to its list.
+5. **Guards.** Every command in every literal `COMMANDS_*` registry of `COLLECT_PARSE_V3_23_0.py` is
+   claimed by at least one protocol pack, or is on an explicit unclaimed list with a reason. Today that is
+   `COMMANDS_NXOS`, `_IOS`, `_ARISTA`, `_JUNIPER`, `_CLOUD` and `_FORTINET`. The registries are
+   enumerated structurally, as `tests/test_r8_client_evidence_is_ignored.py` already does, never from a
+   hand-kept list of names. This keeps evidence that is collected but not parsed visible. The depth matrix
+   gains an OSI-layer column generated from pack registrations, and an area with no pack reads
+   `missing`.

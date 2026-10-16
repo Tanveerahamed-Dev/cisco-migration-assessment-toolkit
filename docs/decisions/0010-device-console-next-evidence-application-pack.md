@@ -1,7 +1,7 @@
 # 0010: Device console, next-evidence suggestions and the application pack
 
-**Date:** 2026-10-16 · **Status:** accepted. Implementation follows ADR 0008, ADR 0009 Wave 0 and
-RC8-P1-F. · **Decided by:** Claude Code under the owner's explicit delegation · **Related:**
+**Date:** 2026-10-16 · **Status:** accepted. The implementation order is in Consequences. ·
+**Decided by:** Claude Code under the owner's explicit delegation · **Related:**
 `docs/decisions/0008-engine-computes-interface-displays.md`,
 `docs/decisions/0009-protocol-packs-and-dependency-graph.md`, the RC8-P1-F in-app collection design
 (PR #668), `cisco_toolkit/traffic_assurance.py`, `cisco_toolkit/attestation.py`,
@@ -51,27 +51,46 @@ These findings were fact-checked against primary sources:
 ## Decision
 
 1. **One engine-owned command policy registry**, `cisco_toolkit/command_policy.py`, keyed by platform.
-   - **Evaluation order:**
+   **Default-deny:** a command is allowed only when it resolves to a registered form for that platform.
+   Anything else is refused, whatever the block list says.
+   - **Registered forms.** Each is a policy ID with a command template and typed parameters (an
+     interface, a VLAN, a peer address), not an arbitrary string.
+   - **Evaluation order for a candidate command:**
      1. canonicalize aliases;
-     2. apply the existing whole-string grammar as a floor;
-     3. apply the per-platform block list (write-inside-read forms, shell escapes such as guestshell,
-        app-hosting, run bash, tclsh);
-     4. apply argument rules to each pipe stage.
-   - **Classes:** `read`; `active_probe` (ping and traceroute, disabled until a separate decision);
-     `never`.
-   - **Producers.** The collector catalogue, pack confirm-on-device commands, `next_evidence`, the
-     console and NRFU exports all draw from this one registry. `attestation.is_read_only_command`
-     remains the independent second verifier.
-   - **Class test.** A test enumerates every producer from its registry and fails if either gate
-     refuses any command that producer can emit.
+     2. resolve it to a registered form, and refuse it if none matches;
+     3. apply the existing whole-string grammar as a floor;
+     4. apply the per-platform block list (write-inside-read forms such as `show tech-support` to a file
+        or URL, and shell escapes such as guestshell, app-hosting, run bash and tclsh);
+     5. apply argument rules to each pipe stage.
+   - **Classes:** `read`; `active_probe` (ping and traceroute); `never`.
+   - **Sent versus printed.** The registry distinguishes commands Atlas *sends* to a device from commands
+     it only *prints* for an engineer to run.
+     - **Sent:** the collector catalogue, the console and `next_evidence`. These may use only `read`
+       forms that pass both gates. `active_probe` is never sent until a separate decision.
+     - **Printed:** NRFU exports, the validation plan, MOP steps and confirm-on-device text. Every
+       printed command must also be a registered form and never `never`. `active_probe` is allowed
+       there, because the engineer runs it. This keeps today's printed ping and traceroute checks, and
+       the golden output, unchanged.
+   - **Verifier.** `attestation.is_read_only_command` remains the independent second verifier for sent
+     commands.
+   - **Class tests.** Producers declare themselves to the registry, and the tests enumerate those
+     declarations; they never use a hand-named list.
+     - Every command a *sending* producer can emit passes both gates.
+     - Every command a *printing* producer can emit is a registered, non-`never` form. This includes
+       `compute_validation_plan` and the NRFU export.
+     - A structural scan fails if any module builds a device command string outside a declared producer.
    - **Rules and edits.** Rules are written from Cisco documentation and verified against real device
      output, never copied from another vendor's policy files. There is no operator-editable policy in
      v1: a policy change is code plus review, and the block list is a floor nothing can relax.
-2. **In-app collection is RC8-P1-F (PR #668), not a second design.** Its custody model is kept as is:
+2. **In-app collection is RC8-P1-F (PR #668), not a second design.** Its custody model is kept as
+   that design defines it:
    - memory-only credentials;
    - a target guard;
-   - strict host keys;
-   - independent secret-scrub verification before offline ingest;
+   - host keys verified before any credential is sent, under the policy RC8-P1-F's review settles (its
+     revision recommends operator-confirmed first use);
+   - **analysis of the original captures first, then secret scrubbing with independent verification**.
+     Scrubbed copies are never re-analyzed, because scrubbing can change a verdict, for example the
+     SNMP default-community severity;
    - one live job at a time;
    - no unattended retries.
 
@@ -86,15 +105,19 @@ These findings were fact-checked against primary sources:
    - a targeted job collects chosen devices × chosen commands;
    - controller REST collection comes in a later increment through the same job boundary.
 
-   Operator-confirmed first-use host-key acceptance (fingerprints shown before any credential is sent,
-   recorded in the job audit, a changed key is a hard failure) is proposed to the RC8-P1-F reviewer.
+   Under operator-confirmed first-use host-key acceptance, fingerprints and their algorithm are shown
+   before any credential is sent, the acceptance is recorded in the job audit, and a changed key is a
+   hard failure. RC8-P1-F's own revision now recommends it, subject to that design's independent review.
 3. **A read-only "Run on device" console in the Investigate workspace.** It is a gated request/response
    runner on the RC8-P1-F job boundary, not a terminal emulator.
-   - Every command, typed or suggested, is evaluated by the engine policy; a refused command never
-     leaves the laptop. An allowed batch shows the exact commands and target and runs only after an
-     explicit click.
-   - Output passes the credential barrier and redaction and is parsed by the owning pack. It becomes a
-     timestamped evidence addendum that the engine re-analyzes into a new snapshot revision.
+   - Every command, typed or suggested, must resolve to a registered `read` form for that device's
+     platform (decision 1, default-deny). Free text that resolves to no form is refused and never leaves
+     the laptop. An allowed batch shows the exact commands and target, and runs only after an explicit
+     click.
+   - Output passes the in-memory credential barrier and is parsed and analyzed by the owning pack from
+     the original capture. The capture is then scrubbed and independently verified before storage, as in
+     RC8-P1-F, and the scrubbed copy is never re-analyzed. The result is a timestamped evidence addendum
+     in a new snapshot revision.
    - Not allowed: enable, configuration mode, `terminal monitor`, and interactive sub-modes. MCP never
      gains a tool that runs commands or triggers collection.
 4. **Deterministic next-evidence suggestions.** This adds item 8 to the ADR 0009 pack contract.
@@ -104,8 +127,11 @@ These findings were fact-checked against primary sources:
    - **Other sources.** The dependency graph's unknown links, collection blind spots and `protocol_kb`
      states feed the same list.
    - **Delivery.** `analysis_result/1` serves `next_evidence` beside `confirm_on_device`.
-   - **Local model.** A model on 127.0.0.1 may only rephrase the engine's explanation. It never
-     selects, ranks or adds commands, and its text is never a run button.
+   - **Local model.** It is optional and off by default. A model on 127.0.0.1 may only rephrase the
+     engine's explanation. It never selects, ranks or adds commands, and its text is never a run button.
+     Its text is labeled "model-phrased, not authoritative" (ADR 0008: the engine's result is the
+     answer). Enabling it is disclosed in the run's attestation rather than silently changing the
+     `no_llm_runtime` claim.
 5. **An application pack**, registered in `docs/ssot.md` as the owner of the declared application map.
    - **Input.** An operator-declared inventory (CSV or JSON keyed by external id, shaped compatibly with
      AIM), hashed and bound to the snapshot.
@@ -137,7 +163,7 @@ These findings were fact-checked against primary sources:
   - Application pack v1 takes the engine slot after Wave 1. Its `unsupported(vrf)` and
     `unsupported(nat)` states lift as Waves 2 and 3 land.
 - **Workspaces:**
-  - Investigate: the console, the Why view and application paths.
+  - Investigate: the console, the root-cause answer and application paths.
   - Fix: confirm on device.
   - Migrate: applications per wave.
   - Cut over: NRFU application checks generated from declared flows.
