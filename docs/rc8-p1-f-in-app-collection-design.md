@@ -200,6 +200,11 @@ two-level row/run authorization, explicit-platform rule and negotiated-session d
 never copy algorithm lists into the UI or silently downgrade after a standard failure. Show
 the weaker profile and exact affected devices before Start. If W59 is unmerged/unapproved or
 the packaged legacy provider is missing/refused, legacy selection is unavailable/refused.
+Baseline `portable/windows-x64-requirements.lock` pins Paramiko 4.0.0; hiding a legacy checkbox
+does not establish W59's standard-profile boundary. Collection admission must also verify an
+approved provider/policy enforces W59's default-profile restrictions before any authentication,
+including auto-detection. If that default boundary cannot be enforced, disable/refuse Collect
+entirely; do not call the existing transport modern merely because no legacy option was chosen.
 Do not bundle an unreviewed provider, change a dependency pin or weaken authentication/trust
 to enable the feature. Bind effective profile and negotiation evidence to each device/job.
 
@@ -373,6 +378,7 @@ GitHub-hosted runners, with synthetic inputs only and **no real device contact e
 2. **Wire/trust/consent refusals.** Auth denied (one attempt), wrong/unknown/missing/rotated key
    before password, refused terminal setup, unsupported platform/profile, legacy with one
    consent missing, ambiguous/stale target consent, no provider, no gate/no pipe/no grant,
+   a legacy-only peer under standard consent and a provider unable to enforce the default policy,
    ambient live/password environment and unexpected driver commands. Record commands for
    auto-detect and reconnect as well as explicit-platform collection. Assert no real sockets
    outside the fixture and no configuration/device-write commands.

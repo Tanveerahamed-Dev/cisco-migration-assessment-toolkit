@@ -434,6 +434,8 @@ protected-PR change is part of the resumed W6 scope.
   Integrated main `9112a16e` by merge commit, preserving both handoff histories. An independent
   drafting pass identified the missing cancellation control channel, autodetect's terminal
   failure fallback and partial-acceptance expiry; the proposal now addresses all three.
+  Baseline Paramiko 4.0.0 is not assumed to enforce W59's standard policy: collection admission
+  must refuse a provider that cannot enforce that boundary, even with legacy selection hidden.
   This pass is not human design approval. Publication/terminal hosted evidence belongs to the final PR Checks and closing comment;
   until then 15/15 is NOT VERIFIED. Graphify was navigation only; no local producer/refresh,
   tests/builds/engine runs, device contact, merge, release or golden/sample change. Stop after
