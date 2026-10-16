@@ -59,6 +59,7 @@ test("desktop snapshot opens Cable Map with all registered tools, and retains an
   await expect(frame.locator('#modes button[data-mode="cablemap"]')).toHaveAttribute("aria-pressed", "true");
   await expect(frame.locator("#svg #vp")).toBeAttached();
   await expect.poll(() => frame.locator("#svg #vp").evaluate((node) => node.childElementCount)).toBeGreaterThan(0);
+  await test.info().attach("workspace-default-cable-map-desktop", { body: await page.screenshot(), contentType: "image/png" });
   const modes = await frame.evaluate("MODES.map(({ key }) => key)") as string[];
   expect(modes).toHaveLength(CANONICAL_MODE_COUNT);
   expect(new Set(modes).size).toBe(modes.length);
@@ -113,6 +114,7 @@ test("narrow application window keeps Network and secondary navigation reachable
   expect(box!.x + box!.width).toBeLessThanOrEqual(391);
   expect(box!.y + box!.height).toBeLessThanOrEqual(845);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await test.info().attach("workspace-default-cable-map-narrow", { body: await page.screenshot(), contentType: "image/png" });
   await expect(page.getByRole("navigation", { name: "Snapshot views" })).toBeVisible();
   await page.getByText("Workspace info", { exact: true }).click();
   await expect(page.getByText(/Flow is not canonical Traffic Assurance/)).toBeVisible();
@@ -129,4 +131,30 @@ test("narrow application window keeps Network and secondary navigation reachable
   await page.getByRole("link", { name: "Overview", exact: true }).click();
   await expect(page.getByText("Synthetic fleet needs review")).toBeVisible();
   await expect(page.getByTitle("Network Migration Explorer")).toBeHidden();
+});
+
+test("an opaque HTTP generation refusal stays visible and can be retried without opening another window", async ({ page }) => {
+  await mockWorkspace(page);
+  let attempts = 0;
+  const popups: Page[] = [], errors: string[] = [];
+  page.on("popup", (popup) => popups.push(popup));
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/snapshots/1/explorer", async (route) => {
+    attempts += 1;
+    if (attempts === 1) return route.fulfill({ status: 503, contentType: "text/html",
+      body: "<!doctype html><h1>Synthetic Explorer generation unavailable</h1><p>Retry the saved snapshot.</p>" });
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body: EXPLORER });
+  });
+  await page.goto("/snapshots/1");
+  const child = page.frameLocator('iframe[title="Network Migration Explorer"]');
+  await expect(child.getByRole("heading", { name: "Synthetic Explorer generation unavailable" })).toBeVisible();
+  // HTTP responses are opaque to the parent; it must neither call this successful analysis
+  // nor require a fictitious iframe error event before offering the real reload control.
+  await expect(page.getByRole("button", { name: "Reload topology", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Reload topology", exact: true }).click();
+  const frame = await readyExplorer(page);
+  await expect(frame.locator('#modes button[data-mode="cablemap"]')).toHaveAttribute("aria-pressed", "true");
+  expect(attempts).toBe(2);
+  expect(popups).toEqual([]);
+  expect(errors).toEqual([]);
 });

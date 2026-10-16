@@ -93,3 +93,8 @@ published-count equality assertion. The generic withheld-state/reason/value
 checks remain immediate. Portable job `116841236077` refused the stale tracked
 SPA diff; Distribution job `116841236012` failed the same two frontend unit
 cases. Neither failure is waived or reported as a successful generated build.
+
+Add hosted default-Cable-Map screenshots at both application-window widths,
+plus an actual opaque HTTP 503 response followed by explicit Reload topology and
+a successful renderer. This distinguishes HTTP generation refusal/recovery from
+the separately tested non-bubbling frame event. No local browser is used.
