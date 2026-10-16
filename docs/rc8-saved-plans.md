@@ -62,14 +62,36 @@ render failure or a selection conflict. Legacy exports without a saved-plan cont
 
 ## Planning and evidence boundaries
 
-Normalized requirements use the existing engine owner. The derived projection persists the blueprint,
-design NRFU and their owner-computed coverage/SSOT/lineage companions. It does not replace observed
-devices, topology, original protocol evidence, validation facts or baseline negative gates.
+Normalized requirements use `cisco_toolkit.design_advisor`. The saved projection contains exactly
+`requirements_register`, `design_blueprint` and `design_nrfu`. Only these three plan-owned sections
+overlay the assessment copy passed to a planning writer. Architecture coverage, coverage matrix,
+unknown evidence, schema census, fact lineage and executive brief retain their stored assessment
+basis; saving a plan does not recompute or promote them. Projection/derivation profile `/2` refuses
+older profiles and additional observed sections, even when an envelope has been rehashed.
+
+The CLI and saved-plan preparation share the late-derivation owner in `cisco_toolkit.ssot`. Its
+saved-plan profile derives requirements, blueprint and design NRFU in that order; the assessment
+profile continues through the existing observed companions and disclosure callbacks. Existing
+assessment failure labels, fail-soft boundaries and output order remain intact. Render-time SSOT
+integrity disclosure remains active on an isolated writer copy and preserves original failures;
+it does not rewrite the persisted assessment or turn inherited failures into a successful phase.
+
+The engine's requirements contract also owns saved-plan list fields, option values and VLAN bounds.
+The actual OpenAPI schema exposes it, and the existing hosted generator emits its runtime metadata
+and types into `openapi.ts`. The required generation freshness check compares that complete output.
+Legacy CLI normalization keeps its existing behavior. Protocol Assurance dispatch uses one set in
+the artifact registry for both HTTP routes and both document-rendering paths.
 
 Design, CRD, MOP, NRFU and the deck consume the saved planning projection. Other existing documents
 may be associated with the revision, but their assessment-baseline sections are labelled explicitly.
 In particular, current cutover and engagement owners do not transform their wave/gate content from
 requirements; association is not a universal wave-parity claim or a new execution plan approval.
+Original assessment integrity failures remain in force. In particular, an inherited Design blueprint
+or requirements failure can keep the Design document's recommendation section withheld as
+UNVERIFIED, even when a new draft blueprint exists. The saved-plan stamp discloses this limit;
+saving a draft does not repair or clear the assessment failure. Selected-plan identity and stored
+inputs match the export basis, but universal content parity across such withheld sections is not
+claimed.
 
 The Protocol Assurance sidecar is built only from the original `BoundSnapshot` and its persisted-byte
 binding. Its complete binding must match the plan's assessment. It is passed unchanged to the supported
@@ -149,3 +171,26 @@ The unchanged gated eight-module type check passes; the full-project advisory re
 1,475 diagnostics match both main340 and preceding Bbf2 exactly. Existing named audit
 suppression, unattributed `2 ignored` output, reference capacity warnings and all 14 external
 gates remain explicit. No test, budget, timeout, suppression or approval is loosened.
+
+## Supervisor SSOT refutation and required closure (2026-10-16)
+
+Independent audit `wf_f0aab664-711` refutes readiness of foundation `c95c2b74` and dependent
+`46ffef86`: the saved projection also overlaid recomputed observed companions, the late pipeline
+was duplicated in a different order, sidecar membership and requirements domains had multiple
+owners, and two SSOT rows did not distinguish assessment and saved-plan bases. Earlier green
+jobs and package receipts remain evidence for their exact sources, not closure of these findings.
+
+The correction limits the saved projection to its three owned sections, shares the late pipeline,
+centralizes sidecar membership and generates the UI requirements contract from its engine owner.
+SSOT rows for assessment headline facts and stored design decisions now point to the saved-plan
+owner row for the selected-plan basis. New hostile drift/profile/writer-isolation and metadata
+freshness cases accompany the change. Runtime behavior is not verified until the revised heads
+pass all 15 required contexts, applicable whole workflows and source-bound frontend/package checks.
+The generated contract must come from the hosted observation; no local generator or build runs.
+Independent review follows those gates. No PR merge, release cut or publication is authorized.
+
+Static follow-through also finds the existing registry producer-key guard still searches only
+the CLI and analysis module. Its source closure now includes only the unique shared helper body,
+after verifying the CLI calls that owner exactly once with `snap_dict` and the assessment profile.
+Every existing required key and assignment assertion remains. This ownership adaptation requires
+fresh hosted execution along with the original in-process pipeline and golden/sample checks.

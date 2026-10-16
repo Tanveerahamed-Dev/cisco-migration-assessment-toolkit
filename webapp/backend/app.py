@@ -2725,6 +2725,18 @@ def is_guarded_api_path(path: str, doc_paths) -> bool:
     return path.startswith("/api/") or path in doc_paths or _is_scope_path(path)
 
 
+class _AtlasFastAPI(FastAPI):
+    """Expose the engine-owned planning contract without eagerly building OpenAPI."""
+
+    def openapi(self) -> Dict[str, Any]:
+        from cisco_toolkit.design_advisor import requirements_contract
+
+        schema = super().openapi()
+        # Fresh metadata avoids sharing a mutable owner container with a schema consumer.
+        schema["x-atlas-requirements-contract"] = requirements_contract()
+        return schema
+
+
 def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None,
                boot_hardening: bool = False,
                scope_dist_dir: str | os.PathLike | None = _SCOPE_DIST_DEFAULT) -> FastAPI:
@@ -2746,7 +2758,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         finally:
             store.close()
 
-    app = FastAPI(
+    app = _AtlasFastAPI(
         title="AssessHub",
         version=engine.ENGINE_SCHEMA_VERSION,
         description="A live web platform over the Cisco Migration-Assessment engine.",
@@ -3763,7 +3775,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             # A derived planning projection is never rebound as observed assessment bytes.
             # The unchanged portfolio sidecar belongs only to this original BoundSnapshot.
             portfolio = (protocol_portfolio.build_protocol_single_snapshot_bundle(snap, binding)
-                         if kind in {"runbook", "mop", "nrfu"} else None)
+                         if kind in docmeta.PROTOCOL_ASSURANCE_DOCUMENT_KINDS else None)
             gate_record = (gates.gate_record(store.list_gates(binding["campaign_id"]))
                            if kind == "engagement" else None)
             gate_note = deliverables.gate_disclosure(kind, engagement=binding["engagement_id"])
@@ -4300,7 +4312,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
         protocol_assurance_bundle = None
-        if kind in {"runbook", "mop", "nrfu"}:
+        if kind in docmeta.PROTOCOL_ASSURANCE_DOCUMENT_KINDS:
             bound = store.get_bound_snapshot(snapshot_id)
             if bound is None:
                 raise HTTPException(404, "Snapshot not found")

@@ -443,6 +443,16 @@ def test_r1_every_direct_phase_to_section_edge_is_registered():
 def test_r1_every_failure_label_is_classified():
     tree, _main = _engine()
     literal, prefixes = _all_labels(tree)
+    late_tree = ast.parse((ROOT / "cisco_toolkit" / "ssot.py").read_text(encoding="utf-8"))
+    late_owner = next(node for node in late_tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "derive_late_snapshot_sections")
+    late_labels = {node.args[0].value for node in ast.walk(late_owner)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == "record_phase_failure" and node.args
+                   and isinstance(node.args[0], ast.Constant)}
+    assert late_labels == {"Design blueprint", "Unknown evidence", "SSOT self-check",
+                           "Schema census / fact lineage"}, "shared late-phase label extractor went blind"
+    literal |= late_labels
     assert len(literal) >= 150, "the label extractor went blind"
     unclassified = sorted(lab for lab in literal if ssot.phase_classification(lab) == "unknown")
     assert not unclassified, f"classify these in ssot (sections / intermediate / non-section): {unclassified}"

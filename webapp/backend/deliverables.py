@@ -21,10 +21,12 @@ from collections.abc import Mapping
 from typing import Any, Dict
 
 from . import engine  # noqa: F401  (import bootstraps sys.path so cisco_toolkit.* resolves)
+from cisco_toolkit import docmeta  # noqa: E402
 from cisco_toolkit.docmeta import (  # noqa: E402  (engine establishes package path in portable mode)
     ASSESSHUB_DOWNLOAD_SPECS,
     ArtifactSpec,
 )
+from cisco_toolkit.ssot import PLAN_SECTION_KEYS  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +397,7 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
             # The writer treats None and {} identically (its own gr filter), so no `and gates`
             # second branch — one call shape per kind (V3.23.159 review simplification).
             write(path, render_snap, label, gate_record=gates)
-        elif kind in {"runbook", "mop", "nrfu"}:
+        elif kind in docmeta.PROTOCOL_ASSURANCE_DOCUMENT_KINDS:
             # The writers are pure renderers and cannot establish exact-byte custody from a parsed
             # snapshot. AssessHub supplies the separately built portfolio-owner sidecar; direct/CLI
             # calls leave it absent and the documents state NOT VERIFIED rather than minting one.
@@ -416,12 +418,19 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None,
     return path
 
 
-SAVED_PLAN_PROJECTION_SCHEMA = "atlas.saved_plan_projection/1"
+SAVED_PLAN_PROJECTION_SCHEMA = "atlas.saved_plan_projection/2"
+SAVED_PLAN_DERIVATION_SCHEMA = "atlas.saved_plan_derivation/2"
 SAVED_PLAN_REQUIREMENTS_BYTES = 64 * 1024
 _PLAN_DERIVED_KINDS = frozenset({"design", "crd", "mop", "nrfu", "deck"})
-_PLAN_SECTION_KEYS = frozenset({
-    "requirements_register", "design_blueprint", "design_nrfu", "architecture_coverage",
-    "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage",
+_PLAN_DERIVATION_OWNERS = (
+    "cisco_toolkit.design_advisor.requirements_from_interview",
+    "cisco_toolkit.ssot.derive_late_snapshot_sections",
+    "cisco_toolkit.design_advisor.compute_design_blueprint",
+    "cisco_toolkit.design_advisor.compute_design_nrfu",
+)
+_PLAN_DERIVATION_KEYS = frozenset({
+    "schema", "profile", "owners", "engine_schema_version", "implementation_identity",
+    "implementation_identity_status", "authority", "note",
 })
 _PLAN_ASSESSMENT_KEYS = frozenset({
     "source", "sha256", "bytes", "snapshot_id", "campaign_id", "engagement_id",
@@ -453,7 +462,11 @@ def _saved_plan_integer(value: Any) -> bool:
 
 def _saved_plan_requirements(requirements: Any) -> dict:
     """Validate the field profile, then use the existing engine's one normalization bridge."""
-    from cisco_toolkit.design_advisor import REQUIREMENTS_KEYS, requirements_from_interview
+    from cisco_toolkit.design_advisor import (
+        REQUIREMENTS_AVAILABILITY_TIERS, REQUIREMENTS_FABRIC_MODELS, REQUIREMENTS_KEYS,
+        REQUIREMENTS_LIST_KEYS, REQUIREMENTS_VLAN_MIN, REQUIREMENTS_VLAN_MAX,
+        requirements_from_interview,
+    )
 
     if type(requirements) is not dict:
         raise SavedPlanError("Saved plan requirements must be an object")
@@ -461,11 +474,10 @@ def _saved_plan_requirements(requirements: Any) -> dict:
         raise SavedPlanError("Saved plan requirements exceed the 64 KiB limit")
     if any(type(key) is not str or key not in REQUIREMENTS_KEYS for key in requirements):
         raise SavedPlanError("Saved plan requirements contain an unsupported field")
-    list_fields = {"critical_apps", "constraints", "data_classification"}
     for key, value in requirements.items():
         if value is None or value == "":
             continue
-        if key in list_fields:
+        if key in REQUIREMENTS_LIST_KEYS:
             if not (type(value) is str or (
                     type(value) is list and all(type(item) is str for item in value))):
                 raise SavedPlanError("Saved plan list requirement has an unsupported value")
@@ -490,14 +502,16 @@ def _saved_plan_requirements(requirements: Any) -> dict:
                         raise SavedPlanError("Saved plan VLAN zones have an unsupported shape")
                     vids = [zone_key]
                 for vid in vids:
-                    if type(vid) is str and re.fullmatch(r"[0-9]{1,4}", vid.strip()):
+                    if (type(vid) is str
+                            and re.fullmatch(rf"[0-9]{{1,{len(str(REQUIREMENTS_VLAN_MAX))}}}", vid.strip())):
                         vid = int(vid.strip())
-                    if type(vid) is not int or not 1 <= vid <= 4094 or vid in seen:
+                    if (type(vid) is not int
+                            or not REQUIREMENTS_VLAN_MIN <= vid <= REQUIREMENTS_VLAN_MAX or vid in seen):
                         raise SavedPlanError("Saved plan VLAN zones contain an invalid or duplicate VLAN")
                     seen.add(vid)
         elif type(value) is not str:
             raise SavedPlanError("Saved plan requirement has an unsupported value")
-        elif key == "availability_tier" and value.strip().lower() not in {"gold", "silver", "bronze"}:
+        elif key == "availability_tier" and value.strip().lower() not in REQUIREMENTS_AVAILABILITY_TIERS:
             raise SavedPlanError("Saved plan availability tier is unsupported")
         elif key == "address_space":
             try:
@@ -512,6 +526,9 @@ def _saved_plan_requirements(requirements: Any) -> dict:
     }
     if requirements.get("fabric_operating_model") and "fabric_operating_model" not in register:
         raise SavedPlanError("Saved plan fabric operating model is unsupported")
+    if ("fabric_operating_model" in register
+            and register["fabric_operating_model"] not in REQUIREMENTS_FABRIC_MODELS):
+        raise SavedPlanError("Saved plan fabric operating model is unsupported")
     # A persisted JSON object has string keys, including the normalizer's integer VLAN keys.
     if "vlan_zones" in register:
         register["vlan_zones"] = {str(vid): zone for vid, zone in register["vlan_zones"].items()}
@@ -524,11 +541,6 @@ def _saved_plan_requirements(requirements: Any) -> dict:
 def prepare_saved_plan(snapshot: dict, requirements: dict) -> dict:
     """Derive once from an isolated copy; callers persist this exact non-authoritative projection."""
     from cisco_toolkit import ssot
-    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
-    from cisco_toolkit.design_advisor import (
-        compute_architecture_coverage, compute_design_blueprint, compute_design_nrfu,
-    )
-    from cisco_toolkit.unknown_evidence import compute_unknown_evidence
 
     if not isinstance(snapshot, dict):
         raise SavedPlanError("Saved plan assessment must be an object")
@@ -541,40 +553,21 @@ def prepare_saved_plan(snapshot: dict, requirements: dict) -> dict:
     # dict() deliberately strips BoundSnapshot's process-local source marker; deepcopy protects
     # the original nested observations even if a future owner starts updating an input container.
     rendered = copy.deepcopy(dict(snapshot))
-    rendered["requirements_register"] = register
-    rendered["design_blueprint"] = compute_design_blueprint(rendered, register or None)
-    rendered["design_nrfu"] = compute_design_nrfu(rendered["design_blueprint"])
-    rendered["architecture_coverage"] = compute_architecture_coverage(rendered)
-    rendered["coverage_matrix"] = compute_coverage_matrix(rendered)
-    rendered["unknown_evidence"] = compute_unknown_evidence(rendered)
-    section_keys = set(_PLAN_SECTION_KEYS)
-    if isinstance(rendered.get("executive_brief"), dict):
-        rendered["executive_brief"]["ssot"] = ssot.summary(rendered)
-        section_keys.add("executive_brief")
-    rendered["fact_lineage"] = ssot.compute_fact_lineage(rendered)
-    rendered["schema_census"] = ssot.compute_schema_census(rendered)
-    # The census describes its own presence too, matching the existing pipeline's second census.
-    rendered["schema_census"] = ssot.compute_schema_census(rendered)
+    ssot.derive_late_snapshot_sections(rendered, register, profile="saved_plan")
     projection = {
         "schema": SAVED_PLAN_PROJECTION_SCHEMA,
         "requirements": register,
-        "sections": {key: rendered[key] for key in sorted(section_keys)},
+        "sections": {key: rendered[key] for key in sorted(PLAN_SECTION_KEYS)},
         "derivation": {
-            "schema": "atlas.saved_plan_derivation/1",
-            "owners": [
-                "cisco_toolkit.design_advisor.requirements_from_interview",
-                "cisco_toolkit.design_advisor.compute_design_blueprint",
-                "cisco_toolkit.design_advisor.compute_design_nrfu",
-                "cisco_toolkit.design_advisor.compute_architecture_coverage",
-                "cisco_toolkit.coverage_matrix.compute_coverage_matrix",
-                "cisco_toolkit.unknown_evidence.compute_unknown_evidence",
-                "cisco_toolkit.ssot.summary/compute_fact_lineage/compute_schema_census",
-            ],
+            "schema": SAVED_PLAN_DERIVATION_SCHEMA,
+            "profile": "saved_plan",
+            "owners": list(_PLAN_DERIVATION_OWNERS),
             "engine_schema_version": engine.ENGINE_SCHEMA_VERSION,
             "implementation_identity": None,
             "implementation_identity_status": "not_established",
             "authority": "none",
-            "note": "Persisted derived plan, not assessment bytes or approval. The engine schema "
+            "note": "Persisted requirements, blueprint and NRFU only; observed assessment sections "
+                    "remain the original baseline. Not assessment bytes or approval. The engine schema "
                     "version does not identify the planner implementation; exact source identity "
                     "is not established here. Reopening consumes the persisted projection.",
         },
@@ -632,26 +625,21 @@ def _validated_saved_plan(snapshot: dict, plan: Any) -> tuple[dict, dict]:
     if _saved_plan_json(normalized) != _saved_plan_json(projection["requirements"]):
         raise SavedPlanError("Saved plan requirements are not canonical")
     sections = projection.get("sections")
-    expected_keys = set(_PLAN_SECTION_KEYS)
-    if isinstance(snapshot.get("executive_brief"), dict):
-        expected_keys.add("executive_brief")
-    if (type(sections) is not dict or set(sections) != expected_keys
+    if (type(sections) is not dict or set(sections) != PLAN_SECTION_KEYS
             or any(type(value) is not dict for value in sections.values())
             or _saved_plan_json(sections.get("requirements_register")) != _saved_plan_json(normalized)):
         raise SavedPlanError("Saved plan derived sections are invalid")
     derivation = projection.get("derivation")
-    if (type(derivation) is not dict or derivation.get("schema") != "atlas.saved_plan_derivation/1"
+    if (type(derivation) is not dict or set(derivation) != _PLAN_DERIVATION_KEYS
+            or derivation.get("schema") != SAVED_PLAN_DERIVATION_SCHEMA
+            or derivation.get("profile") != "saved_plan"
+            or derivation.get("owners") != list(_PLAN_DERIVATION_OWNERS)
+            or any(type(derivation.get(key)) is not str or not derivation[key].strip()
+                   for key in ("engine_schema_version", "note"))
             or derivation.get("authority") != "none"
             or derivation.get("implementation_identity") is not None
             or derivation.get("implementation_identity_status") != "not_established"):
         raise SavedPlanError("Saved plan derivation authority is unsupported")
-    if "executive_brief" in sections:
-        original_brief = dict(snapshot["executive_brief"])
-        plan_brief = dict(sections["executive_brief"])
-        original_brief.pop("ssot", None)
-        plan_brief.pop("ssot", None)
-        if _saved_plan_json(original_brief) != _saved_plan_json(plan_brief):
-            raise SavedPlanError("Saved plan changes original assessment facts")
     blueprint = sections["design_blueprint"]
     nrfu = sections["design_nrfu"]
     decisions, items = blueprint.get("decisions"), nrfu.get("items")
@@ -707,6 +695,8 @@ def _stamp_saved_plan(path: str, spec: ArtifactSpec, plan: dict, *, derived: boo
         scope,
         "Original assessment protocol evidence, where shown, retains its own source-bound receipt. "
         "It does not certify the derived plan or bind this rendering projection as assessment bytes.",
+        "Original assessment integrity failures remain in force. A saved plan does not repair failed "
+        "assessment phases; affected sections may remain withheld or unverified.",
         "The planner implementation's exact source identity is not established by its schema version.",
     ]
 
@@ -759,7 +749,7 @@ def generate_saved_plan(kind: str, snapshot: dict, label: str, plan: dict, *,
     if kind not in SPECS:
         raise SavedPlanError("Selected plan deliverable is unsupported")
     assessment, projection = _validated_saved_plan(snapshot, plan)
-    if protocol_assurance_bundle is not None or kind in {"runbook", "mop", "nrfu"}:
+    if protocol_assurance_bundle is not None or kind in docmeta.PROTOCOL_ASSURANCE_DOCUMENT_KINDS:
         view = protocol_assurance_receipt_view(protocol_assurance_bundle)
         if not view["valid"] or _saved_plan_json(view["source_binding"]) != _saved_plan_json(assessment):
             raise SavedPlanError("Original assessment protocol sidecar does not match the selected plan")

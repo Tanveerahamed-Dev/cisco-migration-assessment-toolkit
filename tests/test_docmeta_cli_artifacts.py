@@ -29,6 +29,7 @@ from cisco_toolkit.docmeta import (
     FAMILY,
     POST_EXECUTION,
     PRE_CUTOVER_SPECS,
+    PROTOCOL_ASSURANCE_DOCUMENT_KINDS,
     WEB_ONLY_KINDS,
     artifact_family_metadata,
     artifact_spec,
@@ -38,6 +39,24 @@ from cisco_toolkit.docmeta import (
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
+
+
+def test_protocol_sidecar_registry_matches_explicit_registered_writer_interfaces():
+    """A writer gaining/losing the sidecar parameter must update its dispatch owner."""
+    assert isinstance(PROTOCOL_ASSURANCE_DOCUMENT_KINDS, frozenset)
+    assert PROTOCOL_ASSURANCE_DOCUMENT_KINDS
+    supported = set()
+    for spec in ASSESSHUB_DOWNLOAD_SPECS:
+        source = ROOT / (spec.writer_module.replace(".", "/") + ".py")
+        functions = [node for node in ast.parse(source.read_text(encoding="utf-8")).body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     and node.name == spec.writer_name]
+        assert len(functions) == 1, spec.key
+        args = functions[0].args
+        names = {item.arg for item in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+        if "protocol_assurance_bundle" in names:
+            supported.add(spec.key)
+    assert supported == PROTOCOL_ASSURANCE_DOCUMENT_KINDS
 
 # What a deliverable suffix LOOKS like. Extensions up to 8 chars and hyphens are allowed: pinning
 # this to (docx|pptx|html) once made the ratchet blind to exactly the case it exists for — a future

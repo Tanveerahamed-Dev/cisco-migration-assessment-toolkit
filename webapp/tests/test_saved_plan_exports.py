@@ -102,7 +102,17 @@ def _office(path: str, extension: str = "docx"):
     return "\n".join(texts), properties
 
 
-def test_preparation_preserves_source_and_refreshes_the_complete_derived_closure():
+def test_preparation_preserves_source_and_publishes_only_the_plan_owned_sections(monkeypatch):
+    from cisco_toolkit import ssot
+
+    calls = []
+    original_late = ssot.derive_late_snapshot_sections
+
+    def counted_late(snapshot, requirements, **kwargs):
+        calls.append(kwargs["profile"])
+        return original_late(snapshot, requirements, **kwargs)
+
+    monkeypatch.setattr(ssot, "derive_late_snapshot_sections", counted_late)
     snapshot = _snapshot()
     original = copy.deepcopy(dict(snapshot))
     marker = bound_snapshot_source(snapshot)
@@ -118,15 +128,21 @@ def test_preparation_preserves_source_and_refreshes_the_complete_derived_closure
     assert projection["derivation"]["implementation_identity"] is None
     assert projection["derivation"]["implementation_identity_status"] == "not_established"
     assert projection["derivation"]["authority"] == "none"
+    assert projection["schema"] == "atlas.saved_plan_projection/2"
+    assert projection["derivation"]["schema"] == "atlas.saved_plan_derivation/2"
+    assert projection["derivation"]["profile"] == "saved_plan"
+    assert set(projection["sections"]) == {"requirements_register", "design_blueprint", "design_nrfu"}
     rendered = deliverables.render_saved_plan(snapshot, plan)
+    assert calls == ["saved_plan"]
     assert rendered["design_blueprint"]["summary"]["n_decisions"] != 999
     assert rendered["design_nrfu"]["n_items"] == len(rendered["design_nrfu"]["items"])
     recommended = {row["id"] for row in rendered["design_blueprint"]["decisions"]
                    if row["status"] == "recommended"}
     assert {row["decision_id"] for row in rendered["design_nrfu"]["items"]} == recommended
-    assert rendered["schema_census"]["summary"]["n_sections"] == len(rendered)
-    fact = next(row for row in rendered["fact_lineage"]["facts"] if row["name"] == "n_design_decisions")
-    assert fact["value"] == rendered["design_blueprint"]["summary"]["n_decisions"]
+    assert {key: value for key, value in rendered.items() if key not in projection["sections"]} == \
+        {key: value for key, value in original.items() if key not in projection["sections"]}
+    for absent in ("architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage"):
+        assert absent not in original and absent not in rendered
     assert rendered["validation_plan"] == original["validation_plan"]
     assert engine.compute_current_baseline_gate(rendered["validation_plan"]) == \
         engine.compute_current_baseline_gate(original["validation_plan"])
@@ -139,16 +155,149 @@ def test_preparation_preserves_source_and_refreshes_the_complete_derived_closure
 def test_reopen_consumes_persisted_sections_without_current_planner_recomputation(monkeypatch):
     snapshot = _snapshot()
     plan = _plan(snapshot, {"constraints": "budget, security"})
-    from cisco_toolkit import design_advisor
+    from cisco_toolkit import design_advisor, ssot
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("reopening must not rerun the current planner")
 
     monkeypatch.setattr(design_advisor, "compute_design_blueprint", forbidden)
     monkeypatch.setattr(design_advisor, "compute_design_nrfu", forbidden)
+    monkeypatch.setattr(ssot, "derive_late_snapshot_sections", forbidden)
     reopened = deliverables.render_saved_plan(snapshot, json.loads(json.dumps(plan)))
     for key, value in plan["projection"]["sections"].items():
         assert reopened[key] == value
+
+
+@pytest.mark.parametrize("kind", [
+    "design", "crd", "mop", "nrfu", "deck", "engagement", "runbook", "archreview", "cutover", "opshandbook",
+])
+def test_every_plan_export_preserves_hostile_observed_baseline_and_source(kind, monkeypatch):
+    from cisco_toolkit import coverage_matrix, design_advisor, ssot, unknown_evidence
+
+    raw = copy.deepcopy(dict(_snapshot()))
+    # These retained observations are deliberately inconsistent with a fresh derivation.
+    # A renderer must retain them and disclose drift, never silently repair the assessment.
+    raw["executive_brief"]["scale"]["n_devices"] = 701
+    raw["executive_brief"]["ssot"] = {"verified": False, "n_violations": 701}
+    raw.update({
+        "architecture_coverage": {"classes": [], "summary": {"n_observed": 702}},
+        "coverage_matrix": {"rows": [], "summary": {"n_assessed": 703}},
+        "unknown_evidence": {"state": "unavailable", "events": [], "EXAMPLE_marker": 704},
+        "schema_census": {"sections": [], "summary": {"n_sections": 705}},
+        "fact_lineage": {"facts": [{"name": "n_design_decisions", "value": 706, "state": "unverified"}]},
+        "assessment_integrity": {
+            "failed_phases": ["Design blueprint", "requirements"],
+            "phase_failures": [{"phase": "Design blueprint", "detail": "EXAMPLE original failure"}],
+        },
+    })
+    snapshot = bind_snapshot_json_bytes(json.dumps(raw, separators=(",", ":")).encode("utf-8"))
+    original, marker = copy.deepcopy(dict(snapshot)), bound_snapshot_source(snapshot)
+    assert ssot.audit(snapshot), "the observation fixture must actually require a drift disclosure"
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("saved plans must not rederive observed assessment sections")
+
+    for module, name in (
+        (design_advisor, "compute_architecture_coverage"),
+        (coverage_matrix, "compute_coverage_matrix"),
+        (unknown_evidence, "compute_unknown_evidence"),
+        (ssot, "summary"), (ssot, "compute_schema_census"), (ssot, "compute_fact_lineage"),
+    ):
+        monkeypatch.setattr(module, name, forbidden)
+    plan = _plan(snapshot, {"availability_tier": "gold", "constraints": ["EXAMPLE selected constraint"]})
+    original_plan = copy.deepcopy(plan)
+    sections = plan["projection"]["sections"]
+    assert set(sections) == {"requirements_register", "design_blueprint", "design_nrfu"}
+    rendered = deliverables.render_saved_plan(snapshot, plan)
+    observed_keys = set(original) - set(sections)
+    assert {key: rendered[key] for key in observed_keys} == {key: original[key] for key in observed_keys}
+    assert rendered["design_blueprint"] != original["design_blueprint"]
+    derived = kind in {"design", "crd", "mop", "nrfu", "deck"}
+    expected_drift = ssot.audit(rendered if derived else original)
+    assert expected_drift
+    seen = []
+
+    def capture_writer(path, writer_snapshot, _label, **_kwargs):
+        seen.append(copy.deepcopy(writer_snapshot))
+        # Attack the actual input, not the spy's retained copy: neither the stored assessment
+        # nor the persisted selected revision may alias a renderer-owned nested container.
+        writer_snapshot["executive_brief"]["scale"]["n_devices"] = -1
+        writer_snapshot["design_blueprint"]["summary"]["n_decisions"] = -2
+        Path(path).write_bytes(b"EXAMPLE writer boundary control")
+
+    # Keep the actual generate() dispatch and reconciliation guard. Existing Office tests
+    # separately exercise each real writer and the three stamping operations.
+    monkeypatch.setattr(deliverables, "resolve_writer", lambda _spec: capture_writer)
+    monkeypatch.setattr(deliverables, "_stamp_ssot_integrity", lambda *_args: None)
+    monkeypatch.setattr(deliverables, "_stamp_unapproved_draft", lambda *_args: None)
+    monkeypatch.setattr(deliverables, "_stamp_saved_plan", lambda *_args, **_kwargs: None)
+    portfolio = build_protocol_single_snapshot_bundle(snapshot, plan["assessment"])
+    path = deliverables.generate_saved_plan(
+        kind, snapshot, "EXAMPLE observed preservation", plan,
+        protocol_assurance_bundle=portfolio, document_gate=None,
+    )
+    try:
+        assert len(seen) == 1
+        writer_snapshot = seen[0]
+        for key in observed_keys - {"assessment_integrity"}:
+            assert json.dumps(writer_snapshot[key], sort_keys=True) == json.dumps(original[key], sort_keys=True), key
+        if derived:
+            for key, value in sections.items():
+                assert writer_snapshot[key] == value
+        else:
+            assert {key: value for key, value in writer_snapshot.items() if key != "assessment_integrity"} == \
+                {key: value for key, value in original.items() if key != "assessment_integrity"}
+        # Existing render-time audit disclosure is still active and retains original failures.
+        assert writer_snapshot["assessment_integrity"] == {**original["assessment_integrity"], **expected_drift}
+        assert writer_snapshot["assessment_integrity"]["failed_phases"] == ["Design blueprint", "requirements"]
+        assert dict(snapshot) == original and bound_snapshot_source(snapshot) == marker
+        assert plan == original_plan
+    finally:
+        Path(path).unlink()
+
+
+@pytest.mark.parametrize("section", [
+    "executive_brief", "architecture_coverage", "coverage_matrix", "unknown_evidence",
+    "schema_census", "fact_lineage", "assessment_integrity",
+])
+def test_rehashed_observed_section_injection_is_refused_for_every_plan_export(section):
+    snapshot = _snapshot()
+    plan = _plan(snapshot)
+    plan["projection"]["sections"][section] = {"EXAMPLE": "re-authored observed facts"}
+    plan["sha256"] = saved_plan_digest(plan)
+    for kind in ("design", "crd", "mop", "nrfu", "deck"):
+        with pytest.raises(deliverables.SavedPlanError, match="derived sections"):
+            deliverables.generate_saved_plan(kind, snapshot, "EXAMPLE refused", plan)
+
+
+@pytest.mark.parametrize("legacy", ["projection", "derivation", "observed-sections"])
+def test_old_projection_profiles_refuse_instead_of_reinterpreting_saved_bytes(legacy):
+    snapshot = _snapshot()
+    plan = _plan(snapshot)
+    if legacy == "projection":
+        plan["projection"]["schema"] = "atlas.saved_plan_projection/1"
+    elif legacy == "derivation":
+        plan["projection"]["derivation"]["schema"] = "atlas.saved_plan_derivation/1"
+    else:
+        for key in ("architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage"):
+            plan["projection"]["sections"][key] = {}
+        plan["projection"]["sections"]["executive_brief"] = copy.deepcopy(snapshot["executive_brief"])
+    plan["sha256"] = saved_plan_digest(plan)
+    before = copy.deepcopy(plan)
+    with pytest.raises(deliverables.SavedPlanError):
+        deliverables.render_saved_plan(snapshot, plan)
+    assert plan == before
+
+
+@pytest.mark.parametrize("part", ["projection", "derivation"])
+def test_rehashed_unexpected_projection_metadata_is_not_silently_ignored(part):
+    snapshot = _snapshot()
+    plan = _plan(snapshot)
+    target = plan["projection"] if part == "projection" else plan["projection"]["derivation"]
+    target["EXAMPLE_unrecognized_profile_field"] = True
+    plan["sha256"] = saved_plan_digest(plan)
+    with pytest.raises(deliverables.SavedPlanError):
+        deliverables.render_saved_plan(snapshot, plan)
 
 
 @pytest.mark.parametrize("requirements", [
@@ -227,19 +376,41 @@ def test_rehashed_boolean_integer_and_float_aliases_never_pass_typed_plan_consis
                      if row["key"] == "convergence_budget_ms")
         field["value"] = False if number_type == "boolean" else 0.0
     else:
+        # Observed sections cannot enter the projection even after rehashing a typed alias.
+        sections["executive_brief"] = copy.deepcopy(snapshot["executive_brief"])
         sections["executive_brief"]["scale"]["n_devices"] = True if number_type == "boolean" else 1.0
     plan["sha256"] = saved_plan_digest(plan)
     with pytest.raises(deliverables.SavedPlanError):
         deliverables.render_saved_plan(snapshot, plan)
 
 
-def test_preparation_propagates_the_shared_projection_allocation_bound_as_a_limit_error():
+def test_preparation_propagates_the_shared_projection_allocation_bound_as_a_limit_error(monkeypatch):
     from backend.storage import SavedPlanLimitError, SAVED_PLAN_MAX_BYTES
+    from cisco_toolkit import design_advisor
+
+    original_blueprint = design_advisor.compute_design_blueprint
+
+    def oversized_blueprint(*args, **kwargs):
+        result = original_blueprint(*args, **kwargs)
+        result["EXAMPLE-oversized-plan-field"] = "x" * SAVED_PLAN_MAX_BYTES
+        return result
+
+    monkeypatch.setattr(design_advisor, "compute_design_blueprint", oversized_blueprint)
+    with pytest.raises(SavedPlanLimitError):
+        deliverables.prepare_saved_plan(_snapshot(), {})
+
+
+def test_large_observed_brief_is_preserved_without_becoming_persisted_plan_data():
+    from backend.storage import SAVED_PLAN_MAX_BYTES, saved_plan_json_bytes
 
     snapshot = copy.deepcopy(dict(_snapshot()))
-    snapshot["executive_brief"]["EXAMPLE-oversized-observation"] = "x" * SAVED_PLAN_MAX_BYTES
-    with pytest.raises(SavedPlanLimitError):
-        deliverables.prepare_saved_plan(snapshot, {})
+    observed = "x" * SAVED_PLAN_MAX_BYTES
+    snapshot["executive_brief"]["EXAMPLE-oversized-observation"] = observed
+    original = copy.deepcopy(snapshot)
+    projection = deliverables.prepare_saved_plan(snapshot, {})
+    assert len(saved_plan_json_bytes(projection)) < SAVED_PLAN_MAX_BYTES
+    assert "executive_brief" not in projection["sections"]
+    assert snapshot == original and snapshot["executive_brief"]["EXAMPLE-oversized-observation"] == observed
 
 
 def test_digest_cross_source_and_derived_section_tampering_refuse():
@@ -257,9 +428,10 @@ def test_digest_cross_source_and_derived_section_tampering_refuse():
     with pytest.raises(deliverables.SavedPlanError, match="derived sections"):
         deliverables.render_saved_plan(snapshot, changed)
     changed = copy.deepcopy(original)
+    changed["projection"]["sections"]["executive_brief"] = copy.deepcopy(snapshot["executive_brief"])
     changed["projection"]["sections"]["executive_brief"]["scale"]["n_devices"] = 999
     changed["sha256"] = saved_plan_digest(changed)
-    with pytest.raises(deliverables.SavedPlanError, match="original assessment facts"):
+    with pytest.raises(deliverables.SavedPlanError, match="derived sections"):
         deliverables.render_saved_plan(snapshot, changed)
     changed = copy.deepcopy(original)
     changed["projection"]["sections"]["design_nrfu"]["items"] = []
@@ -379,6 +551,34 @@ def test_malformed_original_baseline_stays_indeterminate_in_selected_plan_mop():
         assert "EXAMPLE observed routing baseline" not in text
     finally:
         Path(path).unlink()
+
+
+@pytest.mark.parametrize("phase", ["Design blueprint", "requirements"])
+def test_design_export_honestly_retains_inherited_assessment_failure_limits(phase):
+    raw = copy.deepcopy(dict(_snapshot()))
+    raw["assessment_integrity"] = {
+        "failed_phases": [phase],
+        "phase_failures": [{"phase": phase, "detail": "EXAMPLE original assessment failure"}],
+    }
+    snapshot = bind_snapshot_json_bytes(json.dumps(raw, separators=(",", ":")).encode("utf-8"))
+    marker = bound_snapshot_source(snapshot)
+    plan = _plan(snapshot, {"fabric_operating_model": "nxos-evpn"})
+    assert any(row["status"] == "recommended"
+               for row in plan["projection"]["sections"]["design_blueprint"]["decisions"])
+    rendered = deliverables.render_saved_plan(snapshot, plan)
+    assert rendered["assessment_integrity"] == raw["assessment_integrity"]
+    path = deliverables.generate_saved_plan("design", snapshot, "EXAMPLE inherited limit", plan,
+                                           document_gate=None)
+    try:
+        text, _core = _office(path)
+        assert "UNVERIFIED - target-state design synthesis did not complete for this run" in text
+        assert "4.2 Recommended target-state design decisions" not in text
+        assert "Original assessment integrity failures remain in force" in text
+        assert "affected sections may remain withheld or unverified" in text
+        assert "UNAPPROVED DRAFT" in text
+    finally:
+        Path(path).unlink()
+    assert dict(snapshot) == raw and bound_snapshot_source(snapshot) == marker
 
 
 def test_tampered_and_valid_cross_campaign_sidecars_refuse_without_dropping_controls():

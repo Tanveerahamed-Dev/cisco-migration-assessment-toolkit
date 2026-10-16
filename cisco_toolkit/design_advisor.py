@@ -4082,7 +4082,7 @@ def _requirements_model(decisions, req):
     req = req or {}
     fields = [
         {"key": "availability_tier", "label": "Target availability tier",
-         "options": ["gold", "silver", "bronze"], "value": req.get("availability_tier")},
+         "options": list(REQUIREMENTS_AVAILABILITY_TIERS), "value": req.get("availability_tier")},
         {"key": "critical_apps", "label": "Business-critical applications",
          "example": ["voice", "video", "ERP"], "value": req.get("critical_apps")},
         {"key": "convergence_budget_ms", "label": "Max tolerable convergence (ms)",
@@ -4090,7 +4090,7 @@ def _requirements_model(decisions, req):
         {"key": "growth_horizon", "label": "Growth horizon / forecast", "value": req.get("growth_horizon")},
         {"key": "fabric_operating_model",
          "label": "DC fabric operating model (standalone NX-OS VXLAN-EVPN vs Cisco ACI)",
-         "options": ["nxos-evpn", "aci"], "value": req.get("fabric_operating_model")},
+         "options": list(REQUIREMENTS_FABRIC_MODELS), "value": req.get("fabric_operating_model")},
         {"key": "constraints", "label": "Fixed constraints (budget / installed-base / regulatory)",
          "value": req.get("constraints")},
         {"key": "data_classification", "label": "Data-security classification / zones",
@@ -4161,6 +4161,29 @@ def _doctrine_catalog():
 REQUIREMENTS_KEYS = ("availability_tier", "critical_apps", "convergence_budget_ms",
                      "growth_horizon", "constraints", "data_classification", "address_space",
                      "vlan_zones", "fabric_operating_model")
+REQUIREMENTS_LIST_KEYS = ("critical_apps", "constraints", "data_classification")
+REQUIREMENTS_AVAILABILITY_TIERS = ("gold", "silver", "bronze")
+REQUIREMENTS_FABRIC_MODELS = ("nxos-evpn", "aci")
+REQUIREMENTS_VLAN_MIN = 1
+REQUIREMENTS_VLAN_MAX = 4094
+
+
+def requirements_contract():
+    """Fresh metadata for strict saved-plan admission, not the coercive legacy CLI profile.
+
+    The legacy register loaders retain their existing fail-soft treatment of arbitrary tier
+    text and numeric VLAN IDs. Saved-plan validators consume this owner's explicit domain;
+    the hosted OpenAPI generator carries the same metadata to the browser.
+    """
+    return {
+        "schema": "atlas.requirements-contract/1",
+        "scope": "saved_plan_admission",
+        "keys": list(REQUIREMENTS_KEYS),
+        "list_fields": list(REQUIREMENTS_LIST_KEYS),
+        "availability_tiers": list(REQUIREMENTS_AVAILABILITY_TIERS),
+        "fabric_models": list(REQUIREMENTS_FABRIC_MODELS),
+        "vlan_id": {"minimum": REQUIREMENTS_VLAN_MIN, "maximum": REQUIREMENTS_VLAN_MAX},
+    }
 
 
 def _norm_fabric_model(v):
@@ -4240,7 +4263,7 @@ def requirements_from_interview(answers):
             continue
         if k == "availability_tier":
             out[k] = str(v).strip().lower()
-        elif k in ("critical_apps", "constraints", "data_classification"):
+        elif k in REQUIREMENTS_LIST_KEYS:
             out[k] = _to_list(v)
         elif k == "convergence_budget_ms":
             iv = _as_int(v, None)                  # keep a legitimate 0; fall back to raw only if unparseable

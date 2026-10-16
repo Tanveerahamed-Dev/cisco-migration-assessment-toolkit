@@ -285,3 +285,60 @@ def test_export_selection_race_refuses_and_cleans_generated_file(client, monkeyp
                           params=_params(second))
     assert response.status_code == 409
     assert generated and all(not Path(path).exists() for path in generated)
+
+
+def test_actual_openapi_and_offline_export_share_fresh_engine_requirements_contract(client, monkeypatch):
+    from cisco_toolkit import design_advisor
+    from backend.export_ui_projection_openapi import export_schema
+
+    expected = design_advisor.requirements_contract()
+    assert expected["scope"] == "saved_plan_admission"
+    assert client.app.openapi()["x-atlas-requirements-contract"] == expected
+    assert export_schema()["x-atlas-requirements-contract"] == expected
+
+    # Neither an OpenAPI consumer nor a cached schema may mutate the engine owner.
+    client.app.openapi()["x-atlas-requirements-contract"]["list_fields"].append("consumer_only")
+    assert design_advisor.requirements_contract() == expected
+    assert client.app.openapi()["x-atlas-requirements-contract"] == expected
+
+    # A new owner domain must reach runtime/export schemas, including after cache creation.
+    monkeypatch.setattr(design_advisor, "REQUIREMENTS_AVAILABILITY_TIERS", ("platinum", "standard"))
+    monkeypatch.setattr(design_advisor, "REQUIREMENTS_VLAN_MIN", 7)
+    monkeypatch.setattr(design_advisor, "REQUIREMENTS_VLAN_MAX", 12)
+    changed = design_advisor.requirements_contract()
+    assert changed != expected
+    assert client.app.openapi()["x-atlas-requirements-contract"] == changed
+    assert export_schema()["x-atlas-requirements-contract"] == changed
+
+
+def test_protocol_sidecar_dispatch_uses_one_live_registry_for_both_download_routes(client, monkeypatch):
+    from cisco_toolkit import docmeta
+
+    _cid, sid = _source(client)
+    plan = _save(client, sid, _state(client, sid))
+    calls = []
+    resolve = deliverables.resolve_writer
+
+    def capture_writer(spec):
+        writer = resolve(spec)
+
+        def capture(*args, **kwargs):
+            assert "protocol_assurance_bundle" not in kwargs
+            calls.append(spec.key)
+            return writer(*args, **kwargs)
+
+        return capture
+
+    def unexpected_sidecar(*_args, **_kwargs):
+        raise AssertionError("download selector ignored the registry owner")
+
+    # This controlled owner-policy mutation falsifies each of the former four literal sets.
+    # The separate registry/interface contract keeps the production denominator non-vacuous.
+    monkeypatch.setattr(docmeta, "PROTOCOL_ASSURANCE_DOCUMENT_KINDS", frozenset())
+    monkeypatch.setattr(app_module.protocol_portfolio, "build_protocol_single_snapshot_bundle", unexpected_sidecar)
+    monkeypatch.setattr(deliverables, "resolve_writer", capture_writer)
+    baseline = client.get(f"/api/snapshots/{sid}/deliverable/mop")
+    selected = client.get(f"/api/snapshots/{sid}/plans/{plan['revision']}/deliverable/mop", params=_params(plan))
+    assert baseline.status_code == 200, baseline.text[:500]
+    assert selected.status_code == 200, selected.text[:500]
+    assert calls == ["mop", "mop"]

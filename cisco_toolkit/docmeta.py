@@ -256,6 +256,10 @@ PRE_CUTOVER_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.stage == PRE_C
 ASSESSHUB_DOWNLOAD_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.assesshub_download)
 CONDITIONAL_ARTIFACT_SPECS = tuple(spec for spec in ARTIFACT_SPECS if spec.conditional)
 
+# Registry-owned dispatch contract: these snapshot document writers consume the original
+# assessment's Protocol Assurance sidecar. Planning projections never establish its custody.
+PROTOCOL_ASSURANCE_DOCUMENT_KINDS = frozenset({"runbook", "mop", "nrfu"})
+
 # Backward-compatible views. Existing writers and redaction tooling may keep importing these names,
 # but they no longer own membership or filenames: every value is derived from ARTIFACT_SPECS.
 FAMILY = tuple((spec.key, spec.related_name, spec.role) for spec in PRE_CUTOVER_SPECS)
