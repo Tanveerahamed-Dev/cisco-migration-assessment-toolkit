@@ -3304,6 +3304,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
 NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
     (".github/scripts/frontend_artifact_receive.py", "-payload.json"): _CI_EVIDENCE,
     (".github/scripts/frontend_artifact_receive.py", ".stdout.json"): _CI_EVIDENCE,
+    (".github/scripts/prove_portable_no_python.py", "-launcher-restoration.json"):
+        "hosted OS Python launcher paths and exact restoration identities; no engagement data",
     (".github/scripts/refresh_visual_baseline_pins.py", "-728.png"):
         "the synthetic visual-baseline image at the 728-pixel viewport",
     ("cisco_toolkit/distribution_verify.py", "-py3-none-any.whl"):
