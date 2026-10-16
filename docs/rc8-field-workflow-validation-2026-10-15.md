@@ -206,3 +206,53 @@ All runtime tests, builds, engine runs, browsers and verification controllers re
 Local work is Git/static reads, permitted privacy/marker checks and reviewed data-only transfers.
 All 14 external gates remain pending. No version/release cut, signing, physical field qualification or
 publication is performed; existing releases remain draft-only.
+
+## Owner-main integration after complete B control (2026-10-16)
+
+Main advances through owner-merged #665 to `9112a16e4e4d91674ba5cb2881f0d75071c7d78c`.
+Foundation `c95c2b745a933510bba3faf6758d79680505797d` merges that source while retaining
+all application logic and test/limit/version bytes. This dependent union preserves B's own
+API/Snapshot/deliverables source pins, complete census rows and every parent handoff; incoming
+knowledge-export writers and the closed manual Linux-job denominator are additive.
+The controller remains deliberately bound to RC7 source340. Its actual manual export fails
+`report_audit_refused`; it is separate evidence and does not establish a graph/vault refresh.
+
+Immediately preceding B `6f33d57dc810d437555acfebf48ae13f17592b0d` passes all 15
+main-protection context equivalents, app15368, and all six applicable whole workflows:
+CI `38849752537`, portable `38849752606`, reference `38849752603`, original application
+`38849752563`, edited application `38851384099`, and finite post-import `38852385681`.
+Every required job's complete raw log is reviewed through EOF with retained byte counts/hashes.
+The source job `116809433746` finishes at06:14:15 UTC, with full Python completion,
+40 frontend files/623 passing tests, successful build and unchanged tracked distribution.
+Its full 135,079-byte log has SHA-256
+`54fb7a8e71613942b71670e4674a3c8de4fb4cac1a00bdd410ad4d0a36c5cc64`.
+Double-quiet output does not provide a numeric Python aggregate; none is invented.
+Coverage `116809461184` is87.44% against the unchanged85% threshold:19,474 passed,
+167 skipped,3 expected failures,8 warnings and26 passing subtests. The Windows matrix
+`116809461404` separately records19,583 passed,58 skipped,3 expected failures,8 warnings,
+26 passing subtests and4,274.03 seconds. The Linux3.12 job also reproduces the committed
+sample under UTC with the unchanged wall-clock exclusions.
+
+Native browser documents, frontend producer/receipt and the frozen package have independent
+data-only reviews. The package's13 automated checks pass;14 external gates remain pending,
+with draft-only, unsigned, field=false and publication=false preserved. These controls belong
+to B6f33's old main340/A4a base. The new union needs fresh full gates and source-bound receipt;
+no current-source readiness or asset-import authority transfers from the old receipt.
+
+A4a's source job `116806226399` times out at98% under the unchanged120-minute limit.
+No preceding F/E progress marker, full aggregate or completed frontend result is present.
+Its cancellation-frame Pydantic interrupt/tmp-path teardown error does not prove a cause.
+All six A matrix jobs pass, including Windows19,581 passes in6,523.74 seconds. A Coverage
+`116807637257` is superseded by the actual current-main integration push and endsCANCELLED
+at06:31:06 UTC; it is not a pass. An independently proposed old-head one-job repeat never
+runs: its exact-source guard detects main9112 before dispatch. No blind retry, performance
+fix, budget/timeout change or local runtime is inferred by integrating owner changes.
+
+The eight-module type gate passes. The broader explicitly report-only mypy2.4.0 result has
+1,475 diagnostics/89 files/104 checked, identical by path/message to both main340 and Bbf2.
+All60 diagnostics in edited backend files map to byte-identical prior source lines. This is
+pre-existing advisory debt, not universal type cleanliness. The unchanged portable-lock audit
+uses its registered PYSEC-2026-2858 suppression and emits `2 ignored` without naming those
+records; no alias attribution or zero-vulnerability claim follows. Reference warns at85.55%
+of its release census-byte ceiling and85.00% of its compiler JSON-string ceiling; neither
+ceiling changes. Preserve every earlier failure, cancellation and external approval boundary.
