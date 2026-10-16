@@ -673,6 +673,87 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/snapshots/{snapshot_id}/plans": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Saved Plans
+         * @description Saved revisions and the current append-only selection, not an implicit latest preview.
+         */
+        readonly get: operations["saved_plans_api_snapshots__snapshot_id__plans_get"];
+        readonly put?: never;
+        /**
+         * Save Plan
+         * @description Derive outside the Store lock, then publish a separate immutable plan with source/CAS checks.
+         */
+        readonly post: operations["save_plan_api_snapshots__snapshot_id__plans_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/snapshots/{snapshot_id}/plans/{revision}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Saved Plan
+         * @description Reopen the pinned saved bytes; never recompute under a newer planner.
+         */
+        readonly get: operations["saved_plan_api_snapshots__snapshot_id__plans__revision__get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/snapshots/{snapshot_id}/plans/{revision}/deliverable/{kind}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Saved Plan Deliverable
+         * @description One pinned revision supplies the content, visible provenance and response identity.
+         */
+        readonly get: operations["saved_plan_deliverable_api_snapshots__snapshot_id__plans__revision__deliverable__kind__get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/snapshots/{snapshot_id}/plans/{revision}/select": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Select Saved Plan */
+        readonly post: operations["select_saved_plan_api_snapshots__snapshot_id__plans__revision__select_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/snapshots/{snapshot_id}/protocol-assurance/export": {
         readonly parameters: {
             readonly query?: never;
@@ -1037,6 +1118,31 @@ export interface components {
             readonly pre_failure_snapshot_id: number;
             /** Witness Json Base64 */
             readonly witness_json_base64: string;
+        };
+        /**
+         * SavedPlanIn
+         * @description Only requirements are caller-owned; derived plan sections are server-produced.
+         */
+        readonly SavedPlanIn: {
+            /** Assessment */
+            readonly assessment: {
+                readonly [key: string]: unknown;
+            };
+            /** Expected Selection Id */
+            readonly expected_selection_id: number;
+            /** Label */
+            readonly label: string;
+            /** Requirements */
+            readonly requirements?: {
+                readonly [key: string]: unknown;
+            };
+        };
+        /** SavedPlanSelectionIn */
+        readonly SavedPlanSelectionIn: {
+            /** Expected Selection Id */
+            readonly expected_selection_id: number;
+            /** Plan Sha256 */
+            readonly plan_sha256: string;
         };
         /** StepIn */
         readonly StepIn: {
@@ -10249,6 +10355,187 @@ export interface operations {
             readonly cookie?: never;
         };
         readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly saved_plans_api_snapshots__snapshot_id__plans_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly save_plan_api_snapshots__snapshot_id__plans_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["SavedPlanIn"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly saved_plan_api_snapshots__snapshot_id__plans__revision__get: {
+        readonly parameters: {
+            readonly query: {
+                readonly plan_sha256: string;
+                readonly selection_id: number;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly revision: number;
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly saved_plan_deliverable_api_snapshots__snapshot_id__plans__revision__deliverable__kind__get: {
+        readonly parameters: {
+            readonly query: {
+                readonly plan_sha256: string;
+                readonly selection_id: number;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly kind: string;
+                readonly revision: number;
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly select_saved_plan_api_snapshots__snapshot_id__plans__revision__select_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly revision: number;
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["SavedPlanSelectionIn"];
+            };
+        };
         readonly responses: {
             /** @description Successful Response */
             readonly 200: {

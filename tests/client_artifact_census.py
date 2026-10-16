@@ -1382,11 +1382,11 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "d2701c7ec73e14c7bf437ece8288750ec83bd508",
-    # Multipart cleanup shields spool closure and unconditionally releases its heavy-work token.
-    # The complete download caller/route/catalogue/_send_file chain retains its same name owners.
-    "webapp/backend/app.py": "d6c905f222cc8baeb9d1e70b1772180b4d894226",
-    "webapp/backend/deliverables.py": "cf32edb48ce265faacf2e84d2bb663ee091a978d",
-    "cisco_toolkit/docmeta.py": "422f5af5bdbdc91a4d1e70b87f41774faca0cd8c",
+    # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
+    # caller/route/catalogue/_send_file closure retains every original response-name owner.
+    "webapp/backend/app.py": "5c8021b0f960d1f5ad2fc99fa2fbeb27404e6ebe",
+    "webapp/backend/deliverables.py": "73a8469a4b22e6ef0111e21ea9c7923b830bed52",
+    "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {
     ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
@@ -2957,6 +2957,10 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/app.py::create_app.snapshot_deliverable": (
         1, PRIVATE_TEMP, ("word-document", "presentation"),
         "a snapshot deliverable download through deliverables.generate; " + _SYSTEM_TEMP),
+    "webapp/backend/app.py::create_app.saved_plan_deliverable": (
+        1, PRIVATE_TEMP, ("word-document", "presentation"),
+        "a pinned saved-plan download through generate_saved_plan, removed before response or conflict; "
+        + _SYSTEM_TEMP),
     "webapp/backend/app.py::create_app.snapshot_explorer": (
         1, PRIVATE_TEMP, (), "the snapshot explorer through engine.render_explorer_html; " + _SYSTEM_TEMP),
     "webapp/backend/app.py::create_app.ingest_collection": (
@@ -2981,6 +2985,13 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/backend/deliverables.py::_stamp_ssot_integrity": (
         2, CLIENT, ("word-document", "presentation"),
         "re-saves the generated DOCX or PPTX in place with the integrity stamp"),
+    "webapp/backend/deliverables.py::generate_saved_plan": (
+        2, PRIVATE_TEMP, ("word-document", "presentation"),
+        "delegates generation and selected-plan stamping in the same private temporary document; "
+        + _SYSTEM_TEMP),
+    "webapp/backend/deliverables.py::_stamp_saved_plan": (
+        2, CLIENT, ("word-document", "presentation"),
+        "re-saves a generated DOCX/PPTX in place with selected-plan identity and unapproved provenance"),
     "webapp/backend/engine.py::render_explorer_html": (
         2, PRIVATE_TEMP, (),
         "the snapshot explorer assesshub_explorer_*.html, read back for the response; " + _SYSTEM_TEMP),
@@ -3086,11 +3097,11 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/build_atlas.py::_detach_runtime_data": (
         1, NON_CLIENT, (),
         "moves the SMOKE copy's data directory, created by the synthetic field-layout smoke run"),
-    "portable/build_release.py::build_release": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
-    "portable/build_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/build_release.py::build_release": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg', 'engine-log'), _RELEASE),
+    "portable/build_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg', 'engine-log'), _RELEASE),
     "portable/package_signed_release.py::_independent_authenticode": (1, NON_CLIENT, (), _RELEASE),
-    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
-    "portable/package_signed_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), _RELEASE),
+    "portable/package_signed_release.py::package_signed": (3, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg', 'engine-log'), _RELEASE),
+    "portable/package_signed_release.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg', 'engine-log'), _RELEASE),
     "portable/prepare_signing.py::prepare": (3, NON_CLIENT, (), _RELEASE),
     "portable/prepare_signing.py::main": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::_record_build_modules": (1, NON_CLIENT, (), _RELEASE),
@@ -3099,8 +3110,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/release_contract.py::_write_checksums": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::_write_deterministic_zip": (1, NON_CLIENT, (), _RELEASE),
     "portable/release_contract.py::build_portable_release": (9, NON_CLIENT, (), _RELEASE),
-    "portable/qualify_atlas.py::qualify": (3, NON_CLIENT, ("database", "capture-show", "config-file-cfg"), _RELEASE + "; " + _SYNTHETIC),
-    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg'), "the qualification receipt"),
+    "portable/qualify_atlas.py::qualify": (4, NON_CLIENT, ("database", "capture-show", "config-file-cfg", "engine-log"), _RELEASE + "; " + _SYNTHETIC),
+    "portable/qualify_atlas.py::main": (2, NON_CLIENT, (()) + ('database', 'capture-show', 'config-file-cfg', 'engine-log'), "the qualification receipt"),
     "portable/qualify_atlas.py::_redaction": (
         5, NON_CLIENT, ("capture-show", "config-file-cfg"),
         "redaction canaries (SYNTHETIC-CORE1, TEST-ONLY) in a qualification collection; " + _SYNTHETIC),
@@ -3110,6 +3121,13 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/qualify_atlas.py::_database_preflight_case": (
         4, NON_CLIENT, ("database",),
         "copies that synthetic database and writes its atlas-db-preflight.json request; " + _SYNTHETIC),
+    "portable/qualify_atlas.py::_offline_saved_plan_documents": (
+        3, NON_CLIENT, ("database", "engine-log"),
+        "preflights a populated saved-plan database from the bundled synthetic upload under external temp; "
+        + _SYNTHETIC),
+    "portable/qualify_atlas.py::_saved_plan_server": (
+        1, NON_CLIENT, ("engine-log",),
+        "an owned temporary log of the synthetic frozen qualification server, bounded on failure; " + _SYNTHETIC),
     # ---- other tracked Python (CI, tooling, references, research) --------------------------------
     ".github/scripts/classify_webapp_ci_scope.py::main": (
         1, NON_CLIENT, (), "the webapp CI scope verdict written to $GITHUB_OUTPUT"),
