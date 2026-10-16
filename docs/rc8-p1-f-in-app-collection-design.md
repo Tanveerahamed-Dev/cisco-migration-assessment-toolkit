@@ -3,6 +3,8 @@
 **Status: PROPOSED — independent design approval required before implementation.**
 Owner decision: 2026-10-16, relayed by the supervisor. Holder: Codex.
 Source baseline: `3401627f6fd69bb838a2c921d7f95c77b2373623` on GitHub `main`.
+Integrated main `9112a16e4e4d91674ba5cb2881f0d75071c7d78c` with a merge commit;
+its knowledge-export changes do not alter the collection owners described here.
 This PR contains documentation only. It authorizes no live collection, implementation,
 merge, release, device change, or field-qualification claim.
 

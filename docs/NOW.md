@@ -431,7 +431,10 @@ protected-PR change is part of the resumed W6 scope.
   approved adapters; these are not implemented. W59 #636 remains open, D10's Amendment 1 forbids
   the old purge/retention indicator, and W60c's residuals remain open. G/desktop local board
   interfaces are recorded above without editing their worktrees or claiming their approval.
-  Publication/terminal hosted evidence belongs to the final PR Checks and closing comment;
+  Integrated main `9112a16e` by merge commit, preserving both handoff histories. An independent
+  drafting pass identified the missing cancellation control channel, autodetect's terminal
+  failure fallback and partial-acceptance expiry; the proposal now addresses all three.
+  This pass is not human design approval. Publication/terminal hosted evidence belongs to the final PR Checks and closing comment;
   until then 15/15 is NOT VERIFIED. Graphify was navigation only; no local producer/refresh,
   tests/builds/engine runs, device contact, merge, release or golden/sample change. Stop after
   green for independent design review; implementation is gated on that review.
