@@ -103,6 +103,8 @@ jobs:
       # still collects every one of these assertions on every matrix platform.
       - name: Client artifact name and census contracts
         run: python -m pytest tests/test_client_artifact_census.py
+      - name: Knowledge export admission and workflow contracts
+        run: python -m pytest tests/test_knowledge_export.py tests/test_knowledge_export_workflow.py
       # Fail promptly on receive liveness regressions; the unchanged complete
       # suite below still collects these transport contracts on every platform.
       - name: Debug helper receive deadline contracts

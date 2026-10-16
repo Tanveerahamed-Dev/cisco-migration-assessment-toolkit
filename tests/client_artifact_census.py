@@ -3120,6 +3120,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     ".github/scripts/engine_output_handoff.py::_write_review_data": (2, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/engine_output_handoff.py::receive": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/engine_output_handoff.py::main": (3, NON_CLIENT, (), _CI_EVIDENCE),
+    ".github/scripts/knowledge_export.py::write_json": (
+        1, DELEGATED, (), "generic JSON writer; every caller is independently classified"),
+    ".github/scripts/knowledge_export.py::run": (
+        1, NON_CLIENT, (),
+        "logs from reviewed tools over exact clean RC7 repository source; no inherited credentials or client inputs"),
+    ".github/scripts/knowledge_export.py::generate": (
+        16, NON_CLIENT, (),
+        "source-pinned repository AST graph, fresh project notes and integrity metadata; privacy/source guards "
+        "exclude local untracked material, owner memory and the personal vault"),
+    ".github/scripts/knowledge_export.py::main": (
+        3, NON_CLIENT, (), "fixed-code BLOCKED diagnostics and the existing report audit result for that same source"),
     ".github/scripts/frontend_artifact_receive.py::write_new": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::record": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::GitHub.archive": (1, NON_CLIENT, (), _CI_EVIDENCE),
