@@ -1,4 +1,7 @@
 // Typed client for the AssessHub backend. One origin in prod; Vite proxies /api -> :8000 in dev.
+import { designRequirementsContract } from "./generated/openapi";
+import type { DesignRequirements } from "./generated/openapi";
+export { designRequirementsContract } from "./generated/openapi";
 
 export interface Summary {
   version: string;
@@ -165,6 +168,7 @@ export interface Deliverable {
   producer?: "engine-cli" | "assesshub-snapshot";
   engine_cli_member?: boolean;
   stage?: "pre-cutover";
+  saved_plan_basis?: "selected-requirements" | "assessment-baseline";
 }
 
 export interface ArtifactFamilyMeta {
@@ -1424,6 +1428,64 @@ export interface DesignNrfu {
   note: string;
 }
 
+/** Server-owned assessment identity. A saved plan never replaces these assessment bytes. */
+export interface SavedPlanAssessment {
+  source: "persisted snapshots.snapshot_json blob";
+  sha256: string;
+  bytes: number;
+  snapshot_id: number;
+  campaign_id: number;
+  engagement_id: string;
+  label: string;
+  script_version: string;
+}
+export interface SavedPlanPin { revision: number; sha256: string; selection_id: number }
+export interface SavedPlanMeta {
+  schema: "atlas.saved_plan/1";
+  revision: number;
+  label: string;
+  created_at: string;
+  sha256: string;
+  status: "UNAPPROVED_DRAFT";
+}
+export interface SavedPlanState {
+  assessment: SavedPlanAssessment;
+  selection_id: number;
+  selected_revision: number | null;
+  revisions: SavedPlanMeta[];
+}
+/** Generated from the engine-owned strict admission profile; normalization stays server-owned. */
+export type SavedPlanRequirements = DesignRequirements;
+export interface SavedPlanRecord extends SavedPlanMeta, SavedPlanPin {
+  assessment: SavedPlanAssessment;
+  projection: {
+    schema: "atlas.saved_plan_projection/2";
+    requirements: SavedPlanRequirements;
+    sections: {
+      requirements_register: SavedPlanRequirements;
+      design_blueprint: DesignBlueprint;
+      design_nrfu: DesignNrfu;
+    };
+    derivation: {
+      schema: "atlas.saved_plan_derivation/2";
+      profile: "saved_plan";
+      owners: string[];
+      engine_schema_version: string;
+      implementation_identity: null;
+      implementation_identity_status: "not_established";
+      authority: "none";
+      note: string;
+    };
+  };
+}
+export interface SavedPlanSaveInput {
+  label: string;
+  requirements: SavedPlanRequirements;
+  assessment: SavedPlanAssessment;
+  expected_selection_id: number;
+}
+export interface SavedPlanSelectionInput { plan_sha256: string; expected_selection_id: number }
+
 // The unified CAUSAL FLOW model (engine compute_causal_flows — the SAME normalization the explorer's
 // Causal Flow mode renders). GET /api/snapshots/{id}/causal_flows. Every finding family as one
 // trigger -> mechanism -> impact -> mitigation story; cross-layer compounds carry shape "bowtie".
@@ -1548,6 +1610,285 @@ async function j<T>(r: Response): Promise<T> {
   return (r.status === 204 ? (null as T) : await r.json()) as T;
 }
 
+const SAVED_PLAN_DIGEST = /^sha256:[0-9a-f]{64}$/;
+const SAVED_PLAN_ASSESSMENT_KEYS = ["source", "sha256", "bytes", "snapshot_id", "campaign_id",
+  "engagement_id", "label", "script_version"] as const;
+const SAVED_PLAN_META_KEYS = ["schema", "revision", "label", "created_at", "sha256", "status"] as const;
+const SAVED_PLAN_REQUIREMENT_KEYS = new Set<string>(designRequirementsContract.keys);
+const SAVED_PLAN_LIST_FIELDS = new Set<string>(designRequirementsContract.list_fields);
+const SAVED_PLAN_SECTION_KEYS = ["requirements_register", "design_blueprint", "design_nrfu"];
+const SAVED_PLAN_DOCUMENT_LIMIT = 32 * 1024 * 1024;
+export const SAVED_PLAN_MAX_CONVERGENCE_MS = "9007199254740991";
+const SAVED_PLAN_DOCUMENT_TYPES = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+} as const;
+// Fetch may supply bytes from a different realm (native Response + a browser frame/test DOM).
+// Intrinsic accessors inspect internal TypedArray slots, ignoring spoofed own properties/tags.
+const PLAN_TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const PLAN_BYTE_TAG = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
+const PLAN_BYTE_LENGTH = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "byteLength")?.get;
+const PLAN_BYTE_OFFSET = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "byteOffset")?.get;
+const PLAN_BYTE_BUFFER = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOTYPE, "buffer")?.get;
+
+function planObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function planKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+function planInteger(value: unknown, zero = false): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= (zero ? 0 : 1);
+}
+function planString(value: unknown): value is string { return typeof value === "string"; }
+function planStrings(value: unknown): value is string[] { return Array.isArray(value) && value.every(planString); }
+function planStringFields(value: unknown, keys: string[]): boolean {
+  return planObject(value) && keys.every((key) => planString(value[key]));
+}
+function planNonempty(value: unknown): value is string { return planString(value) && value.trim().length > 0; }
+function planDigest(value: unknown): value is string { return planString(value) && SAVED_PLAN_DIGEST.test(value); }
+function planAssert(condition: unknown, message: string, status = 502): asserts condition {
+  if (!condition) throw new ApiError(message, status);
+}
+function planAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("The saved-plan request was cancelled", "AbortError");
+}
+function planId(value: number): void {
+  planAssert(planInteger(value), "A saved-plan identifier must be a positive safe integer", 400);
+}
+function planPin(pin: SavedPlanPin): void {
+  planAssert(planObject(pin) && planInteger(pin.revision) && pin.revision <= 64 && planDigest(pin.sha256)
+    && planInteger(pin.selection_id), "The saved-plan selection is invalid", 400);
+}
+function checkedAssessment(value: unknown, sid: number, status = 502): SavedPlanAssessment {
+  planAssert(planObject(value) && planKeys(value, SAVED_PLAN_ASSESSMENT_KEYS)
+    && value.source === "persisted snapshots.snapshot_json blob" && planDigest(value.sha256)
+    && planInteger(value.bytes) && planInteger(value.snapshot_id) && value.snapshot_id === sid
+    && planInteger(value.campaign_id) && planNonempty(value.engagement_id)
+    && planNonempty(value.label) && planNonempty(value.script_version),
+  "The saved-plan assessment identity could not be verified", status);
+  return value as unknown as SavedPlanAssessment;
+}
+function validPlanMeta(value: unknown): value is SavedPlanMeta {
+  return planObject(value) && value.schema === "atlas.saved_plan/1" && value.status === "UNAPPROVED_DRAFT"
+    && planInteger(value.revision) && value.revision <= 64 && planDigest(value.sha256)
+    && planNonempty(value.label) && value.label.length <= 200 && planNonempty(value.created_at)
+    && /(?:Z|[+-]\d{2}:\d{2})$/.test(value.created_at) && Number.isFinite(Date.parse(value.created_at));
+}
+function validPlanConvergence(value: unknown): boolean {
+  if (planInteger(value, true)) return true;
+  if (value === "") return true;
+  if (!planString(value) || !/^[0-9]{1,19}$/.test(value.trim())) return false;
+  const digits = value.trim().replace(/^0+/, "") || "0";
+  return digits.length < SAVED_PLAN_MAX_CONVERGENCE_MS.length
+    || (digits.length === SAVED_PLAN_MAX_CONVERGENCE_MS.length && digits <= SAVED_PLAN_MAX_CONVERGENCE_MS);
+}
+function validPlanRequirements(value: unknown, input = false): value is SavedPlanRequirements {
+  if (!planObject(value)) return false;
+  return Object.entries(value).every(([key, item]) => {
+    if (!SAVED_PLAN_REQUIREMENT_KEYS.has(key)) return false;
+    if (input && item === undefined) return true;
+    if (SAVED_PLAN_LIST_FIELDS.has(key)) return planString(item) || planStrings(item);
+    if (key === "convergence_budget_ms") return validPlanConvergence(item);
+    if (key === "vlan_zones") return planObject(item) && Object.values(item).every((zone) =>
+      planString(zone) || (Array.isArray(zone) && zone.every((id) => planString(id) || planInteger(id))));
+    return planString(item);
+  });
+}
+function validPlanBlueprint(value: unknown): boolean {
+  if (!planObject(value) || !planObject(value.summary) || !planObject(value.requirements_model)
+    || !planObject(value.coverage)) return false;
+  const summary = value.summary, model = value.requirements_model, coverage = value.coverage;
+  return Array.isArray(value.decisions) && value.decisions.every((decision) => planObject(decision)
+    && ["id", "title", "domain", "priority", "status", "confidence", "driver", "recommended_action",
+      "alternatives", "tradeoffs"].every((key) => planString(decision[key]))
+    && planStrings(decision.axes) && planStrings(decision.requirements_needed)
+    && planObject(decision.evidence) && planString(decision.evidence.summary)
+    && typeof decision.evidence.count === "number" && Number.isFinite(decision.evidence.count)
+    && planStrings(decision.evidence.devices) && planStrings(decision.evidence.fields)
+    && planStringFields(decision.principle, ["id", "title", "citation"]))
+    && ["n_decisions", "n_recommended", "n_needs_requirement", "n_critical"].every((key) => planInteger(summary[key], true))
+    && planString(summary.headline) && typeof summary.requirements_provided === "boolean"
+    && planObject(summary.by_domain) && Object.values(summary.by_domain).every((count) => planInteger(count, true))
+    && typeof model.provided === "boolean" && planString(model.note) && Array.isArray(model.fields)
+    && model.fields.every((field) => planObject(field) && planString(field.key) && planString(field.label)
+      && Object.prototype.hasOwnProperty.call(field, "value") && (field.options === undefined || planStrings(field.options)))
+    && Array.isArray(model.open_questions) && model.open_questions.every((row) => planObject(row)
+      && planString(row.id) && planString(row.title) && planStrings(row.needs))
+    && Array.isArray(value.tradeoff_scorecard) && value.tradeoff_scorecard.every((row) => planObject(row)
+      && ["axis", "label", "posture", "evidence"].every((key) => planString(row[key]))
+      && (row.score === null || (typeof row.score === "number" && Number.isFinite(row.score))))
+    && Array.isArray(value.axes) && value.axes.every((row) => planObject(row)
+      && ["key", "label", "intent"].every((key) => planString(row[key])))
+    && planString(value.methodology) && planString(coverage.caveat)
+    && ["inventory", "collected", "not_collected"].every((key) => planInteger(coverage[key], true))
+    && (value.target_state === undefined || planObject(value.target_state));
+}
+function validPlanNrfu(value: unknown): boolean {
+  return planObject(value) && Array.isArray(value.items) && planInteger(value.n_items, true)
+    && value.n_items === value.items.length && planString(value.note)
+    && value.items.every((item) => planObject(item) && planStrings(item.devices)
+      && ["decision_id", "title", "priority", "description", "pass_criteria", "setup", "principle_citation"]
+        .every((key) => planString(item[key]))
+      && planString(item.phase) && ["pre-cutover", "post-cutover-functional", "post-cutover-operational"].includes(item.phase));
+}
+function checkedPlan(value: unknown, sid: number, pin?: SavedPlanPin): SavedPlanRecord {
+  planAssert(validPlanMeta(value) && planObject(value)
+    && planKeys(value, [...SAVED_PLAN_META_KEYS, "assessment", "projection", "selection_id"])
+    && planInteger(value.selection_id), "The saved-plan record could not be verified");
+  checkedAssessment(value.assessment, sid);
+  if (pin) planAssert(value.revision === pin.revision && value.sha256 === pin.sha256
+    && value.selection_id === pin.selection_id, "The response belongs to a different saved-plan selection");
+  const projection = value.projection;
+  planAssert(planObject(projection) && planKeys(projection, ["schema", "requirements", "sections", "derivation"])
+    && projection.schema === "atlas.saved_plan_projection/2" && validPlanRequirements(projection.requirements)
+    && planObject(projection.sections), "The saved-plan projection is invalid");
+  const sections = projection.sections, derivation = projection.derivation;
+  planAssert(Object.keys(sections).every((key) => SAVED_PLAN_SECTION_KEYS.includes(key))
+    && SAVED_PLAN_SECTION_KEYS.every((key) => planObject(sections[key]))
+    && validPlanRequirements(sections.requirements_register)
+    && validPlanBlueprint(sections.design_blueprint) && validPlanNrfu(sections.design_nrfu)
+    && planObject(derivation) && derivation.schema === "atlas.saved_plan_derivation/2"
+    && derivation.profile === "saved_plan"
+    && planStrings(derivation.owners) && derivation.owners.length > 0 && planNonempty(derivation.engine_schema_version)
+    && derivation.implementation_identity === null && derivation.implementation_identity_status === "not_established"
+    && derivation.authority === "none" && planString(derivation.note), "The saved-plan content or posture is invalid");
+  // The Python store owns canonical hashing. JSON parsing in JS loses 1 versus 1.0 spelling;
+  // never invent a second plan hash here. Compare server identities to the explicit request pin.
+  return value as unknown as SavedPlanRecord;
+}
+function checkedPlanState(value: unknown, sid: number): SavedPlanState {
+  planAssert(planObject(value) && planKeys(value, ["assessment", "selection_id", "selected_revision", "revisions"])
+    && planInteger(value.selection_id, true) && Array.isArray(value.revisions) && value.revisions.length <= 64,
+  "The saved-plan history could not be verified");
+  checkedAssessment(value.assessment, sid);
+  planAssert(value.revisions.every((row, index) => validPlanMeta(row) && planObject(row)
+    && planKeys(row, SAVED_PLAN_META_KEYS) && row.revision === index + 1), "The saved-plan revision history is invalid");
+  planAssert(value.revisions.length === 0
+    ? value.selection_id === 0 && value.selected_revision === null
+    : value.selection_id > 0 && planInteger(value.selected_revision)
+      && value.revisions.some((row) => row.revision === value.selected_revision),
+  "The saved-plan selection does not match its history");
+  return value as unknown as SavedPlanState;
+}
+function savedPlanUrl(sid: number, pin: SavedPlanPin, kind?: string): string {
+  planId(sid); planPin(pin);
+  if (kind !== undefined) planAssert(typeof kind === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(kind), "The document kind is invalid", 400);
+  const suffix = kind === undefined ? "" : `/deliverable/${encodeURIComponent(kind)}`;
+  return `/api/snapshots/${sid}/plans/${pin.revision}${suffix}?plan_sha256=${encodeURIComponent(pin.sha256)}&selection_id=${pin.selection_id}`;
+}
+async function savedPlanJson(url: string, signal?: AbortSignal, body?: unknown): Promise<unknown> {
+  planAbort(signal);
+  const response = await fetch(url, { cache: "no-store", signal,
+    ...(body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+  const value = await j<unknown>(response);
+  planAbort(signal);
+  return value;
+}
+
+async function discardPlanResponse(response: Response): Promise<void> {
+  if (response.body && !response.body.locked) {
+    try { await response.body.cancel(); } catch { /* preserve the original failure */ }
+  }
+}
+function ownedPlanChunk(value: unknown, remaining: number): Uint8Array<ArrayBuffer> {
+  planAssert(ArrayBuffer.isView(value) && PLAN_BYTE_TAG?.call(value) === "Uint8Array",
+    "The document stream is invalid");
+  const length: unknown = PLAN_BYTE_LENGTH?.call(value);
+  const offset: unknown = PLAN_BYTE_OFFSET?.call(value);
+  const buffer: ArrayBufferLike | undefined = PLAN_BYTE_BUFFER?.call(value);
+  planAssert(planInteger(length, true) && planInteger(offset, true) && buffer !== undefined,
+    "The document stream is invalid");
+  planAssert(length <= remaining, "The saved-plan document exceeds the download limit", 413);
+  // A fixed-length view/copy does not retain a larger backing buffer, invoke an overridden
+  // iterator, or let a spoofed .byteLength bypass the limit. It also admits cross-realm bytes.
+  const owned = new Uint8Array(length);
+  owned.set(new Uint8Array(buffer, offset, length));
+  return owned;
+}
+async function planResponseChunks(response: Response, limit: number, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>[]> {
+  planAbort(signal);
+  const length = response.headers.get("content-length");
+  let declared: number | null = null;
+  if (length !== null) {
+    planAssert(/^\d+$/.test(length) && Number.isSafeInteger(Number(length)), "The document length is invalid");
+    declared = Number(length);
+    planAssert(declared <= limit, "The saved-plan document exceeds the download limit", 413);
+  }
+  planAssert(response.body, "The saved-plan response has no document body");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let total = 0, completed = false;
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    for (;;) {
+      planAbort(signal);
+      const { done, value } = await reader.read();
+      planAbort(signal);
+      if (done) { completed = true; break; }
+      const chunk = ownedPlanChunk(value, limit - total);
+      total += chunk.byteLength;
+      chunks.push(chunk);
+    }
+    if (!response.headers.get("content-encoding") || response.headers.get("content-encoding") === "identity") {
+      planAssert(declared === null || declared === total, "The saved-plan document was truncated");
+    }
+    return chunks;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    if (!completed) { try { await reader.cancel(); } catch { /* preserve the original failure */ } }
+    reader.releaseLock();
+  }
+}
+async function savedPlanDocument(sid: number, record: SavedPlanRecord, kind: string,
+  extension: "docx" | "pptx", signal?: AbortSignal): Promise<{ blob: Blob; extension: "docx" | "pptx" }> {
+  planAbort(signal);
+  planId(sid);
+  const plan = checkedPlan(record, sid);
+  planAssert(extension === "docx" || extension === "pptx", "The document format is unsupported", 400);
+  const response = await fetch(savedPlanUrl(sid, plan, kind), { cache: "no-store", signal });
+  try {
+    planAbort(signal);
+    if (!response.ok) {
+      // Preserve j/ApiError status/detail handling while bounding even a hostile error body.
+      let parts: Uint8Array<ArrayBuffer>[] = [];
+      try { parts = await planResponseChunks(response, 64 * 1024, signal); }
+      catch (error) { planAbort(signal); if (!(error instanceof ApiError)) throw error; }
+      const errorBody = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+      let offset = 0;
+      for (const part of parts) { errorBody.set(part, offset); offset += part.byteLength; }
+      return await j<never>(new Response(errorBody, {
+        status: response.status, statusText: response.statusText, headers: response.headers,
+      }));
+    }
+    planAssert(response.status === 200, "The saved-plan download is not a complete document response");
+    const headers = response.headers;
+    planAssert(headers.get("X-Atlas-Assessment-SHA256") === plan.assessment.sha256
+      && headers.get("X-Atlas-Plan-Revision") === String(plan.revision)
+      && headers.get("X-Atlas-Plan-SHA256") === plan.sha256
+      && headers.get("X-Atlas-Plan-Selection") === String(plan.selection_id)
+      && headers.get("X-Atlas-Plan-Status") === "UNAPPROVED_DRAFT",
+    "The downloaded document belongs to a different assessment or saved-plan selection");
+    const media = SAVED_PLAN_DOCUMENT_TYPES[extension];
+    planAssert(headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === media,
+      "The downloaded document has an unexpected file type");
+    const chunks = await planResponseChunks(response, SAVED_PLAN_DOCUMENT_LIMIT, signal);
+    const prefix: number[] = [];
+    for (const chunk of chunks) {
+      for (const byte of chunk) { prefix.push(byte); if (prefix.length === 4) break; }
+      if (prefix.length === 4) break;
+    }
+    planAssert(prefix.length === 4 && prefix[0] === 0x50 && prefix[1] === 0x4b
+      && prefix[2] === 0x03 && prefix[3] === 0x04, "The downloaded document is empty or is not an Office ZIP container");
+    planAbort(signal);
+    return { blob: new Blob(chunks, { type: media }), extension };
+  } catch (error) {
+    await discardPlanResponse(response);
+    throw error;
+  }
+}
+
 export const api = {
   health: () => fetch("/api/health").then((r) => j<{ status: string; sample_available: boolean }>(r)),
   authenticate: (token: string) =>
@@ -1610,6 +1951,45 @@ export const api = {
   designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),
   designNrfuOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignNrfu>(`/api/snapshots/${id}/design/nrfu`, requirements),
+  savedPlans: async (id: number, signal?: AbortSignal): Promise<SavedPlanState> => {
+    planId(id);
+    return checkedPlanState(await savedPlanJson(`/api/snapshots/${id}/plans`, signal), id);
+  },
+  savePlan: async (id: number, body: SavedPlanSaveInput, signal?: AbortSignal): Promise<SavedPlanRecord> => {
+    planId(id);
+    if (planObject(body) && planObject(body.requirements) && body.requirements.convergence_budget_ms !== undefined) {
+      planAssert(validPlanConvergence(body.requirements.convergence_budget_ms),
+        `Convergence must be a nonnegative whole number no greater than ${SAVED_PLAN_MAX_CONVERGENCE_MS} milliseconds`, 400);
+    }
+    planAssert(planObject(body) && planKeys(body, ["label", "requirements", "assessment", "expected_selection_id"])
+      && planNonempty(body.label) && body.label.length <= 200 && validPlanRequirements(body.requirements, true)
+      && planInteger(body.expected_selection_id, true), "The saved-plan request is invalid", 400);
+    const assessment = { ...checkedAssessment(body.assessment, id, 400) };
+    const expectedSelection = body.expected_selection_id, label = body.label.trim();
+    const record = checkedPlan(await savedPlanJson(`/api/snapshots/${id}/plans`, signal, body), id);
+    planAssert(record.selection_id > expectedSelection && record.label === label
+      && SAVED_PLAN_ASSESSMENT_KEYS.every((key) => record.assessment[key] === assessment[key]),
+    "The saved-plan response does not match the requested assessment or edit");
+    return record;
+  },
+  selectSavedPlan: async (id: number, revision: number, body: SavedPlanSelectionInput,
+    signal?: AbortSignal): Promise<SavedPlanRecord> => {
+    planId(id); planId(revision);
+    planAssert(revision <= 64 && planObject(body) && planKeys(body, ["plan_sha256", "expected_selection_id"])
+      && planDigest(body.plan_sha256) && planInteger(body.expected_selection_id, true), "The saved-plan selection is invalid", 400);
+    const digest = body.plan_sha256, expectedSelection = body.expected_selection_id;
+    const record = checkedPlan(await savedPlanJson(`/api/snapshots/${id}/plans/${revision}/select`, signal, body), id);
+    planAssert(record.revision === revision && record.sha256 === digest && record.selection_id > expectedSelection,
+      "The saved-plan response does not match the requested revision");
+    return record;
+  },
+  savedPlan: async (id: number, revision: number, sha256: string, selectionId: number,
+    signal?: AbortSignal): Promise<SavedPlanRecord> => {
+    const pin = { revision, sha256, selection_id: selectionId };
+    return checkedPlan(await savedPlanJson(savedPlanUrl(id, pin), signal), id, pin);
+  },
+  savedPlanDeliverableUrl: (id: number, pin: SavedPlanPin, kind: string) => savedPlanUrl(id, pin, kind),
+  savedPlanDocument,
   causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
   cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,

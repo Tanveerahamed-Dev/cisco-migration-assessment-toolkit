@@ -40,6 +40,11 @@ describe("AboutPage", () => {
     expect(screen.getByText(/3\.23\.0/)).toBeInTheDocument(); // engine schema
     expect(screen.getByText(/13 pre-cutover \+ 1 conditional post-execution/)).toBeInTheDocument();
     expect(screen.getByText(/OUI\/port\/EoL knowledge packs/)).toBeInTheDocument();
+    expect(screen.getByText("Atlas.exe --selftest")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Campaigns" })).toHaveAttribute("href", "/campaigns");
+    expect(screen.getByRole("heading", { name: "Offline field workflow" })).toBeInTheDocument();
+    expect(screen.getByText(/requires no host/)).toHaveTextContent("Python, Node, Office installation or remote service");
+    expect(screen.getByText(/A self-test or hosted check/)).toHaveTextContent("physical USB/recovery");
   });
 
   it("surfaces a load error instead of a blank page", async () => {

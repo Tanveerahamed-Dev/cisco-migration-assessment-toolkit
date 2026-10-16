@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { Link } from "react-router";
 import { ErrorBox, Loading, useAsync } from "../components/ui";
 
 // The About/version page (ADR-0004 P1). Every fact here is SERVED: the app identity comes from
@@ -42,14 +43,34 @@ export default function AboutPage() {
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
+        <h3>Offline field workflow</h3>
+        <ol>
+          <li>Open Campaigns and import your collected evidence or an assessment snapshot.</li>
+          <li>Open the assessment, then choose <strong>Saved plans · MOP / NRFU</strong>.</li>
+          <li>Enter requirements and save a named revision. Reopen it to review the same saved design
+            and acceptance checklist.</li>
+          <li>Download its MOP, NRFU and supporting documents. Each file identifies the assessment,
+            revision and selection used. Changes need a new saved revision before downloading.</li>
+        </ol>
+        <p>Plans stay <strong>unapproved drafts</strong>. A generated test plan is a checklist to run;
+          it does not establish that a cutover passed.</p>
+        <p>This workflow uses the bundled application and document libraries. It requires no host
+          Python, Node, Office installation or remote service. Windows and a supported local browser
+          are host prerequisites; a compatible viewer is optional for opening the document files.</p>
+        <Link className="btn primary" to="/campaigns">Open Campaigns</Link>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
         <h3>Field readiness</h3>
         <div className="dim" style={{ fontSize: 13 }}>
-          Before an engagement, run <span className="mono">assesshub --selftest</span> (or{" "}
-          <span className="mono">python -m webapp.backend.serve --selftest</span>). It fails loud on
+          Before an engagement, run <span className="mono">{app.name}.exe --selftest</span>. It fails loud on
           the assets that otherwise degrade silently: the explorer template, the OUI/port/EoL knowledge
           packs, the DOCX/PPTX generators, the built frontend, the engine entry point and the data
           directory. Collection stays explicit and read-only — this app never writes to a device.
         </div>
+        <p className="dim">A self-test or hosted check does not replace managed Windows policy,
+          physical USB/recovery, signing or field-operator acceptance. Keep the complete application
+          folder together, protect its data folder, and use the field guide shipped beside the executable.</p>
       </div>
     </div>
   );
