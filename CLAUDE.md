@@ -2,9 +2,10 @@
 
 There is **one application: GitHub `main`**. **`docs/NOW.md` is the live work board.** It holds the
 active workstreams, their branch and holder, the next step, pending owner decisions and the handoff
-log. Read it first and update it last. Work only on a branch listed there, keep one writer per
-workstream, and never start a new app, repository or long-lived parallel branch. Before a session
-ends, or a quota runs out: commit to the row's branch and update the board. Pushing still needs the
+log. Read it first. Work only on a branch listed there, keep one writer per workstream, and never
+start a new app, repository or long-lived parallel branch. The supervisor is the board's single
+writer: feature pull requests never edit `docs/NOW.md`. Before a session ends, or a quota runs out:
+commit to the row's branch and report status in its pull request. Pushing still needs the
 user's explicit authority and never applies to a row marked local-only (`docs/NOW.md` rule 5). This
 applies to Claude Code and Codex alike; Codex enters through root `AGENTS.md`.
 
