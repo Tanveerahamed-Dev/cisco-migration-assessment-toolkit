@@ -19,6 +19,7 @@ from governance.architecture import (  # noqa: E402
     build_architecture_conformance,
     component_for_path,
     load_contract,
+    path_dispositions,
     validate_contract,
     validate_path_dispositions,
     validate_runtime_trace,
@@ -850,9 +851,9 @@ def test_hosted_scale_imports_resolve_exact_python_paths_without_broad_edges() -
 def _require_module_companion_owners(paths, contract):
     for companion in paths:
         module = companion.removesuffix(".atlas-role")
-        module_owner = component_for_path(module, contract)
-        assert module_owner is not None, module
-        assert component_for_path(companion, contract) == module_owner, companion
+        module_owner = path_dispositions(module, contract)
+        assert len(module_owner) == 1, module
+        assert path_dispositions(companion, contract) == module_owner, companion
 
 
 def test_every_role_companion_has_its_modules_existing_architecture_owner():
@@ -885,3 +886,21 @@ def test_companion_ownership_is_the_modules_owner_not_a_new_exclusion():
     assert errors == ("path:unknown.py.atlas-role:unmapped",)
     assert {row["id"] for row in rows} == {"engine"}
     assert {row["kind"] for row in rows} == {"component"}
+
+
+
+def test_companion_inherits_a_preexisting_source_exclusion_without_adding_a_new_rule():
+    contract = {"components": [], "exclusions": [
+        {"id": "existing_entrypoint_policy", "paths": ["entry.py", "entry.py.atlas-role"]}]}
+    _require_module_companion_owners(["entry.py.atlas-role"], contract)
+    errors, rows = validate_path_dispositions(["entry.py", "entry.py.atlas-role", "unknown.py.atlas-role"], contract)
+    assert errors == ("path:unknown.py.atlas-role:unmapped",)
+    assert {row["kind"] for row in rows} == {"exclusion"}
+    assert {row["id"] for row in rows} == {"existing_entrypoint_policy"}
+
+
+def test_a_component_owned_module_cannot_gain_a_metadata_only_exemption():
+    contract = {"components": [{"id": "engine", "paths": ["src/owner.py"]}],
+                "exclusions": [{"id": "hidden_metadata", "paths": ["src/owner.py.atlas-role"]}]}
+    with pytest.raises(AssertionError):
+        _require_module_companion_owners(["src/owner.py.atlas-role"], contract)

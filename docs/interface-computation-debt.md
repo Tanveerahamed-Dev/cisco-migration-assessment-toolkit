@@ -572,3 +572,16 @@ No broad exclusion, new component, source edge permission, gate or budget change
 is introduced. A Git-derived companion class parity control refuses missing,
 unowned, ambiguous or different component mappings; unknown files remain
 unmapped. Fresh complete exact-head evidence is required.
+
+
+Head `b6da61f9`, compiler/reference run `38981238964`, job `117242334184`,
+reduces the ownership failures to the CLI companion. Its Python entry module
+already belongs to an explicit existing governance exclusion in the architecture
+contract, not a runtime component. The parity check's component-only assumption
+was incorrect. The correction compares the exact unique disposition **kind and
+id**, adds the CLI companion to that same existing exclusion record, and retains
+all previous refusal cases. Additional controls prove existing exclusion
+inheritance while refusing a component-owned module's metadata-only exemption.
+No source module is newly excluded, no blanket rule or edge permission is added,
+and unknown metadata stays unmapped. Downstream capacity walls in the failed run
+remain unmeasured; no bound or timeout changes. Fresh full validation is required.
