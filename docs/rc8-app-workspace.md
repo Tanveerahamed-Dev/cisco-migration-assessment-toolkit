@@ -21,6 +21,10 @@ Topology pagination retains the existing row/page/draw budgets and exact immutab
 
 Requested from RC8-P1-H: topology overlay presentation/join contracts and per-node coverage; a complete MAC/IP lookup beyond per-port endpoint summaries; stranded endpoint identities. Current owner confirmation says these are not yet published. Do not manufacture them or copy prototype outcomes such as an ACL-clear path.
 
+The later tabs also need projection adapters. Current transport exposes overview/trust/inventory/findings/topology/device plus path and carriage operations; it has no design, saved-plan, cutover, execution or comparison projection. Existing engine-backed legacy design/NRFU/deliverable/comparison APIs and server-owned operator execution records remain Classic contracts, not permission for a new browser fold. RC8-P1-H owns the missing single wave gate (PR2). Unmerged #666/#667 holders own saved-plan revision/list/select/export state. Ask those owners for native adapters before replacing their Classic screen; do not equate operator checklist progress with engine acceptance.
+
+Static review of the two-way handoff found that a refused Classic reference could be dropped on return and that Classic ignored a byte-only reference. The handoff now retains every supplied guard while loading/error, binds the admitted identity after success, and rejects either incomplete source pair. Four additive Classic tests pin these cases; all original workflow assertions remain.
+
 ## Acceptance and custody
 
 GitHub runs every runtime test and build. Do not run local suites, browsers, builds, engine probes or receipt verification. Rule-7 tree privacy and complete new-commit marker scans precede every push. The source producer, reviewed hosted distribution receiver and post-import byte proof must bind the exact source. Require all15 protected contexts and complete applicable workflows on the final head, then stop for independent review. Golden/sample bytes, budgets, gates and existing assertions stay intact. No merge, installation or release is authorized.
