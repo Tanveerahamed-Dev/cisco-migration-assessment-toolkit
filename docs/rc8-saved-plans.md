@@ -241,3 +241,29 @@ unsigned_preview_incomplete. That closes the old architecture failure on0b48 onl
 close the new backend failure or transfer validation to this correction. Require fresh exact-head
 backend/cache/export, full source/matrix/Reference/golden/sample and all15/whole workflows before
 independent review. All existing source-bound negatives and external gates remain preserved.
+
+## Current-main integration after the corrected warm-cache control
+
+Foundation e695f445 full application workflow38884733578 succeeds, including full webapp/tests
+job116919702637 (88,346-byte EOF, SHA-256
+6224618acf594285d00cadf94fafb7ccfcee0fd9d7fe02151dceb07dbb39a2bf; no printed numeric aggregate).
+Python3.14 job116919903073 succeeds with19,560passed/165skipped/3xfailed/26subtests,
+137,634-byte EOF SHA-256205623e123817f3533fa63749cfb1cf35c4450dae3b3753ea7989914cd54f60d.
+Only7/15 required contexts were green before main advanced; none qualifies the integration.
+
+The previous0b48 Python3.10 job116892958485 prints an unidentified F at93%09:58:53Z,
+then reaches97% before supersession cancellation. It has no final failing identity or aggregate.
+Do not attribute that marker only to the known warm-cache test, infer a timeout or call the suite
+a pass. Its frozen required ledger retains7SUCCESS/8CANCELLED with all15 terminal EOF logs
+reviewed; ledger SHA-256e9139567d2c178db6b0fdaf406e7b5c0dd6b6587a712b0a055b103df8be7e71b.
+Fresh full Python3.10 success is required without retrospectively identifying the old marker.
+
+Supervisor main d73d33e28bafe91f750e25f20dee559d412ac485 merges #671 knowledge diagnostics
+with parents9112a16e and34f71d25. The six-file incoming change is preserved, including its
+knowledge-writer census count, alongside the saved-plan endpoint pins. NOW keeps both parent
+handoff histories and the merged K2 row historically. No knowledge generation or local Graphify
+runs here. Independent static union review and stable Rule7/marker scans precede the integrated
+push; all15 required contexts and every applicable whole workflow must pass on that new head.
+The earlier B4f actual-document/SPA reviews remain source-edit DATA, not integrated-source
+readiness or a replacement for the final source-bound rebuild/receipt. No existing test, verifier,
+budget, timeout, golden/sample byte, product/schema version or external gate is relaxed.
