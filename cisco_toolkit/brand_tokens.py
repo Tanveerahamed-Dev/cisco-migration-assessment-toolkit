@@ -19,9 +19,6 @@ it here — the single brand blue the SSOT thesis calls for. To re-brand, edit
 ``BRAND_NAVY_RGB`` ONCE below, not the (formerly ~13) call sites.
 """
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 
 def hex_of(rgb):
     """``(r, g, b)`` 0-255 ints -> ``'RRGGBB'`` uppercase hex (openpyxl / CSS form)."""

@@ -15,9 +15,6 @@ left byte-identical for a human restore (README-FIELD).
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib
 import io
 import json

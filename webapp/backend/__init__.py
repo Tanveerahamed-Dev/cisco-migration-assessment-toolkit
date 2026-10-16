@@ -6,9 +6,6 @@ This package is *additive*: it imports the existing `cisco_toolkit` engine and r
 the single source of truth; this layer gives stored snapshots a live, multi-campaign web surface.
 """
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 __all__ = ["create_app"]
 
 

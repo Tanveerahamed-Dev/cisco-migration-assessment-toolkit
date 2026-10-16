@@ -24,9 +24,6 @@ a live cross-family judge over the text, are the follow-on steps; the defect *se
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import copy
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 

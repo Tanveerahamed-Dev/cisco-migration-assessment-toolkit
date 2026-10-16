@@ -1,9 +1,6 @@
 """Pure show-command parsers + column primitives. Depends only on `re`, stdlib
 typing, and cisco_toolkit.textutils (the leaf layer). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import ipaddress
 import json
 import logging

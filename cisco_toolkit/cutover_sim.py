@@ -20,9 +20,6 @@ The input snapshot is NEVER mutated: every step works on a deep copy. Pure stdli
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import copy
 import json
 import math

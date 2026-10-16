@@ -21,9 +21,6 @@ minimal in-memory scenario is a faithful, controlled exercise of the real verdic
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Callable, Dict, List
 
 

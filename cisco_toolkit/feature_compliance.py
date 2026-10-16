@@ -10,9 +10,6 @@ No new collection, no change to compute_golden_drift; it consumes that function'
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List
 
 # feature -> ordered config-line prefixes it owns (normalized, lower-cased — matching golden-drift's lines).

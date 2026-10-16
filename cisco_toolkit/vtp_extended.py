@@ -8,9 +8,6 @@ are never serialized.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import copy
 import hashlib
 import json

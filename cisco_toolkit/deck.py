@@ -9,9 +9,6 @@ package imports fine without it, and a missing library is a warning + skip, neve
 read is defensive (.get / tolerant of missing keys) so an older snapshot degrades gracefully rather than
 failing. Deterministic content; no network, no device data beyond the snapshot.
 """
-
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
 import logging
 import os
 

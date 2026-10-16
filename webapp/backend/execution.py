@@ -18,9 +18,6 @@ deviations, was partially implemented, or was backed out.
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib
 import json
 import threading

@@ -17,9 +17,6 @@ assumed — no confidence theater.
 python-docx is OPTIONAL: imported inside the function so the package imports without it; a missing
 library is a warning + skip, never a crash. Every snapshot read is defensive. Deterministic; no network.
 """
-
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
 import logging
 from datetime import datetime
 

@@ -7,9 +7,6 @@ dependency, no egress; an opt-in pybatfish power-mode is a deliberately SEPARATE
 here. COVERAGE-HONEST by construction: a resolved lookup is computed from the collected routes; a destination
 with NO matching route returns None ('no route observed' -- a lower bound, never a fabricated 'reachable').
 """
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import ipaddress
 import math
 import re

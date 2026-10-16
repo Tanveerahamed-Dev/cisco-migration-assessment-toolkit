@@ -340,15 +340,19 @@ then required explicit module roles and source-to-dist coverage instead. The
 uncommitted proposal was discarded; no active v2 register was published.
 
 Every Python module under `cisco_toolkit/` and `webapp/backend/`, and the CLI
-orchestrator, declares exactly one module-level literal `__atlas_role__`.
-Missing, ambiguous or computed declarations refuse. Every interface-role module
+orchestrator, declares exactly one engine/interface role. Its module-owned
+`<module>.py.atlas-role` companion is a closed JSON declaration; a literal
+`__atlas_role__` constant is also recognized, but two declarations refuse.
+Missing, ambiguous, computed, duplicate-key or orphan declarations refuse.
+The application uses companions so frozen executable bytes remain intact. Every interface-role module
 is a seed, and imports traverse all repository helpers until an engine-role
 module. Pure owners such as `analyze.py`, `parse.py`, `ssot.py` and
 `ui_projection.py` are terminals. Every engine's full local import closure is
 checked for an interface dependency, including an unregistered intermediate
 helper. Registered writers and report/API-library-backed writers cannot declare
-engine role. The role assignments are reviewed source in this PR, not a curated
-exclusion filename list. Future role changes are reviewed diffs; an interface
+engine role. The role assignments are explicit reviewable module metadata in this PR, not a
+curated exclusion filename list. The module denominator comes from Git source
+classes; a newly added module without its declaration fails. Future role changes are reviewed diffs; an interface
 module becomes engine only after a reviewed extraction removes interface-side
 computation and the corresponding register entries shrink.
 
@@ -494,10 +498,11 @@ v2 ancestor constrains subsequent data, including removals on all merge parents.
 ### Detector byte custody
 
 The six proposals and source Git identities agree. Windows' four **raw detector**
-digests differ because its checkout used CRLF. Inspection of Git object bytes
-proves each Linux digest equals SHA-256(Git blob) and each Windows digest equals
-SHA-256(the same Git blob with LF converted to CRLF), without invoking the source
-inspector locally. There is no unexplained detector difference. The admission
+digests differ because its checkout used CRLF. The bootstrap hash columns below are hosted observations. A local import-time
+comparison attributed the difference to LF-to-CRLF conversion; that comparison
+was outside the broader custody-verification rule and is **not accepted
+validation**. Closing byte/source custody relies on the executed hosted gates,
+not the local comparison. The admission
 adds four exact `text eol=lf` attributes and a CI check deriving the byte-owner
 set from the observer's actual metadata producer. Both HEAD/worktree attribute
 policy must forbid filters, ident and encoding transformations, and every
@@ -511,3 +516,42 @@ byte gate and matching raw observations on every required leg.
 | `tests/interface_computation_lex.py` | `9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c` | `0518e718deeeb7c7ac1842df4fefc2f1621fc7a2193d01244eef5803535e316e` |
 | `tests/interface_computation_sources.py` | `3899f64555b04c0a5159cd5dfe34c07df50548a479a085b41577b2e6959d79ee` | `0c4b44a16dc22b263b1dd30b2d8452389571ea7c3f1f458cc3e83f99994eca0a` |
 | `.github/scripts/interface_computation_ast.mjs` | `bc76ad9baddabf1b63611ad916812283d00cf8008c19df2a4aad205c8a26e2f9` | `0c7c6bf888f38c8142cf96936ad0d2893ac0364be2f2df62ccc037f0575131ff` |
+
+
+## Frozen source-custody correction and declaration representation
+
+On admission head `ab2d9d39`, CI `38974719516`, all six matrix legs pass the
+synthetic controls, source observation, real-producer mutation and full active
+register check, including the new detector-byte custody assertion. This is
+focused hosted evidence, not 15/15. The installed Windows smoke, job
+`117222809936`, fails with `PROTOTYPE_SOURCE_DIGEST_MISMATCH`: the role-only
+statements altered eight source owners bound by the packaged experimental DSL
+TCB. Its structural census separately binds `transition_legacy.py`. No frozen
+asset, budget, digest validator, authority state or test is relaxed.
+
+The implementation uses mandatory **module-owned companion declarations** as a
+reversible representation assumption while the owner's format preference remains
+open. All 125 application Python files are restored to their original foundation
+source. Their roles live at the deterministic companion path
+`<module path>.atlas-role`, with exactly the single JSON key `role` and enum value
+`engine` or `interface`. This is CI source metadata, not a runtime dependency or
+new application fact. No manual engine exception set selects the scanned scope.
+A constant and companion together, unknown fields, duplicate keys, bad values,
+orphan companions, missing declarations and an engine-tagged report writer all
+refuse. Engine/interface direction and full helper traversal are unchanged.
+
+The original download-source blob pins are retained again because the app,
+deliverables and docmeta source bytes are restored. The TCB/data chain, every
+frozen fixture, golden/sample byte and original source-custody check stays intact;
+no regeneration or new measurement/qualification is claimed. A hosted migration
+control compares the immutable initial role snapshot with the previous literal
+assignments, requires every companion, and proves every application Python blob
+in that initial migration equals the foundation source. It does not freeze later
+application edits or prevent reviewed role changes with corresponding debt
+removal. The current live module class must always have exactly one declaration.
+
+Local metadata comparisons performed during the earlier import are recorded as
+process-boundary mistakes, not validation. No local test/build/engine or formal
+verification controller was run; nevertheless the standing doctrine also bars
+local custody verification. All closing custody and receipt checks are hosted.
+The complete exact-head gates and the same independent reviewer remain required.

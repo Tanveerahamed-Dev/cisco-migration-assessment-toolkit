@@ -1,9 +1,6 @@
 """Pure interface-name / text normalization helpers + the interface regex
 constants. Leaf layer: depends only on `re` + `math`. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 1 (behaviour byte-identical)."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import math
 import re
 import sys

@@ -6,6 +6,7 @@ including helpers outside an entry's directory. Third-party modules are terminal
 discovery is not a claim about code outside the repository.
 """
 import ast
+import json
 from pathlib import PurePosixPath
 
 
@@ -16,29 +17,56 @@ def role_required(path):
     return path.endswith(".py") and (path.startswith(("cisco_toolkit/", "webapp/backend/")) or path == "COLLECT_PARSE_V3_23_0.py")
 
 
-def module_roles(names, read):
-    """Every owned module declares one literal role; missing/ambiguous roles refuse.
+def module_roles(names, read, declaration_names=None):
+    """Require one explicit role per owned module, never an exemption filename list.
 
-    Roles are reviewed source, not a filename exemption list. Mixed modules remain
-    interface until a reviewed owner extraction removes their interface computation.
+    A literal module constant or its module-owned ``.atlas-role`` companion is a
+    declaration. Companions preserve frozen executable source bytes. Both forms
+    together, missing/ambiguous roles, duplicate JSON keys and orphan companions
+    refuse. All modules come from the source class, not the declaration inventory.
     """
+    available = set(names if declaration_names is None else declaration_names)
+    owned = {path for path in names if role_required(path)}
+    for path in available:
+        if path.endswith(".atlas-role") and path.removesuffix(".atlas-role") not in owned:
+            raise ValueError("Orphan or unowned module role declaration: " + path)
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate module role declaration key")
+            result[key] = value
+        return result
+
     roles = {}
-    for path in sorted(name for name in names if role_required(name)):
+    for path in sorted(owned):
         tree = ast.parse(read(path), filename=path)
         writes = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
                   and node.id == "__atlas_role__" and isinstance(node.ctx, (ast.Store, ast.Del))]
         declarations = [node for node in tree.body if isinstance(node, ast.Assign) and len(node.targets) == 1
                         and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "__atlas_role__"]
-        if len(writes) != 1 or len(declarations) != 1 or not isinstance(declarations[0].value, ast.Constant) or declarations[0].value.value not in {"engine", "interface"}:
-            raise ValueError("Module requires exactly one literal __atlas_role__: " + path)
-        roles[path] = declarations[0].value.value
+        values = []
+        if writes or declarations:
+            if len(writes) != 1 or len(declarations) != 1 or not isinstance(declarations[0].value, ast.Constant):
+                raise ValueError("Module requires exactly one literal role declaration: " + path)
+            values.append(declarations[0].value.value)
+        companion = path + ".atlas-role"
+        if companion in available:
+            data = json.loads(read(companion), object_pairs_hook=unique)
+            if type(data) is not dict or set(data) != {"role"}:
+                raise ValueError("Module role companion has unknown or missing fields: " + companion)
+            values.append(data["role"])
+        if len(values) != 1 or type(values[0]) is not str or values[0] not in {"engine", "interface"}:
+            raise ValueError("Module requires exactly one literal role declaration: " + path)
+        roles[path] = values[0]
     return roles
 
 
-def python_closure(names, read, role_read=None):
+def python_closure(names, read, role_read=None, role_names=None):
     files = {path for path in names if path.endswith(".py")}
     cache = {}
-    roles = module_roles(names, role_read or read)
+    roles = module_roles(names, role_read or read, role_names)
 
     def tree(path):
         if path not in cache:

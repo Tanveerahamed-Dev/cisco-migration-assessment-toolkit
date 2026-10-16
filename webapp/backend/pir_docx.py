@@ -13,9 +13,6 @@ headings, "Light Grid Accent 1" tables) so it reads as one family with the rest 
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 from datetime import datetime
 from typing import Any, Dict, List
 

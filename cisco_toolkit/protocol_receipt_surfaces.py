@@ -7,9 +7,6 @@ document projection.  Direct/legacy callers therefore receive an explicit ``NOT 
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any
 
 from cisco_toolkit.docmeta import protocol_assurance_receipt_view

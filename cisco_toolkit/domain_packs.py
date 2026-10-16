@@ -19,9 +19,6 @@ unit-testable without a snapshot. The registry cross-check imports the registry 
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List, Set, Tuple
 
 # pack id -> (title, knowledge/checklist doc, the architecture-coverage CLASS KEYS this domain reviews).

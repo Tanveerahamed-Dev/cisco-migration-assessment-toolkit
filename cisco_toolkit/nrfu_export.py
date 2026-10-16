@@ -38,9 +38,6 @@ write_nrfu_pack(snap, out_dir) emits the per-device .nrfu.txt command files per 
 snapshot). A --nrfu-pack CLI flag is DEFERRED — call write_nrfu_pack directly or consume the published
 snap['nrfu_commands'] section.
 """
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import os
 import re
 from collections import Counter

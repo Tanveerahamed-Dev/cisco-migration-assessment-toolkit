@@ -1,9 +1,6 @@
 """Export the real AssessHub OpenAPI offline using a temporary, empty snapshot store."""
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import argparse
 import json
 from pathlib import Path

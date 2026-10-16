@@ -36,9 +36,6 @@ outside the root. On a Python-less stick the same check is ``Atlas.exe --verify-
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib
 import json
 import os

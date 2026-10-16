@@ -15,9 +15,6 @@ REAL CONTENT but whose output carried 0 entities. Coverage-honest by design: an
 event means "collected-but-unparsed evidence — possible parser format gap",
 NEVER a device state verdict; absent / error captures are the Collection
 Completeness axis's domain and are not counted here."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import logging
 import os
 import threading

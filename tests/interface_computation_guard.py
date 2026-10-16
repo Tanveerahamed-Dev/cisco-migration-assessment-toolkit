@@ -75,7 +75,8 @@ def source_map(revision=None):
     # The old fact ceiling predates role declarations. Its reviewed role basis is
     # immutable Git source, never inferred from future module names or current roles.
     role_read = (lambda p: git("show", ROLE_ORIGIN + ":" + p).decode("utf-8")) if revision and ROLE_ORIGIN else None
-    selected = python_closure(names, read, role_read)
+    role_names = (git("ls-tree", "-r", "-z", "--name-only", ROLE_ORIGIN).decode("utf-8").split("\0")) if role_read else None
+    selected = python_closure(names, read, role_read, role_names)
     candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
     discovered = node_reply(dict(mode="discover", files=candidates, names=names)) if candidates else {"paths": [], "generated": []}

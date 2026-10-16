@@ -9,9 +9,6 @@ therefore every adapter receipt is ``AUDIT_ONLY`` with a null R2 gate.
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import base64
 from copy import deepcopy
 from importlib import metadata, resources

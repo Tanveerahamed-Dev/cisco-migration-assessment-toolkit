@@ -26,9 +26,6 @@ import. The actual spawning of analysts/authors is the ``/remediate`` command's 
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List, Optional
 
 SEV_ORDER = ["Critical", "High", "Medium", "Low"]

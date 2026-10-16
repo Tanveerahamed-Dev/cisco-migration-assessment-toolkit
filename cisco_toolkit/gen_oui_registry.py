@@ -13,9 +13,6 @@ non-authoritative outputs and cannot replace the shipped pack.
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import argparse
 import csv
 import gzip

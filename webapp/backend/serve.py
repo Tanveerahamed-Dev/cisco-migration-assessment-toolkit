@@ -27,9 +27,6 @@ needs a real terminal, so the frozen app is built ``console=True``.
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import argparse
 import hashlib
 import ipaddress

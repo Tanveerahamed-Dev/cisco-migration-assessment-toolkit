@@ -4,9 +4,6 @@ verbatim from COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 9 (behaviour
 byte-identical). `InterfaceData` is the per-port record; `DevicePhysical` is the
 per-switch physical inventory record. The scoring tunables (`ScoringConfig`) stay
 with the analyze layer - they are not part of the passed-around data model."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import enum
 from dataclasses import dataclass, fields
 

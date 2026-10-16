@@ -18,9 +18,6 @@ upgrade; a future closure-capable protocol must use a new versioned boundary.
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from dataclasses import dataclass
 import hashlib
 import importlib.util

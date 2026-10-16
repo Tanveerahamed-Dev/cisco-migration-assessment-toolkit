@@ -279,9 +279,6 @@ Optional:
   --collection-dir DIR  --workers N  --debug-arp
 """
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib, io, ipaddress, os, sys, json, re, logging, warnings, argparse, time  # io: immutable input-byte bindings
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed

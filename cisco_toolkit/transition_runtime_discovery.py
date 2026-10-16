@@ -55,9 +55,6 @@ policy, key, signature, budget, review decision, qualification, promotion, or Re
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import ctypes
 import hashlib
 import json

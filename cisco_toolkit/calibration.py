@@ -31,9 +31,6 @@ never a fabricated calibration.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import json
 import os
 from typing import Any, Dict, List, Optional, Tuple

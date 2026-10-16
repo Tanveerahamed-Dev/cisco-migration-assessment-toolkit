@@ -30,9 +30,6 @@ the other writers: imported inside the function, missing library is a warning + 
 Every snapshot read is defensive (`_as_dict` / `_as_list` / tolerant of malformed rows) so arbitrary
 stored JSON degrades instead of crashing (the V3.23.159 review doctrine).
 """
-
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
 import logging
 import re
 from collections import defaultdict

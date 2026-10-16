@@ -15,9 +15,6 @@ it projects the existing verdicts and quotes their own evidence. Coverage-honest
 abstention state (`not_collected` / `partial` / `unverified` / `unparsed` / `not_observed`) with
 `is_abstention=True`, never silently a pass.
 """
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple, TypeGuard

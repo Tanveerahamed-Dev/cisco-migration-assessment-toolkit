@@ -27,9 +27,6 @@ absence is absence (an empty ledger is "no runs", never "healthy").
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import json
 import os
 from datetime import date, datetime, timedelta

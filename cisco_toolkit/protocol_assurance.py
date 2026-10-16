@@ -13,9 +13,6 @@ legacy ``protocol_adjacency_delta/1`` schema or the seven-family assessability d
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from dataclasses import dataclass
 import hashlib
 import json

@@ -40,9 +40,6 @@ re-implement the token.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List
 
 from cisco_toolkit.textutils import (   # native-VLAN-1 unit/basis tokens -- one owner (leaf module)

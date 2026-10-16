@@ -4,9 +4,6 @@ already-collected show output. Depends on cmdio (loading), parse (parsers), mode
 textutils - a layer above those, independent of analyze/excel. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps 27-28 (behaviour byte-identical):
 step 27 = the switch-level builders + ARP enrichment, step 28 = build_interfaces."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import ipaddress
 import json
 import logging

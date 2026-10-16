@@ -127,9 +127,6 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from copy import deepcopy
 import ipaddress
 import json

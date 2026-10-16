@@ -7,9 +7,6 @@ helpers, so the 260-test golden contract is untouched.
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import os
 import sys
 import tempfile

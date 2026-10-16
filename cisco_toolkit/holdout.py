@@ -36,9 +36,6 @@ CLI exit codes: 0 = ok · 2 = refusal (activation floor / unattributed or duplic
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib
 import json
 import os

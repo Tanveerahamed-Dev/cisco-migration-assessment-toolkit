@@ -9,9 +9,6 @@ registry is lazy-loaded and cached; lookups do a longest-prefix match across
 Refreshes are explicit, deterministic evidence updates. See
 ``reference-data/official-sources/README.md`` and
 ``python -m cisco_toolkit.gen_oui_registry --help``."""
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import functools
 import logging
 import os

@@ -13,9 +13,6 @@ Malformed, partial, duplicated, or missing required evidence remains ``not_verif
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from collections import Counter
 from copy import deepcopy
 from functools import lru_cache

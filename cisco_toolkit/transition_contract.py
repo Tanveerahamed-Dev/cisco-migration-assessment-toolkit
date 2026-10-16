@@ -12,9 +12,6 @@ Those claims require the verifier, an external trust policy, and the later quali
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import datetime as _datetime
 import hashlib
 import json

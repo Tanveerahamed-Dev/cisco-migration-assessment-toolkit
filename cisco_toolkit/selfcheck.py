@@ -16,9 +16,6 @@ crashes the nightly run.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import ast
 import hashlib
 import json

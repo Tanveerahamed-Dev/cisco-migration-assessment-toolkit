@@ -32,9 +32,6 @@ empty or degraded result rather than raising -- a section the engine did not emi
 """
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import argparse
 import json
 import os

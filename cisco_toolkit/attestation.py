@@ -16,9 +16,6 @@ Published as snap['attestation'] and the workbook 'Trust & Sovereignty' sheet
 (excel.write_attestation_sheet). Explorer panel + HLD front-matter rendering: deferred.
 No I/O beyond reading this package's own source files; no network; no new dependencies.
 """
-
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
 import ast
 import importlib
 import importlib.util

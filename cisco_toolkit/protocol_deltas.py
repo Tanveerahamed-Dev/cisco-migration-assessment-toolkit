@@ -12,9 +12,6 @@ projections rather than trusting a detached baseline object.
 
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from copy import deepcopy
 import re
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence, Tuple

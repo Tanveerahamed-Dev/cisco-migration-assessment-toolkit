@@ -20,9 +20,6 @@ accepts ({type:'node'|'site', id}); the host-resolution is reused from whatif._m
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import math
 from typing import Any, Dict, List, Optional
 

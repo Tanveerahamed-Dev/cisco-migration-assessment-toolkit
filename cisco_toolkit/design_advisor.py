@@ -15,9 +15,6 @@ Discipline (mirrors the engine's coverage-honesty rules): every detector is EVID
 the condition from the snapshot and the decision disappears. A design claim is never asserted from
 absent evidence ("not observed" is not "healthy"); not-collected devices are an explicit unknown.
 """
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import math
 import re
 

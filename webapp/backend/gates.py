@@ -9,9 +9,6 @@ plan and the war-room execution console use, so the whole loop joins on one key.
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List, Optional
 
 from . import engine  # noqa: F401  (import bootstraps sys.path so cisco_toolkit.* resolves)

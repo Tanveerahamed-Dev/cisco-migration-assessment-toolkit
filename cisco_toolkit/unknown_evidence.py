@@ -14,9 +14,6 @@ horizon signal, or deliberate exclusion.
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 from collections import Counter, defaultdict
 from hashlib import sha256
 import json

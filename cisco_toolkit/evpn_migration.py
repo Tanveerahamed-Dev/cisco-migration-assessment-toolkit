@@ -16,9 +16,6 @@ Sources (primary Cisco, verified 2025-2026):
 - Cisco white papers "Migrating Classic Ethernet to VXLAN BGP EVPN" and "Migrating a FabricPath environment
   to VXLAN BGP EVPN" -- double-sided vPC loop-safety (the overlay neither forwards nor blocks STP BPDUs).
 """
-
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
 import re
 from typing import Optional
 

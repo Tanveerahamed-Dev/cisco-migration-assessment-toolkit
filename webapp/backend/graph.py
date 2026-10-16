@@ -9,9 +9,6 @@ are dropped so the graph is the inter-switch fabric, matching what the deep expl
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 from typing import Any, Dict, List, Optional
 
 from . import engine

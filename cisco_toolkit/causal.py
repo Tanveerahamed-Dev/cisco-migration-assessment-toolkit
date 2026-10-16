@@ -16,9 +16,6 @@ Nothing here re-computes a finding: each row renders the engine's own output. Pu
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)

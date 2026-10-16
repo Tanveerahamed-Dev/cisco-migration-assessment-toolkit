@@ -28,9 +28,6 @@ comparison on a non-numeric subject) is skipped; if nothing can be evaluated the
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import json
 import re
 from typing import Any, Dict, List, Optional

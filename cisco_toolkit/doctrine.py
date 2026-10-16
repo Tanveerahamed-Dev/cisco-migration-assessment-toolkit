@@ -15,9 +15,6 @@ Together they make coverage-honesty a build gate and attack the recurring detect
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import ast
 from typing import Any, Dict, Iterable, List, Set, Tuple
 

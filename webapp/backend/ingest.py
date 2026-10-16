@@ -31,9 +31,6 @@ Design points:
 
 from __future__ import annotations
 
-__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
-
-
 import io
 import contextlib
 import hashlib

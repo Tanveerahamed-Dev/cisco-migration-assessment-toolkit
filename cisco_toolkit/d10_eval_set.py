@@ -45,9 +45,6 @@ tried and reverted (it masks genuine deletions, since ``built_at_commit`` is HEA
 """
 from __future__ import annotations
 
-__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
-
-
 import hashlib
 import json
 import os

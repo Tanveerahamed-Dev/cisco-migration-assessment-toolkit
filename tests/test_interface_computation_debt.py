@@ -310,7 +310,7 @@ def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, pa
                "cisco_toolkit/new_report.py": "from webapp.backend.new import f\n",
                path: "def f(rows):\n return len(rows)\n"}
     for name, text in sources.items():
-        if role_required(name) and "__atlas_role__" not in text:
+        if role_required(name) and "__atlas_role__" not in text and name + ".atlas-role" not in sources:
             text = '__atlas_role__ = "interface"\n' + text
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +323,7 @@ def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, pa
 
 def source_fixture(tmp_path, monkeypatch, sources):
     for name, text in sources.items():
-        if role_required(name) and "__atlas_role__" not in text:
+        if role_required(name) and "__atlas_role__" not in text and name + ".atlas-role" not in sources:
             text = '__atlas_role__ = "interface"\n' + text
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -842,3 +842,76 @@ def test_every_observed_detector_has_identical_committed_and_executing_bytes():
         assert attributes == {path: expected for path in paths}
     for path in paths:
         assert (guard.DETECTOR_ROOT / path).read_bytes() == guard.git("cat-file", "blob", "HEAD:" + path), path
+
+
+
+def test_module_owned_companions_preserve_the_same_mandatory_engine_interface_boundary():
+    sources = {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()",
+        "cisco_toolkit/docmeta.py.atlas-role": '{"role":"interface"}',
+        "cisco_toolkit/owner.py": "def compute(rows):\n return len(rows)",
+        "cisco_toolkit/owner.py.atlas-role": '{"role":"engine"}',
+        "cisco_toolkit/renderer.py": "from .owner import compute",
+        "cisco_toolkit/renderer.py.atlas-role": '{"role":"interface"}',
+    }
+    assert python_closure(sources, sources.__getitem__) == {"cisco_toolkit/docmeta.py", "cisco_toolkit/renderer.py"}
+    sources["cisco_toolkit/owner.py"] = "from .renderer import compute"
+    with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("metadata", ['{}', '{"role":"other"}', '{"role":true}',
+    '{"role":"engine","extra":1}', '{"role":"engine","role":"interface"}'])
+def test_module_companions_are_closed_and_cannot_hide_duplicate_or_ambiguous_roles(metadata):
+    sources = {"cisco_toolkit/new.py": "", "cisco_toolkit/new.py.atlas-role": metadata}
+    with pytest.raises(ValueError):
+        module_roles(sources, sources.__getitem__)
+
+
+def test_a_constant_and_companion_cannot_compete_for_the_module_role():
+    sources = {"cisco_toolkit/new.py": '__atlas_role__ = "engine"',
+               "cisco_toolkit/new.py.atlas-role": '{"role":"interface"}'}
+    with pytest.raises(ValueError, match="exactly one literal"):
+        module_roles(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("path", ["cisco_toolkit/removed.py.atlas-role", "outside/hidden.py.atlas-role"])
+def test_orphan_or_unowned_module_companion_refuses(path):
+    with pytest.raises(ValueError, match="Orphan or unowned"):
+        module_roles([path], lambda name: '{"role":"engine"}')
+
+
+def test_removing_a_companion_does_not_default_a_module_to_engine():
+    with pytest.raises(ValueError, match="exactly one literal"):
+        module_roles(["cisco_toolkit/new.py"], lambda name: "")
+
+
+def test_registered_writers_cannot_hide_behind_an_engine_companion():
+    sources = {
+        "cisco_toolkit/docmeta.py": 'ArtifactSpec(writer_module="cisco_toolkit.report")',
+        "cisco_toolkit/docmeta.py.atlas-role": '{"role":"interface"}',
+        "cisco_toolkit/report.py": "def write_report_docx():\n return None",
+        "cisco_toolkit/report.py.atlas-role": '{"role":"engine"}',
+    }
+    with pytest.raises(ValueError, match="writer cannot declare engine"):
+        python_closure(sources, sources.__getitem__)
+
+
+
+def test_initial_companion_migration_preserves_roles_and_frozen_application_bytes():
+    legacy = "97813d794f8cb8d61b206ba49a52aa4f9142b8e6"
+    foundation = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
+
+    def declarations(revision):
+        names = guard.git("ls-tree", "-r", "-z", "--name-only", revision).decode("utf-8").split("\0")
+        roles = module_roles(names, lambda path: guard.git("show", revision + ":" + path).decode("utf-8"))
+        return set(names), roles
+
+    _legacy_names, legacy_roles = declarations(legacy)
+    migrated_names, migrated_roles = declarations(guard.ROLE_ORIGIN)
+    assert migrated_roles == legacy_roles
+    assert all(path + ".atlas-role" in migrated_names for path in migrated_roles)
+    # This binds the immutable initial migration, not future application changes.
+    # It does not import an engine or regenerate any frozen evidence.
+    for path in migrated_roles:
+        assert guard.git("cat-file", "blob", guard.ROLE_ORIGIN + ":" + path) == guard.git("cat-file", "blob", foundation + ":" + path), path
