@@ -2,11 +2,21 @@
 
 There is **one application: GitHub `main`**. **`docs/NOW.md` is the live work board.** It holds the
 active workstreams, their branch and holder, the next step, pending owner decisions and the handoff
-log. Read it first and update it last. Work only on a branch listed there, keep one writer per
-workstream, and never start a new app, repository or long-lived parallel branch. Before a session
-ends, or a quota runs out: commit to the row's branch and update the board. Pushing still needs the
+log. Read it first. Work only on a branch listed there, keep one writer per workstream, and never
+start a new app, repository or long-lived parallel branch. The supervisor is the board's single
+writer: feature pull requests never edit `docs/NOW.md`. Before a session ends, or a quota runs out:
+commit to the row's branch and report status in its pull request. Pushing still needs the
 user's explicit authority and never applies to a row marked local-only (`docs/NOW.md` rule 5). This
 applies to Claude Code and Codex alike; Codex enters through root `AGENTS.md`.
+
+**Foundation rule (binding; ADR 0008, `docs/decisions/0008-engine-computes-interface-displays.md`):**
+the engine computes, the interface displays. Every fact and analysis is computed once in the engine
+and reaches users through the snapshot or `ui_projection`. AssessHub, the topology workspace, Atlas
+Scope, the HTML explorer and every document only format and display it. A screen that needs a new
+value gets it from a new engine-owned fact registered in `docs/ssot.md`, never from its own
+calculation. Its mechanical CI enforcement (ADR 0008 point 4) is **pending RC8-P1-H** and counts as
+in force only once that work merges with exact-head evidence; until then reviewers enforce the rule.
+A conflicting change needs an owner amendment to ADR 0008.
 
 ## Repository-review record (CLOSED 2026-08-03)
 
