@@ -93,6 +93,7 @@ def test_every_quoted_app_message_is_really_printed():
     a quoted string that does not match is worse than none, because it reads as 'not my case'."""
     sources = "\n".join((ROOT / p).read_text(encoding="utf-8", errors="replace") for p in (
         "webapp/backend/serve.py", "webapp/backend/storage.py", "portable/make_stick.ps1",
+        "portable/update_transaction.ps1", "portable/maintenance.py",
         "COLLECT_PARSE_V3_23_0.py", "webapp/backend/ingest.py"))
 
     def emitted(phrase: str) -> bool:
@@ -140,8 +141,9 @@ def test_every_app_command_uses_only_app_flags():
     """The mirror of the engine check: an `Atlas.exe …` command WITHOUT the --run-engine sentinel
     is the app's own surface, so an engine-only flag there dies at argparse. Without this, only
     one direction of the two-surface confusion was guarded."""
-    app_flags = set(_ADD_ARG.findall(
-        (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")))
+    app_flags = set(_ADD_ARG.findall("\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in ("webapp/backend/serve.py", "portable/maintenance.py"))))
     checked = 0
     for n, cmd, used in _atlas_commands():
         if "--run-engine" in used:
@@ -166,7 +168,9 @@ def test_commands_are_copy_pasteable_on_one_line():
 def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     serve_src = (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")
     engine_src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8")
-    valid = set(_ADD_ARG.findall(serve_src)) | set(_ADD_ARG.findall(engine_src))
+    maintenance_src = (ROOT / "portable/maintenance.py").read_text(encoding="utf-8")
+    valid = (set(_ADD_ARG.findall(serve_src)) | set(_ADD_ARG.findall(engine_src))
+             | set(_ADD_ARG.findall(maintenance_src)))
     sentinel = re.search(r'ENGINE_SENTINEL\s*=\s*"(--[a-z-]+)"', serve_src)
     assert sentinel, "serve.ENGINE_SENTINEL moved — update this reconciler"
     valid.add(sentinel.group(1))  # checked pre-argparse by design

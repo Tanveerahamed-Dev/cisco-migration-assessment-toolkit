@@ -25,7 +25,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32",
                                 reason="Windows-only stick layout script (robocopy/powershell)")
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "portable" / "make_stick.ps1"
+# The same transaction is now a bundled resource. Keep every fault/recovery case
+# on the real owner; the public wrapper has its own frozen end-to-end proof.
+SCRIPT = ROOT / "portable" / "update_transaction.ps1"
 
 
 def _command(*args: str, skip_selftest: bool = True) -> list[str]:
@@ -35,6 +37,9 @@ def _command(*args: str, skip_selftest: bool = True) -> list[str]:
     ]
     if skip_selftest:
         command.append("-SkipSelftest")
+    if "-Package" in args:
+        package = Path(args[args.index("-Package") + 1])
+        command.extend(["-VerifierExe", str(package.parent / "verifier.exe")])
     return command
 
 
@@ -798,6 +803,27 @@ def _release_package(tmp_path: Path, *, longest_member: bool = False) -> Path:
     }
     output = tmp_path / "package-output"
     index = release.build_portable_release(repository, bundle, output, qualification)
+    # A test-only protocol adapter lets the unmodified transaction exercise the
+    # exact Python verifier on synthetic packages. Production always supplies the
+    # installed frozen executable; it has no interpreter fallback.
+    shim_source = tmp_path / "verifier.cs"
+    executable = str(Path(sys.executable)).replace('"', '""')
+    working = str(ROOT).replace('"', '""')
+    shim_source.write_text(
+        r'''using System; using System.Diagnostics; using System.Linq;
+class V {
+  static int Main(string[] a) {
+    if (a.Length == 0 || a[0] != "--verify-release") return 2;
+    var p = new ProcessStartInfo();
+    p.FileName = @"''' + executable + r'''";
+    p.WorkingDirectory = @"''' + working + r'''";
+    p.UseShellExecute = false;
+    p.Arguments = "-B -m portable.verify_release " + String.Join(" ", a.Skip(1).Select(x => "\"" + x.Replace("\"", "\\\"") + "\""));
+    using (var child = Process.Start(p)) { child.WaitForExit(); return child.ExitCode; }
+  }
+}''', encoding="ascii",
+    )
+    _compile_test_exe(shim_source, output / "verifier.exe")
     return output / index["zip"]["name"]
 
 

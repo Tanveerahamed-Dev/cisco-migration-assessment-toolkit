@@ -4,9 +4,29 @@ Atlas, by Tanveer Ahamed - offline network-assessment kit on a stick.
 This page is the field discipline. Build/developer docs live in the
 repository, not on the stick.
 
+FIRST INSTALL (A FOLDER OR A USB STICK; NO PYTHON OR CHECKOUT)
+------------------------------------------------------------
+Download the release ZIP and obtain its published SHA-256 from the
+release's checksum record through your trusted delivery channel. A hash
+only compares selected bytes; it is not a publisher signature.
+In Windows PowerShell, set these values to your download and published hash:
+  $zip = 'C:\Downloads\Atlas-release.zip'
+  $expected = 'PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE'
+  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'ZIP SHA-256 mismatch' }
+Choose a NEW writable destination. A USB drive is optional:
+  Expand-Archive -LiteralPath $zip -DestinationPath C:\AtlasField
+  C:\AtlasField\Atlas\Atlas.exe --selftest
+Expect "SELFTEST: PASS", then double-click C:\AtlasField\Atlas\Atlas.exe.
+For a USB drive use a new folder such as E:\AtlasField instead.
+Never expand a new ZIP over an existing installation; use UPDATE below.
+An optional verified, journaled first copy from the extracted app is:
+  C:\AtlasField\Atlas\Atlas.exe --install D:\AtlasField --package $zip --expected-sha256 $expected
+This creates D:\AtlasField\Atlas. The source must be a separately
+extracted hash-checked bundle. No Python installation or repository is needed.
+
 FIRST RUN / EVERY ENGAGEMENT START
 ----------------------------------
-1. Plug in, open the  Atlas\  folder on the stick.
+1. Open the Atlas\ folder in your chosen folder or on the stick.
 2. Run:  Atlas.exe --selftest        -> expect "SELFTEST: PASS".
 3. Double-click Atlas.exe. It starts AssessHub (the app) and opens
    your browser. Keep the console window open; closing it stops Atlas.
@@ -356,8 +376,23 @@ Anything that asks you to save a password on the stick is a bug: don't.
 
 UPDATE (new Atlas version)
 --------------------------
-On the build machine:
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Package <Atlas-version-windows-x64.zip>
+Close the running Atlas application first. On THIS computer, use the
+INSTALLED executable and the new ZIP's independently obtained published hash:
+  C:\AtlasField\Atlas\Atlas.exe --update C:\Downloads\Atlas-update.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
+Run from a folder OUTSIDE Atlas\ so the terminal does not hold its directory.
+Atlas copies its installed maintenance code (never data\) into a private
+same-drive helper, then exits so Windows can release its executable and DLLs.
+"scheduled" means dispatched, NOT complete. The command prints a result
+file outside Atlas\; wait until that file says "status":"complete" and
+"exit_code":0 before starting Atlas again. A "refused" result needs inspection;
+preserve all Atlas* paths. The optional make_stick.ps1 wrapper waits for this
+result and returns the transaction's actual exit code; it needs only Atlas.exe.
+If interruption leaves Atlas\Atlas.exe absent, open Atlas.maintenance.json
+beside Atlas\: it names the retained installed-version recovery helper.
+Run that exact helper executable with --recover and the installation parent
+folder. The optional wrapper selects and checks this helper automatically
+when a journal exists. Recovery finishes the recorded request; inspect its
+exit status before issuing another update.
 Never copy new files over the active Atlas\ tree. The updater verifies and
 preflights Atlas.incoming on the destination drive, preserves a hash-bound
 pre-update database backup, moves data\ to Atlas.data-handoff, switches and
@@ -371,14 +406,25 @@ Software fault-injection tests cover each recorded phase; only the physical
 field packet can prove real USB power-loss behavior.
 
 Explicit application rollback (newer database retained separately):
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback
+  C:\AtlasField\Atlas\Atlas.exe --rollback
 The older application must open a same-drive copy of the retained database
 before Atlas switches it in. If that compatibility check fails, use:
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback -RestorePreUpdateDatabase
+  C:\AtlasField\Atlas\Atlas.exe --rollback --restore-pre-update-database
 Only the database backup named and hashed by Atlas.rollback-slot.json is
 eligible. Atlas first preserves the newer database and a hash receipt in
 data\release-backups\. Those hashes are local consistency evidence, not a
 signature or independent custody record.
+
+Verification runs inside the installed frozen Atlas, including full SBOM
+schema validation. Its SHA-bound compatibility policy permits additional
+runtime dependencies with complete bound notices/SBOM, while preserving every
+installed dependency version, schema, toolchain, native-package and frontend
+pin. A changed pin or unsupported schema is refused; do not bypass it.
+Strict current-source release/build gates remain separate and unchanged.
+After a compatible update, the next update uses the newly installed verifier.
+Maintenance helpers contain application code only. Later invocations retire
+older helpers after selecting a new recovery copy; interrupted helpers remain
+preserved while their recovery journal exists.
 
 If the update reports "IN USE": Atlas or the browser it opened is
 still running and holding files on the stick. Close both (see EJECT

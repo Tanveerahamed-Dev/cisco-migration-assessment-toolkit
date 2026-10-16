@@ -402,7 +402,7 @@ def test_archive_release_workflows_create_drafts_only() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell 5.1 syntax gate")
-@pytest.mark.parametrize("name", ["make_stick.ps1", "sign_release.ps1", "verify_signatures.ps1"])
+@pytest.mark.parametrize("name", ["make_stick.ps1", "update_transaction.ps1", "sign_release.ps1", "verify_signatures.ps1"])
 def test_portable_powershell_scripts_parse_on_windows_powershell(name: str) -> None:
     path = ROOT / "portable" / name
     command = f"$null=[scriptblock]::Create((Get-Content -Raw -LiteralPath '{path}'))"

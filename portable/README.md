@@ -7,6 +7,24 @@ installed on the host**. That physical Python-absent-host run remains an externa
 it boots the server, opens the browser, and re-invokes itself as the engine CLI for ingest runs
 (the `--run-engine` sentinel; see `webapp/backend/serve.py`).
 
+First installation needs only a published ZIP, its independently obtained SHA-256,
+Windows PowerShell's `Expand-Archive`, and the bundled executable. Any writable folder
+works; USB is optional. See `README-FIELD.txt`. `Atlas.exe --install DEST --package ZIP
+--expected-sha256 SHA` and the installed `Atlas.exe --update ZIP --expected-sha256 SHA`
+use the frozen verifier and bundled journaled transaction. The optional `make_stick.ps1`
+is a thin executable wrapper with no checkout/interpreter fallback. Updates hand off
+to a same-drive installed-code recovery helper before exiting; dispatch is pending
+until the separate terminal receipt confirms completion. The helper remains reachable
+even when an interrupted directory switch leaves no active `Atlas.exe`.
+
+The updater's SHA-bound compatibility door permits additive runtime distributions
+with full member/SBOM/schema/notices checks, while preserving installed dependency
+versions and all existing schema/toolchain/frontend/native pins. It neither authenticates
+the publisher nor replaces strict current-source release qualification. The existing
+Windows build-and-qualify job exercises frozen installation, three interrupted phases,
+recovery, rollback and database restore with Python/py hidden from the product's PATH.
+Its observer still has Python; the actual Python-uninstalled/disconnected-host gate remains external.
+
 ## Build
 
 Release candidates use the exact Windows x64 toolchain in `portable/toolchain.json` and the

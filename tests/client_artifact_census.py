@@ -3071,6 +3071,16 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/frontend/e2e-real/serve_real_backend.py::main": (
         2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
+    "portable/maintenance.py::_write_result": (
+        2, DELEGATED, (), "atomic maintenance protocol metadata; each caller owns its path"),
+    "portable/maintenance.py::_copy_installed_application": (
+        1, NON_CLIENT, (), "installed application code copied to a private helper; top-level data is never traversed"),
+    "portable/maintenance.py::_worker": (
+        1, NON_CLIENT, (), "maintenance exit status, policy and nonce; no client evidence"),
+    "portable/maintenance.py::main": (
+        6, NON_CLIENT, (), "maintenance request metadata and application-only helper; data is excluded"),
+    "portable/maintenance.py::_recover": (
+        1, NON_CLIENT, (), "maintenance result for the retained installed-code recovery request"),
     "portable/database_preflight.py::_open_readonly": (
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
@@ -3111,6 +3121,14 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         4, NON_CLIENT, ("database",),
         "copies that synthetic database and writes its atlas-db-preflight.json request; " + _SYNTHETIC),
     # ---- other tracked Python (CI, tooling, references, research) --------------------------------
+    ".github/scripts/prove_portable_no_python.py::database_state": (
+        1, NON_CLIENT, ("database",), "read-only inspection of the hosted HTTP-seeded synthetic database"),
+    ".github/scripts/prove_portable_no_python.py::extract_bootstrap": (
+        1, NON_CLIENT, (), "closed-set public candidate code extracted to an external hosted proof folder"),
+    ".github/scripts/prove_portable_no_python.py::prove": (
+        15, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
+    ".github/scripts/prove_portable_no_python.py::main": (
+        2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (
         1, NON_CLIENT, (), "the webapp CI scope verdict written to $GITHUB_OUTPUT"),
     ".github/scripts/engine_output_handoff.py::<module>": (1, NON_CLIENT, (), _CI_EVIDENCE),
@@ -3294,7 +3312,7 @@ NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
 # --------------------------------------------------------------------------- PowerShell writers
 
 #: The PowerShell writer that copies client databases (W65 registry header names it).
-POWERSHELL_DATABASE_WRITERS = ("portable/make_stick.ps1",)
+POWERSHELL_DATABASE_WRITERS = ("portable/update_transaction.ps1",)
 
 
 def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:

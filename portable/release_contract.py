@@ -51,9 +51,11 @@ EXPECTED_BUNDLED_PYTHON = {
     "arrow": "1.4.0",
     "attrs": "26.1.0",
     "bcrypt": "5.0.0",
+    "boolean-py": "5.0",
     "cffi": "2.1.1",
     "click": "8.5.0",
     "cryptography": "50.0.1",
+    "cyclonedx-python-lib": "11.12.0",
     "defusedxml": "0.7.1",
     "et-xmlfile": "2.0.0",
     "fastapi": "0.141.1",
@@ -68,17 +70,20 @@ EXPECTED_BUNDLED_PYTHON = {
     "jsonschema-rs": "0.58.6",
     "jsonschema-specifications": "2025.9.1",
     "lark": "1.3.1",
+    "license-expression": "30.4.4",
     "lxml": "6.1.3",
     "markdown-it-py": "4.2.0",
     "mdurl": "0.1.2",
     "netmiko": "4.7.0",
     "openpyxl": "3.1.5",
     "packaging": "26.3",
+    "packageurl-python": "0.17.6",
     "paramiko": "4.0.0",
     "pillow": "12.3.0",
     "pydantic": "2.13.5",
     "pydantic-core": "2.46.5",
     "pygments": "2.21.0",
+    "py-serializable": "2.1.0",
     "pynacl": "1.6.2",
     "pyserial": "3.5",
     "python-dateutil": "2.9.0.post0",
@@ -99,6 +104,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "scp": "0.16.1",
     "setuptools": "84.0.0",
     "six": "1.17.0",
+    "sortedcontainers": "2.4.0",
     "starlette": "1.6.0",
     "textfsm": "2.1.0",
     "typing-extensions": "4.16.0",
@@ -2323,7 +2329,17 @@ def _check_attribution_members(
             )
 
 
-def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapping[str, Any]:
+def _runtime_inventory_matches(versions: Mapping[str, str], *, allow_extensions: bool) -> bool:
+    if set(versions) & _FORBIDDEN_PACKAGE_PARTS:
+        return False
+    if allow_extensions:
+        return all(versions.get(name) == version for name, version in EXPECTED_BUNDLED_PYTHON.items())
+    return versions == EXPECTED_BUNDLED_PYTHON
+
+
+def _validate_toolchain_receipt(
+    value: object, runtime_names: list[str], *, allow_runtime_extensions: bool = False,
+) -> Mapping[str, Any]:
     _require_current_schema(value, TOOLCHAIN_SCHEMA, "portable toolchain receipt")
     if not isinstance(value, Mapping) or set(value) != _TOOLCHAIN_KEYS:
         raise PortableReleaseError("portable toolchain receipt shape is invalid")
@@ -2454,10 +2470,14 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         for item in bundled_distributions
         if isinstance(item, Mapping) and "name" in item and "version" in item
     }
-    if (
-        len(bundled_versions) != len(bundled_distributions)
-        or bundled_versions != EXPECTED_BUNDLED_PYTHON
-    ):
+    # The source/build gate always requires its exact reviewed inventory. The separate
+    # SHA-bound field updater admits additive dependencies for a successor (e.g. its
+    # desktop window), while retaining every existing version and toolchain/native pin.
+    # A candidate may never remove/replace an installed runtime dependency or add a
+    # forbidden package. This is consistency of operator-selected bytes, not approval
+    # of a new dependency; that remains the successor's independent source review.
+    if (len(bundled_versions) != len(bundled_distributions)
+            or not _runtime_inventory_matches(bundled_versions, allow_extensions=allow_runtime_extensions)):
         raise PortableReleaseError("bundled Python dependency denominator differs from reviewed set")
     materials = value.get("materials")
     if not isinstance(materials, list) or any(
@@ -3832,7 +3852,14 @@ def verify_portable_release(
     expected_zip_sha256: str | None = None,
     validate_sbom_schema: bool = True,
     expected_material_root: str | Path | None = None,
+    _allow_runtime_extensions: bool = False,
 ) -> dict[str, Any]:
+    if _allow_runtime_extensions and (
+        not isinstance(expected_zip_sha256, str)
+        or not _HEX64.fullmatch(expected_zip_sha256)
+        or expected_material_root is not None
+    ):
+        raise PortableReleaseError("runtime-extension update verification needs an operator-selected ZIP digest")
     path = Path(zip_path).resolve(strict=True)
     zip_bytes = _read_zip_path(path)
     zip_sha256 = hashlib.sha256(zip_bytes).hexdigest()
@@ -4112,7 +4139,9 @@ def verify_portable_release(
     if provenance.get("subject") != expected_subject:
         raise PortableReleaseError("portable provenance subject digest differs")
     toolchain = objects[TOOLCHAIN_NAME]
-    toolchain = _validate_toolchain_receipt(toolchain, runtime_names)
+    toolchain = _validate_toolchain_receipt(
+        toolchain, runtime_names, allow_runtime_extensions=_allow_runtime_extensions,
+    )
     _check_attribution_members(toolchain, claimed)
     if expected_material_root is not None:
         material_root = Path(expected_material_root).resolve(strict=True)
