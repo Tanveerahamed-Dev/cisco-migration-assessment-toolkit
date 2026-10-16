@@ -404,7 +404,8 @@ Negative controls cover uncovered bundles/entries, absent/conditional gates,
 a changed build or output allowance, and inline computation in a compiled entry.
 Fresh hosted captures and final-head gates remain required.
 
-Initial role metadata is frozen in `7117ca872198c412ff664f0b32d715aaac3bd3ab`.
+Initial role metadata, including the mixed comparison correction, is frozen in
+`97813d794f8cb8d61b206ba49a52aa4f9142b8e6`.
 The complete class boundary is pinned by `ORIGIN` before its hosted capture;
 `ROLE_ORIGIN` independently pins the reviewed role assignments. The source ceiling
 contains the foundation code, role metadata and this CI guard; engine-owned
