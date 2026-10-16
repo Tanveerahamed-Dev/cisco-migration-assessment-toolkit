@@ -431,6 +431,46 @@ def test_alias_without_base_url_uses_its_declaring_configuration(parser, tmp_pat
     refuse_unregistered(selected, "ratio-arithmetic")
 
 
+def test_locked_transitive_npm_dependency_is_a_third_party_terminal(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/package.json": '{"name":"client","dependencies":{"vite":"1"}}',
+        "client/package-lock.json": '{"lockfileVersion":3,"packages":{"node_modules/browser-driver":{"version":"1","resolved":"https://registry.npmjs.org/browser-driver/-/browser-driver-1.tgz"}}}',
+        "client/index.html": '<script type="module" src="main.js"></script>',
+        "client/main.js": "import {driver} from 'browser-driver'; export const value = driver;",
+    })
+    selected = guard.source_map()
+    assert "client/main.js" in selected
+    assert guard.scan(selected) == []
+
+
+def test_file_linked_npm_name_cannot_hide_a_repository_helper(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/package.json": '{"name":"client","dependencies":{"vite":"1","helper-metrics":"file:../shared"}}',
+        "client/package-lock.json": '{"lockfileVersion":3,"packages":{"node_modules/helper-metrics":{"resolved":"../shared","link":true}}}',
+        "client/index.html": '<script type="module" src="main.js"></script>',
+        "client/main.js": "export {answer} from 'helper-metrics';",
+        "shared/package.json": '{"name":"metrics"}',
+        "shared/index.js": "export function answer(rows) { return rows.length; }",
+    })
+    selected = guard.source_map()
+    assert "shared/index.js" in selected
+    refuse_unregistered(selected, "count")
+
+
+def test_new_opaque_remote_script_source_cannot_silently_pass(parser):
+    refuse_unregistered({"client/index.html": '<script src="https://cdn.example.invalid/analysis.js"></script>'}, "opaque-script-source")
+
+
+def test_opaque_script_comment_edits_keep_the_same_source_identity(parser):
+    before = '<script src="https://cdn.example.invalid/analysis.js"></script>'
+    after = '<!-- inert len(rows) --><script src="https://cdn.example.invalid/analysis.js"></script>'
+    one = guard.scan({"client/index.html": before})
+    two = guard.scan({"client/index.html": after})
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
 @pytest.mark.parametrize("source,rule", [
     ("def f(value, limit):\n return value <= limit\n", "returned-comparison"),
     ("def f(n):\n return n == 0\n", "returned-comparison"),

@@ -33,6 +33,9 @@ one is still followed. Third-party package/CDN modules and non-executable asset
 imports are terminals, not a claim about their code. Unknown local module edges
 refuse. Dynamic selectors conservatively expand the applicable repository source
 class; opaque external/generated runtime behavior still requires review.
+Remote HTML script references additionally emit `opaque-script-source`, so an
+uninspected remote script is never treated as an empty/clean code unit. Existing
+references require exact source identities; new ones refuse the closed register.
 
 Python's AST and the locked TypeScript AST parser identify named analysis
 functions, counts, reductions, key counts, counter updates, numeric thresholds,
@@ -249,3 +252,13 @@ by the CLI traceback, so no root cause or valid capture is established. The next
 diagnostic source prints that stderr and rethrows the same failure, retaining the
 original 90-second parser limit. No source edge is waived, and no timeout or test
 is relaxed. The malformed-source control also requires the diagnostic to surface.
+
+Diagnostic head `a53e2ba9`, CI `38951026502`, Linux Python 3.12 job
+`117142571364`, identifies the exact refusal:
+`atlas-scope/review/a11y-ax-rows.mjs -> playwright`. The module is a transitive
+npm dependency rather than a repository-local source edge. Discovery now reads
+the canonical package locks as well as direct manifests. Locked third-party
+packages are terminals; file-linked workspace dependencies are traversed as
+repository source. Positive transitive-terminal and negative file-linked-helper
+controls accompany the correction. No file-name exception, skipped edge, raised
+limit or valid-capture claim replaces this failed evidence.

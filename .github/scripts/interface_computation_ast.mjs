@@ -44,6 +44,14 @@ function htmlSources(text, depth = 0, baseLine = 0, resolveScript = null) {
       if (!location?.startTag) throw new Error('Script source location is unavailable');
       if (text.slice(location.startTag.startOffset, location.startTag.endOffset).trimEnd().endsWith('/>')) throw new Error('Self-closing script syntax is ambiguous');
       if (!location.endTag) throw new Error('Unclosed Explorer script');
+      if (external) {
+        const url = new URL(external.value, 'https://static-census.invalid/');
+        if (['http:', 'https:'].includes(url.protocol) && url.origin !== 'https://static-census.invalid') {
+          // Uninspected remote code is an explicit, frozen source form, not an
+          // empty/clean script. A newly added remote source cannot silently pass.
+          fragments.push({text: `__atlas_opaque_script_source__(${JSON.stringify(url.href)});`, line: baseLine + location.startTag.endLine - 1});
+        }
+      }
       const type = attrs.find(attr => attr.name === 'type')?.value?.trim().toLowerCase();
       if (!external && !['application/json', 'application/ld+json', 'importmap'].includes(type)) {
         fragments.push({ text: (node.childNodes ?? []).filter(child => child.nodeName === '#text').map(child => child.value).join(''),
@@ -202,6 +210,7 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
       if (['reduce', 'reduceRight', 'some', 'every', 'count', 'countBy', 'groupBy', 'sum', 'sumBy', 'mean', 'average'].includes(called)) emit(node, symbol, 'aggregate');
       if (['bfs', 'dfs', 'shortestPath', 'dijkstra', 'reachable', 'floodFill'].includes(called)) emit(node, symbol, 'graph-call');
       if (['eval', 'Function', 'exec', 'compile'].includes(called)) emit(node, symbol, 'dynamic-code');
+      if (called === '__atlas_opaque_script_source__') emit(node, symbol, 'opaque-script-source');
       if (callee.kind === ts.SyntaxKind.ImportKeyword && (!node.arguments.length || !(ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0])))) emit(node, symbol, 'dynamic-module');
       if (ts.isPropertyAccessExpression(callee) && ['Reflect', 'Object'].includes(callee.expression.getText(file)) && ['get', 'getOwnPropertyDescriptor'].includes(called) && ['length', 'size'].includes(keyOf(node.arguments[1]))) emit(node, symbol, 'count');
       if (['push', 'pop', 'shift', 'unshift', 'add', 'set'].includes(called)) emit(node, symbol, 'collection-update');
@@ -321,11 +330,12 @@ function payloadStreams(path, text, line = 0, depth = 0) {
 function discoverSourcePaths(files, names) {
   const script = path => /\.(?:[mc]?[jt]s|[jt]sx)$/.test(path);
   const paths = new Set(names), selected = new Set(), pending = [];
-  const packages = new Map(), configurations = new Map(), optionCache = new Map();
+  const packages = new Map(), locks = new Map(), configurations = new Map(), optionCache = new Map();
   const absolute = path => '/repo/' + path;
   const relative = path => posix.normalize(path) === '/repo' ? '.' : posix.normalize(path).replace(/^\/repo\//, '');
   for (const [path, text] of Object.entries(files)) {
     if (path.endsWith('package.json')) packages.set(posix.dirname(path), JSON.parse(text));
+    if (path.endsWith('package-lock.json')) locks.set(posix.dirname(path), JSON.parse(text));
     if (/(?:tsconfig|jsconfig).*\.json$/.test(path)) {
       const parsed = ts.parseConfigFileTextToJson(path, text);
       if (parsed.error) throw new Error('Cannot parse module-resolution configuration: ' + path);
@@ -414,6 +424,19 @@ function discoverSourcePaths(files, names) {
     const packageName = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
     for (const [folder, pkg] of packages) {
       if (pkg.name === packageName) return [...paths].filter(path => path.startsWith(folder + '/') && script(path));
+    }
+    for (const [folder, lock] of locks) {
+      if (root !== null && folder !== root) continue;
+      const entries = Object.entries(lock.packages ?? {}).filter(([name]) => name === 'node_modules/' + packageName || name.endsWith('/node_modules/' + packageName));
+      for (const [_name, record] of entries) {
+        if (record.link || record.resolved?.startsWith('file:')) {
+          const target = posix.normalize(posix.join(folder, (record.resolved ?? '').replace(/^file:/, '')));
+          const local = [...paths].filter(path => path.startsWith(target + '/') && script(path));
+          if (!local.length) throw new Error('Unclosed file-linked module source: ' + packageName);
+          return local;
+        }
+      }
+      if (entries.length) return []; // pinned third-party install graph, not repository source
     }
     for (const pkg of root === null ? packages.values() : [packages.get(root)]) {
       if (Object.hasOwn({...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies, ...pkg.optionalDependencies}, packageName)) return [];

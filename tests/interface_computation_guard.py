@@ -65,7 +65,7 @@ def source_map(revision=None):
     names = sorted(set(names) - {""})
     selected = python_closure(names, read)
     candidates = {path: read(path) for path in names if path.endswith((*SCRIPT_SUFFIXES, ".html"))
-                  or path.endswith(("package.json", ".json")) and ("tsconfig" in path or "jsconfig" in path or path.endswith("package.json"))}
+                  or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
     if candidates:
         selected.update(node_reply(dict(mode="discover", files=candidates, names=names)))
     return {path: read(path) for path in sorted(selected)}
