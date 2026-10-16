@@ -114,3 +114,38 @@ Windows' environment-variable limit without putting the payload itself into the 
 original encoder-allocation guards, payload expressions and 4 MiB refusal assertions remain intact.
 This corrects framework setup/reporting; fresh hosted results must still prove both cases and the
 complete source/frontend gate on the final head. Earlier timed-out runs remain negative evidence.
+
+## Current-main integration and retained validation (2026-10-16)
+
+Owner-merged #665 advances main from RC7 source `3401627f` to `9112a16e`. Its hosted
+knowledge-export controller, tests and writer census are integrated with this foundation.
+The application logic, qualification contract, test inputs/assertions, original limits, versions
+and golden/sample bytes are unchanged by this integration. All incoming knowledge-export
+source bytes remain owner-owned; its manual controller still deliberately targets RC7 source.
+The actual manual generation ends `report_audit_refused`, so no fresh graph or project vault
+is established. That separate failure is preserved without granting local generation authority.
+
+On preceding A `4aebecc8`, all six supported-runtime matrix jobs pass. Windows records
+19,581 passes, 58 skips, 3 expected failures and 26 passing subtests in 6,523.74 seconds.
+This closes the old oversized-case-ID setup failure on that source. The separate pinned
+source/frontend job `116806226399`, run `38849132444`, is cancelled at its unchanged
+120-minute limit at 06:09:41 UTC. Its last progress is 98%; there is no completed Python
+aggregate or frontend result. Its complete 109,721-byte log has SHA-256
+`2bdcf6f68cc9ba9fad0bc940075ad48e79f78ee5bde13a66e30b90025ad189aa`.
+No earlier F/E progress marker or oversized-ID exception is observed. A cancellation-frame
+Pydantic interrupt and pytest temporary-path teardown error do not identify the active test
+or prove the runtime-overrun cause. The timeout remains an unsatisfied gate.
+
+Dependent B `6f33d57d` separately passes all 15 required-context equivalents and six
+applicable whole workflows, including the same pinned source profile and 87.44% coverage
+against the unchanged 85% threshold. Both actual Windows profiles use CPython 3.12.10;
+matching base-package lists are not a claim that every matrix/tooling dependency is identical.
+An independently recommended one-job repeat of old A is not dispatched: its exact-source
+guard detects the main advance first. No source-level performance fix is inferred.
+
+The integrated heads need fresh complete hosted gates and source-bound frontend evidence.
+Earlier positives, A's still-pending coverage and all timeout/cancellation records do not transfer.
+The unchanged gated eight-module type check passes; the full-project advisory report's
+1,475 diagnostics match both main340 and preceding Bbf2 exactly. Existing named audit
+suppression, unattributed `2 ignored` output, reference capacity warnings and all 14 external
+gates remain explicit. No test, budget, timeout, suppression or approval is loosened.
