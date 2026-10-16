@@ -90,6 +90,8 @@ describe("Snapshot topology workspace", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(explorer()).not.toBe(original);
     expect(explorer()).toHaveAttribute("src", "/api/snapshots/1/explorer#mode=cablemap");
+    fireEvent.error(original);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it.each(["0", "-1", "not-a-snapshot", "9007199254740992", "1e3", "0x1", "01"])("withholds all snapshot readers for invalid id %s", (id) => {

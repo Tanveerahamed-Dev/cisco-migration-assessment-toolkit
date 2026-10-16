@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
 import CoreSnapshot from "./CoreSnapshot";
@@ -18,6 +18,14 @@ function SnapshotSession({ id }: { id: string }) {
   const [generation, setGeneration] = useState(0);
   const [frameError, setFrameError] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null);
+  // Frame error events do not bubble. Bind to the frame itself, and detach the old
+  // listener on replacement so a late event cannot label the new frame as failed.
+  // HTTP generation failures still belong to the opaque document's own response.
+  const attachFrame = useCallback((node: HTMLIFrameElement | null) => {
+    if (frame.current) frame.current.onerror = null;
+    frame.current = node;
+    if (node) node.onerror = () => setFrameError(true);
+  }, []);
   useEffect(() => { if (!core) setVisited(true); }, [core]);
   const requested = params.get("view");
   const sid = Number(id);
@@ -46,10 +54,9 @@ function SnapshotSession({ id }: { id: string }) {
       {(visited || !core) && <section className="snapshot-network-pane" hidden={core} inert={core} aria-label="Network workspace">
         <h1 className="snapshot-workspace-sr">Network workspace</h1>
         {frameError && <div className="snapshot-workspace-error" role="alert">The Explorer frame could not load. Use Reload topology to try again.</div>}
-        <iframe key={`${id}:${generation}`} ref={frame} title="Network Migration Explorer"
+        <iframe key={`${id}:${generation}`} ref={attachFrame} title="Network Migration Explorer"
           src={`${api.explorerUrl(sid)}#mode=cablemap`}
-          sandbox="allow-scripts allow-downloads allow-modals"
-          onError={() => setFrameError(true)} />
+          sandbox="allow-scripts allow-downloads allow-modals" />
       </section>}
       {core && <section className="snapshot-core-pane" aria-label="Core assessment"><CoreSnapshot embedded /></section>}
     </>}

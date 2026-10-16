@@ -101,8 +101,12 @@ export default function App() {
     }
   }
 
+  const snapshotRoute = /^\/snapshots\/[^/]+\/?$/.test(shown.pathname);
+  // The router accepts both spellings. A secondary tab canonicalizes the URL, but
+  // must not replace the same snapshot's boundary and destroy its Explorer frame.
+  const boundaryPath = snapshotRoute ? shown.pathname.replace(/\/$/, "") : shown.pathname;
   return (
-    <div className={/^\/snapshots\/[^/]+\/?$/.test(shown.pathname) ? "app-shell snapshot-app-shell" : "app-shell"}>
+    <div className={snapshotRoute ? "app-shell snapshot-app-shell" : "app-shell"}>
       <TopBar app={app} />
       {authRequired && (
         <div className="auth-overlay">
@@ -126,7 +130,7 @@ export default function App() {
           it fresh and clears a prior error. Keyed to `shown` (the LAGGED pathname), never `location` directly —
           keying to `location` would remount the boundary, and destroy the outgoing page, before the view
           transition below gets to snapshot it, silently defeating the whole mechanism. */}
-      <ErrorBoundary key={`${shown.pathname}:${authGeneration}`}>
+      <ErrorBoundary key={`${boundaryPath}:${authGeneration}`}>
         <Routes location={shown}>
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />

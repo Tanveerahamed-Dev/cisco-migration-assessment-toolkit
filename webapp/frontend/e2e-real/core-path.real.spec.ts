@@ -274,7 +274,10 @@ test("real backend: engine ingest, coverage-honest core views, cutover plan to e
       // A published device count must be the fleet this archive carried; a withheld one is covered above.
       const devicesFact = factByLabel(page, page, "Devices with health records");
       await expect(devicesFact).toHaveCount(1);
-      if (/\bstate-published\b/.test(await devicesFact.locator(".projection-state").getAttribute("class") || "")) {
+      await devicesFact.getByRole("button", { name: "Info for Devices with health records", exact: true }).click();
+      const devicesState = await page.getByRole("dialog").locator(".projection-state").getAttribute("class");
+      await page.getByRole("button", { name: "Close evidence", exact: true }).click();
+      if (/\bstate-published\b/.test(devicesState || "")) {
         await expect(devicesFact.locator(".projection-fact-value")).toHaveText(String(collection.devices.length));
       }
     });
