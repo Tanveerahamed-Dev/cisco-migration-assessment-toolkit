@@ -789,3 +789,31 @@ def test_authored_build_tools_are_scanned_instead_of_mistaken_for_compiled_outpu
     selected = guard.source_map()
     assert "client/build/tool.mjs" in selected
     refuse_unregistered(selected, "count")
+
+
+
+def test_read_only_workbook_input_reader_remains_an_engine_owner():
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/ingestion.py": '__atlas_role__ = "engine"\nfrom openpyxl import load_workbook as read\n'
+                                    'def ingest(path):\n book = read(path, read_only=True, data_only=True)\n return list(book)',
+    }
+    assert python_closure(sources, sources.__getitem__) == {"cisco_toolkit/docmeta.py"}
+
+
+@pytest.mark.parametrize("body", [
+    'book = load_workbook(path)',
+    'book = load_workbook(path, read_only=False)',
+    'book = load_workbook(path, read_only=flag)',
+    'book = load_workbook(path, read_only=True, **options)',
+    'book = load_workbook(path, read_only=True)\nbook.save(path)',
+    'reader = load_workbook\nbook = reader(path, read_only=True)',
+    'from openpyxl import Workbook\nbook = load_workbook(path, read_only=True)',
+])
+def test_report_library_use_without_the_closed_read_only_form_cannot_be_engine(body):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/hidden_report.py": '__atlas_role__ = "engine"\nfrom openpyxl import load_workbook\n' + body,
+    }
+    with pytest.raises(ValueError, match="writer cannot declare engine"):
+        python_closure(sources, sources.__getitem__)

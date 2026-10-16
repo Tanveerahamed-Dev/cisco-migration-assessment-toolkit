@@ -76,22 +76,64 @@ def python_closure(names, read, role_read=None):
         parts = PurePosixPath(path).parts
         return not any(part in {"tests", "test", "__tests__", "fixtures", ".venv", "node_modules"} for part in parts)
 
+    def readonly_workbook_reader(nodes):
+        """Closed read-only form, not a module-name exception or general purity proof.
+
+        A report-library import alone remains conservative writer discovery unless
+        all library bindings are direct load_workbook calls with literal read_only=True.
+        Constructors, save operations, escapes and ambiguous bindings refuse that form.
+        """
+        bindings = set()
+        for node in nodes:
+            if isinstance(node, ast.Import) and any(alias.name.split(".")[0] in {"docx", "pptx", "openpyxl", "xlsxwriter"} for alias in node.names):
+                return False
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in {"docx", "pptx", "openpyxl", "xlsxwriter"}:
+                if node.module != "openpyxl" or any(alias.name != "load_workbook" for alias in node.names):
+                    return False
+                bindings.update(alias.asname or alias.name for alias in node.names)
+        if not bindings:
+            return False
+        parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+        called = set()
+        for node in nodes:
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"save", "save_virtual_workbook", "Workbook", "Document", "Presentation"}:
+                return False
+            if isinstance(node, ast.Name) and node.id in bindings:
+                parent = parents.get(node)
+                if not (isinstance(node.ctx, ast.Load) and isinstance(parent, ast.Call) and parent.func is node
+                        and not any(keyword.arg is None for keyword in parent.keywords)
+                        and any(keyword.arg == "read_only" and isinstance(keyword.value, ast.Constant)
+                                and keyword.value.value is True for keyword in parent.keywords)):
+                    return False
+                called.add(node.id)
+            if isinstance(node, ast.arg) and node.arg in bindings:
+                return False
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in bindings:
+                return False
+        return called == bindings
+
     production = {path for path in files if authored(path)}
     for path in production:
-        for node in ast.walk(tree(path)):
+        nodes = list(ast.walk(tree(path)))
+        report_library = False
+        for node in nodes:
             module = node.module if isinstance(node, ast.ImportFrom) else ""
             imports = [name.name for name in node.names] if isinstance(node, ast.Import) else []
-            # API entry classes and report-writing libraries cover unregistered
-            # API modules/workbook/HTML writers without a hand-maintained file list.
-            if module and module.split(".")[0] in {"fastapi", "starlette", "docx", "pptx", "openpyxl", "xlsxwriter"}:
+            # API entries and report libraries are class-derived seeds. A closed
+            # positive read-only workbook form is an engine input reader, not a writer.
+            if ((module and module.split(".")[0] in {"fastapi", "starlette"})
+                    or any(name.split(".")[0] in {"fastapi", "starlette"} for name in imports)):
                 seeds.add(path)
                 writers.add(path)
-            if any(name.split(".")[0] in {"fastapi", "starlette", "docx", "pptx", "openpyxl", "xlsxwriter"} for name in imports):
-                seeds.add(path)
-                writers.add(path)
+            if ((module and module.split(".")[0] in {"docx", "pptx", "openpyxl", "xlsxwriter"})
+                    or any(name.split(".")[0] in {"docx", "pptx", "openpyxl", "xlsxwriter"} for name in imports)):
+                report_library = True
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("write_") and node.name.endswith(("_html", "_docx", "_pptx", "_xlsx")):
                 seeds.add(path)
                 writers.add(path)
+        if report_library and not readonly_workbook_reader(nodes):
+            seeds.add(path)
+            writers.add(path)
 
     for path in writers:
         if roles.get(path) == "engine":

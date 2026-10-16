@@ -427,3 +427,18 @@ is unchanged. The three Git blob pins are reconciled to those inspected sources;
 no browser source, response suffix, catalogue member, classification, exemption
 or refusal control changes. All source-drift mutations remain mandatory. This
 failed bootstrap supplies no v2 capture or admission evidence.
+
+
+Head `3e11a4dc`, CI `38970458240`, Linux 3.12 job `117207414176`,
+passes all **660** client artifact controls and **201 synthetic controls / 3
+deselected**, then refuses the real census because `external_import.py` imports
+`load_workbook`. Source inspection shows a literal `read_only=True` input reader,
+not a report writer; it remains engine-role. The class detector now recognizes
+only the closed read-only call form: direct imported reader bindings, every call
+with literal `read_only=True`, no keyword expansion, alias escape, constructor
+or save operation. All other report-library imports remain conservative writer
+seeds, including unused/ambiguous imports. Registered writers still refuse
+engine role independently of libraries. Controls prove both the valid engine
+reader and missing/false/dynamic read-only flags, saves, escapes and constructors.
+No filename exception, role downgrade, production calculation or existing
+refusal assertion changes. No capture/admission is claimed from this failed run.
