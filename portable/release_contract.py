@@ -476,6 +476,8 @@ def _installed_verification_root(
 
 def _installed_tree_entries(
     root: Path,
+    *,
+    _skip_root_data: bool = False,
 ) -> tuple[list[tuple[str, Path, os.stat_result]], dict[Path, tuple[int, ...]]]:
     """Enumerate a bounded tree deterministically without descending through links/reparses."""
 
@@ -505,6 +507,10 @@ def _installed_tree_entries(
             scanned: list[tuple[str, Path, os.stat_result]] = []
             with os.scandir(directory) as iterator:
                 for entry in iterator:
+                    if _skip_root_data and directory == root and entry.name.casefold() == "data":
+                        # The installed maintenance source is the only such view.
+                        # Never stat, open or traverse client data while copying code.
+                        continue
                     path = directory / entry.name
                     relative = safe_relative(path.relative_to(root).as_posix())
                     metadata = path.lstat()
@@ -585,10 +591,12 @@ def _recheck_installed_tree(
     entries: list[tuple[str, Path, os.stat_result]],
     directories: Mapping[Path, tuple[int, ...]],
     root_path_directories: Mapping[Path, tuple[int, ...]],
+    *,
+    _skip_root_data: bool = False,
 ) -> None:
     _recheck_installed_root_path(root_path_directories)
     _recheck_installed_directories(directories)
-    observed_entries, observed_directories = _installed_tree_entries(root)
+    observed_entries, observed_directories = _installed_tree_entries(root, _skip_root_data=_skip_root_data)
     expected_snapshot = [
         (relative, _installed_stat_identity(metadata))
         for relative, _path, metadata in entries
@@ -4617,10 +4625,14 @@ def verify_release_set(
     }, RELEASE_SET_VERIFICATION_SCHEMA, "document")
 
 
-def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
+def verify_installed_bundle(
+    bundle_root: str | Path,
+    *,
+    _maintenance_entries: list[tuple[str, Path, os.stat_result, str | None]] | None = None,
+) -> dict[str, Any]:
     """Rehash an extracted/staged Atlas tree before updater activation."""
     root, root_path_directories = _installed_verification_root(bundle_root)
-    entries, directories = _installed_tree_entries(root)
+    entries, directories = _installed_tree_entries(root, _skip_root_data=_maintenance_entries is not None)
     entry_map = {
         relative: (path, metadata)
         for relative, path, metadata in entries
@@ -4635,11 +4647,12 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         return _read_installed_regular(path, metadata, maximum, what)
 
     try:
-        checksum_text = read_entry(
+        checksum_bytes = read_entry(
             f"{METADATA_DIR}/{CHECKSUMS_NAME}",
             MAX_METADATA_BYTES,
             "installed checksum list",
-        ).decode("utf-8", errors="strict")
+        )
+        checksum_text = checksum_bytes.decode("utf-8", errors="strict")
     except (OSError, UnicodeDecodeError) as exc:
         raise PortableReleaseError("installed bundle lacks valid embedded checksums") from exc
     expected: dict[str, str] = {}
@@ -4758,7 +4771,25 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         if item["executable"]
     ):
         raise PortableReleaseError("installed signed PE lacks a terminal certificate table")
-    _recheck_installed_tree(root, entries, directories, root_path_directories)
+    _recheck_installed_tree(
+        root, entries, directories, root_path_directories,
+        _skip_root_data=_maintenance_entries is not None,
+    )
+    if _maintenance_entries is not None:
+        # Capture only after every default file/manifest/PE/signing check succeeds.
+        # Empty directories have no manifest ownership and must not enter a helper.
+        hashes = {**actual, f"{METADATA_DIR}/{CHECKSUMS_NAME}": hashlib.sha256(checksum_bytes).hexdigest()}
+        owned_directories = {
+            str(parent) for name in hashes for parent in PurePosixPath(name).parents
+            if str(parent) != "."
+        }
+        observed_directories = {name for name, _path, metadata in entries if stat.S_ISDIR(metadata.st_mode)}
+        if observed_directories != owned_directories:
+            raise PortableReleaseError("installed maintenance source contains unowned directories")
+        _maintenance_entries.extend(
+            (name, path, metadata, None if stat.S_ISDIR(metadata.st_mode) else hashes[name])
+            for name, path, metadata in entries
+        )
     return _shaped({
         "schema": INSTALLED_VERIFICATION_SCHEMA,
         "status": "SELF_CONSISTENCY_PASS",
@@ -4770,3 +4801,17 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         "signature_reverification_performed": False,
         "signature_claim_source": "embedded_windows_receipt_not_reperformed",
     }, INSTALLED_VERIFICATION_SCHEMA, "document")
+
+
+def verified_application_entries(
+    bundle_root: str | Path,
+) -> list[tuple[str, Path, os.stat_result, str | None]]:
+    """Return a fully verified code allowlist; root client data is never traversed.
+
+    Candidate/staged verification retains its strict default. Only maintenance's
+    installed source uses this view; unmanifested files and directories refuse
+    before a destination can be populated. Digests bind each subsequent copy read.
+    """
+    entries: list[tuple[str, Path, os.stat_result, str | None]] = []
+    verify_installed_bundle(bundle_root, _maintenance_entries=entries)
+    return entries

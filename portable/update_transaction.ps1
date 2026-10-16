@@ -19,6 +19,7 @@ param(
   [string]$Source = "",
   [switch]$Rollback,
   [switch]$RestorePreUpdateDatabase,
+  [switch]$RecoverOnly,
   [switch]$SkipSelftest,
   [ValidateSet("", "staging", "staged", "prepared", "previous_retired",
     "data_moved", "active_moved", "activated", "data_attach_pending", "data_attached",
@@ -1117,6 +1118,9 @@ try {
   $script:ReservedExtract = Join-Path $destPath ".Atlas.update-extract"
   $script:ReservedPreflight = Join-Path $destPath ".Atlas.database-preflight"
 
+  if ($RecoverOnly -and -not (Test-Path -LiteralPath $journal -PathType Leaf)) {
+    throw "-RecoverOnly requires an existing transaction journal; no new operation was started"
+  }
   $recoveryOutcome = Recover-Interrupted $destPath $target $incoming $handoff $previous $retired $journal
   if ($Rollback -and $recoveryOutcome -eq "rollback_completed") {
     Write-Host "[ok] requested rollback was completed by recovery"
@@ -1124,6 +1128,14 @@ try {
   }
   if ($recoveryOutcome -eq "rollback_reversed") {
     throw "the interrupted rollback candidate failed verification; the pre-rollback active tree was restored"
+  }
+  if ($RecoverOnly) {
+    if ($recoveryOutcome -notin @("update_recovered", "rollback_completed") -or
+        (Test-Path -LiteralPath $journal)) {
+      throw "journal recovery did not reach a terminal state; no new operation was started"
+    }
+    Write-Host "[ok] recovered the recorded transaction only; no new update or rollback was started"
+    exit 0
   }
   if ($RestorePreUpdateDatabase -and -not $Rollback) {
     throw "-RestorePreUpdateDatabase requires -Rollback"

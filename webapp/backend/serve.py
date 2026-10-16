@@ -842,6 +842,25 @@ def main(argv=None) -> int:
             os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = prior_live
 
 
+def _maintenance_write_refused() -> bool:
+    """Fence every writable door, including a private recovery-helper executable."""
+    if not _frozen():
+        return False
+    application = _exe_dir()
+    root = application.parent
+    helper = bool(re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}", root.name, re.IGNORECASE))
+    if helper:
+        root = root.parent
+    pending = os.path.lexists(root / "Atlas.update-state.json")
+    if not pending and not helper:
+        return False
+    reason = "portable maintenance is incomplete" if pending else "private maintenance helpers are code-only"
+    print(f"{APP_TITLE}: refusing to write - {reason}.\n"
+          "  Preserve every Atlas* path and explicitly recover with the recorded "
+          "installed-version helper (README-FIELD.txt, UPDATE).", file=sys.stderr)
+    return True
+
+
 def _main_scoped(argv: list[str]) -> int:
     # Maintenance uses the code frozen into THIS executable, before server setup.
     if _frozen() and argv and argv[0] == "--verify-release":
@@ -856,6 +875,8 @@ def _main_scoped(argv: list[str]) -> int:
 
             return maintenance_main(argv)
     if argv and argv[0] == ENGINE_SENTINEL:
+        if _maintenance_write_refused():
+            return 1
         log_path = None
         if _frozen():
             # Running the engine (its main()) installs its audit FileHandler. A bundle-tree cwd resolves to
@@ -1034,17 +1055,15 @@ def _main_scoped(argv: list[str]) -> int:
     # Keep this as ONE pair: `is not None` from the guard, `reuse_out` + the 3-flag message
     # from #438. Re-stacking them re-breaks whichever half is listed second.
     if args.redact_folder is not None:
+        if _maintenance_write_refused():
+            return 1
         return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
     if args.out is not None or args.redact_collection or args.reuse_out:
         print(f"{APP_TITLE}: --out, --redact-collection and --reuse-out only apply to "
               f"--redact-folder.", file=sys.stderr)
         return 2
 
-    if _frozen() and os.path.lexists(_exe_dir().parent / "Atlas.update-state.json"):
-        print(f"{APP_TITLE}: refusing to start - portable maintenance is incomplete.\n"
-              "  Preserve every Atlas* path and finish the recorded update or rollback with "
-              "its installed-version recovery helper (README-FIELD.txt, UPDATE).",
-              file=sys.stderr)
+    if _maintenance_write_refused():
         return 1
 
     if bool(args.ssl_certfile) != bool(args.ssl_keyfile):

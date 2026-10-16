@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import time
@@ -42,10 +44,13 @@ def test_unfrozen_wheel_cli_never_imports_the_portable_build_package(monkeypatch
     assert exited.value.code == 0
 
 
-def test_maintenance_command_keeps_engine_argv_opaque(monkeypatch):
+def test_maintenance_command_keeps_engine_argv_opaque(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(serve, "_run_engine", lambda argv: seen.append(argv) or 9)
-    monkeypatch.setattr(serve, "_frozen", lambda: False)
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: tmp_path / "Atlas")
+    monkeypatch.setattr(serve, "engine_log_path", lambda **kw: "synthetic-engine.log")
+    monkeypatch.setattr(maintenance, "main", lambda argv: pytest.fail("engine argv entered maintenance"))
     assert serve._main_scoped(["--run-engine", "--update", "opaque"]) == 9
     assert seen == [["--update", "opaque"]]
 
@@ -60,6 +65,44 @@ def test_pending_maintenance_refuses_server_before_creating_an_empty_store(tmp_p
     assert serve._main_scoped(["--no-browser"]) == 1
     assert "portable maintenance is incomplete" in capsys.readouterr().err
     assert not (bundle / "data").exists()
+
+
+@pytest.mark.parametrize("helper", [None, "Atlas.maintenance-", "aTlAs.MaInTeNaNcE-"])
+@pytest.mark.parametrize("argv", [
+    ["--no-browser"],
+    ["--run-engine", "--help"],
+    ["--redact-folder", "synthetic-collection", "--out", "synthetic-output"],
+])
+def test_pending_journal_fences_every_writable_door_in_active_and_helper_apps(
+    tmp_path, monkeypatch, capsys, helper, argv,
+):
+    application = (tmp_path / (helper + "c" * 32) / "Atlas"
+                   if helper else tmp_path / "Atlas")
+    application.mkdir(parents=True)
+    (tmp_path / "Atlas.update-state.json").write_text("malformed or valid both fence writes", encoding="ascii")
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(serve, "_run_engine", lambda argv: pytest.fail("engine started"))
+    monkeypatch.setattr(serve, "run_redaction", lambda *a: pytest.fail("redaction started"))
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("store path touched"))
+    assert serve._main_scoped(argv) == 1
+    assert "portable maintenance is incomplete" in capsys.readouterr().err
+    assert not (application / "data").exists()
+
+
+@pytest.mark.parametrize("argv", [["--no-browser"], ["--run-engine", "--help"],
+                                   ["--redact-folder", "synthetic-input", "--out", "synthetic-output"]])
+def test_completed_private_helpers_are_never_writable_application_doors(tmp_path, monkeypatch, capsys, argv):
+    helper = tmp_path / ("ATLAS.MAINTENANCE-" + "a" * 32) / "Atlas"
+    helper.mkdir(parents=True)
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: helper)
+    monkeypatch.setattr(serve, "_run_engine", lambda argv: pytest.fail("helper engine started"))
+    monkeypatch.setattr(serve, "run_redaction", lambda *a: pytest.fail("helper redaction started"))
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("helper store touched"))
+    assert serve._main_scoped(argv) == 1
+    assert "code-only" in capsys.readouterr().err
+    assert not (helper / "data").exists()
 
 
 def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monkeypatch):
@@ -78,6 +121,19 @@ def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monk
         return original(path)
 
     verified = []
+    censused = []
+
+    def census(root):
+        assert root == source
+        if not censused:
+            assert not target.exists(), "helper bytes were copied before source census"
+        censused.append(root)
+        return [(name, path, metadata, None if stat.S_ISDIR(metadata.st_mode)
+                 else hashlib.sha256(path.read_bytes()).hexdigest())
+                for name, path, metadata in release_contract._installed_tree_entries(
+                    root, _skip_root_data=True)[0]]
+
+    monkeypatch.setattr(release_contract, "verified_application_entries", census)
     monkeypatch.setattr(release_contract, "_same_read", read)
     monkeypatch.setattr(release_contract, "verify_installed_bundle", lambda root: verified.append(root))
     target = tmp_path / "helper"
@@ -86,6 +142,7 @@ def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monk
         "Atlas.exe", "_internal/payload.bin"}
     assert not (target / "data").exists()
     assert verified == [target]
+    assert censused == [source, source]
     assert (target / "_internal" / "payload.bin").read_bytes() == b"runtime"
 
 
@@ -116,6 +173,7 @@ def test_transaction_uses_the_selected_executable_and_bundled_script(monkeypatch
     assert argv[argv.index("-VerifierExe") + 1] == str(exe)
     assert argv[argv.index("-File") + 1] == str(script)
     assert options["cwd"] == str(tmp_path)
+    assert options["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
     assert "py" not in argv and "python" not in argv
 
 

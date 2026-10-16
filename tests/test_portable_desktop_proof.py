@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib.util
 import json
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import zipfile
 
 import pytest
@@ -27,7 +29,10 @@ SPEC.loader.exec_module(proof)
 def test_sanitization_removes_mixed_case_python_overrides_and_launcher_path(tmp_path: Path) -> None:
     inherited = {"Path": "C:/Python;C:/Windows;C:/launchers", "PythonHome": "bad",
                  "pythonpath": "bad", "SYSTEMROOT": "C:/Windows", "VIRTUAL_ENV": "bad",
-                 "HTTPS_PROXY": "http://proxy.invalid", "ATLAS_PORTABLE_ALLOW_LIVE_NETWORK": "1"}
+                 "HTTPS_PROXY": "http://proxy.invalid", "ATLAS_PORTABLE_ALLOW_LIVE_NETWORK": "1",
+                 "PYTHONBREAKPOINT": "bad", "Python_ROOT_DIR": "bad", "PYTHONUSERBASE": "bad",
+                 "pythonOddFutureOption": "bad", "_PYTHON_HOST_PLATFORM": "bad",
+                 "PY_PYTHON": "bad", "PYLAUNCHER_DEBUG": "bad"}
     environment = proof.runtime_environment(inherited, tmp_path)
     assert {key.casefold() for key in environment}.isdisjoint(
         {"pythonhome", "pythonpath", "virtual_env", "https_proxy", "atlas_portable_allow_live_network"}
@@ -36,6 +41,92 @@ def test_sanitization_removes_mixed_case_python_overrides_and_launcher_path(tmp_
         str(Path("C:/Windows") / "System32")
     ]
     assert "py.exe" in proof.PYTHON_COMMANDS
+    assert not any(key.casefold().lstrip("_").startswith(("python", "py_", "pylauncher_")) for key in environment)
+
+
+@pytest.mark.parametrize("location", ["app", "cwd", "system32", "system16", "windows", "powershell"])
+def test_python_absence_checks_every_process_search_location(tmp_path, monkeypatch, location):
+    directories = {name: tmp_path / name for name in
+                   ("app", "cwd", "system32", "system16", "windows", "powershell")}
+    for path in directories.values():
+        path.mkdir()
+    (directories["system32"] / "where.exe").write_bytes(b"synthetic lookup probe")
+    monkeypatch.setattr(proof.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1))
+    environment = {"PATH": str(directories["system32"])}
+    systems = tuple(directories[name] for name in ("system32", "system16", "windows", "powershell"))
+    proof.assert_python_hidden(environment, directories["cwd"], (directories["app"],), systems)
+    (directories[location] / "python3.12.exe").write_bytes(b"must be detected even outside PATH")
+    with pytest.raises(RuntimeError, match="complete Windows"):
+        proof.assert_python_hidden(environment, directories["cwd"], (directories["app"],), systems)
+
+
+def test_hosted_launcher_quarantine_is_journaled_and_restored_on_failure(tmp_path):
+    system = tmp_path / "windows"
+    system.mkdir()
+    launcher = system / "py.exe"
+    launcher.write_bytes(b"synthetic launcher")
+    journal = tmp_path / "journal.json"
+    with pytest.raises(ValueError, match="synthetic proof refusal"):
+        with proof.hidden_system_python_launchers(journal, (system,)):
+            assert not launcher.exists()
+            record = json.loads(journal.read_text(encoding="utf-8"))
+            assert record["status"] == "restoration_required"
+            assert len(record["originals"]) == 1
+            raise ValueError("synthetic proof refusal")
+    assert launcher.read_bytes() == b"synthetic launcher"
+    assert json.loads(journal.read_text(encoding="utf-8"))["status"] == "restored"
+    assert list(system.iterdir()) == [launcher]
+
+
+def test_hosted_launcher_quarantine_refuses_hardlinks_before_moving_any_bytes(tmp_path):
+    system = tmp_path / "windows"
+    system.mkdir()
+    launcher = system / "py.exe"
+    launcher.write_bytes(b"synthetic launcher")
+    try:
+        os.link(launcher, tmp_path / "linked.bin")
+    except OSError as error:
+        pytest.skip(str(error))
+    with pytest.raises(RuntimeError, match="multiply-linked"):
+        with proof.hidden_system_python_launchers(tmp_path / "journal.json", (system,)):
+            pytest.fail("hardlinked launcher was hidden")
+    assert launcher.read_bytes() == b"synthetic launcher"
+
+
+def test_unmoved_launcher_with_same_bytes_but_replaced_identity_is_not_claimed_restored(tmp_path, monkeypatch):
+    system = tmp_path / "windows"
+    system.mkdir()
+    launcher = system / "py.exe"
+    launcher.write_bytes(b"synthetic launcher")
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(launcher.read_bytes())
+    original_replace = proof.os.replace
+
+    def raced_replace(source, destination):
+        if source == launcher:
+            original_replace(replacement, launcher)
+            raise OSError("synthetic rename refusal after external replacement")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(proof.os, "replace", raced_replace)
+    with pytest.raises(RuntimeError, match="unmoved launcher identity changed"):
+        with proof.hidden_system_python_launchers(tmp_path / "journal.json", (system,)):
+            pytest.fail("replaced launcher was hidden")
+    assert launcher.read_bytes() == b"synthetic launcher"
+    assert json.loads((tmp_path / "journal.json").read_text())["status"] == "restoration_refused"
+
+
+def test_verified_reinstall_copy_retains_hidden_files_and_empty_directories(tmp_path):
+    original = tmp_path / "old-data"
+    (original / "retained-empty").mkdir(parents=True)
+    (original / ".retained-hidden").write_bytes(b"synthetic original evidence")
+    backup = tmp_path / "offline-backup"
+    inventory = proof.copy_data_verified(original, backup)
+    assert inventory["directories"] == ["retained-empty"]
+    assert (backup / ".retained-hidden").read_bytes() == b"synthetic original evidence"
+    with pytest.raises(RuntimeError, match="fresh"):
+        proof.copy_data_verified(original, backup)
+    assert proof.data_inventory(original) == inventory == proof.data_inventory(backup)
 
 
 @pytest.mark.parametrize("mutation", [

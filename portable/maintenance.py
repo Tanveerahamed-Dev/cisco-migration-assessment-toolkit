@@ -1,10 +1,4 @@
-"""Frozen Atlas installation and journaled update entry points.
-
-The transaction remains the field-tested Windows PowerShell implementation. Only
-the installed executable verifies incoming code. A private copy of that executable
-continues maintenance after the launching executable exits, releasing Windows DLL
-and working-directory handles before the whole-directory switch.
-"""
+"""Installed-code maintenance, with durable and explicit journal recovery."""
 
 from __future__ import annotations
 
@@ -14,7 +8,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -24,16 +17,34 @@ from pathlib import Path
 
 COMMANDS = frozenset({"--install", "--update", "--rollback", "--recover", "--maintenance-worker"})
 RESULT_SCHEMA = "atlas.maintenance-result/1"
+_HELPER = re.compile(r"Atlas\.maintenance-([0-9a-f]{32})")
+_RESULT = re.compile(r"Atlas\.maintenance-result\.([0-9a-f]{32})\.json")
+_ERRORS = (OSError, ValueError, RuntimeError, TypeError, KeyError)
+
+
+def _normal(value: str | Path) -> Path:
+    # Lexical normalization preserves aliases for the physical-path rejection.
+    return Path(os.path.abspath(os.path.normpath(os.fspath(value))))
 
 
 def _physical(path: Path) -> None:
-    """Reject redirects in every existing ancestor, including the selected root."""
     for item in (path, *path.parents):
         if not os.path.lexists(item):
             continue
         value = item.lstat()
         if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
             raise ValueError("maintenance paths must not contain links or reparse points")
+
+
+def _object(path: Path) -> tuple[dict, bytes]:
+    from portable.release_contract import _read_bounded_regular
+
+    _physical(path)
+    raw = _read_bounded_regular(path, 64 * 1024, "maintenance protocol file")
+    value = json.loads(raw.decode("utf-8", errors="strict"))
+    if not isinstance(value, dict):
+        raise ValueError("maintenance protocol file must contain an object")
+    return value, raw
 
 
 def _write_result(path: Path, value: dict) -> None:
@@ -51,13 +62,12 @@ def _write_result(path: Path, value: dict) -> None:
 
 
 def _powershell() -> Path:
-    root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    return root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
 
 
 @contextlib.contextmanager
 def _handoff_lock(root: Path):
-    """OS-owned exclusive handle: process death cannot leave a stale logical lock."""
+    """OS-owned handle; a dead process cannot leave a stale logical lock."""
     import ctypes
     from ctypes import wintypes
 
@@ -78,14 +88,13 @@ def _handoff_lock(root: Path):
 
 
 def _transaction(executable: Path, arguments: list[str], outcome: dict | None = None) -> int:
-    script = executable.parent / "_internal" / "portable" / "update_transaction.ps1"
+    script = executable.parent / "_internal/portable/update_transaction.ps1"
     _physical(script)
     process = subprocess.run(
-        [str(_powershell()), "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-File", str(script),
-         "-VerifierExe", str(executable), *arguments],
+        [str(_powershell()), "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(script), "-VerifierExe", str(executable), *arguments],
         cwd=str(executable.parent.parent), check=False, capture_output=True,
-        encoding="utf-8", errors="replace",
+        encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     output = ((process.stdout or "") + "\n" + (process.stderr or "")).strip()
     if output and outcome is None:
@@ -96,85 +105,337 @@ def _transaction(executable: Path, arguments: list[str], outcome: dict | None = 
 
 
 def _result_path(root: Path, selected: str | None, nonce: str) -> Path:
-    path = Path(selected).absolute() if selected else root / f"Atlas.maintenance-result.{nonce}.json"
+    path = _normal(selected) if selected else root / f"Atlas.maintenance-result.{nonce}.json"
     _physical(path)
-    if (not re.fullmatch(r"Atlas\.maintenance-result\.[0-9a-f]{32}\.json", path.name)
+    if (not _RESULT.fullmatch(path.name)
             or (path.is_relative_to(root) and path.parent != root)):
         raise ValueError("result must be a fresh Atlas.maintenance-result.<32-hex>.json outside application slots")
     if os.path.lexists(path):
         raise ValueError("maintenance result already exists; choose a fresh path")
+    if not path.parent.is_dir():
+        raise ValueError("maintenance result parent must already exist")
     return path
 
 
-def _retire_helpers(root: Path, current: Path) -> None:
-    """Retire only old code helpers after selecting the new durable recovery copy."""
-    from portable.release_contract import _installed_tree_entries
+def _outcome(nonce: str) -> dict:
+    return {"schema": RESULT_SCHEMA, "status": "refused", "exit_code": 1,
+            "verifier_origin": "installed_atlas", "verification_policy": "sha256_bound_runtime_extension",
+            "authentication": "operator_selected_digest_not_publisher_authentication", "nonce": nonce}
 
-    if (root / "Atlas.update-state.json").exists():
-        return  # interrupted-source custody takes precedence over reclaiming space
-    for candidate in root.iterdir():
-        if candidate == current or not re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}", candidate.name):
-            continue
-        if candidate.parent != root or not candidate.is_absolute():
-            raise ValueError("refusing helper removal outside the maintenance destination")
-        _physical(candidate)
-        request = candidate / "request.json"
-        if not request.is_file():
-            continue
-        prior = json.loads(request.read_text(encoding="utf-8"))
-        prior_result = Path(prior.get("result", ""))
-        if not prior_result.is_file():
-            continue  # unfinished helper custody is never discarded
-        if os.path.lexists(candidate / "Atlas" / "data"):
-            raise ValueError("refusing to remove a maintenance helper containing client data")
-        _installed_tree_entries(candidate)  # complete no-reparse census before recursive removal
+
+def _process_identity(pid: int) -> int | None:
+    """Creation time of a live OS process; PID reuse cannot inherit handoff ownership."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x00101000, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 87:
+            return None
+        raise OSError(error, "cannot establish maintenance process identity")
+    try:
+        state = kernel.WaitForSingleObject(handle, 0)
+        if state == 0:
+            return None
+        if state != 258:
+            raise OSError(ctypes.get_last_error(), "cannot establish maintenance process liveness")
+        created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                      ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            raise OSError(ctypes.get_last_error(), "cannot bind maintenance process creation time")
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _pending_handoff(root: Path) -> None:
+    """Admission under the handoff lock, including the pre-journal worker window."""
+    path = root / "Atlas.maintenance.json"
+    if not os.path.lexists(path):
+        return
+    pointer, _raw = _object(path)
+    relative, selected = pointer.get("helper"), pointer.get("result")
+    match = re.fullmatch(r"Atlas\.maintenance-([0-9a-f]{32})/Atlas/Atlas\.exe", relative or "")
+    if (pointer.get("schema") != "atlas.maintenance-recovery/1" or match is None
+            or not isinstance(selected, str)):
+        raise ValueError("cannot establish pending handoff ownership; preserve its pointer")
+    nonce = match.group(1)
+    result_path = _normal(selected)
+    _physical(result_path)
+    if (result_path.name != f"Atlas.maintenance-result.{nonce}.json"
+            or (result_path.is_relative_to(root) and result_path.parent != root)):
+        raise ValueError("recorded handoff result has an unsafe or unbound location")
+    if os.path.lexists(result_path):
+        result, _raw = _object(result_path)
+        code = result.get("exit_code")
+        if (result.get("schema") != RESULT_SCHEMA or result.get("nonce") != nonce
+                or type(code) is not int or code < 0
+                or result.get("status") != ("complete" if code == 0 else "refused")
+                or result.get("verifier_origin") != "installed_atlas"
+                or result.get("verification_policy") != "sha256_bound_runtime_extension"
+                or result.get("authentication") != "operator_selected_digest_not_publisher_authentication"):
+            raise ValueError("recorded handoff has no valid terminal result; preserve its evidence")
+        return
+    _executable, pointer, request = _recorded_helper(root)
+    worker_pid, worker_creation = pointer.get("worker_pid"), pointer.get("worker_creation")
+    if type(worker_pid) is int and worker_pid > 0 and type(worker_creation) is int and worker_creation > 0:
+        if _process_identity(worker_pid) == worker_creation:
+            raise ValueError("recorded maintenance worker is still active; preserve its pointer and wait for its result")
+    else:
+        launcher_pid, launcher_creation = pointer.get("launcher_pid"), pointer.get("launcher_creation")
+        if (type(launcher_pid) is not int or launcher_pid <= 0 or type(launcher_creation) is not int
+                or launcher_creation <= 0):
+            raise ValueError("cannot prove recorded handoff is inactive; preserve its pointer and inspect")
+        if _process_identity(launcher_pid) == launcher_creation:
+            raise ValueError("recorded maintenance launcher is still active; preserve its pointer")
+        # A worker lacking its own published creation identity refuses before it
+        # may mutate state, so a dead launcher cannot leave a runnable stale request.
+    outcome = _outcome(nonce)
+    outcome["error"] = "recorded handoff ended before a journal or terminal result; no request was replayed"
+    _finish(_result_path(root, str(result_path), nonce), outcome)
+    raise ValueError(f"inactive handoff was recorded as refused; inspect {result_path} before requesting maintenance again")
+
+
+def _restore_owned_pointer(path: Path, published: bytes | None, previous: bytes | None) -> None:
+    """Restore only our exact published pointer; never erase a superseding writer."""
+    if published is None or not os.path.lexists(path):
+        return
+    _value, current = _object(path)
+    if current != published:
+        return
+    if previous is None:
+        path.unlink()
+        return
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(previous)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _finish(path: Path, outcome: dict) -> int:
+    try:
+        if os.path.lexists(path):
+            raise ValueError("refusing to overwrite an existing maintenance result")
+        _write_result(path, outcome)
+    except _ERRORS as exc:
+        print(f"Atlas maintenance REFUSED: {exc}; result could not be saved at {path}", file=sys.stderr)
+        return 1
+    if outcome["exit_code"]:
+        print(f"Atlas maintenance REFUSED: {outcome.get('error', 'transaction failed')}; result: {path}",
+              file=sys.stderr)
+    else:
+        print(json.dumps({"status": "complete", "result": str(path)}))
+    return outcome["exit_code"]
+
+
+def _validate_request(value: dict, root: Path, nonce: str) -> None:
+    if (set(value) != {"schema", "parent_pid", "arguments", "result", "nonce"}
+            or value["schema"] != "atlas.maintenance-request/1" or value["nonce"] != nonce
+            or type(value["parent_pid"]) is not int or value["parent_pid"] <= 0
+            or not isinstance(value["result"], str) or not isinstance(value["arguments"], list)
+            or not all(isinstance(item, str) for item in value["arguments"])):
+        raise ValueError("unsupported maintenance handoff")
+    result = _normal(value["result"])
+    if (result.name != f"Atlas.maintenance-result.{nonce}.json"
+            or (result.is_relative_to(root) and result.parent != root)):
+        raise ValueError("maintenance request result does not match its helper nonce")
+    arguments = value["arguments"][:]
+    if "-TestFailAfter" in arguments:
+        index = arguments.index("-TestFailAfter")
+        if index != len(arguments) - 2 or not arguments[-1]:
+            raise ValueError("unsupported maintenance fault-injection arguments")
+        arguments = arguments[:index]
+    if len(arguments) < 3 or arguments[0].casefold() != "-dest" or _normal(arguments[1]) != root:
+        raise ValueError("maintenance request destination differs from its helper")
+    if arguments[2] == "-Rollback":
+        if arguments[3:] not in ([], ["-RestorePreUpdateDatabase"]):
+            raise ValueError("unsupported rollback request arguments")
+    elif (len(arguments) != 6 or arguments[2] != "-Package" or arguments[4] != "-ExpectedSha256"
+          or not re.fullmatch(r"[0-9a-f]{64}", arguments[5])):
+        raise ValueError("unsupported package request arguments")
+
+
+def _entry_identity(entries: list) -> list:
+    from portable.release_contract import _installed_stat_identity
+
+    return [(relative, _installed_stat_identity(metadata), digest)
+            for relative, _path, metadata, digest in entries]
+
+
+def _remove_created(files: list[tuple[Path, os.stat_result]], directories: list[Path]) -> None:
+    """Never recursively delete unknown content after a copy failure."""
+    from portable.release_contract import _installed_file_identity
+
+    for path, expected in reversed(files):
         try:
-            shutil.rmtree(candidate)
-        except OSError:
-            # A completed helper may still be exiting. Leave its remaining code for
-            # the next invocation; never kill a process or relax file sharing.
+            _physical(path)
+            if not os.path.lexists(path):
+                continue
+            if _installed_file_identity(path.lstat()) != _installed_file_identity(expected):
+                continue  # a replaced/changed file is no longer ours to remove
+            path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+    for path in reversed(directories):
+        try:
+            _physical(path)
+            path.rmdir()
+        except (OSError, ValueError):
             pass
 
 
-def _copy_installed_application(source: Path, destination: Path) -> None:
-    """Copy code only; never traverse or copy the installed client data directory."""
-    from portable.release_contract import _installed_tree_entries, _same_read
+def _copy_installed_application(source: Path, destination: Path) -> list:
+    from portable.release_contract import (
+        _installed_stat_identity, _same_read, verified_application_entries, verify_installed_bundle,
+    )
 
     _physical(source)
-    destination.mkdir()
-    entries = []
-    for child in source.iterdir():
-        if child.name.casefold() == "data":
-            continue
-        _physical(child)
-        metadata = child.lstat()
-        entries.append((child.name, child, metadata))
-        if stat.S_ISDIR(metadata.st_mode):
-            children, _directories = _installed_tree_entries(child)
-            entries.extend((f"{child.name}/{relative}", path, value)
-                           for relative, path, value in children)
-    entries.sort(key=lambda row: row[0])
-    for relative, path, metadata in entries:
-        target = destination.joinpath(*relative.split("/"))
-        if stat.S_ISDIR(metadata.st_mode):
-            target.mkdir(exist_ok=True)
-        else:
-            if getattr(metadata, "st_nlink", 1) != 1:
-                raise ValueError("maintenance application contains a multiply-linked file")
-            raw, current = _same_read(path)
-            if (current.st_size, current.st_mtime_ns, current.st_ino) != (
-                metadata.st_size, metadata.st_mtime_ns, metadata.st_ino
-            ):
-                raise ValueError("installed application changed during maintenance copy")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(raw)
-    from portable.release_contract import verify_installed_bundle
+    entries = verified_application_entries(source)  # BEFORE creating any copy or reading unowned bytes
+    created_files: list[tuple[Path, os.stat_result]] = []
+    created_directories: list[Path] = []
+    try:
+        destination.mkdir()
+        created_directories.append(destination)
+        for relative, path, metadata, expected_digest in entries:
+            target = destination.joinpath(*relative.split("/"))
+            _physical(path)
+            if stat.S_ISDIR(metadata.st_mode):
+                if _installed_stat_identity(path.lstat()) != _installed_stat_identity(metadata):
+                    raise ValueError("installed application directory changed during maintenance copy")
+                target.mkdir()
+                created_directories.append(target)
+            else:
+                raw, current = _same_read(path)
+                if (_installed_stat_identity(current) != _installed_stat_identity(metadata)
+                        or hashlib.sha256(raw).hexdigest() != expected_digest):
+                    raise ValueError("installed application changed during maintenance copy")
+                with target.open("xb") as stream:
+                    created_files.append((target, os.fstat(stream.fileno())))
+                    try:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    finally:
+                        # Bind our partial file too if write/flush/fsync fails.
+                        # Buffered bytes must reach the descriptor before fstat.
+                        try:
+                            stream.flush()
+                        finally:
+                            created_files[-1] = (target, os.fstat(stream.fileno()))
+        if _entry_identity(verified_application_entries(source)) != _entry_identity(entries):
+            raise ValueError("installed application census changed during maintenance copy")
+        verify_installed_bundle(destination)
+        return [(relative, destination.joinpath(*relative.split("/")),
+                 destination.joinpath(*relative.split("/")).lstat(), digest)
+                for relative, _path, _metadata, digest in entries]
+    except BaseException:
+        _remove_created(created_files, created_directories)
+        raise
 
-    verify_installed_bundle(destination)
+
+def _helper_contents(helper: Path) -> tuple[list, dict, bytes]:
+    from portable.release_contract import verified_application_entries, verify_installed_bundle
+
+    _physical(helper)
+    if not _HELPER.fullmatch(helper.name) or not helper.is_dir():
+        raise ValueError("unsupported maintenance helper namespace")
+    if {path.name for path in helper.iterdir()} != {"Atlas", "request.json"}:
+        raise ValueError("maintenance helper contains unowned root entries; preserve it")
+    atlas = helper / "Atlas"
+    _physical(atlas)
+    if any(path.name.casefold() == "data" for path in atlas.iterdir()):
+        raise ValueError("maintenance helper contains client data; preserve it")
+    verify_installed_bundle(atlas)  # default verifier forbids data and rechecks every member
+    entries = verified_application_entries(atlas)
+    request, raw = _object(helper / "request.json")
+    _validate_request(request, helper.parent, helper.name.removeprefix("Atlas.maintenance-"))
+    return entries, request, raw
+
+
+def _retire_helper(candidate: Path) -> None:
+    """Delete only one completed helper whose complete ownership was verified."""
+    entries, request, request_raw = _helper_contents(candidate)
+    result_path = _normal(request["result"])
+    if not os.path.lexists(result_path):
+        return
+    result, _result_raw = _object(result_path)
+    code = result.get("exit_code")
+    if (result.get("schema") != RESULT_SCHEMA or result.get("nonce") != request["nonce"]
+            or type(code) is not int or code < 0
+            or result.get("status") != ("complete" if code == 0 else "refused")
+            or result.get("verifier_origin") != "installed_atlas"
+            or result.get("verification_policy") != "sha256_bound_runtime_extension"
+            or result.get("authentication") != "operator_selected_digest_not_publisher_authentication"):
+        raise ValueError("maintenance helper lacks a matching terminal result; preserve it")
+    if code != 0:
+        return  # recovery's separate receipt never erases the original refusal
+    # Delete only exact verified members; an inserted unknown file survives and
+    # prevents directory removal rather than being swept up by recursive deletion.
+    _entries, _request, confirmed_raw = _helper_contents(candidate)
+    from portable.release_contract import _installed_file_identity, _same_read
+
+    request_path = candidate / "request.json"
+    _physical(request_path)
+    bound_raw, request_metadata = _same_read(request_path)
+    if bound_raw != request_raw or confirmed_raw != request_raw:
+        raise ValueError("maintenance helper request changed before retirement; preserve it")
+    files = [(candidate / "Atlas" / relative, metadata) for relative, _path, metadata, _sha in entries
+             if not stat.S_ISDIR(metadata.st_mode)]
+    directories = [candidate / "Atlas"] + [candidate / "Atlas" / relative
+                   for relative, _path, metadata, _sha in entries if stat.S_ISDIR(metadata.st_mode)]
+    _remove_created(files, directories)
+    remaining = {path.name for path in candidate.iterdir()}
+    if remaining == {"request.json"}:
+        _physical(request_path)
+        current_raw, current_metadata = _same_read(request_path)
+        if (current_raw != request_raw
+                or _installed_file_identity(current_metadata) != _installed_file_identity(request_metadata)):
+            raise ValueError("maintenance helper request changed during retirement; preserve it")
+        request_path.unlink()
+        candidate.rmdir()
+
+
+def _retire_helpers(root: Path, current: Path) -> None:
+    if os.path.lexists(root / "Atlas.update-state.json"):
+        return
+    pointer_path = root / "Atlas.maintenance.json"
+    referenced = _object(pointer_path)[0].get("helper") if os.path.lexists(pointer_path) else None
+    for candidate in root.iterdir():
+        if candidate == current or not _HELPER.fullmatch(candidate.name):
+            continue
+        if referenced == f"{candidate.name}/Atlas/Atlas.exe":
+            continue  # preserve the old pointer's subject until a new handoff exists
+        try:
+            _retire_helper(candidate)
+        except _ERRORS as exc:
+            # Unknown/unfinished content is preserved without blocking a new,
+            # separately verified maintenance operation.
+            print(f"Atlas retained maintenance helper {candidate}: {exc}", file=sys.stderr)
+
+
+def _cleanup_prepared_helper(helper: Path, entries: list, request_identity: os.stat_result | None) -> None:
+    files = [(helper / "Atlas" / relative, metadata) for relative, _path, metadata, _sha in entries
+             if not stat.S_ISDIR(metadata.st_mode)]
+    if request_identity is not None:
+        files.append((helper / "request.json", request_identity))
+    directories = [helper, helper / "Atlas"] + [helper / "Atlas" / relative
+                   for relative, _path, metadata, _sha in entries if stat.S_ISDIR(metadata.st_mode)]
+    _remove_created(files, directories)
 
 
 def _wait_for_parent(pid: int) -> None:
-    """Wait on the real launching process handle; never kill the user's application."""
     import ctypes
     from ctypes import wintypes
 
@@ -185,7 +446,7 @@ def _wait_for_parent(pid: int) -> None:
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = kernel.OpenProcess(0x00100000, False, pid)
     if not handle:
-        if ctypes.get_last_error() == 87:  # already exited, no process by that id
+        if ctypes.get_last_error() == 87:
             return
         raise OSError(ctypes.get_last_error(), "cannot wait for Atlas to close")
     try:
@@ -195,89 +456,124 @@ def _wait_for_parent(pid: int) -> None:
         kernel.CloseHandle(handle)
 
 
+def _recorded_helper(root: Path) -> tuple[Path, dict, dict]:
+    pointer, _raw = _object(root / "Atlas.maintenance.json")
+    relative = pointer.get("helper")
+    if (pointer.get("schema") != "atlas.maintenance-recovery/1" or not isinstance(relative, str)
+            or not re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}/Atlas/Atlas\.exe", relative)):
+        raise ValueError("unsupported recorded maintenance helper")
+    executable = root.joinpath(*relative.split("/"))
+    _entries, request, raw = _helper_contents(executable.parent.parent)
+    from portable.release_contract import _same_read
+
+    if (hashlib.sha256(_same_read(executable)[0]).hexdigest() != pointer.get("helper_exe_sha256")
+            or hashlib.sha256(raw).hexdigest() != pointer.get("request_sha256")
+            or pointer.get("result") != request["result"]):
+        raise ValueError("recorded helper code, request or result identity changed")
+    return executable, pointer, request
+
+
 def _worker(request_path: Path) -> int:
-    """Private installed-code handoff; the outer result never asserts publisher identity."""
-    executable = Path(sys.executable).absolute()
-    _physical(request_path)
-    if request_path != executable.parent.parent / "request.json":
-        raise ValueError("maintenance request must be beside its private application copy")
-    request = json.loads(request_path.read_text(encoding="utf-8"))
-    if (set(request) != {"schema", "parent_pid", "arguments", "result", "nonce"}
-            or request["schema"] != "atlas.maintenance-request/1"
-            or not isinstance(request["parent_pid"], int)
-            or request["parent_pid"] <= 0
-            or not isinstance(request["arguments"], list)
-            or not all(isinstance(item, str) for item in request["arguments"])
-            or request["nonce"] != request_path.parent.name.removeprefix("Atlas.maintenance-")):
-        raise ValueError("unsupported maintenance handoff")
-    result_path = Path(request["result"])
-    outcome: dict = {
-        "schema": RESULT_SCHEMA, "status": "refused", "exit_code": 1,
-        "verifier_origin": "installed_atlas",
-        "verification_policy": "sha256_bound_runtime_extension",
-        "authentication": "operator_selected_digest_not_publisher_authentication",
-        "nonce": request["nonce"],
-    }
+    executable = _normal(sys.executable)
+    helper = executable.parent.parent
+    match = _HELPER.fullmatch(helper.name)
+    if not match or executable.parent.name != "Atlas" or executable.name != "Atlas.exe":
+        raise ValueError("worker must run from a canonical installed-code helper")
+    root, nonce = helper.parent, match.group(1)
+    result = _result_path(root, None, nonce)  # safe fallback BEFORE any request parsing
+    outcome = _outcome(nonce)
     try:
+        # Only the pointer, independent of malformed request bytes, may select an
+        # external result. Its basename is tied to this helper's nonce.
+        pointer, _raw = _object(root / "Atlas.maintenance.json")
+        if pointer.get("helper") == executable.relative_to(root).as_posix():
+            selected = _result_path(root, pointer.get("result"), nonce)
+            if selected.name != result.name:
+                raise ValueError("recorded worker result nonce differs")
+            result = selected
+        if _normal(request_path) != helper / "request.json":
+            raise ValueError("maintenance request must be beside its private application copy")
+        request, _raw = _object(request_path)
+        _validate_request(request, root, nonce)
         _wait_for_parent(request["parent_pid"])
-        root = request_path.parent.parent
         with _handoff_lock(root):
-            pointer = json.loads((root / "Atlas.maintenance.json").read_text(encoding="utf-8"))
-            if (pointer.get("worker_pid") != os.getpid()
-                    or pointer.get("helper") != executable.relative_to(root).as_posix()
-                    or pointer.get("request_sha256") != hashlib.sha256(request_path.read_bytes()).hexdigest()):
-                raise ValueError("maintenance handoff was superseded or changed before worker activation")
+            recorded, pointer, request = _recorded_helper(root)
+            if (recorded != executable or pointer.get("worker_pid") != os.getpid()
+                    or pointer.get("worker_creation") != _process_identity(os.getpid())):
+                raise ValueError("maintenance handoff was superseded before worker activation")
             rc = _transaction(executable, request["arguments"], outcome)
         outcome.update(exit_code=rc, status="complete" if rc == 0 else "refused")
-    except (OSError, ValueError, TimeoutError) as exc:
+    except _ERRORS as exc:
         outcome["error"] = str(exc)
-    _write_result(result_path, outcome)
-    return outcome["exit_code"]
+    return _finish(result, outcome)
 
 
 def _recover(executable: Path, root: Path, result: Path | None) -> int:
-    _physical(root)
-    pointer_path = root / "Atlas.maintenance.json"
-    _physical(pointer_path)
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    helper = pointer.get("helper", "")
-    if (pointer.get("schema") != "atlas.maintenance-recovery/1"
-            or not isinstance(helper, str)
-            or not re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}/Atlas/Atlas\.exe", helper)
-            or executable != root.joinpath(*helper.split("/"))
-            or hashlib.sha256(executable.read_bytes()).hexdigest() != pointer.get("helper_exe_sha256")):
-        raise ValueError("recovery must use the recorded installed-version helper")
-    request = executable.parent.parent / "request.json"
-    _physical(request)
-    if hashlib.sha256(request.read_bytes()).hexdigest() != pointer.get("request_sha256"):
-        raise ValueError("recorded recovery request identity changed")
-    value = json.loads(request.read_text(encoding="utf-8"))
-    arguments = value.get("arguments", [])
-    if (value.get("schema") != "atlas.maintenance-request/1"
-            or not isinstance(arguments, list) or not all(isinstance(item, str) for item in arguments)
-            or arguments[:2] != ["-Dest", str(root)]
-            or not (root / "Atlas.update-state.json").is_file()):
-        raise ValueError("no matching journaled maintenance request to recover")
-    if "-TestFailAfter" in arguments:
-        index = arguments.index("-TestFailAfter")
-        arguments = arguments[:index] + arguments[index + 2:]
-    if result is not None:
-        result = _result_path(root, str(result), uuid.uuid4().hex)
-    outcome: dict = {
-        "schema": RESULT_SCHEMA, "verifier_origin": "installed_atlas",
-        "verification_policy": "sha256_bound_runtime_extension",
-        "authentication": "operator_selected_digest_not_publisher_authentication",
-    }
-    with _handoff_lock(root):
-        rc = _transaction(executable, arguments, outcome)
-    outcome.update(status="complete" if rc == 0 else "refused", exit_code=rc)
-    if result is not None:
-        _write_result(result, outcome)
-    return rc
+    root, executable = _normal(root), _normal(executable)
+    nonce = uuid.uuid4().hex
+    result_path = _result_path(root, str(result) if result else None, nonce)
+    nonce = _RESULT.fullmatch(result_path.name).group(1)
+    outcome = _outcome(nonce)
+    try:
+        with _handoff_lock(root):
+            if not os.path.lexists(root / "Atlas.update-state.json"):
+                raise ValueError("no journaled maintenance request to recover")
+            _physical(root / "Atlas.update-state.json")
+            recorded, _pointer, request = _recorded_helper(root)
+            arguments = request["arguments"][:]
+            if "-TestFailAfter" in arguments:
+                arguments = arguments[:arguments.index("-TestFailAfter")]
+            arguments.append("-RecoverOnly")
+            if executable == recorded:
+                rc = _transaction(recorded, arguments, outcome)
+                outcome.update(exit_code=rc, status="complete" if rc == 0 else "refused")
+                return _finish(result_path, outcome)
+        # Release our handle before the recorded original version acquires it.
+        # The pointer is preserved; the active version never replaces the trust root.
+        child = subprocess.run(
+            [str(recorded), "--recover", str(root), "--maintenance-result", str(result_path)],
+            cwd=str(root), check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if not result_path.is_file():
+            raise ValueError(f"recorded recovery helper returned {child.returncode} without a durable result")
+        value, _raw = _object(result_path)
+        if (value.get("schema") != RESULT_SCHEMA or value.get("nonce") != nonce
+                or type(value.get("exit_code")) is not int or value["exit_code"] != child.returncode
+                or value.get("status") != ("complete" if child.returncode == 0 else "refused")):
+            raise ValueError("recorded recovery helper returned an inconsistent result")
+        if child.returncode:
+            print(f"Atlas recovery REFUSED: {value.get('error', 'transaction failed')}; result: {result_path}",
+                  file=sys.stderr)
+        return child.returncode
+    except _ERRORS as exc:
+        outcome["error"] = str(exc)
+    return _finish(result_path, outcome)
+
+
+def _require_runtime() -> None:
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        raise ValueError("installation and updates require the bundled Windows Atlas.exe")
+
+
+def _validate_options(args) -> None:
+    if args.recover or args.maintenance_worker:
+        if (args.package or args.expected_sha256 or args.dest or args.restore_pre_update_database
+                or args.test_fail_after or (args.maintenance_worker and args.maintenance_result)):
+            raise ValueError("recovery/worker mode cannot ignore install, update or rollback options")
+    if args.install and args.dest:
+        raise ValueError("--dest cannot be combined with --install")
+    if args.package and not args.install:
+        raise ValueError("--package requires --install")
+    if args.restore_pre_update_database and not args.rollback:
+        raise ValueError("--restore-pre-update-database requires --rollback")
+    if args.rollback and args.expected_sha256:
+        raise ValueError("--expected-sha256 does not apply to --rollback")
+    if args.install and args.maintenance_result:
+        raise ValueError("--maintenance-result applies only to asynchronous maintenance and recovery")
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Install, update or roll back portable Atlas")
+    parser = argparse.ArgumentParser(description="Install, update or explicitly recover portable Atlas")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--install", metavar="DEST")
     group.add_argument("--update", metavar="ZIP")
@@ -292,93 +588,107 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--test-fail-after", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        if os.name != "nt" or not getattr(sys, "frozen", False):
-            raise ValueError("installation and updates require the bundled Windows Atlas.exe")
+        _require_runtime()
+        _validate_options(args)
         if args.maintenance_worker:
-            return _worker(Path(args.maintenance_worker).absolute())
-        executable = Path(sys.executable).absolute()
+            return _worker(_normal(args.maintenance_worker))
+        executable = _normal(sys.executable)
         if args.recover:
-            return _recover(executable, Path(args.recover).absolute(),
-                            Path(args.maintenance_result).absolute() if args.maintenance_result else None)
+            return _recover(executable, _normal(args.recover),
+                            _normal(args.maintenance_result) if args.maintenance_result else None)
         source = executable.parent
-        root = Path(args.install or args.dest or source.parent).absolute()
+        root = _normal(args.install or args.dest or source.parent)
         _physical(root)
-        if root == source or (source.is_relative_to(root / "Atlas") and args.install):
+        if root == source or (args.install and (source.is_relative_to(root / "Atlas")
+                                               or root.is_relative_to(source))):
             raise ValueError("first installation must run from a separately extracted Atlas folder")
-        if args.package and not args.install:
-            raise ValueError("--package requires --install")
-        if args.restore_pre_update_database and not args.rollback:
-            raise ValueError("--restore-pre-update-database requires --rollback")
         package = args.package if args.install else args.update
         if not args.rollback:
-            if not package:
-                raise ValueError("--install requires --package ZIP and its published --expected-sha256")
-            digest = args.expected_sha256 or ""
-            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-                raise ValueError("supply the published lowercase --expected-sha256 for this ZIP")
-            package_path = Path(package).absolute()
+            if not package or not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256 or ""):
+                raise ValueError("supply --package/--update ZIP and its published lowercase --expected-sha256")
+            digest = args.expected_sha256
+            package_path = _normal(package)
             _physical(package_path)
             from portable.release_contract import _read_zip_path
 
             if hashlib.sha256(_read_zip_path(package_path)).hexdigest() != digest:
                 raise ValueError("package SHA-256 differs from the published SHA-256 expectation")
         root.mkdir(parents=True, exist_ok=True)
-        transaction_args = ["-Dest", str(root)]
+        arguments = ["-Dest", str(root)]
         if args.rollback:
-            transaction_args.append("-Rollback")
+            arguments.append("-Rollback")
             if args.restore_pre_update_database:
-                transaction_args.append("-RestorePreUpdateDatabase")
+                arguments.append("-RestorePreUpdateDatabase")
         else:
-            transaction_args.extend(["-Package", str(package_path), "-ExpectedSha256", digest])
+            arguments.extend(["-Package", str(package_path), "-ExpectedSha256", digest])
         if args.test_fail_after:
-            transaction_args.extend(["-TestFailAfter", args.test_fail_after])
-        if args.install:
-            if (root / "Atlas.update-state.json").exists():
-                journal = root / "Atlas.update-state.json"
-                _physical(journal)
-                state = json.loads(journal.read_text(encoding="utf-8"))
-                if (state.get("schema") != "atlas.portable-transaction/2"
-                        or state.get("operation") != "update" or state.get("had_active") is not False
-                        or state.get("candidate_identity", {}).get("package_sha256") != digest):
-                    raise ValueError("existing update journal requires its recorded installed-version recovery helper")
-                return _transaction(executable, transaction_args)
-            if (root / "Atlas").exists():
-                raise ValueError("Atlas already exists here; use that installed Atlas.exe --update")
-            return _transaction(executable, transaction_args)
-        if source != root / "Atlas":
-            raise ValueError("update and rollback must be launched by the installed Atlas.exe")
-        # Leave the active executable and its DLLs before renaming any application slot.
-        # A unique result path makes dispatch success distinct from transaction completion.
-        nonce = uuid.uuid4().hex
-        result = _result_path(root, args.maintenance_result, nonce)
+            arguments.extend(["-TestFailAfter", args.test_fail_after])
         with _handoff_lock(root):
+            journal = root / "Atlas.update-state.json"
+            if os.path.lexists(journal):
+                if not args.install:
+                    raise ValueError("journaled maintenance is incomplete; use explicit --recover ROOT")
+                state, _raw = _object(journal)
+                identity = state.get("candidate_identity")
+                if (state.get("schema") != "atlas.portable-transaction/2" or state.get("operation") != "update"
+                        or state.get("had_active") is not False or not isinstance(identity, dict)
+                        or identity.get("package_sha256") != digest):
+                    raise ValueError("existing journal requires its recorded installed-version recovery helper")
+                return _transaction(executable, arguments)
+            if args.install:
+                if os.path.lexists(root / "Atlas"):
+                    raise ValueError("Atlas already exists here; use that installed Atlas.exe --update")
+                return _transaction(executable, arguments)
+            if source != root / "Atlas":
+                raise ValueError("update and rollback must be launched by the installed Atlas.exe")
+            _pending_handoff(root)
+            result = _result_path(root, args.maintenance_result, uuid.uuid4().hex)
+            nonce = _RESULT.fullmatch(result.name).group(1)
             helper = root / f"Atlas.maintenance-{nonce}"
+            _retire_helpers(root, helper)  # before publishing any new helper or pointer
             helper.mkdir()
-            copied = helper / "Atlas"
-            _copy_installed_application(source, copied)
-            request = helper / "request.json"
-            _write_result(request, {
-                "schema": "atlas.maintenance-request/1", "parent_pid": os.getpid(),
-                "arguments": transaction_args, "result": str(result), "nonce": nonce,
-            })
-            pointer = {
-                "schema": "atlas.maintenance-recovery/1",
-                "helper": (copied / "Atlas.exe").relative_to(root).as_posix(),
-                "helper_exe_sha256": hashlib.sha256((copied / "Atlas.exe").read_bytes()).hexdigest(),
-                "request_sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
-            }
-            _write_result(root / "Atlas.maintenance.json", pointer)
-            _retire_helpers(root, helper)
-            worker = subprocess.Popen(
-                [str(copied / "Atlas.exe"), "--maintenance-worker", str(request)],
-                cwd=str(helper), close_fds=True,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
-            )
-            pointer["worker_pid"] = worker.pid
-            _write_result(root / "Atlas.maintenance.json", pointer)
+            prepared_entries: list = []
+            request_identity = None
+            worker = None
+            pointer_path = root / "Atlas.maintenance.json"
+            previous_pointer = _object(pointer_path)[1] if os.path.lexists(pointer_path) else None
+            published_pointer = None
+            try:
+                copied = helper / "Atlas"
+                prepared_entries = _copy_installed_application(source, copied)
+                request_path = helper / "request.json"
+                _write_result(request_path, {"schema": "atlas.maintenance-request/1", "parent_pid": os.getpid(),
+                                            "arguments": arguments, "result": str(result), "nonce": nonce})
+                request_identity = request_path.lstat()
+                pointer = {"schema": "atlas.maintenance-recovery/1",
+                           "helper": (copied / "Atlas.exe").relative_to(root).as_posix(),
+                           "helper_exe_sha256": hashlib.sha256((copied / "Atlas.exe").read_bytes()).hexdigest(),
+                           "request_sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(), "result": str(result),
+                           "launcher_pid": os.getpid(), "launcher_creation": _process_identity(os.getpid())}
+                if pointer["launcher_creation"] is None:
+                    raise ValueError("cannot establish current maintenance launcher identity")
+                published_pointer = (json.dumps(pointer, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+                _write_result(pointer_path, pointer)
+                worker = subprocess.Popen(
+                    [str(copied / "Atlas.exe"), "--maintenance-worker", str(request_path)], cwd=str(helper), close_fds=True,
+                    creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                   | getattr(subprocess, "DETACHED_PROCESS", 0)),
+                )
+                pointer["worker_pid"] = worker.pid
+                pointer["worker_creation"] = _process_identity(worker.pid)
+                if pointer["worker_creation"] is None:
+                    raise ValueError("maintenance worker exited before its creation identity could be published")
+                _write_result(pointer_path, pointer)
+            except BaseException:
+                if worker is None:
+                    try:
+                        _restore_owned_pointer(pointer_path, published_pointer, previous_pointer)
+                    finally:
+                        _cleanup_prepared_helper(helper, prepared_entries, request_identity)
+                raise
         print(json.dumps({"status": "scheduled", "result": str(result),
                           "message": "Atlas is closing; wait for status complete in the result file."}))
         return 0
-    except (OSError, ValueError, RuntimeError) as exc:
+    except _ERRORS as exc:
         print(f"Atlas maintenance REFUSED: {exc}", file=sys.stderr)
         return 1

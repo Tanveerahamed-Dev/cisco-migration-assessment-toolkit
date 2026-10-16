@@ -5,6 +5,7 @@ stay ASCII-only (the make_stick.ps1 cp1252 lesson — this file gets opened in N
 Windows boxes), and never name a CLI flag the shipped argparse surfaces don't actually have
 (the doc-rot class where a README teaches commands that no longer exist)."""
 
+import ast
 import re
 from pathlib import Path
 
@@ -13,9 +14,50 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "portable" / "README-FIELD.txt"
 
-_ADD_ARG = re.compile(r"""add_argument\(\s*['"](--[a-z][a-z0-9-]*)""")
 _FLAG = re.compile(r"--[a-z][a-z0-9-]*")
 _ATLAS = re.compile(r"Atlas\.exe\b.*")
+
+
+def _parser_flags(relative):
+    """Read each parser independently without importing or running the product."""
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    flags = {argument.value for node in ast.walk(tree)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "add_argument" for argument in node.args
+             if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+             and argument.value.startswith("--")}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else (
+            node.func.id if isinstance(node.func, ast.Name) else None)
+        if name == "ArgumentParser":
+            setting = next((keyword.value for keyword in node.keywords if keyword.arg == "add_help"), None)
+            if setting is None or (isinstance(setting, ast.Constant) and setting.value is True):
+                flags.add("--help")  # argparse adds this without an explicit add_argument call
+    return flags
+
+
+def _check_command_surface(command):
+    flags = _FLAG.findall(command)
+    maintenance = {"--install", "--update", "--rollback", "--recover", "--maintenance-worker"}
+    if "--run-engine" in flags:
+        index = flags.index("--run-engine")
+        assert set(flags[:index]) <= {"--allow-live-network"}, "non-launcher flag precedes engine sentinel"
+        unknown = set(flags[index + 1:]) - _parser_flags("COLLECT_PARSE_V3_23_0.py")
+        surface = "engine"
+    elif "--verify-release" in flags:
+        assert flags[0] == "--verify-release", "release verifier dispatch must be the first flag"
+        unknown = set(flags[1:]) - _parser_flags("portable/verify_release.py")
+        surface = "release verifier"
+    elif set(flags) & maintenance:
+        unknown = set(flags) - _parser_flags("portable/maintenance.py")
+        surface = "maintenance"
+    else:
+        unknown = set(flags) - _parser_flags("webapp/backend/serve.py")
+        surface = "app"
+    assert not unknown, f"{surface} command names wrong-surface flags {sorted(unknown)}: {command}"
+    return surface
 
 
 def _atlas_commands():
@@ -65,9 +107,8 @@ def test_every_atlas_command_is_routed_to_exactly_one_surface():
     every command the guide shows is accounted for by one of the two surface checks, so a new
     engine command cannot appear unreconciled."""
     cmds = _atlas_commands()
-    engine = [c for c in cmds if "--run-engine" in c[2]]
-    app = [c for c in cmds if "--run-engine" not in c[2]]
-    assert len(engine) + len(app) == len(cmds) and cmds
+    surfaces = [_check_command_surface(command) for _line, command, _flags in cmds]
+    assert len(surfaces) == len(cmds) and {"engine", "app", "maintenance"} <= set(surfaces)
 
 
 def test_field_guide_is_ascii_only():
@@ -121,8 +162,7 @@ def test_every_engine_command_uses_only_engine_flags():
     """Per-SURFACE check. The union test below proves a flag exists *somewhere*; it would pass a
     line that hands a server-only flag to the engine (or drops the --run-engine sentinel), which
     fails at runtime. Each `Atlas.exe --run-engine …` command must be all-engine flags."""
-    engine_flags = set(_ADD_ARG.findall(
-        (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="replace")))
+    engine_flags = _parser_flags("COLLECT_PARSE_V3_23_0.py")
     for n, cmd, used in _atlas_commands():
         if "--run-engine" not in used:
             continue
@@ -141,17 +181,63 @@ def test_every_app_command_uses_only_app_flags():
     """The mirror of the engine check: an `Atlas.exe …` command WITHOUT the --run-engine sentinel
     is the app's own surface, so an engine-only flag there dies at argparse. Without this, only
     one direction of the two-surface confusion was guarded."""
-    app_flags = set(_ADD_ARG.findall("\n".join(
-        (ROOT / path).read_text(encoding="utf-8")
-        for path in ("webapp/backend/serve.py", "portable/maintenance.py"))))
     checked = 0
     for n, cmd, used in _atlas_commands():
         if "--run-engine" in used:
             continue
         checked += 1
-        unknown = used - app_flags
-        assert not unknown, f"line {n}: app command names non-app flags {sorted(unknown)}: {cmd}"
+        _check_command_surface(cmd)
     assert checked, "no app-surface command was checked — this loop went inert"
+
+
+@pytest.mark.parametrize("command", [
+    "Atlas.exe --selftest --expected-sha256 VALUE",
+    "Atlas.exe --install C:\\new --package candidate.zip --db wrong.db",
+    "Atlas.exe --redact-folder captures --update candidate.zip",
+    "Atlas.exe --run-engine --install C:\\new",
+    "Atlas.exe --update candidate.zip --run-engine --help",
+    "Atlas.exe --verify-release --selftest",
+    "Atlas.exe --recover C:\\kit --no-browser",
+])
+def test_wrong_surface_examples_fail_even_when_every_flag_exists_elsewhere(command):
+    with pytest.raises(AssertionError):
+        _check_command_surface(command)
+
+
+@pytest.mark.parametrize("command,surface", [
+    ("Atlas.exe --selftest", "app"),
+    ("Atlas.exe --allow-live-network --run-engine --help", "engine"),
+    ("Atlas.exe --install C:\\new --package candidate.zip --expected-sha256 VALUE", "maintenance"),
+    ("Atlas.exe --recover C:\\kit --maintenance-result receipt.json", "maintenance"),
+    ("Atlas.exe --verify-release --zip candidate.zip --expected-sha256 VALUE", "release verifier"),
+])
+def test_real_parser_surfaces_accept_their_own_examples(command, surface):
+    assert _check_command_surface(command) == surface
+
+
+@pytest.mark.parametrize("constructor,expected", [
+    ("argparse.ArgumentParser()", True), ("argparse.ArgumentParser(add_help=True)", True),
+    ("argparse.ArgumentParser(add_help=False)", False),
+])
+def test_parser_reader_preserves_argparse_automatic_help(tmp_path, monkeypatch, constructor, expected):
+    (tmp_path / "parser.py").write_text(constructor + "\nparser.add_argument('--value')\n", encoding="ascii")
+    monkeypatch.setitem(_parser_flags.__globals__, "ROOT", tmp_path)
+    flags = _parser_flags("parser.py")
+    assert "--value" in flags
+    assert ("--help" in flags) is expected
+
+
+def test_verified_reinstall_recipe_checks_before_traversal_and_binds_full_preflight_receipt():
+    text = GUIDE.read_text(encoding="ascii")
+    inventory = text.split("function Data-Inventory", 1)[1].split("function Same-Inventory", 1)[0]
+    assert "Get-ChildItem -LiteralPath $root -Recurse" not in inventory
+    assert inventory.index("Redirected data ancestor") < inventory.index("$stack.Push($item)")
+    assert inventory.index("Redirected data directory") < inventory.index("Get-ChildItem")
+    assert inventory.index("Redirected data member") < inventory.index("$stack.Push($entry)")
+    for field in ("request_sha256", "request_nonce", "input_copy_binding.database_name",
+                  "input_copy_binding.bytes", "input_copy_binding.sha256", "migrated_copy_bytes",
+                  "migrated_copy_sha256", "logical_migration.prior_table_preservation"):
+        assert "$receipt." + field in text
 
 
 def test_commands_are_copy_pasteable_on_one_line():
@@ -167,13 +253,14 @@ def test_commands_are_copy_pasteable_on_one_line():
 
 def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     serve_src = (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")
-    engine_src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8")
-    maintenance_src = (ROOT / "portable/maintenance.py").read_text(encoding="utf-8")
-    valid = (set(_ADD_ARG.findall(serve_src)) | set(_ADD_ARG.findall(engine_src))
-             | set(_ADD_ARG.findall(maintenance_src)))
+    valid = (_parser_flags("webapp/backend/serve.py") | _parser_flags("COLLECT_PARSE_V3_23_0.py")
+             | _parser_flags("portable/maintenance.py"))
     sentinel = re.search(r'ENGINE_SENTINEL\s*=\s*"(--[a-z-]+)"', serve_src)
     assert sentinel, "serve.ENGINE_SENTINEL moved — update this reconciler"
     valid.add(sentinel.group(1))  # checked pre-argparse by design
+    assert '"--verify-release"' in serve_src
+    valid.add("--verify-release")
+    valid.update(_parser_flags("portable/verify_release.py"))
     named = set(_FLAG.findall(GUIDE.read_text(encoding="ascii")))
     unknown = named - valid
     assert not unknown, f"field guide names flags no shipped surface has: {sorted(unknown)}"

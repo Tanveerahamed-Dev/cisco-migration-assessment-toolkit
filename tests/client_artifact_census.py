@@ -3076,11 +3076,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "portable/maintenance.py::_copy_installed_application": (
         1, NON_CLIENT, (), "installed application code copied to a private helper; top-level data is never traversed"),
     "portable/maintenance.py::_worker": (
-        1, NON_CLIENT, ("atomic-staging",), "maintenance exit status, policy and nonce; no client evidence"),
+        1, OPERATOR_PATH, ("atomic-staging",), "private maintenance outcome can name operator paths and refusal details"),
+    "portable/maintenance.py::_finish": (
+        1, DELEGATED, ("atomic-staging",), "durable private result; caller owns its operator-selected output path"),
+    "portable/maintenance.py::_pending_handoff": (
+        1, OPERATOR_PATH, ("atomic-staging",), "private refusal preserves the recorded operator request without replay"),
+    "portable/maintenance.py::_restore_owned_pointer": (
+        2, DELEGATED, ("atomic-staging",), "restore only this attempt's private pointer to its prior byte identity"),
     "portable/maintenance.py::main": (
-        6, NON_CLIENT, ("atomic-staging",), "maintenance request metadata and application-only helper; data is excluded"),
+        7, OPERATOR_PATH, ("atomic-staging",), "private request/pointer paths and verified application-only helper; client data excluded"),
     "portable/maintenance.py::_recover": (
-        1, NON_CLIENT, ("atomic-staging",), "maintenance result for the retained installed-code recovery request"),
+        2, OPERATOR_PATH, ("atomic-staging",), "private recovery result retains operator paths and failure reasons"),
     "portable/database_preflight.py::_open_readonly": (
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
@@ -3127,8 +3133,16 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, (), "closed-set public candidate code extracted to an external hosted proof folder"),
     ".github/scripts/prove_portable_no_python.py::copy_runtime_for_smoke": (
         1, NON_CLIENT, (), "a byte-equal runtime copy of packaged public application code; package metadata remains intact"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers": (
+        4, NON_CLIENT, (), "hosted-only OS launcher quarantine/restore and public binary identity journal"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers.record": (
+        1, NON_CLIENT, (), "hosted OS launcher paths and restoration digests; no engagement data"),
+    ".github/scripts/prove_portable_no_python.py::copy_data_verified": (
+        1, NON_CLIENT, (), "hosted synthetic application/data inventory copies only"),
+    ".github/scripts/prove_portable_no_python.py::prove_verified_reinstall": (
+        14, NON_CLIENT, ("database",), "synthetic legacy kit, exact offline backup and candidate-copy preflight evidence"),
     ".github/scripts/prove_portable_no_python.py::prove": (
-        16, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
+        20, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups and released application code only"),
     ".github/scripts/prove_portable_no_python.py::main": (
         2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (

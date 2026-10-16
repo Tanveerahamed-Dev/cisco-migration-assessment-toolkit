@@ -22,8 +22,32 @@ with full member/SBOM/schema/notices checks, while preserving installed dependen
 versions and all existing schema/toolchain/frontend/native pins. It neither authenticates
 the publisher nor replaces strict current-source release qualification. The existing
 Windows build-and-qualify job exercises frozen installation, three interrupted phases,
-recovery, rollback and database restore with Python/py hidden from the product's PATH.
+recovery, rollback, database restore and verified fresh reinstallation. Python-prefixed
+environment overrides are removed; Python launchers are absent from the full Windows
+CreateProcess search locations, including application/cwd, System32, System and Windows
+directories. Hosted-only system launcher renames are journaled and restored in `finally`.
 Its observer still has Python; the actual Python-uninstalled/disconnected-host gate remains external.
+
+**Supported successor path:** RC7-and-earlier kits have no frozen update door. A successor
+which changes a dependency, security, toolchain, frontend, schema or native-provider pin can
+also be refused by an installed verifier. Use **VERIFIED REINSTALL** in `README-FIELD.txt`:
+independently obtain the published ZIP SHA-256; extract a fresh bootstrap; have its own
+frozen verifier install the same ZIP/hash into a new destination; stop every process; retain
+the old kit and a completely inventoried/hash-verified offline copy of `data`; preflight
+another database copy with the new candidate before adopting any data. The guide supplies
+the canonical request/nonce, receipt checks and same-volume directory moves. Retain all
+originals, rollback data and receipts. This path preserves old pins rather than relaxing
+their checks. The hosted synthetic copy/preflight/adoption proof does not establish arbitrary
+historical-database migration or a distinct security/toolchain successor's acceptance.
+
+Recovery is explicit: `Atlas.exe --recover ROOT` or the optional wrapper's `-Recover`.
+A pending journal refuses a new update/rollback; recovery uses the recorded installed-version
+helper and reports its terminal result and failure reason before a new operation is requested.
+It never silently converts a requested new operation into replay of an older request.
+An interrupted first journaled `--install` has no installed helper/pointer: retain the
+destination and rerun the same separately extracted, hash-checked bootstrap with the
+same ZIP, published SHA-256 and destination. Only a matching first-install journal
+(`had_active` false) permits that retry; wrapper `-Recover` is for installed operations.
 
 The installed verifier also recognizes bounded, architecture-neutral managed IL-only
 DLLs for the planned Windows window adapter. These are labelled separately from native
@@ -146,6 +170,14 @@ must first prove it can open a same-volume copy of the retained database. If it 
 `-Rollback -RestorePreUpdateDatabase`: only the backup named and hashed by the exact rollback-slot
 receipt is eligible, and the newer database is preserved with its own receipt before replacement.
 
+Windows PowerShell Group Policy (`AllSigned`/`RemoteSigned`), AppLocker or application control
+can refuse the bundled unsigned transaction. `-ExecutionPolicy Bypass` does not override those
+controls. Managed-policy acceptance is an external gate. Where executable launch and ordinary
+copying are permitted, hash-check/`Expand-Archive` the new ZIP into a fresh destination and use
+its frozen verifier and the field guide's offline backup, copy preflight and adoption procedure;
+this avoids the transaction script. Otherwise stop for the managed-device owner; do not change
+policy merely to complete an update.
+
 Post-package Authenticode evidence is written outside the verified bundle so the receipt itself
 cannot change the package member set:
 
@@ -200,8 +232,9 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
   `atlas.portable-third-party-notices/2` alongside `atlas.portable-toolchain-receipt/2` and
   `atlas.portable-qualification/3`, whose closed database census includes the versioned stored carriage
   preparation tables. A package carrying a `/1` document of any of these, or a `/2` qualification
-  receipt, is refused as superseded, with the stated reason, never migrated: verify it with the
-  checkout that built it, or rebuild it. Python/npm package license
+  receipt, is refused as superseded, with the stated reason, never silently migrated. A field
+  successor uses VERIFIED REINSTALL through the new release's frozen verifier; it requires no
+  old checkout or old update command. Python/npm package license
   texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
   OUI and Cisco-fact public redistribution authority remains an explicit legal-review gate; a draft
   candidate does not close it.
