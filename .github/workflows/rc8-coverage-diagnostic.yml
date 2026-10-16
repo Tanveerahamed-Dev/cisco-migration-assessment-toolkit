@@ -1,0 +1,126 @@
+name: RC8 coverage diagnosis
+
+on:
+  push:
+    branches: [codex/rc8-coverage-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnosis:
+    name: Coverage faulthandler (diagnostic only)
+    runs-on: ubuntu-24.04
+    steps:
+      # Workflow definition and tested subject are deliberately separate identities.
+      # The subject retains its original workflow census, gate and every assertion.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1bee065379e02d5f580fbe4e334ec7317ae1b183
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Prepare external traceback plugin and bind source
+        env:
+          DIAGNOSTIC_WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = 1bee065379e02d5f580fbe4e334ec7317ae1b183
+          test -z "$(git status --porcelain)"
+          mkdir "$RUNNER_TEMP/atlas-cov-diagnostic"
+          cat > "$RUNNER_TEMP/atlas-cov-diagnostic/atlas_cov_diagnostic_plugin.py" <<'PY'
+          import faulthandler
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import sys
+          import time
+
+          _log = None
+          _patterns = None
+
+          def _safe_node(nodeid):
+              global _patterns
+              if _patterns is None:
+                  from cisco_toolkit.distribution_verify import _client_marker_patterns
+                  _patterns = _client_marker_patterns()
+              safe = nodeid
+              for pattern in _patterns:
+                  safe = pattern.sub("[redacted-marker]", safe)
+              if safe != nodeid:
+                  safe += " [nodeid-sha256=" + hashlib.sha256(nodeid.encode()).hexdigest() + "]"
+              return safe
+
+          def _record(event, **fields):
+              line = json.dumps({"event": event, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **fields}, sort_keys=True)
+              print(line, flush=True)
+              _log.write(line + "\n")
+              _log.flush()
+
+          def pytest_sessionstart(session):
+              global _log
+              import coverage
+              _log = (Path(os.environ["RUNNER_TEMP"]) / "atlas-coverage-diagnostic.log").open("w", encoding="utf-8", buffering=1)
+              active = coverage.Coverage.current()
+              collector = getattr(active, "_collector", None)
+              core = getattr(collector, "core", None)
+              tracer = getattr(core, "tracer_class", None)
+              metadata = {
+                  "tested_source": "1bee065379e02d5f580fbe4e334ec7317ae1b183",
+                  "workflow_definition": os.environ["DIAGNOSTIC_WORKFLOW_COMMIT"],
+                  "python": sys.version,
+                  "coverage_version": coverage.__version__,
+                  "coverage_core_type": type(core).__name__,
+                  "coverage_tracer_class": getattr(tracer, "__qualname__", None),
+                  "gettrace_type": type(sys.gettrace()).__name__,
+                  "coverage_core_override": os.environ.get("COVERAGE_CORE"),
+                  "platform": platform.platform(),
+                  "processor": platform.processor(),
+                  "cpu_count": os.cpu_count(),
+                  "load_average": os.getloadavg(),
+              }
+              for name, path in (("cpu_quota", "/sys/fs/cgroup/cpu.max"), ("cpu_stat", "/sys/fs/cgroup/cpu.stat")):
+                  try:
+                      metadata[name] = Path(path).read_text().strip() if Path(path).is_file() else None
+                  except OSError as error:
+                      metadata[name] = "unavailable:" + type(error).__name__
+              _record("source_and_runtime", **metadata)
+              faulthandler.enable()
+              # A global repeated dump also captures aggregate slow progress. No test
+              # timer, threshold, selection or production gate is changed.
+              faulthandler.dump_traceback_later(1200, repeat=True, file=_log)
+
+          def pytest_runtest_logstart(nodeid, location):
+              _record("test_start", nodeid=_safe_node(nodeid))
+
+          def pytest_runtest_logreport(report):
+              if report.duration >= 1 or report.failed:
+                  _record("test_phase", nodeid=_safe_node(report.nodeid), phase=report.when,
+                          seconds=report.duration, outcome=report.outcome)
+
+          def pytest_sessionfinish(session, exitstatus):
+              faulthandler.cancel_dump_traceback_later()
+              if _log is None:
+                  return
+              _record("session_finish", exitstatus=int(exitstatus))
+              _log.close()
+          PY
+      - name: Original coverage command with traceback instrumentation
+        env:
+          DIAGNOSTIC_WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          export PYTHONPATH="$RUNNER_TEMP/atlas-cov-diagnostic${PYTHONPATH:+:$PYTHONPATH}"
+          python -m pytest --cov=cisco_toolkit --cov-report=term-missing:skip-covered --cov-fail-under=85 --durations=40 -p atlas_cov_diagnostic_plugin
+      - name: Retain diagnostic evidence including failed runs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: rc8-coverage-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/atlas-coverage-diagnostic.log
+          if-no-files-found: error
+          retention-days: 30
