@@ -24,9 +24,9 @@ test("core assessment navigation, exact device, evidence keyboard and paging", a
     legacyRequests.push(url.pathname);
     return route.fulfill({ status: 404, json: { detail: "Unexpected legacy route" } });
   });
-  await page.goto("/snapshots/1");
+  await page.goto("/snapshots/1?view=overview");
   await expect(page.getByText("Synthetic fleet needs review")).toBeVisible();
-  const evidence = page.getByRole("button", { name: "Evidence for Engine statement" });
+  const evidence = page.getByRole("button", { name: "Info for Engine statement" });
   await evidence.click();
   const dialog = page.getByRole("dialog", { name: "Evidence: Engine statement" });
   await expect(dialog).toContainText("Synthetic fleet needs review");

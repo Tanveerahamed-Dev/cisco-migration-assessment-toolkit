@@ -146,15 +146,20 @@ async function expectHonestStates(scope: Locator, where: string): Promise<Record
     for (const host of Array.from(root.querySelectorAll(".projection-fact, .projection-list-state"))) {
       const excerpt = (host.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160);
       const label = host.querySelector(":scope > .projection-state");
-      const token = label
-        ? Array.from(label.classList).find((name) => name.startsWith("state-"))?.slice("state-".length)
-        : undefined;
-      if (!label || !token || !(label.textContent || "").trim()) {
+      const token = host.getAttribute("data-evidence-state");
+      const info = host.querySelector(".projection-info[aria-haspopup='dialog']");
+      if (!token || !info || !info.getAttribute("aria-label")?.startsWith("Info for ")) {
         problems.push(`no evidence state: ${excerpt}`);
         continue;
       }
       counts[token] = (counts[token] || 0) + 1;
-      if (token === "published") continue;
+      if (token === "published") {
+        if (label) problems.push(`published badge should be in Info: ${excerpt}`);
+        continue;
+      }
+      if (!label || !label.classList.contains(`state-${token}`) || !(label.textContent || "").trim()) {
+        problems.push(`withheld state is not immediate: ${excerpt}`);
+      }
       const reason = (host.querySelector(":scope > .projection-reason")?.textContent || "").trim();
       if (!reason) problems.push(`${token} without its reason: ${excerpt}`);
       if (host.classList.contains("projection-fact")) {
@@ -172,7 +177,7 @@ async function expectHonestStates(scope: Locator, where: string): Promise<Record
  * Playwright evaluates a `has` locator's whole selector inside each candidate element. */
 function factByLabel(page: Page, scope: Page | Locator, label: string): Locator {
   return scope.locator(".projection-fact").filter({
-    has: page.getByRole("button", { name: `Evidence for ${label}`, exact: true }),
+    has: page.getByRole("button", { name: `Info for ${label}`, exact: true }),
   });
 }
 
@@ -240,12 +245,19 @@ test("real backend: engine ingest, coverage-honest core views, cutover plan to e
     });
     evidence.baseline = { id: baseline.id, engine_seconds: baseline.ingest.engine_seconds };
 
-    const shell = page.locator("main.projection-shell");
+    const shell = page.locator(".projection-shell");
     const views: Record<string, Record<string, number>> = {};
     const settle = async (where: string) => {
       await expect(shell.getByRole("status").filter({ hasText: /^(Loading|Preparing) / })).toHaveCount(0);
       await expect(shell.getByRole("alert"), `${where}: a view or list failed to load`).toHaveCount(0);
       views[where] = await expectHonestStates(shell, where);
+      const published = shell.locator('[data-evidence-state="published"]').first();
+      if (await published.count()) {
+        await published.getByRole("button", { name: /^Info for / }).click();
+        const info = page.getByRole("dialog");
+        await expect(info.locator(".projection-state.state-published")).toHaveText("Published");
+        await page.getByRole("button", { name: "Close evidence", exact: true }).click();
+      }
       await expectNoClientLeaks(page.locator("body"), engine, where);
     };
     const openView = async (title: string, anchor: Locator, timeout = 30_000) => {
@@ -254,6 +266,7 @@ test("real backend: engine ingest, coverage-honest core views, cutover plan to e
     };
 
     await test.step("Overview", async () => {
+      await page.getByRole("navigation", { name: "Snapshot views" }).getByRole("link", { name: "Overview", exact: true }).click();
       await expect(page.getByRole("heading", { level: 1, name: `Snapshot ${baseline.id}`, exact: true })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Fleet posture", exact: true })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Health assessment", exact: true })).toBeVisible();

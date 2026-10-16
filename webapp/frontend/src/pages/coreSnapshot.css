@@ -19,6 +19,9 @@
 .projection-fact-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text-dim); text-transform: none; }
 .projection-fact-value { margin: 7px 0; color: var(--text); white-space: pre-wrap; }
 .projection-evidence { background: none; padding: 3px 0; border: 0; color: var(--accent); cursor: pointer; font: 11px var(--sans); flex-shrink: 0; }
+.projection-info { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; font: 12px var(--sans); flex-shrink: 0; }
+.projection-info:hover { background: var(--accent-soft); color: var(--text); }
+.projection-info:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .projection-qualifications { display: block; margin-top: 7px; padding: 3px 7px; border: 1px dashed var(--border-strong); border-radius: 5px; background: transparent; color: var(--text-dim); cursor: pointer; font: 11px var(--sans); }
 .projection-state { display: inline-flex; padding: 3px 7px; border-radius: 5px; border: 1px solid var(--border-strong); font: 11px var(--mono); color: var(--text-dim); background: var(--surface-3); }
 .projection-state.state-published { background: var(--accent-soft); border-color: var(--border); color: var(--text); }

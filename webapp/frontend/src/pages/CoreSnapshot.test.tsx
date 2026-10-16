@@ -10,6 +10,13 @@ function Harness() {
   return <><button onClick={() => navigate("/snapshots/2")}>Switch source</button><Routes><Route path="/snapshots/:id" element={<CoreSnapshot />} /></Routes></>;
 }
 const show = (path = "/snapshots/1") => render(<MemoryRouter initialEntries={[path]}><Harness /></MemoryRouter>);
+// Published is available with the exact fact's evidence, without repeating a badge at every value.
+function expectPublishedInfo(scope: ReturnType<typeof within>, label: string) {
+  expect(scope.queryByText("Published", { exact: true })).not.toBeInTheDocument();
+  fireEvent.click(scope.getByRole("button", { name: `Info for ${label}` }));
+  expect(within(screen.getByRole("dialog")).getByText("Published", { exact: true })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+}
 describe("Core snapshot route", () => {
   afterEach(() => vi.restoreAllMocks());
   it("uses the projection alone for core facts and preserves published zero", async () => {
@@ -48,7 +55,7 @@ describe("Core snapshot route", () => {
     fireEvent.click(group.getByText("Readiness checks and evidence"));
     expect(group.getAllByText(/Synthetic check [AB]/).map((node) => node.textContent)).toEqual(["Synthetic check B", "Synthetic check A"]);
     expect(group.getByText("Rollback")).toBeInTheDocument();
-    fireEvent.click(group.getByRole("button", { name: "Qualifications for endpoints" }));
+    fireEvent.click(group.getByRole("button", { name: "Info for endpoints" }));
     const drawer = screen.getByRole("dialog");
     expect(drawer).toHaveTextContent("not distinct endpoints across a move group");
     expect(drawer).toHaveTextContent("/migration_readiness/3/endpoints");
@@ -104,7 +111,7 @@ describe("Core snapshot route", () => {
   it("loads Trust on navigation and closes the previous fact drawer", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/trust?") ? trustFixture() : String(input).includes("/overview?") ? overviewFixture() : { available: false })));
     show(); await screen.findByText("Synthetic fleet needs review");
-    fireEvent.click(screen.getByRole("button", { name: "Evidence for Engine statement" }));
+    fireEvent.click(screen.getByRole("button", { name: "Info for Engine statement" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("Synthetic fleet needs review");
     fireEvent.click(screen.getByRole("link", { name: "Trust" }));
     await screen.findByRole("heading", { name: "Evidence coverage" });
@@ -140,7 +147,7 @@ describe("Core snapshot route", () => {
     }
     const inputRow = (input: string) => within(screen.getByRole("article", { name: `${input} analysis input` }));
     const factIn = (row: ReturnType<typeof within>, label: string) =>
-      within(row.getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+      within(row.getByRole("button", { name: `Info for ${label}` }).closest(".projection-fact")! as HTMLElement);
     // Any ratio sentence at all, whatever its numbers: a sentence rendered over a withheld count or denominator
     // ("3 of null …") must fail the tests below, so the pattern never requires a number.
     const ratio = /inventory devices could not be assessed/;
@@ -183,13 +190,13 @@ describe("Core snapshot route", () => {
       expect(assessedEmpty.getByText("Synthetic engine label: no authoritative lifecycle band", { exact: true })).toBeInTheDocument();
       expect(assessedEmpty.getByText("/device_dossiers/per_device/1/exposures/1", { exact: true })).toBeInTheDocument();
       expect(new URL(assessedEmpty.getByRole("link", { name: "synthetic-core ↗" }).getAttribute("href")!, "http://localhost").searchParams.get("view")).toBe("device");
-      fireEvent.click(eol.getByRole("button", { name: "Evidence for Devices not assessed by Hardware EoL" }));
+      fireEvent.click(eol.getByRole("button", { name: "Info for Devices not assessed by Hardware EoL" }));
       let drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent("synthetic.owner:trust_inputs");
       expect(drawer).toHaveTextContent("/device_dossiers/per_device");
       expect(drawer).toHaveTextContent("/collection_completeness/summary/inventory");
       fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
-      fireEvent.click(eol.getByRole("button", { name: "Qualifications for Devices not assessed by Hardware EoL" }));
+      fireEvent.click(eol.getByRole("button", { name: "Info for Devices not assessed by Hardware EoL" }));
       drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent(scope.text);
       fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
@@ -201,7 +208,7 @@ describe("Core snapshot route", () => {
       // a measured 0 over an empty, collected list is qualified like any count: the count, its sentence and the list
       // each carry the scope qualification, which the engine keeps on the empty list too
       for (const label of ["could not be assessed", "0 of 5 inventory devices could not be assessed", "Devices not assessed by Health"]) {
-        fireEvent.click(health.getByRole("button", { name: `Qualifications for ${label}` }));
+        fireEvent.click(health.getByRole("button", { name: `${label.includes(" of ") ? "Qualifications" : "Info"} for ${label}` }));
         expect(screen.getByRole("dialog")).toHaveTextContent(scope.text);
         fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close evidence" }));
       }
@@ -227,7 +234,7 @@ describe("Core snapshot route", () => {
       expect(row.queryByText(/^0 of/)).not.toBeInTheDocument();
       expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
       expect(factIn(row, "inventory devices").getByText("5", { exact: true })).toBeInTheDocument();
-      fireEvent.click(row.getByRole("button", { name: "Evidence for could not be assessed" }));
+      fireEvent.click(row.getByRole("button", { name: "Info for could not be assessed" }));
       expect(screen.getByRole("dialog")).toHaveTextContent(reason);
       expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:trust_inputs");
       fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
@@ -392,7 +399,7 @@ describe("Core snapshot route", () => {
     expect(missing.queryByText("stp_blocked")).not.toBeInTheDocument();
     expect(missing.getByRole("group", { name: "Cable 0 member 0" })).toHaveTextContent("synthetic-b");
     expect(within(panel).getByText("Cables 1–2 of 2 assessed cables")).toBeInTheDocument();
-    fireEvent.click(within(regions[0]).getByRole("button", { name: "Qualifications for relation" }));
+    fireEvent.click(within(regions[0]).getByRole("button", { name: "Info for relation" }));
     const drawer = screen.getByRole("dialog");
     expect(drawer).toHaveTextContent("not simultaneous forwarding or data-plane delivery");
     expect(drawer).toHaveTextContent("/vlan_carriage/rows/0/codes");
@@ -490,21 +497,21 @@ describe("Core snapshot route", () => {
       const fetcher = serve(findingsRollupFixture());
       show(path);
       const rollup = within(await screen.findByRole("group", { name: label }));
-      const worst = rollup.getByRole("button", { name: "Evidence for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
-      const counts = rollup.getByRole("button", { name: "Evidence for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
+      const worst = rollup.getByRole("button", { name: "Info for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
+      const counts = rollup.getByRole("button", { name: "Info for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
       expect(within(worst).getByText("High", { exact: true })).toBeInTheDocument();
       expect(within(worst).queryByText("Critical", { exact: true })).not.toBeInTheDocument();
       expect(within(counts).getAllByRole("term").map((node) => node.textContent)).toEqual(["Critical", "High", "Medium", "Low", "Info"]);
       expect(within(counts).getAllByRole("definition").map((node) => node.textContent)).toEqual(["0", "2", "0", "1", "0"]);
       expect(within(counts).getAllByText("0", { exact: true })).toHaveLength(3);
-      fireEvent.click(within(counts).getByRole("button", { name: "Evidence for Findings by severity" }));
+      fireEvent.click(within(counts).getByRole("button", { name: "Info for Findings by severity" }));
       let drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent("synthetic.owner:device_findings");
       expect(drawer).toHaveTextContent("/punchlist/7");
       expect(drawer).toHaveTextContent("/devices/edge~1a~0b");
       expect(drawer).toHaveTextContent(`sha256:${"a".repeat(64)}`);
       fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
-      fireEvent.click(within(worst).getByRole("button", { name: "Evidence for Worst finding severity" }));
+      fireEvent.click(within(worst).getByRole("button", { name: "Info for Worst finding severity" }));
       drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent("High");
       expect(drawer).toHaveTextContent("/punchlist/7");
@@ -522,7 +529,7 @@ describe("Core snapshot route", () => {
       expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
       expect(rollup.queryByText("High", { exact: true })).not.toBeInTheDocument();
       expect(rollup.queryByRole("definition")).not.toBeInTheDocument();
-      fireEvent.click(rollup.getByRole("button", { name: "Evidence for Findings by severity" }));
+      fireEvent.click(rollup.getByRole("button", { name: "Info for Findings by severity" }));
       const drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent(reason);
       expect(drawer).toHaveTextContent("/devices/edge~1a~0b");
@@ -531,13 +538,13 @@ describe("Core snapshot route", () => {
     it("keeps assessed-empty worst severity empty while showing five published zeros", async () => {
       serve(findingsRollupFixture("assessed_empty")); show(path);
       const rollup = within(await screen.findByRole("group", { name: label }));
-      const worst = rollup.getByRole("button", { name: "Evidence for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
-      const counts = rollup.getByRole("button", { name: "Evidence for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
+      const worst = rollup.getByRole("button", { name: "Info for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
+      const counts = rollup.getByRole("button", { name: "Info for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
       expect(within(worst).getByText("Collected, empty")).toBeInTheDocument();
       expect(within(worst).getByText("Synthetic captured assessment has no findings")).toBeInTheDocument();
       expect(within(worst).queryByText("0", { exact: true })).not.toBeInTheDocument();
-      expect(within(worst).queryByText("Info", { exact: true })).not.toBeInTheDocument();
-      expect(within(counts).getByText("Published", { exact: true })).toBeInTheDocument();
+      expect(within(worst).queryByText("Info", { exact: true, selector: ".projection-fact-value" })).not.toBeInTheDocument();
+      expectPublishedInfo(within(counts), "Findings by severity");
       expect(within(counts).getAllByRole("term").map((node) => node.textContent)).toEqual(["Critical", "High", "Medium", "Low", "Info"]);
       expect(within(counts).getAllByRole("definition").map((node) => node.textContent)).toEqual(["0", "0", "0", "0", "0"]);
       expect(within(counts).getAllByText("0", { exact: true })).toHaveLength(5);
@@ -566,10 +573,10 @@ describe("Core snapshot route", () => {
     let query = new URL(first.getAttribute("href")!, "http://localhost").searchParams;
     expect(query.get("ref")).toBe("/punchlist/7"); expect(query.get("row")).toBe("7");
     expect(query.get("source")).toBe(`sha256:${"a".repeat(64)}`); expect(query.get("source_bytes")).toBe("42");
-    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Evidence for Device finding references" }));
+    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Info for Device finding references" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:exact_host_refs");
     fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
-    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Qualifications for Device finding references" }));
+    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Info for Device finding references" }));
     expect(screen.getByRole("dialog")).toHaveTextContent(qualification.text);
     fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
     fireEvent.click(within(referencesRegion).getByRole("button", { name: "Next Device finding references page" }));
@@ -602,13 +609,13 @@ describe("Core snapshot route", () => {
     it("renders the owner's worst state and abstention total with their own evidence", async () => {
       const fetcher = serve(coverageRollupFixture()); show(path);
       const rollup = within(await screen.findByRole("group", { name: label }));
-      const worst = rollup.getByRole("button", { name: "Evidence for Worst coverage state" }).closest(".projection-fact")! as HTMLElement;
-      const abstained = rollup.getByRole("button", { name: "Evidence for Abstaining coverage axes" }).closest(".projection-fact")! as HTMLElement;
+      const worst = rollup.getByRole("button", { name: "Info for Worst coverage state" }).closest(".projection-fact")! as HTMLElement;
+      const abstained = rollup.getByRole("button", { name: "Info for Abstaining coverage axes" }).closest(".projection-fact")! as HTMLElement;
       expect(within(worst).getByText("unverified", { exact: true })).toBeInTheDocument();
-      expect(within(worst).getByText("Published", { exact: true })).toBeInTheDocument();
+      expectPublishedInfo(within(worst), "Worst coverage state");
       expect(within(abstained).getByText("3", { exact: true })).toBeInTheDocument();
       expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
-      fireEvent.click(within(abstained).getByRole("button", { name: "Evidence for Abstaining coverage axes" }));
+      fireEvent.click(within(abstained).getByRole("button", { name: "Info for Abstaining coverage axes" }));
       const drawer = screen.getByRole("dialog");
       expect(drawer).toHaveTextContent("synthetic.owner:device_coverage");
       expect(drawer).toHaveTextContent("/coverage_matrix/by_device/edge~1a~0b");
@@ -628,7 +635,7 @@ describe("Core snapshot route", () => {
       expect(rollup.queryByText("covered", { exact: true })).not.toBeInTheDocument();
       expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
       expect(rollup.queryByText("No", { exact: true })).not.toBeInTheDocument();
-      fireEvent.click(rollup.getByRole("button", { name: "Evidence for Worst coverage state" }));
+      fireEvent.click(rollup.getByRole("button", { name: "Info for Worst coverage state" }));
       expect(screen.getByRole("dialog")).toHaveTextContent(reason);
       expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:device_coverage");
     });
@@ -651,12 +658,12 @@ describe("Core snapshot route", () => {
     it("shows supplied dimension, verdict source and true abstention beside the axis", async () => {
       serveRow(coverageAxisFixture()); show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
       const row = within(await screen.findByRole("group", { name: "Coverage axis capture" }));
-      const factFor = (label: string) => within(row.getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+      const factFor = (label: string) => within(row.getByRole("button", { name: `Info for ${label}` }).closest(".projection-fact")! as HTMLElement);
       expect(factFor("dimension").getByText("capture", { exact: true })).toBeInTheDocument();
       expect(factFor("verdict source").getByText("capture_integrity", { exact: true })).toBeInTheDocument();
       expect(factFor("is abstention").getByText("Yes", { exact: true })).toBeInTheDocument();
       expect(factFor("capture").getByText("unverified", { exact: true })).toBeInTheDocument();
-      fireEvent.click(row.getByRole("button", { name: "Evidence for verdict source" }));
+      fireEvent.click(row.getByRole("button", { name: "Info for verdict source" }));
       expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:exact_device_axis");
       expect(screen.getByRole("dialog")).toHaveTextContent("/coverage_matrix/rows/4");
     });
@@ -681,9 +688,9 @@ describe("Core snapshot route", () => {
       vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/ui-projection/device?") ? current : { available: false })));
       show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
       const row = within(await screen.findByRole("group", { name: "Coverage axis capture" }));
-      const abstention = within(row.getByRole("button", { name: "Evidence for is abstention" }).closest(".projection-fact")! as HTMLElement);
+      const abstention = within(row.getByRole("button", { name: "Info for is abstention" }).closest(".projection-fact")! as HTMLElement);
       expect(abstention.getByText("No", { exact: true })).toBeInTheDocument();
-      expect(abstention.getByText("Published", { exact: true })).toBeInTheDocument();
+      expectPublishedInfo(abstention, "is abstention");
       const rollup = within(screen.getByRole("group", { name: "Device coverage summary" }));
       expect(rollup.getAllByText("Unverified", { exact: true })).toHaveLength(2);
       expect(rollup.queryByText("covered", { exact: true })).not.toBeInTheDocument();
@@ -754,7 +761,7 @@ describe("Core snapshot route", () => {
       return { current, fetcher };
     }
     const factIn = (scope: HTMLElement, label: string) =>
-      within(within(scope).getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+      within(within(scope).getByRole("button", { name: `Info for ${label}` }).closest(".projection-fact")! as HTMLElement);
 
     it("renders published failure-impact values, published zeros and the engine's own row presentation", async () => {
       const { fetcher } = serve({ failure_impact: deviceSelectionPage("/failure_impact", [deviceImpactRowFixture()]) });
@@ -772,13 +779,13 @@ describe("Core snapshot route", () => {
       const presentation = factIn(row, "Engine presentation");
       expect(presentation.getByText("Synthetic engine high-impact presentation", { exact: true })).toBeInTheDocument();
       expect(presentation.getByText("impact_high", { exact: true })).toBeInTheDocument();
-      for (const label of MEASURES) expect(factIn(row, label).getByText("Published", { exact: true })).toBeInTheDocument();
+      for (const label of MEASURES) expectPublishedInfo(factIn(row, label), label);
       expect(within(row).queryByText(/^(Not collected|Unverified|Analysis unavailable)$/)).not.toBeInTheDocument();
       // the negative control for the lower-bound mark: these published measures cite no witness, so 42 is a measurement
       expect(row.querySelector('[data-impact="lower_bound"], [data-impact="lower_bound_reason"]')).toBeNull();
       // No page-side tone: the device document carries no legend, and the page invents no severity mapping.
       expect(region.querySelector('[class*="topology-tone-"]')).toBeNull();
-      fireEvent.click(within(row).getByRole("button", { name: "Evidence for Severity" }));
+      fireEvent.click(within(row).getByRole("button", { name: "Info for Severity" }));
       expect(screen.getByRole("dialog")).toHaveTextContent("High");
       expect(screen.getByRole("dialog")).toHaveTextContent(`sha256:${"a".repeat(64)}`);
       expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
@@ -807,7 +814,7 @@ describe("Core snapshot route", () => {
       // the pre-fix device page printed a plain 42: a minimum read as an exact measurement
       expect(stranded.queryByText("42", { exact: true })).not.toBeInTheDocument();
       expect(stranded.getByText("≥ 42", { exact: true }).closest('[data-impact="lower_bound"]')).toHaveClass("impact-bound");
-      expect(stranded.getByText("Published", { exact: true })).toBeInTheDocument();
+      expectPublishedInfo(stranded, "Stranded endpoints");
       // its reason is a visible line naming the cited cell of this row, never hover-only
       const reason = row.querySelectorAll('[data-impact="lower_bound_reason"]');
       expect(reason).toHaveLength(4);
@@ -844,13 +851,13 @@ describe("Core snapshot route", () => {
         expect(fact.queryByText("0", { exact: true })).not.toBeInTheDocument();
         expect(fact.queryByRole("definition")).not.toBeInTheDocument();
       }
-      expect(within(row).queryByText(/^(High|Medium|Low|Info)$/)).not.toBeInTheDocument();
+      expect(within(row).queryByText(/^(High|Medium|Low|Info)$/, { selector: ".projection-fact-value" })).not.toBeInTheDocument();
       // The engine presentation's own glyph value may read "none"; the clean-bill wording must not appear anywhere.
       expect(within(row).queryByText(/no (reachability )?impact/i)).not.toBeInTheDocument();
       expect(within(row).queryByText(/^impact_/)).not.toBeInTheDocument();
       expect(factIn(row, "Engine presentation").getByText(token, { exact: true })).toBeInTheDocument();
       expect(factIn(row, "Off-scan gateway VLANs").getByText("2", { exact: true })).toBeInTheDocument();
-      fireEvent.click(within(row).getByRole("button", { name: "Evidence for Stranded endpoints" }));
+      fireEvent.click(within(row).getByRole("button", { name: "Info for Stranded endpoints" }));
       expect(screen.getByRole("dialog")).toHaveTextContent(reason);
       expect(screen.getByRole("dialog")).toHaveTextContent("/failure_impact/4/witness");
     });
@@ -890,7 +897,7 @@ describe("Core snapshot route", () => {
         expect(region.queryByRole("group", { name: /source row/ })).not.toBeInTheDocument();
         expect(region.queryByText("0", { exact: true })).not.toBeInTheDocument();
         expect(region.queryByText(/no impact|no link|^none$/i)).not.toBeInTheDocument();
-        fireEvent.click(region.getByRole("button", { name: `Evidence for ${title}` }));
+        fireEvent.click(region.getByRole("button", { name: `Info for ${title}` }));
         expect(screen.getByRole("dialog")).toHaveTextContent(reason);
       });
     });
@@ -986,7 +993,7 @@ describe("Core snapshot route", () => {
     const facets = findingFacetsFixture();
     const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
     for (const row of facets.severity) {
-      expect(within(severity).getByRole("button", { name: `Evidence for ${row.k} findings` })).toBeInTheDocument();
+      expect(within(severity).getByRole("button", { name: `Info for ${row.k} findings` })).toBeInTheDocument();
     }
     // every severity total is withheld in the fixture: each shows its reason, and none reads as a measured zero
     expect(within(severity).getAllByText("Synthetic input was not collected")).toHaveLength(facets.severity.length);
@@ -994,7 +1001,7 @@ describe("Core snapshot route", () => {
     const category = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
     expect(within(category).getAllByText("Synthetic input was not collected")).toHaveLength(facets.category.length);
     const device = screen.getByRole("region", { name: "Findings by inventory device" });
-    expect(within(device).getByRole("button", { name: "Evidence for Findings on edge/a~b" })).toBeInTheDocument();
+    expect(within(device).getByRole("button", { name: "Info for Findings on edge/a~b" })).toBeInTheDocument();
     expect(within(device).getByText("1")).toBeInTheDocument();
   });
   it("renders a facet count the engine publishes only as a minimum as ≥ N, never as a bare exact count (W51 round 4)", async () => {
@@ -1011,16 +1018,16 @@ describe("Core snapshot route", () => {
     show("/snapshots/1?view=findings");
     await screen.findByText("Synthetic finding");
     const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
-    const boundFact = within(severity).getByRole("button", { name: `Evidence for ${bounded.k} findings` }).closest(".projection-fact") as HTMLElement;
+    const boundFact = within(severity).getByRole("button", { name: `Info for ${bounded.k} findings` }).closest(".projection-fact") as HTMLElement;
     expect(within(boundFact).getByText("≥ 3")).toBeInTheDocument();
     expect(boundFact.querySelector('[data-impact="lower_bound_reason"]')).toHaveTextContent(
       "At least 3: a lower bound, not an exact measurement. Why: the engine publishes this count only as a minimum while fleet_lists_exclude_blind_devices applies");
     expect(within(boundFact).queryByText("3")).not.toBeInTheDocument();
-    const plainFact = within(severity).getByRole("button", { name: `Evidence for ${plain.k} findings` }).closest(".projection-fact") as HTMLElement;
+    const plainFact = within(severity).getByRole("button", { name: `Info for ${plain.k} findings` }).closest(".projection-fact") as HTMLElement;
     expect(within(plainFact).getByText("2")).toBeInTheDocument();
     expect(plainFact.querySelector('[data-impact="lower_bound_reason"]')).toBeNull();
     const categories = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
-    const categoryFact = within(categories).getByRole("button", { name: `Evidence for ${category.k} findings` }).closest(".projection-fact") as HTMLElement;
+    const categoryFact = within(categories).getByRole("button", { name: `Info for ${category.k} findings` }).closest(".projection-fact") as HTMLElement;
     expect(within(categoryFact).getByText("≥ 4")).toBeInTheDocument();
   });
   it("rejects a reference bound to another source without showing its rows", async () => {
@@ -1040,7 +1047,7 @@ describe("Core snapshot route", () => {
     await screen.findByRole("heading", { name: "Health", exact: true });
     fireEvent.click(screen.getByText("Interfaces, links and routing", { exact: true }));
     const row = screen.getByText("Gi1").closest(".projection-list-item")! as HTMLElement;
-    const labels = within(row).getAllByRole("button").map((button) => button.getAttribute("aria-label")?.replace("Evidence for ", ""))
+    const labels = within(row).getAllByRole("button").map((button) => button.getAttribute("aria-label")?.replace("Info for ", ""))
       .filter((label) => columns.map((key) => key.replaceAll("_", " ")).includes(label ?? ""));
     expect(labels).toEqual(columns.map((key) => key.replaceAll("_", " ")));
   });

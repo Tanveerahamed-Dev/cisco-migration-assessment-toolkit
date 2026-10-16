@@ -10,7 +10,8 @@ export const STATE_LABEL: Record<State, string> = {
   analysis_unavailable: "Analysis unavailable", not_assessed: "Not assessed", unverified: "Unverified",
 };
 type Envelope = Fact | SourceList;
-type Selection = { label: string; envelope: Envelope };
+type SourceMetadata = Readonly<Record<string, DisplayValue>>;
+type Selection = { label: string; envelope: Envelope; metadata?: SourceMetadata };
 type EvidenceContextValue = { open: (selection: Selection) => void; limitations: readonly Limitation[] };
 const EvidenceContext = createContext<EvidenceContextValue>({ open: () => {}, limitations: [] });
 
@@ -62,24 +63,31 @@ export function EnvelopeEvidence({ label, envelope }: { label: string; envelope:
     aria-label={`Evidence for ${label}`}>Evidence ↗</button>;
 }
 
+// One compact door to the same source-bound drawer. Published state and qualifications stay in
+// that drawer; withheld states and lower-bound reasons remain immediate beside their values.
+function EnvelopeInfo({ label, envelope, metadata }: Selection) {
+  const { open } = useContext(EvidenceContext);
+  return <button type="button" className="projection-info" onClick={() => open({ label, envelope, metadata })}
+    aria-label={`Info for ${label}`} aria-haspopup="dialog">Info</button>;
+}
+
 // `lowerBound` is passed only by ImpactFactView below, which knows the owner marks this fact as a minimum (a
 // failure-impact measure citing a witness, components/ImpactValue.tsx::projectionImpactBound). It is never inferred
 // here: a witness ref on another fact means something else, and a published zero stays a zero. A lower bound's reason
 // is a visible line, as a withheld state's reason is, so it never depends on a hover.
-export function FactView({ label, fact, compact = false, lowerBound }: {
-  label: string; fact: Fact; compact?: boolean; lowerBound?: string;
+export function FactView({ label, fact, compact = false, lowerBound, metadata }: {
+  label: string; fact: Fact; compact?: boolean; lowerBound?: string; metadata?: SourceMetadata;
 }) {
   const bound = fact.state === "published" && lowerBound !== undefined
     && (typeof fact.value === "number" || typeof fact.value === "string") ? fact.value : null;
-  return <div className={`projection-fact${compact ? " compact" : ""}`}>
-    <div className="projection-fact-label">{label}<EnvelopeEvidence label={label} envelope={fact} /></div>
+  return <div className={`projection-fact${compact ? " compact" : ""}`} data-evidence-state={fact.state}>
+    <div className="projection-fact-label">{label}<EnvelopeInfo label={label} envelope={fact} metadata={metadata} /></div>
     <div className="projection-fact-value">{fact.state === "published"
       ? bound !== null ? <ImpactValue state={{ kind: "lower_bound", value: bound, why: lowerBound ?? "" }} reasonShown /> : <ValueText value={fact.value} />
       : <span aria-hidden="true">—</span>}</div>
-    <StateLabel state={fact.state} />
+    {fact.state !== "published" && <StateLabel state={fact.state} />}
     {fact.state !== "published" && <p className="projection-reason">{fact.reason}</p>}
     {bound !== null && <p className="projection-reason" data-impact="lower_bound_reason">{impactBoundText(bound, lowerBound ?? "")}</p>}
-    <Qualifications label={label} envelope={fact} />
   </div>;
 }
 
@@ -94,9 +102,8 @@ export function ImpactFactView({ field, label, fact, row, compact = true }: {
 }
 
 export function ListState({ label, source }: { label: string; source: SourceList }) {
-  return <div className="projection-list-state"><StateLabel state={source.state} /> <EnvelopeEvidence label={label} envelope={source} />
+  return <div className="projection-list-state" data-evidence-state={source.state}>{source.state !== "published" && <StateLabel state={source.state} />} <EnvelopeInfo label={label} envelope={source} />
     {source.state !== "published" && <p className="projection-reason">{source.reason}</p>}
-    <Qualifications label={label} envelope={source} />
   </div>;
 }
 
@@ -141,6 +148,7 @@ export function EvidenceProvider({ identity, limitations, children }: {
         {envelope.refs.length ? <ul>{envelope.refs.map((ref, index) => <li key={index}><span>{ref.role}</span> <code>{ref.pointer}</code></li>)}</ul>
           : <p>No references were published.</p>}
         {"engine_state" in envelope && envelope.engine_state && <><h3>Engine state</h3><p>{envelope.engine_state} · {envelope.engine_state_owner}</p></>}
+        {selection.metadata && <><h3>Source metadata</h3><ValueText value={selection.metadata} /></>}
         <h3>Qualifications</h3><Caveats envelope={envelope} />
         {!envelope.caveats?.length && <p>No additional caveat is attached to this fact.</p>}
         <h3>Stored snapshot identity</h3><p>Snapshot {identity.snapshot_id} · {identity.bytes} bytes</p>

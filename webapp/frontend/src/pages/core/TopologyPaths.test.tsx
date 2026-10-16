@@ -19,7 +19,7 @@ describe("Engine-owned topology and path screen", () => {
     fireEvent.click(peer);
     const inspector = screen.getByRole("region", { name: "Topology record details" });
     expect(within(inspector).getByText("No")).toBeInTheDocument();
-    fireEvent.click(within(inspector).getByRole("button", { name: "Evidence for collected" }));
+    fireEvent.click(within(inspector).getByRole("button", { name: "Info for collected" }));
     expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner");
     expect(fetcher).not.toHaveBeenCalled();
   });
@@ -126,7 +126,7 @@ describe("Engine-owned topology and path screen", () => {
     show(document); await screen.findByText(/All projected list pages loaded/);
     fireEvent.click(screen.getByText("Topology evidence lists"));
     const factIn = (region: HTMLElement, label: string) =>
-      within(region).getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact") as HTMLElement;
+      within(region).getByRole("button", { name: `Info for ${label}` }).closest(".projection-fact") as HTMLElement;
     const list = screen.getByRole("region", { name: "Failure impact" });
     const offScan = factIn(list, "off scan gw vlans");
     expect(within(offScan).getByText("3")).toBeInTheDocument();

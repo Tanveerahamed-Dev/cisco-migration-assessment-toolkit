@@ -1,0 +1,31 @@
+.snapshot-app-shell { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.snapshot-app-shell > .topbar { flex: 0 0 auto; }
+.snapshot-workspace { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.snapshot-workspace-header { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.snapshot-workspace-title { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.snapshot-workspace-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.snapshot-workspace-actions .btn { font-size: 12px; padding: 5px 9px; }
+.snapshot-workspace-info { position: relative; font-size: 12px; }
+.snapshot-workspace-info summary { cursor: pointer; padding: 6px; color: var(--text-dim); }
+.snapshot-workspace-info > div { position: absolute; z-index: 20; top: 100%; right: 0; width: min(360px, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); }
+.snapshot-workspace-info p { margin: 0 0 8px; }
+.snapshot-workspace-info p:last-child { margin-bottom: 0; }
+.snapshot-workspace-nav { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 3px; padding: 5px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.snapshot-workspace-nav a { padding: 6px 10px; border-radius: 5px; font-size: 13px; color: var(--text-dim); }
+.snapshot-workspace-nav a[aria-current="page"] { color: var(--text); background: var(--accent-soft); outline: 1px solid var(--accent-dim); }
+.snapshot-workspace-secondary { color: var(--text-faint); font-size: 11px; padding: 0 5px 0 12px; border-left: 1px solid var(--border-strong); }
+.snapshot-network-pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.snapshot-network-pane[hidden] { display: none; }
+.snapshot-network-pane iframe { display: block; width: 100%; height: 100%; flex: 1 1 auto; min-height: 0; border: 0; background: var(--bg); }
+.snapshot-core-pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.snapshot-core-pane .projection-shell { box-sizing: border-box; width: 100%; }
+.snapshot-workspace-error { padding: 8px 16px; color: var(--crit); background: var(--crit-soft); }
+.snapshot-workspace-sr { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 600px) {
+  .snapshot-workspace-header { padding: 8px; gap: 6px; }
+  .snapshot-workspace-actions { margin-left: 0; width: 100%; }
+  .snapshot-workspace-nav { padding: 5px; }
+  .snapshot-workspace-nav a { padding: 5px 7px; font-size: 12px; }
+  .snapshot-workspace-info { position: static; }
+  .snapshot-workspace-info > div { right: 8px; left: 8px; width: auto; }
+}

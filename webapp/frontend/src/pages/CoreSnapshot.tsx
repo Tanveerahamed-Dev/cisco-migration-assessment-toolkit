@@ -74,9 +74,9 @@ function Overview({ document }: { document: ViewDocument<"overview"> }) {
       </Panel>
     </div>
     <ProjectionList title="Gating items" document={document} initial={p.top_gating} renderRow={(row) => <>
-      <FactView label={`Gating item ${row.index}`} fact={row.fact} /><span className="dim">Engine axis index: {row.axis_index}</span></>} />
+      <FactView label={`Gating item ${row.index}`} fact={row.fact} metadata={{ "Engine axis index": row.axis_index }} /></>} />
     <ProjectionList title="Assessment axes" document={document} initial={p.axes} renderRow={(row) => <>
-      <FactView label={row.axis ?? "Unnamed axis"} fact={row.fact} /><span className="dim">Basis sections: {row.basis_sections.join(", ")}</span></>} />
+      <FactView label={row.axis ?? "Unnamed axis"} fact={row.fact} metadata={{ "Basis sections": row.basis_sections }} /></>} />
     {p.absent_axes.length > 0 && <Panel title="Axes without a published result">{p.absent_axes.map((row) => <FactView key={row.axis} label={row.axis} fact={row.fact} />)}</Panel>}
     <ProjectionList title="Move-group readiness" document={document} initial={p.readiness.groups} renderRow={(row) =>
         <div role="group" aria-label={`Move-group source row ${row.index}`}>
@@ -386,7 +386,7 @@ function facetLowerBound(fact: Fact): string | undefined {
   if (fact.state !== "published") return undefined;
   const cited = (fact.caveats ?? []).filter((id) => FACET_LOWER_BOUND_CAVEATS.includes(id));
   return cited.length
-    ? `the engine publishes this count only as a minimum while ${cited.join(", ")} applies (see its Qualifications)`
+    ? `the engine publishes this count only as a minimum while ${cited.join(", ")} applies (see its Info)`
     : undefined;
 }
 function FindingFacets({ document }: { document: ViewDocument<"findings"> }) {
@@ -460,7 +460,7 @@ function Device({ document }: { document: ViewDocument<"device"> }) {
   </>;
 }
 
-export default function CoreSnapshot() {
+export default function CoreSnapshot({ embedded = false }: { embedded?: boolean }) {
   const { id } = useParams();
   const sid = Number(id);
   const [params] = useSearchParams();
@@ -490,14 +490,15 @@ export default function CoreSnapshot() {
     return () => controller.abort();
   }, [key, sid, view, host, valid, retry, expectedSource, expectedBytes]);
   const document = result?.key === key ? result.document : null;
-  return <main className="container projection-shell">
-    <div className="breadcrumb"><Link to="/campaigns">Campaigns</Link> / Snapshot {id}</div>
+  const Shell = embedded ? "div" : "main";
+  return <Shell className="container projection-shell">
+    {!embedded && <div className="breadcrumb"><Link to="/campaigns">Campaigns</Link> / Snapshot {id}</div>}
     <header className="page-head"><div><h1>{view === "device" ? host ?? "Device" : `Snapshot ${id}`}</h1>
       <p className="sub">Evidence-led migration assessment</p></div><span className="spacer" /><ScopeLink key={sid} sid={sid} />
-      <Link className="btn" to={`/snapshots/${id}/tools`}>Tools and downloads</Link></header>
-    <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings", "topology"] as const).map((item) =>
+      {!embedded && <Link className="btn" to={`/snapshots/${id}/tools`}>Tools and downloads</Link>}</header>
+    {!embedded && <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings", "topology"] as const).map((item) =>
       <Link key={item} aria-current={view === item || (view === "device" && item === "inventory") ? "page" : undefined}
-        to={`/snapshots/${id}?view=${item}`}>{titles[item]}</Link>)}</nav>
+        to={`/snapshots/${id}?view=${item}`}>{titles[item]}</Link>)}</nav>}
     {failure?.key === key ? <section className="panel projection-error" role="alert"><h2>View unavailable</h2><p>{failure.message}</p>
       <button className="btn" onClick={() => setRetry((n) => n + 1)}>Retry view</button></section>
       : !document ? <section className="panel" role="status">Loading {titles[view].toLowerCase()}…</section>
@@ -517,5 +518,5 @@ export default function CoreSnapshot() {
             <p>Code schema: {document.engine.code_schema_version} · source schema supported: {document.engine.snapshot_schema_supported === null ? "Not published" : document.engine.snapshot_schema_supported ? "Yes" : "No"}</p>
           </details>
         </EvidenceProvider>}
-  </main>;
+  </Shell>;
 }

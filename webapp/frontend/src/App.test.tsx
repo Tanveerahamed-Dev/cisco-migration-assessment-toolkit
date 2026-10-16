@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router";
 import App from "./App";
 import { api, ApiError } from "./api";
 import type { Meta } from "./api";
+import { findingsFixture, overviewFixture } from "./test/projectionFixtures";
 
 // App is the routing spine: the top bar (always present), the route table, and the theme toggle.
 // These exercise the parts jsdom can reach without mocking every page's API — the catch-all route
@@ -122,5 +123,51 @@ describe("TopBar app identity", () => {
     await waitFor(() => expect(authenticate).toHaveBeenCalledWith("field-secret"));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.getByText("Atlas")).toBeInTheDocument();
+  });
+});
+
+describe("snapshot workspace routes", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["/snapshots/1", "/snapshots/1/"])("opens Network through %s and restores its frame after Core navigation", async (path) => {
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("offline identity"));
+    vi.spyOn(api, "scopeView").mockResolvedValue({ available: false, href: null, status: "not_built", detail: "Synthetic unavailable Scope" });
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/ui-projection/overview?")) return new Response(JSON.stringify(overviewFixture()));
+      throw new Error(`Unexpected snapshot request: ${String(input)}`);
+    });
+    const popup = vi.spyOn(window, "open");
+    renderApp(path);
+    const initial = screen.getByTitle("Network Migration Explorer");
+    expect(initial.closest(".snapshot-app-shell")).toBeInTheDocument();
+    expect(initial).toHaveAttribute("src", "/api/snapshots/1/explorer#mode=cablemap");
+    expect(initial).toHaveAttribute("sandbox", "allow-scripts allow-downloads allow-modals");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(screen.queryByText("Synthetic fleet needs review")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Overview", exact: true }));
+    expect(await screen.findByText("Synthetic fleet needs review")).toBeInTheDocument();
+    expect(screen.getByTitle("Network Migration Explorer")).toBe(initial);
+    expect(screen.getByRole("navigation", { name: "Snapshot views" })).toBeInTheDocument();
+    expect(screen.getAllByRole("navigation", { name: "Snapshot views" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: "Network", exact: true }));
+    await waitFor(() => expect(screen.queryByText("Synthetic fleet needs review")).not.toBeInTheDocument());
+    expect(screen.getByTitle("Network Migration Explorer")).toBe(initial);
+    expect(popup).not.toHaveBeenCalled();
+  });
+
+  it("passes source-bound deep links to the actual Core refusal instead of silently showing another record", async () => {
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("offline identity"));
+    vi.spyOn(api, "scopeView").mockResolvedValue({ available: false, href: null, status: "not_built", detail: "Synthetic unavailable Scope" });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/ui-projection/findings?")) return new Response(JSON.stringify(findingsFixture()));
+      throw new Error(`Unexpected snapshot request: ${String(input)}`);
+    });
+    const query = new URLSearchParams({ view: "findings", ref: "/punch_list/0", row: "0",
+      source: `sha256:${"b".repeat(64)}`, source_bytes: "42" });
+    renderApp(`/snapshots/1?${query}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("The referenced record belongs to a different stored snapshot");
+    expect(screen.queryByText("Synthetic finding", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Network Migration Explorer")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Findings", exact: true })).toHaveAttribute("aria-current", "page");
   });
 });

@@ -38,7 +38,7 @@ async function installProjectionRoutes(page: Page, scope: "unavailable" | "refus
 
 test("fifth tab renders engine styles, evidence and a usable path without legacy fetching", async ({ page }) => {
   const observed = await installProjectionRoutes(page);
-  await page.goto("/snapshots/1");
+  await page.goto("/snapshots/1?view=overview");
   await page.getByRole("link", { name: "Topology & Paths", exact: true }).click();
   await expect(page.getByText("All projected list pages loaded.", { exact: false })).toBeVisible();
   const map = page.getByRole("img", { name: "Engine topology diagram" });
@@ -49,7 +49,7 @@ test("fifth tab renders engine styles, evidence and a usable path without legacy
   await expect(peer).toHaveAttribute("data-stroke", "dotted");
   await node.focus(); await page.keyboard.press("Enter");
   await expect(page.getByRole("region", { name: "Topology record details" })).toContainText("/cable_map/nodes/0");
-  await page.getByRole("button", { name: "Evidence for host", exact: true }).click();
+  await page.getByRole("button", { name: "Info for host", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Evidence: host" })).toContainText("synthetic-edge-a");
   await page.keyboard.press("Escape");
   await page.getByLabel("Source IP", { exact: true }).fill("192.0.2.10");
