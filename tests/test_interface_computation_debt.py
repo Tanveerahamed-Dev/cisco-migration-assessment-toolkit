@@ -592,6 +592,18 @@ def test_interpolated_html_templates_remain_one_inspected_payload(parser, path, 
     refuse_unregistered({path: source}, "raw-count")
 
 
+def test_diagnostic_markup_is_recorded_opaque_without_becoming_an_entry_document(parser):
+    source = 'def refusal(src):\n return f"<script src={src!r}> is not a module entry"\n'
+    refuse_unregistered({"webapp/backend/template.py": source}, "opaque-generated-source")
+
+
+def test_static_payload_code_is_still_inspected_beside_an_opaque_source(parser):
+    source = 'const template = "<script src=missing.js></script><script>function f(rows) { return rows.length; }</script>";'
+    sites = guard.scan({"webapp/frontend/template.js": source})
+    assert any(site["rule"] == "opaque-generated-source" for site in sites)
+    assert any(site["rule"] == "raw-count" and site["symbol"] == "<generated-payload>" for site in sites)
+
+
 def test_unknown_historical_policy_cannot_reset_the_ceiling():
     site = sample_site()
     previous = {**guard.proposal([]), "schema": "interface-computation-debt/unknown"}

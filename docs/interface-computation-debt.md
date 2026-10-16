@@ -313,3 +313,14 @@ scanner indefinitely. Masks now use actual JSX text ranges, discard zero-width
 ranges and advance only to an end strictly beyond the current token. A multiline
 JSX control covers whitespace-only text and inert displayed `len(rows)` text.
 The original timeout stays in force; no source file is skipped or waived.
+
+Head `d50d2ced`, CI `38961770546`, Linux Python 3.12 job `117178532167`,
+passes **164 synthetic controls / 3 deselected** and traverses the real JavaScript
+files without the prior stall. It then refuses the generated-string payload at
+`webapp/backend/app.py:2205`: a diagnostic message mentioning `<script src=…>`,
+not an entry document. Real documents remain strict. Unknown/incomplete markup
+inside used string payloads is instead represented by exact
+`opaque-generated-source` records; static script/event code beside it remains
+token-inspected. New opaque forms refuse the closed register, and their code is
+not certified absent. Controls pin both the diagnostic-string case and a static
+count beside an opaque script reference. No payload/file is silently discarded.

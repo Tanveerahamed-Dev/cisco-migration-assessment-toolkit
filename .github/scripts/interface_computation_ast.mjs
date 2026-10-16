@@ -19,6 +19,7 @@ const verdicts = new Set(['READY', 'NOT READY', 'CAUTION', 'GO', 'NO-GO', 'CONDI
 const verdictName = /^(?:can|could|should|is|has|may|must|allow|deny|permit|block|ready|safe|eligible|valid|approved|accepted|rejected|blocked|allowed|denied)(?:_|[A-Z]|$)|(?:^|_)(?:verdict|decision|readiness|ready|allowed|denied|eligible|gate|go_no_go|can_cut_over|ok|pass|fail)$/;
 const verdictReturns = new Set([...verdicts, 'yes', 'no', 'true', 'false', 'pass', 'fail', 'approved', 'rejected', 'blocked', 'allowed', 'valid', 'invalid'].map(value => value.toLowerCase().replaceAll('_', '-')));
 const hash = text => createHash('sha256').update(text).digest('hex');
+const generatedOpaqueSites = [], generatedOpaqueOccurrences = new Map();
 const resourceSchemes = new Set(['http:', 'https:', 'mailto:', 'tel:', 'file:', 'about:']);
 const executableSchemes = new Map([
   ['javascript:', url => decodeURIComponent(url.href.slice(url.protocol.length))],
@@ -26,7 +27,7 @@ const executableSchemes = new Map([
   ['vbscript:', () => { throw new Error('Unsupported executable VBScript URL source'); }],
 ]);
 
-function htmlSources(text, depth = 0, baseLine = 0, resolveScript = null) {
+function htmlSources(text, depth = 0, baseLine = 0, resolveScript = null, onOpaque = null) {
   if (depth > 8) throw new Error('Nested HTML exceeds the static census depth');
   const document = parseHtml(text, { sourceCodeLocationInfo: true });
   const fragments = [];
@@ -39,17 +40,27 @@ function htmlSources(text, depth = 0, baseLine = 0, resolveScript = null) {
     const attrs = node.attrs ?? [];
     if (node.tagName === 'script') {
       const external = attrs.find(attr => ['src', 'href'].includes(attr.name));
-      if (external && !resolveScript?.(external.value)) throw new Error('External script source is not closed by discovery');
+      if (external && !resolveScript?.(external.value)) {
+        if (!onOpaque) throw new Error('External script source is not closed by discovery');
+        onOpaque(['unresolved-script-src', external.value], baseLine + (node.sourceCodeLocation?.startLine ?? 1));
+      }
       const location = node.sourceCodeLocation;
       if (!location?.startTag) throw new Error('Script source location is unavailable');
-      if (text.slice(location.startTag.startOffset, location.startTag.endOffset).trimEnd().endsWith('/>')) throw new Error('Self-closing script syntax is ambiguous');
-      if (!location.endTag) throw new Error('Unclosed Explorer script');
+      if (text.slice(location.startTag.startOffset, location.startTag.endOffset).trimEnd().endsWith('/>')) {
+        if (!onOpaque) throw new Error('Self-closing script syntax is ambiguous');
+        onOpaque(['self-closing-script-fragment'], baseLine + location.startTag.startLine);
+      }
+      if (!location.endTag) {
+        if (!onOpaque) throw new Error('Unclosed Explorer script');
+        onOpaque(['unclosed-script-fragment'], baseLine + location.startTag.startLine);
+      }
       if (external) {
         const url = new URL(external.value, 'https://static-census.invalid/');
         if (['http:', 'https:'].includes(url.protocol) && url.origin !== 'https://static-census.invalid') {
           // Uninspected remote code is an explicit, frozen source form, not an
           // empty/clean script. A newly added remote source cannot silently pass.
-          fragments.push({text: `__atlas_opaque_script_source__(${JSON.stringify(url.href)});`, line: baseLine + location.startTag.endLine - 1});
+          if (onOpaque) onOpaque(['remote-script-src', url.href], baseLine + location.startTag.startLine);
+          else fragments.push({text: `__atlas_opaque_script_source__(${JSON.stringify(url.href)});`, line: baseLine + location.startTag.endLine - 1});
         }
       }
       const type = attrs.find(attr => attr.name === 'type')?.value?.trim().toLowerCase();
@@ -67,12 +78,17 @@ function htmlSources(text, depth = 0, baseLine = 0, resolveScript = null) {
         const url = new URL(attr.value, 'https://static-census.invalid/');
         if (!resourceSchemes.has(url.protocol)) {
           const reader = executableSchemes.get(url.protocol);
-          if (!reader) throw new Error('Unsupported URL scheme in executable-source census');
-          const body = reader(url);
-          fragments.push({ text: `function ${wrapper('html_url')}() {\n${body}\n}`, line: line - 2 });
+          try {
+            if (!reader) throw new Error('Unsupported URL scheme in executable-source census');
+            const body = reader(url);
+            fragments.push({ text: `function ${wrapper('html_url')}() {\n${body}\n}`, line: line - 2 });
+          } catch (error) {
+            if (!onOpaque) throw error;
+            onOpaque(['opaque-url-source', attr.value], line);
+          }
         }
       }
-      if (attr.name === 'srcdoc' && attr.value) fragments.push(...htmlSources(attr.value, depth + 1, line - 1, resolveScript));
+      if (attr.name === 'srcdoc' && attr.value) fragments.push(...htmlSources(attr.value, depth + 1, line - 1, resolveScript, onOpaque));
     }
     for (const child of node.childNodes ?? []) visit(child);
     if (node.content) visit(node.content);
@@ -354,7 +370,14 @@ function tokenStreams(path, text, symbol = '<forbidden-pattern>', lineOffset = 0
 function payloadStreams(path, text, line = 0, depth = 0) {
   try {
     if (/<(?:!doctype|html|script|body|div|button|iframe)\b/i.test(text)) {
-      return htmlSources(text, depth, line, value => scriptIsClosed(path, value))
+      const opaque = (descriptor, sourceLine) => {
+        const fingerprint = hash(JSON.stringify(descriptor)), key = `${path}:${fingerprint}`;
+        const occurrence = (generatedOpaqueOccurrences.get(key) ?? 0) + 1;
+        generatedOpaqueOccurrences.set(key, occurrence);
+        generatedOpaqueSites.push({path, symbol: '<generated-payload>', rule: 'opaque-generated-source',
+          fingerprint, occurrence, line: sourceLine, expression: descriptor.join(' ').slice(0, 240)});
+      };
+      return htmlSources(text, depth, line, value => scriptIsClosed(path, value), opaque)
         .flatMap(fragment => tokenStreams(path, fragment.text, '<generated-payload>', fragment.line, depth + 1));
     }
     return tokenStreams(path, text, '<generated-payload>', line, depth);
@@ -554,4 +577,5 @@ for (const source of input.sources ?? []) {
   process.stderr.write('DEBT_FILE_DONE ' + source.path + '\n');
 }
 for (const payload of input.payloads ?? []) streams.push(...payloadStreams(payload.path, payload.text, payload.line));
+sites.push(...generatedOpaqueSites);
 process.stdout.write(JSON.stringify({sites, streams}));
