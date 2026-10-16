@@ -1,514 +1,706 @@
-# RC8-P1-F: collect a brownfield assessment inside Atlas
+# RC8-P1-F: in-app read-only collection — revised design and threat model
 
-**Status: PROPOSED — docs-only review; implementation held for the foundation.**
-Owner decision: 2026-10-16, relayed by the supervisor. Holder: Codex.
-Source baseline: `3401627f6fd69bb838a2c921d7f95c77b2373623` on GitHub `main`.
-Integrated main `9112a16e4e4d91674ba5cb2881f0d75071c7d78c` with a merge commit;
-its knowledge-export changes do not alter the collection owners described here.
-This PR contains documentation only. It authorizes no live collection, implementation,
-merge, release, device change, or field-qualification claim.
-The supervisor's 2026-10-16 foundation decision applies immediately: no implementation PR
-until **F0 / ADR 0008 and RC8-P1-H have merged**, this design has independent approval, and
-the supervisor explicitly resumes RC8-P1-F. A green design PR alone does not lift that hold.
+**PROPOSED, docs only; independent re-review required.** Holder: Codex, 2026-10-16.
+The [independent review of `961f65cd`](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/668#issuecomment-6214268613)
+was **BLOCKED: five P2 and six P3 design findings**, despite 15/15 CI. This revision replaces
+that design; its resolution ledger below is a specification, not implementation verification
+or approval. No code, test, dependency, workflow, golden or sample change is included.
 
-## Outcome and scope
+Source observations began at main `3401627f`; main `9112a16e` and then `d73d33e2` are integrated
+by merge commits. Current source remains the owner of existing behavior. New engine interfaces,
+memory-backed evidence and command-policy facilities below are proposed, not present on main.
 
-A Cisco Advanced Services consultant opens **New assessment → Collect from devices**, pastes
-addresses or imports a CSV, supplies credentials, reviews the exact targets and read-only SSH
-policy, and explicitly starts one collection. Atlas supervises the existing engine in a child
-process, shows each device's result, verifies secret scrubbing, ingests a snapshot, and opens
-the topology workspace. No terminal or hand-written `devices.json` is required.
+**Implementation hold:** no implementation PR until the supervisor verifies that F0/ADR 0008
+and RC8-P1-H foundation work have merged, this design is independently approved, and explicitly
+resumes F. Use immutable PR merge receipts and Git ancestry/owner acceptance records for those
+predicates. An Active-table row disappearing under NOW rule 8 is neither failure nor proof of
+the gate; row presence is not a prerequisite. Design CI, a merged design PR, and a partial H
+delivery do not self-authorize implementation. No merge, release or device contact here.
 
-The other New assessment choice remains **Import existing collection**. Its ZIP and folder
-routes remain offline and cannot acquire network authority. This phase covers Cisco IOS/IOS-XE
-and NX-OS SSH collection through the existing engine; controller REST collection, discovery
-sweeps, arbitrary commands, configuration mode, device writes, saved credentials, scheduled
-collection and unattended retries are outside this design.
+## 1. One app, one engine owner
 
-## ADR 0008: the engine computes, the interface displays
+The committed [ADR 0008 at PR #672 head `8fd9e520`](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/8fd9e52076024380e2f49d69d508a56848a85efb/docs/decisions/0008-engine-computes-interface-displays.md)
+owns the five-workspace Atlas direction: **Investigate** (default), **Fix**, **Migrate**,
+**Cut over**, **Deliver**. New assessment lives at the engagement home. The topology/cable map,
+Browse drawer and answer panel belong to Investigate; the shared Find bar, Trust drawer and
+snapshot selector expose engine answers and evidence. No separate Explorer or `/scope` entry,
+new console workspace, Network tab, Inventory tab or second frontend is proposed. The native
+window is a target shell; today's launcher/browser behavior is not claimed already replaced.
 
-This design follows `docs/decisions/0008-engine-computes-interface-displays.md` from F0's
-`claude/foundation-adr-0008` branch. At inspection it is an uncommitted owner draft, not a
-merged main artifact (observed Git blob `34b958fef535dc1c3429b366787128141d425ca1`).
-The supervisor's current instruction binds this design; re-read the approved merged ADR and
-RC8-P1-H contracts before any resumed implementation. Do not copy F0's draft into this PR.
+The supervisor's six collection/command additions in the current instruction are binding here
+and intended for ADR 0010. At inspection PR #675 contains ADR 0009 protocol packs, not a published
+ADR 0010 file. This design does not claim that future ADR or `cisco_toolkit/command_policy.py`
+has landed. Reconcile its eventual authoritative record before resumed implementation; do
+not edit or copy another workstream's draft to make a dependency appear complete.
 
-**Collection, job states and coverage have one engine owner.** That includes seed validation
-and canonical plans, target counts, consent/policy decisions, per-device outcomes, aggregate
-progress, timeouts/cancellation disposition, partial-result eligibility, evidence verification
-and coverage/retention facts. Neither browser code nor `webapp/backend` may compute a parallel
-version. A Python function in the webapp backend is still interface code, not the engine.
-
-| Concern | Engine-owned contract | Application responsibility |
+| Concern | Sole fact/policy owner | App responsibility |
 |---|---|---|
-| Inputs and authorization | Shared devices normalization, validated plan/digest, full roster and counts, effective trust/transport policy and per-job consent | Collect form values, enforce unchanged HTTP security/body admission, forward bounded inputs, display engine validation/results verbatim |
-| Collection and lifecycle | Existing collector plus one engine job-state owner; ordered events, transitions, reason codes, deadlines, all-device outcomes and aggregate totals | Spawn/own/reap the child and drain pipes; pass typed OS/control observations to the engine owner; persist/relay its state projection |
-| Coverage and partial results | Engine collection-integrity/completeness and verification owners; failed/not-collected denominator, usable-evidence/partial-admission decision | Display the engine's counts, qualifiers and available actions; forward the consultant's choice without recounting or deciding readiness |
-| Snapshot, retention and audit | Engine evidence/custody/verification results, digest forms, event/audit facts and admission decision | Perform the approved atomic filesystem/database operations, store the engine result, and navigate using committed IDs |
+| Seeds, selected scope and caps | Engine device normalization, policy expansion and preflight plan | Decode input cells, forward values, display engine rows/errors/counts and available actions |
+| Network, trust and commands | Engine destination/consent policy, command registry and session owner | HTTP security and private IPC/process mechanics; forward explicit operator decisions |
+| Job and per-device outcomes | One engine job-state reducer, including parent-side OS observations when the child is dead | Spawn/drain/reap; relay observations; persist and display the typed projection |
+| Progress, failure reasons and coverage | Engine `collection_completeness`, capture-integrity and assessment owners | No recount, inferred percentages, absence verdict or log-derived success in browser/backend |
+| Analysis and persistence admission | Engine analysis of original bytes, then engine redaction and independent verification | Atomically store the admitted snapshot/evidence; navigate using committed identities |
 
-The engine job-state owner must also run in the supervisor context so it can consume typed
-process-exit, bootstrap-failure, deadline, cancellation, cleanup and restart observations when
-the child is dead or has emitted nothing. OS process management stays in the application;
-the interpretation as failed/interrupted/cancelled/completed and its coverage consequences
-stays in engine code. The app must not infer an assessment result from exit code, log text,
-event silence or array length. Missing engine status is shown as unavailable, without a
-fabricated outcome, zero count or healthy default.
+Backend Python is interface code too. New user-visible facts must first have an engine owner
+and owner/reconcile tests, an SSOT registration, then a typed projection. Job facts use a
+versioned engine job projection before a snapshot exists; persisted assessment facts use
+the engine snapshot/`ui_projection`. Formatting/sorting/filtering/layout are allowed; deriving
+a new verdict/count is not. Missing engine output displays unavailable, never healthy or zero.
+RC8-P1-H owns the shrinking interface-debt register and executed two-sided parity gates.
+This feature adds no interface-computation exception. Independent verifier implementation
+remains independent of its producer even if its current webapp location is later reconciled.
 
-Every new user-visible fact must first gain an engine owner and test, be registered in
-`docs/ssot.md` with a reconcile/owner guard, then be exposed through a typed engine projection
-and displayed. Persisted assessment facts use the engine snapshot/`ui_projection`; ephemeral
-job facts use the same engine-first contract discipline through a versioned job projection.
-The application may format, sort, filter and lay out those facts. It must not calculate
-percentages, recount devices, merge outcomes into a new verdict or simulate coverage. Job
-policy limits likewise come from the engine contract; interface controls display those limits.
+## 2. Consultant flow and the two job types
 
-RC8-P1-H owns the foundation enforcement and existing summary/topology duplicates. Existing
-`summary.py` or interface graph logic is not a model for new collection facts. This feature
-must add no interface-computation debt; any temporary existing duplicate stays under F0/H's
-closed shrinking debt register and executed two-sided parity gate, without an F exception.
-Current verifier helpers below are baseline location pointers, not permission to create new
-webapp-owned verification facts. The resumed engine/verification owners must expose the
-canonical admission result through the engine contract while preserving producer/verifier
-independence; any owner relocation requires explicit registry/tests, not a second implementation.
+1. At engagement home choose **New assessment → Collect from devices**, or the existing
+   **Import existing collection** offline route. Offline import never acquires live authority.
+2. Paste IPs/hostnames or import a CSV. The engine returns a preview with canonical device
+   labels, addresses, `auto`/IOS/IOS-XE/NX-OS hints, row errors and counts. Hints are editable
+   per device. No DNS, socket or probe occurs during preview/preflight.
+3. Choose **Assessment collection** (the engine's approved platform bundle), or **Targeted
+   collection** (chosen devices × chosen registered read commands). The engine shows the exact
+   expansion, prerequisite commands, files/bytes/time reservations and scope not requested.
+4. Select an engine-admissible batch, enter per-job credentials and choose trust/transport policy.
+   The app displays the engine's preflight and requires an unchecked consent plus **Authorize
+   and collect once**. Changed targets, command arguments, profile, credentials assignment,
+   trust or caps invalidate the prepared grant. There is no scheduled or automatic continuation.
+5. The engine job projection supplies per-device progress and qualified failures. A first-use
+   key prompt, if selected, occurs before authentication as described below. Cancel is explicit;
+   closing a tab is not cancellation. Reopening reconnects to that job's projected status.
+6. The engine analyses **original captures in memory**, then scrubs, verifies and admits safe
+   persistence. The app displays those stages, the engine's full job denominator and reasons.
+   A partial assessment needs **Open partial assessment**; no usable evidence means no snapshot.
+7. Open the committed snapshot in **Investigate**, with its engine coverage chip/Trust drawer
+   and scoped collection outcomes. If that workspace is unavailable, use the same app's snapshot
+   view with a clear unavailable message; never open a separate Explorer/Scope frontend.
 
-## Current owners and gaps
+Targeted jobs are a first-class engine job kind, not a full-assessment shortcut. The operator
+selects engine policy IDs with typed arguments, not arbitrary command strings. Mandatory trust,
+version, privilege and session-presentation prerequisites are visible in the expansion. Only
+chosen approved reads and those prerequisites execute. Unselected commands are `not-requested`,
+with their dependent axes not assessed, never collected-empty or feature absent. A job may
+produce an investigation result without meeting full snapshot admission. Any new partial
+snapshot requires the engine's explicit coverage/eligibility result and operator acceptance;
+it never mutates or silently merges into an older snapshot. Bind results to device, command,
+job, time and source snapshot context without claiming cross-vintage equivalence.
 
-These observations are source-bound, not claims that the proposed feature exists:
+Investigate's engine question/confirm-on-device action may preselect this same job dialog.
+The later read-only console must consume the same policy/job channel; this PR adds no console,
+free-form terminal, arbitrary shell, config mode or write capability. Active probes stay off.
 
-| Contract | Current source owner | Consequence for this design |
-|---|---|---|
-| Device file parsing, aliases and platform mapping | `COLLECT_PARSE_V3_23_0.py::load_devices`; `devices.example.json` | Reuse one parser/normalizer; add a memory-input seam, not a second devices schema. The file loader currently also reads password environments and may prompt. |
-| Collection and read-only wire vocabulary | `COLLECT_PARSE_V3_23_0.py::connect_device`, `autodetect_platform`, `collect`, `send_cmd`, `ssh_wire_commands`, `is_ssh_wire_command`, `TERMINAL_SETUP_CMDS` | Keep the command owner and capture-integrity semantics. Both auto-detect and driver session preparation require wire-level tests. |
-| Frozen live-network permission | `webapp/backend/serve.py::main`, `_main_scoped`; `portable/network_boundary.py` | `--allow-live-network` currently enables a process-wide socket gate; it is not a target-scoped grant. A job adapter must add target confinement. |
-| Engine child and offline ingest | `webapp/backend/ingest.py::_engine_argv`, `_assess_tree`; `webapp/backend/app.py` ingest routes | Today these routes run `--no-collect`, with a 600-second timeout, and write a temporary devices file. They cannot carry live credentials or be repurposed into a network route. |
-| Request security and resource admission | `webapp/backend/app.py` Host, cross-site read/write, body-size, token and generation-slot middleware | New job routes join existing classifications and guards. No exemptions or changed Host/CSRF semantics. |
-| Redaction and evidence custody | engine `--redact-collection`, `_stage_finalize`; `webapp/backend/redaction_verify.py::verify_collection_secret_scrub`; ingest redaction/promotion helpers | A flag, process exit 0 or producer log count is insufficient to retain evidence. Independently verify the exact complete tree. |
-| Raw-evidence policy | [ADR 0007 D10 and Amendment 1](decisions/0007-one-application-direction.md) | Keep verified scrubbed evidence. No retention indicator or in-app purge; disposal is manual outside Atlas. |
-| Known redaction limits | [W60c residuals](w60c-redaction-residuals-2026-10-12.md) | P2-6/P3-7 and the inherited certified marker-alias escape remain open. Recognized-grammar verification is bounded evidence, not universal secrecy. |
-| Legacy SSH | [W59 #636](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/636) | Still open at design inspection. Do not claim its profiles, transport or disclosure are on baseline main. Reconcile its approved merged owner before implementation. |
+After a job, the engine may project **uncollected CDP/LLDP peers as candidate seeds for the next
+job**, with evidence pointers and ambiguity/unresolved-address qualifiers. The operator ticks
+them, supplies/confirms valid targets and hints, runs preflight, and authorizes a new job.
+Peers are never followed, resolved, contacted, added to the current grant or marked collected
+automatically. Unselected candidates remain outside that job's authorized denominator; the
+engine separately exposes pending engagement scope so a small batch is not a full-fleet claim.
 
-Graphify supplied navigation leads only; source inspection established these boundaries. No
-graph refresh, engine run, local test/build or device contact was performed for this design.
+## 3. One engine command policy; same-session detection and privilege
 
-## Consultant flow
+The future **`cisco_toolkit/command_policy.py`** is the one per-platform registry. A row binds
+stable ID, platform, canonical wire form, allowed aliases and typed argument/filter grammar,
+class, privilege/evidence prerequisites, output/file/byte bounds and coverage dependencies.
+Classes are **`read`**, **`active_probe`** (off/unavailable in these jobs) and **`never`**.
+Unknown platforms, commands, aliases, arguments, stages or missing policy bounds fail closed.
+The app renders the registry; it has no copied algorithm/command allowlist.
 
-1. **Create assessment.** Choose/create a campaign and assessment label, then Collect from
-   devices. Explain: read-only SSH still consumes sessions and device CPU, may collect sensitive
-   running configuration, and requires the consultant's authority for the listed devices.
-2. **Seed devices.** Paste one IP/hostname per line, or select a CSV locally. Show an editable
-   preview table with target, engine hostname/label and platform hint (`auto`, `ios`, `nxos`).
-   Supply one hint to all rows or override each row. No DNS lookup, probe or connection occurs.
-3. **Credentials and trust.** Enter a username/password for this job, optionally override by
-   device/group. Import trusted public host-key entries or enter independently verified SHA-256
-   fingerprints per target. The supported first increment is password authentication only;
-   arbitrary key paths, SSH-agent forwarding and enable secrets are unavailable.
-4. **Review and authorize.** Show the engine's final device count and expanded table, platform hints,
-   SSH port 22, trusted key bindings, standard/legacy profiles, concurrency and time limits,
-   capture handling, and incomplete-evidence implications. An unchecked acknowledgement and
-   **Authorize and collect once** are required. Cancel/back makes no connection. Changing any
-   target, credential assignment, trust, profile or limit invalidates the prepared authorization.
-5. **Collect.** Show queued/connecting/collecting/collected/failed/timed-out/cancelled for every
-   seeded device and the current global stage. Show bounded reason codes and command counts;
-   never stream terminal output, banners, raw errors or credentials. Provide Cancel and explain
-   that closing the tab does not cancel an accepted job. Reopening the campaign reconnects to it.
-6. **Verify and ingest.** Show Scrubbing → Verifying → Saving. If some devices failed, require
-   **Open partial assessment** after showing the exact failed/not-collected denominator; do not
-   label the run complete or those devices healthy. If all failed or no usable interfaces were
-   parsed, provide the failure summary without a snapshot/workspace success link.
-7. **Open topology.** After committed snapshot creation, open RC8-P1-G's canonical workspace
-   for that campaign/snapshot identity. Keep collection failures and evidence coverage visible.
-   If that workspace is unavailable, open the existing snapshot page with a clear workspace
-   unavailable message. A navigation failure never reruns collection or duplicates a snapshot.
+Canonicalize approved aliases/case/whitespace under the engine grammar before classification;
+reject control characters, hidden/ambiguous spellings and chaining rather than repair them
+into executable input. The collector's existing whole-string grammar is a **floor**, not proof
+that every `show` command is safe. Apply the per-platform explicit block rules to the complete
+canonical command and **every pipe stage/argument**. Block file/URL destinations in `show
+tech-support`, redirection/append/tee/transfer forms, unsafe or unrecognized `sort` arguments,
+and any stage with write/egress semantics. A safe first word or first pipe does not admit a
+later stage. A registry ID cannot override a block. Examples are test shapes, not a hand-kept
+denominator: tests derive the complete registered domain and its grammar mutations.
 
-### Seed conversion and validation
+`cisco_toolkit.attestation.is_read_only_command` stays the independent second verifier; it
+does not import the registry's decision/grammar. A wire send needs **both** producer-policy
+admission and independent-verifier admission. No `extra_verbs` waiver, new class default or
+test weakening to force agreement. If required session setup cannot pass both, refuse until
+an independently reviewed owner change supplies positive/negative controls. Terminal paging/
+width setup may be explicitly registered operational session reads; `enable`, config, write,
+copy, reload and transfer never execute. Driver preparation and every low-level channel send
+are checked too, so Netmiko implicit preparation cannot bypass the policy.
 
-The browser may split pasted lines/decode CSV cells in memory as input handling; the engine
-alone maps aliases, validates devices, supplies preview labels/counts and returns row errors.
-The app sends a bounded JSON body, not a multipart upload that can spool to disk.
-Proposed engine-owned limits: 1 MiB seed import, 300 rows, one active live job
-per Atlas process, at most four collector workers. These are new job caps, not changes to any
-existing budget. Larger imports refuse with a split-job instruction; they never truncate.
+Today's attestation function has the independent verb/chaining/pipe-prefix floor; it does not
+by itself prove safe platform-specific tech-support destinations or full sort arguments.
+Before enabling these app jobs, its owner must provide independently reviewed per-platform,
+full-argument coverage of the admitted registry domain, without importing the producer's
+grammar/verdict or sharing its admission result. Missing coverage refuses the capability.
+Calling today's function twice or treating its existing True as that stronger certification
+does not satisfy this requirement. All existing verifier assertions and independence stay intact.
 
-CSV headers map to the engine's existing canonical fields `ip`, `hostname`, `platform`, with
-the engine's existing address/name/platform aliases resolved by that same owner. A pasted
-target supplies `ip`; the engine offers a unique safe hostname label when one is absent, displayed
-for confirmation. Credentials are supplied in step 3, resolving engine-required `username`
-in memory. Do not infer inventory facts from a label or hint. Unknown platform input follows
-the owner's current `auto` normalization and is explicitly shown for confirmation; the UI
-must not silently describe it as a recognized platform.
+**Replace SSHDetect in the new app job path.** Establish one approved SSH transport/channel,
+verify its host key, authenticate at most once, then issue gated `show version` in that same
+session. The engine chooses/binds the supported platform driver to that authenticated session
+without opening/re-authenticating another connection. Preflight reserves a policy-approved
+bootstrap and the worst-case outputs of each allowed platform alternative. An unknown version,
+hint conflict outside the confirmed alternatives, unapproved driver preparation, or a driver
+that cannot reuse the session refuses the device; there is no IOS fallback or second auth.
+The app job performs no automatic reconnect. Existing CLI changes, if needed later to share
+the owner, require their own reviewed parity tests; this docs PR changes no CLI behavior.
 
-Extract the loader's normalization into a shared pure seam in an approved implementation PR,
-with parity tests against existing JSON/list/object/legacy-stream inputs. The GUI creates the
-same normalized device records without requiring a physical file. Do not add CSV parsing to
-the engine's devices-file format merely for this UI. Reject credential-bearing CSV columns
-(`username`, password/secret aliases, `password_env`), unknown columns, duplicate headers,
-malformed rows, missing targets, and ambiguous duplicate device identities. Report row numbers
-and field names, never echo rejected values (a value itself may contain a secret).
+**IOS privilege is an engine fact.** After version detection, execute policy-approved `show
+privilege` before any configuration-derived capture. Full assessment requires a positively
+parsed **privilege 15** result. Below 15, missing/ambiguous result, denied command or timeout:
+refuse full collection before `show running-config`, with `refused-by-guard` and a specific
+privilege qualification. Never invoke enable/escalation. A well-formed partial configuration
+ending in `end` does not prove complete visibility. If a targeted operational job is explicitly
+admitted at a lower verified level, only rows whose engine policy permits that level run;
+its configuration-dependent axes remain not observed/insufficient privilege and cannot assert
+absence, pass or readiness. Missing proof refuses rather than guessing. NX-OS uses its owned
+role/command-authorization evidence, not a fabricated IOS numeric level; denied or uncertain
+visibility qualifies the affected axes. Preserve paging, prompt fallback and transport metadata.
 
-The network-facing adapter adds safety checks absent from the permissive legacy loader:
-strings with strict lengths; numeric unicast addresses or validated DNS names; no URL, userinfo,
-port, CIDR, range, shell expression, control character, UNC/path or path-like device label.
-Reject unspecified, multicast, broadcast, loopback, link-local and metadata destinations,
-including mapped-address equivalents. Private unicast networks are allowed. No implicit
-neighbor expansion, external web fetch, reverse lookup or target derived from capture text.
-Refuse duplicate safe-filename/case/Unicode-normalized labels instead of overwriting captures.
-The server calls the same engine validation owner and the child revalidates the bound plan;
-the interface must not implement another semantic validator or infer a successful validation.
+## 4. Preflight caps before DNS or SSH
 
-## Job and credential boundary
+The engine uses the existing `load_devices` schema/aliases/platform normalization through a
+shared pure memory-input seam; the browser does not add semantic validation or a devices-file
+format. CSV is an input adapter for canonical `ip`, `hostname`, `platform` fields and approved
+aliases. Credentials are supplied separately. Reject credential/env columns, duplicate/unknown
+headers, malformed rows, ambiguous identities and normalized filename collisions with constant
+errors/row numbers, never reflected input. Preserve legacy devices-file parity in owner tests.
+Input targets are literal unicast IPs or bounded DNS names, not URLs, CIDRs/ranges, userinfo,
+ports, paths, UNC, expressions or control-bearing strings. The engine offers safe unique labels
+and displays unknown hints as `auto` for confirmation, never as a recognized platform fact.
 
-The following route names and protocol are proposed, not implemented API claims:
+**300 is a seed-catalog limit, not an advertised 300-device job.** Seed input is at most 512 KiB;
+the operator explicitly chooses a smaller admissible job. No silent truncation or automatic
+batching/contact. The selected job's original roster, including failures and refusals, is the
+denominator of its outcomes; pending catalog scope remains separately visible as engine facts.
 
-| Operation | Proposed contract |
+Before Start may authenticate or resolve a name, the engine freezes a complete plan binding:
+policy/registry version and digests, device/platform alternatives, command/prerequisite expansion,
+worst-case member census, original-memory and sanitized-output reservations, limits, credential
+groups, trust, target policy and consent. Parent preflight is pure/no network; the child repeats
+it before enabling live intent and acknowledges reservation. Missing bounds or insufficient
+capacity refuses **the whole proposed job before any SSH session**, including trust-only probes.
+
+Proposed conservative app-job limits (review choices, not measured field capacity):
+
+| Resource | Bound and preflight consequence |
 |---|---|
-| Prepare | `POST /api/campaigns/{id}/collection-jobs/prepare`: bounded seeds, public trust, assignments and limits; no credentials or network. Returns opaque preparation ID, canonical plan digest and expiry. |
-| Start | `POST /api/campaigns/{id}/collection-jobs`: preparation ID/digest, explicit consent and credential map in one strictly bounded JSON body. Validate campaign, admission and complete plan before consuming the one-use preparation. Returns 202 with opaque job ID. |
-| Status | `GET /api/campaigns/{id}/collection-jobs/{job_id}`: bounded typed stage/device events and last sequence. Existing access/cross-site guards; no secrets, raw log tails, targets in URLs or filesystem paths. Polling suffices for phase 1. |
-| Cancel | `POST /api/campaigns/{id}/collection-jobs/{job_id}/cancel`: same access/CSRF checks, idempotent cancellation acknowledgement; completion is reported only after child exit and cleanup. |
-| Partial admission | `POST /api/campaigns/{id}/collection-jobs/{job_id}/accept-partial`: accepts an already verified result, never reauthorizes SSH. |
+| Original capture store | 256 MiB RAM-only pool; 16 MiB total reservation per device, at most 2 MiB per command; no disk spill |
+| Child memory | 1 GiB enforced process/job memory cap, including the capture pool and analysis/serialization headroom; refusal if the profile cannot reserve/enforce it before SSH |
+| Disk/member set | At most 500 MiB sanitized job output and 20,000 physical entries, or any stricter existing ingest/verifier limit; include logs, markers, sidecars, templates, audit and all artifacts |
+| Parallelism | At most four sessions/workers, with serialized authentication per credential/account group; no extra auto-detect/retry sessions |
+| Time | Device wall cap 1,200 s; job wall cap 3,600 s; post-collection analysis/scrub/verify/admission/partial-choice cap 600 s; bootstrap/reservation cap 30 s; cancellation 5 s cooperative plus 5 s forced reap |
 
-The engine preparation contract expires after five minutes; application-generated opaque
-job identities and typed clock observations are inputs to its monotonic-deadline owner.
-The engine binds the grant to campaign, exact canonical device set, credential
-assignments (opaque references only), trust policy, effective profiles, limits, plan digest and
-one child instance. Consume atomically; duplicate Start returns the existing job identity or
-409 without another child. Concurrent conflicting starts refuse under the existing admission
-mechanism; do not queue credential bodies on disk. Cross-campaign job IDs refuse. A job retry
-always needs new credentials and new explicit authorization.
+Derive `Fmax = job-wide members + sum(maximum members per allowed device/platform branch)`
+from the command policy, actual writer/artifact registry and bootstrap/metadata/log owners,
+not a copied command count. Optional/heavy commands, failure files and targeted products count.
+Admit only if `Fmax <= min(20,000, all downstream entry limits)` and the byte/memory reservations
+fit. Current `collect` writes roughly 103 wire files per device before other members: 300 such
+devices alone exceed 20,000. That observation is a refutation of the old promise, not a new
+hardcoded platform count. A registry change invalidates the plan and reruns preflight.
 
-Credentials exist only in browser transient form state, bounded server memory, the private
-bootstrap pipe, and collector child memory. Clear browser form state after submission/cancel;
-no local/session storage, URL, history state, analytics, autofill persistence controlled by the
-app, service-worker caching, file input export, crash payload, snapshot or audit serialization.
-Use no-store responses and do not echo the Start body. Disable request-body/access-debug
-capture on this route without removing any security middleware. Avoid credential-bearing
-object repr/tracebacks; use allowlisted constant errors. Username is sensitive too.
+For the proposed defaults, eight devices are the absolute maximum: two four-worker waves
+reserve `2 × 1,200 + 600 + 30 = 3,030 s`, below the 3,600 s job cap, and eight 16 MiB original
+reservations occupy 128 MiB. The actual cap is the minimum of this time limit, memory, exact
+file/byte limits and any stricter platform/credential scheduling constraints. A serial profile
+may admit fewer. Targeted jobs still use these conservative ceilings until separately qualified.
+Device wall time starts on assignment to a wave slot, including credential-auth permit wait,
+trust choice and setup; the scheduler cannot start its timer only after successful auth.
+If any computed cap is exceeded, the engine returns admissible scope and asks the operator to
+choose a new job; it does not collect first and discard the evidence later.
 
-Use an anonymous inherited **stdin pipe** for one versioned, length-bounded JSON envelope;
-stdout is a separate framed progress channel, stderr is bounded and sanitized in memory.
-No pickle, shell command, environment credential, named/public pipe, credential file, argv
-secret or reusable secret reference. The child reads exactly one envelope, validates schema,
-length, version, job identity/deadline and plan digest, acknowledges receipt, and closes stdin.
-Short reads, EOF, oversized/extra frames, unknown fields, missing credentials, bootstrap timeout
-or failed acknowledgement refuse before SSH. Limit Start/envelope to 2 MiB; bootstrap to
-10 seconds. Parent drops its credential references after acknowledgement; child releases them
-when sessions close and terminates. No credential reuse across jobs or fallback to `CISCO_PASS`,
-`password_env`, getpass, agent/key search or inherited developer configuration.
+These are **hard resource/deadline reservations, not a throughput SLA or a promise that 103
+commands finish in 20 minutes**. Existing 120/300-second command read limits can exceed the
+device wall cap when added. Each read uses the lesser remaining device/job/command deadline;
+expiry produces explicit uncollected/partial coverage, not a complete result. The UI displays
+that completion feasibility is not field-qualified. CI fake-clock/boundary tests prove the
+envelope/refusals, not real-fleet duration. Do not increase any existing 600-second offline
+ingest, verifier, projection or test budget to admit this feature. Require hosted measured
+memory/time evidence for these proposed caps before implementation is accepted; if absent or
+infeasible, keep Collect unavailable rather than claim scale. Actual over-limit output refuses
+the device/capture in RAM, without persisting a truncated clean-looking file or exceeding caps.
 
-Cancellation uses a separate private inherited control event/handle, owned by the supervisor
-and polled by the child between waits/commands; POSIX may use an owned control pipe instead.
-It carries only cancel intent, no credentials, and is not exposed as an HTTP capability or
-named public endpoint. Closing bootstrap stdin cannot disable cancellation. Handle setup
-failure refuses startup; child control loss is interruption, subject to the same hard reap.
+## 5. Positive destination admission and job-scoped network authority
 
-Application code cannot guarantee physical RAM erasure in Python/JavaScript, prevent a
-privileged local process reading memory, or control OS pagefiles, browser password managers,
-hibernation and externally enabled full-memory dumps. The promise is no application persistence
-or emission; field operating policy must address those residual host risks. Do not claim secure
-zeroization, encryption-at-rest or crash-proof secrecy from a pipe.
+Destination eligibility is an engine-owned **positive prefix table**, not “anything except
+these bad addresses” or the host Python version's `is_global`. Admit only:
 
-### Confine the existing live gate to one supervised child
+- RFC 1918 private IPv4 prefixes (`10/8`, `172.16/12`, `192.168/16`);
+- RFC 4193 unique-local IPv6 (`fc00::/7`);
+- prefixes positively classified as globally reachable unicast by the reviewed, pinned IANA
+  allocation and special-purpose registry data, with valid destination/forwarding semantics.
 
-Do not start the GUI/server with `--allow-live-network` or set its environment globally.
-The controller and offline ingest children remain network-denied. Add an approved job-bootstrap
-dispatch beside the existing frozen `--run-engine` dispatch; it invokes the same
-`COLLECT_PARSE_V3_23_0` collector/analysis owners, not a new SSH implementation. Existing CLI
-semantics remain separately tested. The job path must validate the envelope and install its
-target guard **before** applying the existing live-flag permission or importing code that can
-open sockets. A live intent in child argv contains no credentials and is insufficient by itself:
-absence of a valid parent pipe/envelope refuses. Never temporarily unlock the server process.
+Build a finite disjoint positive table from complete versioned source data, resolving more-
+specific reservations before broader allocations. Public allocated/legacy unicast uses the
+IANA allocation basis; special-purpose exceptions require explicit applicable destination,
+forwardable and globally-reachable admission. Blank/unknown/N/A, expired, malformed or
+unclassified entries do not authorize an address. Do not treat `2000::/3`, any allocated `/8`,
+or `not is_private` as sufficient. Source absence/drift or unsupported embedded-address forms
+fail closed; no runtime IANA fetch. Test every class/overlap and boundary from the pinned data,
+including a newly added synthetic non-admissible reservation, rather than a named bad subset.
+IANA's globally-reachable field does not guarantee actual routability to a particular device.
+Sources: [IPv4 special purpose](https://www.iana.org/assignments/iana-ipv4-special-registry),
+[IPv6 special purpose](https://www.iana.org/assignments/iana-ipv6-special-registry),
+[IPv4 allocations](https://www.iana.org/assignments/ipv4-address-space), and
+[IPv6 global-unicast allocations](https://www.iana.org/assignments/ipv6-unicast-address-assignments).
 
-Only the child receives the existing `--allow-live-network` intent. Its additional guard
-restricts connects to approved numeric destination/port tuples; the existing boolean gate
-alone would permit arbitrary outbound traffic. Hostname resolution occurs only after consent,
-through the host's configured resolver, for the finite authorized names. Show beforehand that
-DNS queries may be sent. Admit and pin all answers after applying the same destination rules;
-mixed disallowed answers, resolver failure or ambiguity refuse that target. No re-resolution
-on reconnect, address fallback outside that set, search-based discovery or proxy/jump host.
-Bind the resolution map into the job's audit result. DNS changes cannot redirect later retries.
-Allow only the bounded resolution phase's resolver traffic and then target TCP/22. Do not
-modify global DNS settings. Unsupported resolution/confinement platforms fail closed.
+Membership is only eligibility. This job's exact operator-authorized target/address/port
+allowlist (TCP/22), reservations and effective transport policy permit only a bounded key-
+exchange socket. An imported match or explicit bound-key acceptance is an additional gate
+before any username/password, authentication request or command. This split permits the
+first-use prompt without silently granting authentication to an unknown key. Normalize
+IPv4-mapped forms to their underlying IPv4 subject before class admission;
+never use a second spelling to evade the same positive table. Do not follow routing, HTTP,
+proxy/jump-host, CDP/LLDP or device-output destinations. Unsupported forms refuse.
 
-The process socket wrapper is defense in depth, not an OS sandbox. Enforce the same target
-binding at collector construction/connect, disable ambient proxy/config behavior, and test
-every frozen/socket/async path the adapter uses. No device-originated path, script, dynamic
-command or deserialized executable is run. The server stays numeric-loopback-only; CSRF,
-Host, auth, read protections and existing offline socket guard remain unchanged.
+DNS happens only in the authorized child after resource preflight and explicit consent that
+shows resolver traffic. Use the configured resolver for the finite names; apply the positive
+table to **every** answer and pin the admitted map for the entire job. A mixed invalid answer,
+unresolvable name or unapproved address change refuses that target; never re-resolve on retry.
+Allow only that bounded resolver phase and then the exact pinned SSH tuples. Bind the map into
+the engine audit. The process wrapper is defense in depth, not an OS sandbox; enforce the same
+engine plan at collector construction and every connect path, including driver internals.
 
-### SSH trust and transport policy
+The app/server remains numeric-loopback-only and outbound-denied. **Collect admission refuses
+a server launched with bare `--allow-live-network`, an active ambient live grant, or an absent/
+unprovable required boundary**, before Start body/network work. Do not flip a shared server
+environment flag to recover. Existing CLI use remains separate. Only the validated job child
+receives live intent, applied after its memory envelope, reservations and target guard are
+validated; argv alone never authorizes the new job path. Preserve Host/CSRF/auth/read guards.
 
-Baseline `connect_device`/`autodetect_platform` do not explicitly configure strict host-key
-verification. This design therefore requires a new tested host-key input seam; it does not
-claim today's default establishes trust. Before sending credentials, verify the server's
-public host key against the job's independently supplied trusted fingerprint/known-host entry,
-bound to the normalized name, pinned address set and port. Cover auto-detection, reconnects
-and normal driver sessions equally. Unknown, missing, changed or mismatched keys fail that
-device before authentication. No AutoAddPolicy, silent TOFU, global known-host mutation or
-"ignore mismatch" control. Phase 1 has no untrusted key-discovery shortcut; consultants obtain
-trust material out of band and enter/import it in the app.
+All offline import/analysis children must be constructed with an explicit offline dispatch:
+no live flag and no `ATLAS_PORTABLE_ALLOW_LIVE_NETWORK` in their environment, regardless of
+the parent. Current `ingest._engine_argv` forwards that flag from the parent; it cannot be
+reused unchanged and called offline-safe. Child bootstrap attests its denied boundary before
+analysis; failure refuses. This design does not send a scrubbed collection to such a child
+for a second authoritative analysis. Existing import routes still never collect from devices.
 
-Standard SSH is the default. Legacy transport is a separate, initially unchecked, per-device
-consent in addition to live-network consent. It must consume W59's approved profile vocabulary,
-two-level row/run authorization, explicit-platform rule and negotiated-session disclosure;
-never copy algorithm lists into the UI or silently downgrade after a standard failure. Show
-the weaker profile and exact affected devices before Start. If W59 is unmerged/unapproved or
-the packaged legacy provider is missing/refused, legacy selection is unavailable/refused.
-Baseline `portable/windows-x64-requirements.lock` pins Paramiko 4.0.0; hiding a legacy checkbox
-does not establish W59's standard-profile boundary. Collection admission must also verify an
-approved provider/policy enforces W59's default-profile restrictions before any authentication,
-including auto-detection. If that default boundary cannot be enforced, disable/refuse Collect
-entirely; do not call the existing transport modern merely because no legacy option was chosen.
-Do not bundle an unreviewed provider, change a dependency pin or weaken authentication/trust
-to enable the feature. Bind effective profile and negotiation evidence to each device/job.
+## 6. Strictly memory-only Start, credentials and private control
 
-## Supervision, progress and failure semantics
+Proposed job routes remain guarded campaign-scoped prepare/start/status/cancel/partial-choice
+operations; prepare has no credentials or network. New Start uses an opaque one-use prepared
+plan ID/digest plus credentials, not repeated raw devices or filesystem paths. Atomic start
+consumption returns an existing job or 409 on replay, never a duplicate child. Revalidation,
+cross-campaign/expired-plan refusal and admission precede secret intake where possible.
 
-The approved implementation needs engine-owned typed progress events and a job projection
-at the existing engine collection boundaries. Never parse human logs to establish success.
-The engine computes event/state transitions, aggregate progress and coverage. Events carry protocol version,
-job/device opaque IDs, strictly increasing sequence, stage, attempt/command counts, time and
-closed reason codes; no passwords, usernames, raw outputs or arbitrary exceptions. Browser
-labels are mapped from the validated plan. Event size is capped at 16 KiB, retained status at
-2 MiB; coalesce progress updates while preserving each device's final outcome and cancellation.
-Pipe drains must run while the child runs so a full progress/stderr pipe cannot deadlock it.
-Coalescing may relay a newer complete engine projection; transport code must not fold events
-into its own job state, progress counter or coverage verdict.
+**Start has a fixed 64 KiB raw-body ceiling and a dedicated non-spooling receive path.** The
+existing `_RequestBodyLimitMiddleware` uses `SpooledTemporaryFile(max_size=1 MiB)` for unsafe
+API bodies; ordinary JSON is not a no-disk guarantee. Classify the normalized Start route
+before that generic spool and receive it in a bounded RAM buffer, never a temporary file,
+file-backed mmap, multipart parser or disk replay queue. The global JSON env override cannot
+raise its cap or select the generic spool. Keep access/Host/CSRF and early declared-length
+guards before body reads, then enforce actual bytes for chunked/absent/lying lengths. Refuse
+over-limit before buffering the offending chunk; reject non-JSON/compressed/multipart,
+duplicate keys, non-finite or malformed values with constant errors. Never log/echo raw bodies,
+decoder exceptions, unknown field values or request object reprs. Give new job-control routes
+the same fixed memory path where they could carry sensitive data. No middleware order bypass.
 
-Keep existing per-connect/auth/command deadlines and authentication-no-retry behavior. Add
-an explicit typed terminal-failure path for auto-detection: baseline `autodetect_platform`
-catches all exceptions and returns `ios`, so an auth/trust refusal can otherwise be followed
-by a second driver connection. Propagate auth, host-key, consent and deadline refusals without
-fallback or another authentication attempt; preserve ordinary platform-detection semantics
-only for nonterminal outcomes. This is a required adapter correction, not current behavior.
-Add these stricter job bounds: device wall deadline 20 minutes, job wall deadline 60 minutes,
-post-collection scrub/verify/ingest stage 600 seconds, cancellation grace 5 seconds then forced
-termination/reap within another 5 seconds. The current offline ingest 600-second cap remains
-unchanged. Device timeout includes auto-detection, connection retries and command time; neither
-device nor job timers reset on an event/reconnect. A device timeout closes its connection;
-if an uncooperative collector thread cannot be stopped safely, terminate the whole child and
-mark every unfinished device interrupted. Do not claim thread cancellation from Future.cancel.
-The exact proposed caps are design-review choices; implementation cannot silently increase
-them or relax existing test/measurement budgets.
+The job-namespace selector must cover raw/decoded-path, trailing-slash and routing error
+variants before any generic spool; ambiguous path/method/encoding refuses before body intake.
+Never redirect/replay a credential-bearing Start or fall back to generic body buffering just
+because its route model or path normalization failed. Exercise these variants in T05.
 
-The 600-second post-collection bound and overall job deadline include partial acceptance;
-the UI displays the earlier expiry. All SSH sessions and credential references are closed
-before waiting. Expiry refuses snapshot admission, releases the generation slot after safe
-cleanup and records `partial_acceptance_expired`; a disconnected tab cannot hold it indefinitely.
+Credentials (including username) live only in transient browser form state, that RAM request
+buffer, private child IPC and bounded engine memory. Clear form/request references after
+submission/cancel; no URL/argv, env credential, cache/history/local/session storage, analytics,
+saved credentials, snapshot, support bundle, credential hash or log. Use no-store responses.
+Disable body/debug capture for this path without disabling security guards. No fallback to
+`CISCO_PASS`, `password_env`, getpass, SSH-agent/key search or inherited user configuration.
 
-The supervisor owns a hidden child and descendant process group (Windows Job Object with
-kill-on-close; equivalent process-group ownership on POSIX), working directory and generation
-slot until exit and cleanup. It forwards Cancel to the engine owner, which stops scheduling
-and requests cooperative connection close; process management enforces the hard reap deadline.
-Parent exit, child crash, broken pipe, malformed events,
-missing terminal event and lost child identity cannot become success. Watchdog and restart
-recovery must handle a process dying during bootstrap/import; no unbounded wait/receive.
-After restart the engine owner marks nonterminal durable job records interrupted; never resume collection or
-recover credentials from disk. A disconnected browser does not transfer supervision.
+Pass one versioned length-bounded **anonymous inherited stdin envelope**, at most 64 KiB,
+containing the admitted plan binding and credential map. No shell, pickle, named/public pipe
+or credential file. Parent/child validate exact schema, length, identity, expiry and digest;
+acknowledge reservation, then close bootstrap stdin and drop unnecessary references. EOF,
+extra frames, unknown version/field, timeout or failed acknowledgement refuses before network.
+Typed progress is a separate bounded stdout stream; unstructured stderr stays in RAM until
+safe constant/allowlisted diagnostics can be emitted. Never persist raw stderr and scrub later.
 
-Proposed engine-owned job states: `prepared → authorized → starting → collecting → scrubbing → verifying →
-awaiting_partial_acceptance (if needed) → ingesting → completed | completed_partial`.
-Refusal/failure/cancellation/interruption are terminal; timeout is a distinct failure reason.
-No terminal cancellation transitions to completed when a late child exits. A final atomic
-commit point arbitrates cancel versus ingest: cancellation winning the lock prevents commit;
-commit winning returns the committed snapshot and rejects further cancellation as already
-complete. Engine-published counts always include all original seeds, including
-failed/skipped/cancelled ones. The interface consumes projected state/totals without recomputation.
+The envelope carries compact command IDs/typed arguments, selected devices and exact expansion/
+policy digests, not hundreds of repeated wire strings or the full seed catalog. The child
+re-expands with the same installed engine owner and verifies the identical canonical plan.
+If even that representation exceeds 64 KiB, refuse and replan a smaller job before any socket;
+never raise the cap or spill the envelope. Sensitive prepare/seed input also uses an explicit
+512 KiB route ceiling before a generic spool, independent of the global JSON env override.
 
-Only existing engine read-only command vocabulary and session preparation may reach the wire.
-Use least-privilege AAA with show/operational access, no enable escalation, config mode,
-save/write, reload, file transfer or arbitrary CLI. Preserve terminal paging/width setup and
-its failure metadata; these alter session presentation, never configuration. Audit Netmiko
-driver preparation and SSHDetect commands against the permitted operational vocabulary too;
-an unknown driver write refuses instead of bypassing the collector allowlist. Capture timeouts,
-prompt-fallback, command authorization errors, terminal-setup failures and parse gaps retain
-their existing integrity qualifiers. Successful SSH is not a complete/healthy assessment.
+A separate inherited private framed control pipe/event carries only cancel, per-device
+first-use key decisions and partial-choice intent, each bound to job/device/plan and one-use
+nonce. It carries no credential values and is not an HTTP capability. Closing credential stdin
+cannot disable control. Unknown/stale/extra control messages refuse; loss means interruption.
+Drain output concurrently to prevent backpressure deadlocks. At most 16 KiB per event and
+2 MiB projected status; relay newer complete engine projections rather than recomputing state.
 
-## Completion, raw evidence and audit
+Python/JavaScript cannot guarantee physical zeroization or defeat privileged memory readers,
+browser password managers, OS paging/hibernation or externally configured dumps. The guarantee
+is no application persistence/emission; managed-host policy must address those residual risks.
+No claim of secure erasure, encrypted RAM or crash-proof secrecy follows from a pipe.
 
-Each job gets a private, randomly named staging directory under the resolved Atlas data root,
-outside code/bundle/repository trees and outside static/download routes. Use current-user-only
-ACLs, physical-directory/link/reparse/hardlink checks and no caller-selected output paths.
-Fail preflight on insufficient bounded storage or unsuitable permissions. Maintain a frozen
-file/member census, limits and stable hashes; resource exhaustion is a refusal, not truncation.
-The adapter needs a 500 MiB total staging-byte cap and 20,000-file cap, no weaker than existing
-ingest tree limits; individual verifier/container limits continue to apply. All outputs count,
-including diagnostic and incomplete files. Abort writers when bounds are reached.
+## 7. Host keys and consecutive authentication failures
 
-Job credentials must not land on disk even if a device echoes them. Install a job-aware,
-in-memory credential sink barrier before engine/file logging, capture writes, exceptions,
-sidecars and artifacts; include username and password plus declared encoding variants. Structured
-events are allowlisted, not sanitized arbitrary strings. Unclassifiable/undecodable credential
-carriers refuse the sink, with a constant error. Do not persist raw stderr then scrub later.
-Existing engine exception logging and file-input custody are not safe substitutes. Parity-tested
-memory inputs must never be serialized wholesale into the run manifest, input binding, snapshot,
-temporary devices file or log. Non-secret roster/provenance may be persisted separately.
+**Recommendation:** prefer imported/independently verified pins; also support **opt-in,
+operator-confirmed first-use acceptance per device** for authorized brownfield work. Unknown
+keys never auto-accept, and there is no Accept all. Import-only is stronger when trusted
+material exists but prevents legitimate first contact without a prepared inventory. First-use
+confirmation alone remains vulnerable to a first-contact MITM; the UI states that risk and
+offers out-of-band comparison, without claiming the device identity was independently proven.
 
-Other device-originated secrets can exist in private working captures during analysis. Those
-are sensitive staging, never retained evidence, downloads, support ZIPs, backup inputs or static
-files. Apply the engine's `--redact-collection` after analysis, then independently call
-`verify_collection_secret_scrub` on the final physical tree. Require a nonempty verified capture
-set and reconcile every file against the writer census: every `uncovered` member must be
-individually handled by an appropriate existing verifier or refuse the whole retention. Never
-interpret an excluded JSON sidecar as automatically clean. Require current completion/custody
-records, stable hashes and no incomplete/unsafe marker; recheck immediately before promotion.
+Both paths show and bind target/name, pinned address, port, exact public-key blob/key type,
+**fingerprint digest algorithm plus value**, negotiated host-key/signature algorithm and
+effective transport policy. A bare digest with no algorithm is invalid. For RSA, distinguish
+the public-key type from the negotiated RSA-SHA2/signature algorithm; same fingerprint is not
+a waiver of the profile. Approved negotiation must satisfy the bound algorithm policy.
 
-Only that verified scrubbed tree can enter retained storage, digest-bound to the resulting
-snapshot. The backend passes a server-owned verified tree handle to the offline ingest core;
-do not post arbitrary paths to `/ingest-folder` or broaden its allowed roots. Its child remains
-`--no-collect` with no credentials or live grant. Preserve snapshot validation (finite JSON,
-usable device/interface evidence), summaries, engine-owned coverage and persisted-byte digest
-forms. Store the full failed seed roster as collection provenance, without synthesizing healthy
-snapshot devices. Atomically join job/result/campaign/snapshot identity; repeated completion
-must return the same snapshot. Crash between file promotion and database commit leaves an
-unpublished orphan for recovery, never a workspace pointing at missing/unverified evidence.
+For first use, perform only approved SSH key exchange on the already authorized/reserved
+target; do not send username, password or an authentication request until the engine receives
+that exact displayed-key acceptance. Pause the same connection, with a two-minute choice
+deadline inside device/job deadlines. Refusal/expiry closes it. Record key bytes/fingerprint,
+algorithms, target, local operator-decision reference, time and acceptance method in the job
+audit. Keep accepted public trust bindings in an engagement-scoped ledger for later jobs;
+they are not credentials and do not mutate global known_hosts. **A changed key is a hard
+host-key-refused failure**, with no in-job override or “accept replacement” shortcut. Rotation
+needs separate out-of-band re-onboarding under an owner-approved trust procedure, not a retry.
+No credential precedes trust on explicit or auto-platform paths. If a packaged provider cannot
+expose/gate key acceptance before authentication on one session, Collect stays unavailable.
 
-Successful output stays a client-confidential in-app assessment, with original topology
-identifiers as needed; secret-scrubbed does not mean anonymized or share-safe. Export continues
-through the separately verified `--redact-folder` path and its artifact-family checks. Preserve
-all W60c residuals explicitly; do not claim this design fixes them or treat verifier success as
-universal privacy/field qualification. Independent design approval must assess those known
-limits before implementation is authorized; any new failing secrecy case blocks the feature.
+W59's approved default/legacy profile, two-level per-device/run consent, explicit-platform
+restrictions and negotiated-session facts remain the transport authority. No algorithm list
+copied into UI, implicit SHA-1 fallback or unreviewed provider. Baseline Paramiko 4.0.0 is not
+assumed to enforce W59's standard boundary: inability to enforce the approved default policy
+refuses Collect even with legacy hidden. An auto target incompatible with W59's effective
+profile refuses before connection; a standard failure never switches profile.
 
-Retain verified scrubbed captures and non-secret audit records under D10/Amendment 1 until the
-operator's manual engagement disposal. No TTL, in-app purge or retention indicator is added.
-Ephemeral unredacted staging is removed after successful promotion and on every refusal,
-cancel, timeout or failure, with startup recovery for abandoned workspaces. A failed cleanup
-is a separate `cleanup_required` condition that blocks further collection until the operator
-removes that exact owned staging tree outside Atlas; never silently retain it as clean or
-backup it. Permission/disk/crash failures can leave sensitive staging: show a bounded local
-recovery instruction, keep it inaccessible to routes, and include its location in the manual
-disposal documentation. Deletion on flash/SSD is not secure erasure.
+**Engine-owned authentication circuit breaker:** at most one authentication in progress per
+credential/account group; existing successfully authenticated sessions may collect concurrently.
+Default threshold is **two consecutive authentication failures**, operator may lower it to one
+but never raise it in this design. Increment only an actual auth failure; a successful auth
+resets that group's consecutive count. Timeout/unreachable/host-key/guard outcomes neither
+increment nor reset it. At threshold, atomically stop scheduling/authenticating that group,
+close its pending unauthenticated connections, and mark its unattempted devices refused-by-guard
+with `credential-auth-stop`. Other groups may continue under the same job caps. No queued third
+attempt, SSHDetect fallback, password-method fallback or reconnect after authentication failure.
 
-The existing [operator disposal procedure](operator-guide-core-screens.md#disposing-of-client-data-manual-outside-assesshub)
-and `portable/README-FIELD.txt` must enumerate new staging/retained-job locations alongside
-database/journal/backups, release-backups, updater copies, exports, logs, OS temp, browser data
-and other copied media before implementation ships. Do not back up an active staging tree.
+Canonicalize equivalent credential slots in RAM. Conservatively group the same username
+across the whole job, including case/Unicode-equivalent comparison forms, regardless of slot,
+password, claimed realm or transport profile; a renamed/duplicate override cannot reset the
+stop counter. This comparison never changes the literal username/password sent for auth.
+It may stop unrelated same-named accounts too; that safe limitation is displayed. A claimed
+realm is not evidence allowing more attempts. Audit
+opaque group IDs, counts and stop outcomes, never username/password or their hashes. The UI
+shows the engine stop and remaining unattempted devices, not “unreachable”. No automatic
+retry/new job; re-entry requires fresh credentials and consent. This bounds attempts, not
+proof against an AAA lockout policy stricter than the chosen threshold; show that limitation
+and require the consultant to use the site's read-only account policy.
 
-Persist an append-only, versioned local job audit with job/campaign IDs, application/source
-identity, plan digest, non-secret target and resolution/trust bindings, consent time and local
-session identity (not a falsely authenticated human signature), limits/effective profiles,
-per-device outcomes, cancellation/timeout/interruption, scrub/verifier scope and digests,
-snapshot ID plus digest form, and cleanup outcome. No credential values, credential hashes,
-private keys, request bodies, arbitrary device error text or raw log tails. Audit must be
-available before network starts; write failure refuses startup or aborts an active job.
-Wall-clock timestamps are local observations, with monotonic durations for deadlines.
-Audit is customer data and can be edited by a privileged local user: no tamper-proof,
-trusted-time, operator-identity or non-repudiation claim. Backup includes committed safe records
-only; unknown/incomplete jobs remain visibly interrupted after recovery.
+## 8. Original analysis first; scrubbed persistence second
 
-## Threat model and mandatory counterexamples
+**Authoritative analysis input is the original transport bytes.** Existing
+`tests/test_redact_collection.py::test_cli_flag_scrubs_after_analysis_and_warns` owns this
+ordering for `--redact-collection`. The previous design's `scrub → --no-collect analysis` was
+wrong: default SNMP `public/private` severity and secret-valued golden drift can change.
 
-Assets: credentials, device availability/configuration, client evidence, snapshot integrity,
-authorization scope and host storage. Trust boundaries: browser → loopback API → child IPC →
-SSH/DNS peer → staging → independent verifier → durable store/workspace. Threat actors include
-a drive-by website, malformed import, compromised/misidentified SSH peer, concurrent local
-client, accidental repeat/cancel and process/media failure. A compromised OS or modified Atlas
-binary is outside the app's enforcement boundary and remains a deployment risk.
+To preserve that ordering AND the no-credential-on-disk rule, new app jobs need one **bounded
+RAM evidence backend** for the existing engine reader/custody/parser owners, not a second
+analysis engine. Collect original bytes there, including credential-like lines and echoed job
+identities. Original command captures, unsanitized metadata/snapshots/artifacts and exceptions
+must never touch disk, logs, spill files, crash reports or backups. Bind all engine reads to
+that immutable in-memory set through the existing custody interface's reviewed memory seam.
+If any parser, library or writer requires an original on disk, refuse this job mode; a private
+temporary file followed by deletion is not compliant. No partial implementation of this seam
+may enable Collect. The original RAM store is a required implementation gate, not current code.
+Original bytes are exactly the collector capture representation the existing CLI would parse,
+including its line endings; the RAM adapter performs no additional normalization or filtering.
 
-| Threat | Required mitigation | Closing test evidence |
+Ordering is explicit:
+
+1. Complete/qualify collection, version/privilege/command evidence and the full selected roster.
+2. Freeze the original in-memory evidence set; run **all** assessment/normalization checks on
+   it, including SNMP severity, weak-user checks and golden drift. Keep secret-bearing computed
+   structures in RAM. Resource overrun or missing originals produces an unavailable/partial
+   engine result, never a silent switch to scrubbed inputs.
+3. Freeze the authoritative analysis facts. Then run the engine's `--redact-collection`
+   semantics on a copy/view and a reviewed engine-owned **secret/credential-only operational
+   persistence transform** on the snapshot/metadata before any file writer. This is not the
+   wholesale `--redact`/`html.redact_snapshot` share-safe transform, which pseudonymizes
+   topology identities. Reuse applicable owner primitives without duplicating the vocabulary;
+   retain original noncredential IP/MAC/serial/device facts needed by Investigate and confirm-
+   on-device. The app adds the explicit credential-identity withholding policy below. Do not rerun
+   value-dependent analysis over the scrubbed tree to manufacture a replacement snapshot.
+4. Independently verify the exact sanitized captures and secret-only operational snapshot,
+   metadata, log/audit and any artifact set under a reviewed operational persistence contract.
+   The existing share-safe artifact certification is a different claim; it cannot be relabelled
+   or weakened to certify an operational snapshot. Missing independent secret-only coverage
+   refuses persistence. Require nonempty proof, complete member/census reconciliation and stable
+   digests. Every excluded/binary/uncovered member needs its own appropriate verifier or the
+   whole retention refuses. A flag, producer count, exit 0 or zero checked files is not proof.
+5. Persist only the admitted safe set. Store the **original-analysis snapshot**, after its
+   persistence redaction, through the existing snapshot validation/atomic storage boundary.
+   Reuse storage/summary consumers after foundation reconciliation; **do not call `_assess_tree`,
+   `run_collection_folder` or `--no-collect` on scrubbed captures for authoritative ingest**.
+   Preserve finite JSON, usable-evidence eligibility, engine coverage, custody and digest forms.
+6. Atomically bind job/campaign/snapshot, sanitized evidence and verification scope. Navigation
+   happens only after commit. Retry returns the same committed snapshot. A promoted filesystem
+   orphan without a database commit is unpublished recovery state, not a workspace success.
+
+**Username-versus-evidence decision: mask only AFTER analysis, with a qualifier; refuse if that
+cannot be proved safe.** The live username is a credential, including when it occurs in
+`username <name>` configuration, logging/accounting or a weak-user finding. Original text stays
+in RAM for analysis. Before persistence the engine replaces that identity with an opaque
+job-scoped token in retained captures, labels, structured findings, logs and all metadata,
+using a distinct consistent token per original credential identity so counts/joins do not
+collapse. Preserve line structure and supply safe retained-evidence pointers. It masks password
+values too; it never hashes credentials into the snapshot. If a safe identity/field/pointer
+transform cannot be completed or independently certified, refuse persistence of that result.
+No pre-analysis mask, dropped offending line or “identity was public anyway” exception.
+
+The engine publishes `credential_identity_withheld` and affected record/axis qualifiers:
+the original-analysis severity/result remains, identity detail is unavailable, and a later
+re-analysis of sanitized evidence cannot claim original-value equivalence. In particular,
+weak-user failure/severity/count cannot become pass or disappear just because names are
+withheld. CLI raw scrubbing currently keeps identities (`html.py::redact_collection_dir`);
+the app is intentionally stricter about its job identity at persistence. Tests allow only
+those explicitly mapped identity/secret payload differences, never weakened findings or
+blanket exclusions from the fact comparison. Other topology identities remain as observed
+unless they collide with a job credential; that collision must be qualified or refused.
+
+Value-dependent checks are engine-owned and explicitly catalogued/tested. The original run
+publishes their original result plus the retention/replay limitation. If ONLY scrubbed source
+is available in a later offline import, engine policy withholds the affected check or marks
+it not assessable from original values; it must not assert feature absent, no drift, or a
+weaker clean verdict. Do not use string placeholders as if they were measured device values.
+Custody distinguishes original RAM observations from retained scrubbed bytes and explicitly
+states `original_evidence_not_retained`; a retained-tree digest cannot certify the disposed
+originals' byte identity. Do not persist a raw secret-bearing input digest as an oracle or
+silently waive the existing disk-custody receipt checks. The memory mode needs its own reviewed
+engine custody contract and tests; without it, refuse the app job. Existing CLI custody gates
+stay unchanged. A qualified original-analysis result is not portable original-raw custody.
+Known W60c P2-6/P3-7 and the certified marker-alias escape remain negative evidence, not fixed
+by this design. In particular, current producer AND verifier certify a known private residue:
+their green result alone cannot admit this app path. The deployed job capability must remain
+unavailable until independently reviewed engine/privacy-owner enforcement can reject those
+preserved counterexamples and their grammar variants without weakening any legacy test/golden.
+Inject each known certified escape through fake-device output and require **no retained
+evidence, snapshot or downloadable artifact**, despite simulating today's false certification.
+Do not create a fixture-name exception, app-side vocabulary copy or operator override. Any
+unproved transformation/residue refuses persistence. Passing this finite corpus still cannot
+prove universal secrecy, share-safe delivery or field qualification.
+
+## 9. States, failure facts, cancellation and partial results
+
+One engine reducer owns `prepared → preflighted → authorized → starting → collecting →
+analysing_originals → scrubbing → verifying → awaiting_partial_acceptance (if needed) →
+committing → completed | completed_partial`. Per-device key choice is an engine substate,
+not an app-invented success. Refused/failed/cancelled/interrupted and timeout reason are
+terminal dispositions. The same engine owner in the supervisor process consumes typed OS
+exit, bootstrap, control-loss, watchdog, cleanup and restart observations when no child event
+exists. App/backend never derives the job verdict from an exit code or event silence.
+
+Publish **each selected device's failure reason as an engine fact in `collection_completeness`**:
+`auth-failed`, `timeout`, `host-key-refused`, `unreachable`, `refused-by-guard`, with stable detail
+codes, stage, attempt count, requested/observed command coverage and evidence pointer. Unattempted
+devices after a guard/auth stop are refused-by-guard with why, not fabricated auth failures.
+Success does not erase privilege/paging/prompt/partial qualifiers. Extend the engine's closed
+owner/schema/projection with reconciliation tests, not an app status dictionary. The source
+roster and outcomes reconcile exactly; missing reason/row is unavailable, never zero failures.
+
+Supervisor mechanics own a hidden child and process tree (Windows Job Object kill-on-close;
+equivalent owned process group on POSIX), bounded pipe drains and the generation slot. Cancel
+goes through the private control channel to the engine; stop scheduling and close sessions,
+then force/reap within 5+5 seconds if needed. A stuck collector thread cannot be safely killed
+by `Future.cancel`; terminate the child and let the engine mark all unfinished devices
+interrupted/partial. Never extend a deadline on progress, retry, key choice or cleanup.
+
+The 600-second post-collection bound and global deadline include partial acceptance, with
+the earlier expiry displayed. Sessions/credential references close before waiting. Expiry
+refuses snapshot admission, records the engine reason and releases resources after cleanup.
+Atomic commit arbitration prevents late child events turning cancellation into completed;
+commit winning returns the existing snapshot and refuses a late cancel as already complete.
+After a crash/restart, engine state is interrupted, not automatically resumed; no credentials
+are recovered from disk. Missing usable device/interface evidence means no assessment snapshot.
+
+## 10. Per-job paths, log census, retention and disposal
+
+Process cwd and sanitized staging are a private external job root, for example the resolved
+per-user local application-data `Atlas/collection-jobs/<opaque-id>` directory, **outside the
+executable/install/update trees**, not `<exe_dir>/data`, repo code or a static/download root.
+Canonicalize and reject overlapping roots, links/reparse points, hard-linked/nonregular files,
+caller paths and unsuitable ACLs before auth. Check writability and bounded disk space. No
+working directory that falls back into the executable tree is admissible.
+
+`cisco_toolkit.engine_log_path` sends any frozen child whose cwd is inside the executable tree
+to a shared `<exe_dir>/data` log. Therefore an apparently isolated `data/jobs/<id>` cwd is unsafe.
+The job bootstrap must resolve/assert the exact final engine log path before SSH, pin it to
+the external job root, install the safe log sink before engine logging, and include every
+writer/child logger in the frozen member/byte census. No parent/shared FileHandler or raw
+stdout/stderr spill. If the current resolver would select the shared log or the root cannot
+be proven, refuse before collection; do not clean/delete a shared file belonging to other jobs.
+Frozen-profile tests must prove no write under the shared log/bundle, including exception paths.
+
+Logs that reach disk contain only allowlisted safe engine events/IDs, never original captures,
+raw exceptions or credentials. Finalized safe evidence may then be copied and reverified into
+the active data store, which may be `<exe_dir>/data` as the documented **writable data exception**
+to immutable application bytes. That retained-data exception never authorizes a child cwd or
+shared job log there. Copy across volumes into a private destination, reverify exact members,
+then commit; no assumption that cross-volume rename is atomic. Originals never follow that copy.
+
+Under [ADR 0007 D10/Amendment 1](decisions/0007-one-application-direction.md), retain verified
+scrubbed evidence and safe audit records; no in-app purge/retention indicator or expiry of
+committed evidence. Dispose manually under the client agreement outside Atlas. List the new
+external roots and retained-data copies in the operator/field guides before implementation
+acceptance, alongside database/journals/backups, update/release copies, exports, browser data
+and all other media. App deletion on flash is not secure erasure. No active staging in backups.
+
+Original RAM references are released on every terminal path; only safe staged output can
+need filesystem cleanup. A failed scrub/persistence/cleanup leaves no retained-clean label,
+no served snapshot and an engine `cleanup_required` reason for any safe-but-incomplete disk
+set; block new collection until that exact owned root is handled. If an implementation ever
+finds a plaintext original/credential file, treat it as a violated gate/security incident,
+quarantine it from app serving/backups and stop; ordinary deletion is not proof it never existed.
+
+The versioned append-only job audit stores plan/policy/source identities, reservations,
+positive target map, public-key/algorithm decision, explicit consent, opaque credential-group
+failure counts, command IDs, original-analysis versus retained-evidence forms, qualifications,
+per-device outcomes, verifier/member digests, snapshot ID/digest form and cleanup result. No
+credential values/hashes, original secret-bearing payload/digest oracle, bodies or raw log
+tails. Audit availability is a preflight prerequisite; audit-write failure aborts new SSH.
+Local operator/time records are observations, not authenticated signatures, trusted time or
+tamper-proof custody. Engine facts remain authoritative; the app stores them without recounting.
+
+## 11. Threat model
+
+Assets are credentials, device configuration/availability, original evidence/analysis truth,
+retained privacy, job authorization and host storage. Boundaries are browser → guarded API RAM
+→ private IPC → engine/session/SSH peer → original RAM analysis → scrub/verifier → durable store.
+Adversaries/failures include drive-by pages, malformed seeds, MITM/changed keys, hostile device
+output, accidental credential mistakes, concurrent requests, process death and media exhaustion.
+A compromised host or modified executable is outside the app's enforcement boundary.
+
+| Threat | Required control | Decisive refusal/negative control |
 |---|---|---|
-| Drive-by CSRF, hostile Host/DNS rebinding, cross-campaign job theft | Existing guards before body/child work; campaign/job ownership; no credential CORS exception | Reject cross-site/missing/forged headers and foreign IDs, with zero SSH/resolver contacts and no secret persistence |
-| CSV/target SSRF, DNS redirection, path collision/injection | Shared loader plus strict job adapter; finite authorized names, pinned valid addresses/port; physical server-owned paths | URL/userinfo/CIDR/UNC/traversal/mapped/link-local/metadata, mixed DNS answers, changed DNS and normalized filename collision all refuse |
-| Credential exfiltration via request logs, errors, argv/env, captures or telemetry | Memory pipe; sink barriers; no-store; no ambient auth; closed progress/errors | Sentinel scanners over every physical/logical sink and transport; inject echo/banner/auth-error/encoded carriers |
-| MITM/legacy downgrade | Verify trusted key before auth on every SSH path; W59 double consent; no fallback | Unknown/changed key sends no credential; default failure never loads legacy provider; stale/ambiguous consent refuses |
-| Device configuration/write or unauthorized extra probe | Engine-owned operational allowlist plus driver/detect wire checks; pinned target set | Fixture records every command/auth/connect; config/enable/write/transfer and off-roster destinations cause failure |
-| Hanging child, pipe flood, device stall or orphaned descendant | Monotonic deadlines; concurrent pipe drains; bounded events/storage; owned process tree | Kill during import, blocked read, malformed/flooded IPC, slow device, parent death, cancel race and restart converge to bounded failure/reap |
-| False success from partial collection or producer-only scrub | Full seed denominator, typed outcomes, independent physical verification and atomic ingest | One failed device remains failed; zero usable evidence refuses; missing/changed/uncovered/unsafe member blocks retention and navigation |
-| Raw evidence leak or stale/cross-job promotion | Private staging, exact member/digest binding, no static access, cleanup/recovery | Links, swapped files, disk full, denied cleanup, orphan promotion and foreign receipts cannot produce completed state |
-| Forged audit/identity or overclaimed redaction | Local observed audit with explicit scope/limits and residuals | Audit failures stop new SSH; restart preserves negative states; no golden/sample or authority-state rebaseline |
+| Body/credential persistence or echo | Fixed non-spooling Start, original RAM-only readers/writers, post-analysis identity masking and independent sink scans | Chunked oversized body, env-raised cap, username in real config/syslog and one deliberate file leak must fail |
+| Analysis softening after redaction | Originals authoritative; direct original-result ingestion; value-dependent replay qualifiers | `public/private` SNMP and distinct-secret golden drift change under scrubbed-only analysis but original-result verdict never changes |
+| Device writes or active probes hidden behind `show` | One platform registry, whole-string floor, every pipe/argument block, independent attestation and driver-send gate | Aliases, tech-support destinations, sort arguments, later unsafe pipe, config/enable/transfer and driver bypass refuse |
+| SSRF/discovery/ambient live grant | Positive IANA/RFC classes plus exact job tuples, pinned DNS, offline child grant stripping, server-live admission refusal | Full class/boundary corpus, mixed/rebinding answer, peer auto-follow and bare-live server produce no unauthorized session |
+| MITM, low privilege, AAA lockout | Algorithm-bound trust before auth, changed-key hard failure, one-session detection/privilege gate, per-group consecutive stop | Unknown/unaccepted key sends zero credentials; privilege 1 valid-looking config never yields absence; no third auth after threshold 2 |
+| Expensive impossible job, hung/orphan child or partial false success | Exact caps/reservations before SSH, owned process tree/deadlines, complete engine failure roster, atomic commit | 300-device over-cap request, disk/memory refusal, stalled reads, parent death and cancel/commit race cannot complete falsely |
+| Cross-site/campaign job theft or forged coverage | Existing Host/CSRF/auth guards; campaign-bound one-use plan; engine states/SSOT projection | Foreign/missing headers/IDs, forged app totals, missing/late engine events and replayed Start refuse or display unavailable |
 
-## Hosted test plan and approval gates
+## 12. Hosted acceptance tests (specified, not implemented or run here)
 
-No new test code is included in this design PR. All following execution belongs on ephemeral
-GitHub-hosted runners, with synthetic inputs only and **no real device contact ever**.
+All execution is on GitHub-hosted ephemeral runners with synthetic data/fake SSH only; **no
+real gear ever**. Current golden/sample bytes and every test, gate and budget remain unchanged.
 
-1. **Whole-job fake SSH fixture.** Bind a deterministic loopback SSH server with a generated
-   test host key and IOS/NX-OS-like prompt, exact engine command responses and wire transcript.
-   Drive the real UI/API Start → actual supervised engine child → redaction → independent verifier
-   → offline ingest → stored snapshot → workspace handoff. Do not stub collection/subprocess/
-   redaction/store to manufacture end-to-end success. The production adapter refuses loopback
-   targets: use an explicit test-only dependency-injected endpoint policy in the source harness,
-   absent from frozen production entry points and unavailable through HTTP/argv/env. Prove that
-   isolation independently; do not add a product loopback-exception switch for CI. Resolver
-   tests use an injected finite fake, never a real external resolver. Frozen tests independently
-   exercise bootstrap/socket denial, process supervision and synthetic offline handoff; any
-   missing packaged whole-job coverage stays NOT VERIFIED rather than weakening destination policy.
-2. **Wire/trust/consent refusals.** Auth denied (one attempt), wrong/unknown/missing/rotated key
-   before password, refused terminal setup, unsupported platform/profile, legacy with one
-   consent missing, ambiguous/stale target consent, no provider, no gate/no pipe/no grant,
-   a legacy-only peer under standard consent and a provider unable to enforce the default policy,
-   ambient live/password environment and unexpected driver commands. Record commands for
-   auto-detect and reconnect as well as explicit-platform collection. Assert no real sockets
-   outside the fixture and no configuration/device-write commands.
-3. **Leak scanner.** Use unique synthetic username/password sentinels per device and run on
-   success, all-failed, partial, cancellation, refusal, timeout and injected crash. Inspect argv,
-   environment, HTTP responses/headers/history, browser storage/cache, progress, parent/child
-   stdout/stderr and structured/file logs, every staging/retained filename and byte, database
-   and journal/backup copies, snapshots, run manifests/custody, error/incomplete markers,
-   generated documents/archives, CI logs and uploaded artifacts. Scan UTF-8/UTF-16, JSON,
-   URL/entity/base64/escape variants and format-aware OOXML/archive payloads; raw byte grep
-   alone is insufficient. File-write interception must also assert no transient disk write,
-   because an end-of-job scan would miss a deleted credential file. Include an intentional
-   leaking negative control to prove scanner failure. Never upload failing secret-bearing output;
-   CI credentials are synthetic, and reports use IDs/counts rather than echoing sentinels.
-4. **Safety and resource refusals.** Exercise every threat-table counterexample, import caps,
-   bootstrap deadline/EOF/oversize/unknown-version, worker/session caps, disk/file/event budgets,
-   exact deadline handling (including partial-acceptance expiry), private control-handle loss,
-   cancellation during bootstrap/authentication/command reads, cancel/commit race and killed-child/parent recovery on Windows and
-   Linux. Confirm request rejection precedes any child, DNS or SSH effect. Prove server/offline
-   child gates remain denied during and after live-job authorization.
-5. **Custody/partial/retention.** Test at least two devices with one timeout, complete failure,
-   prompt fallback, empty parser output, uncovered/binary members, sidecar secrets, post-verify
-   mutation, redaction residue (including preserved W60c known cases), interrupted promotion,
-   cleanup denial and repeated completion. Partial acceptance cannot discard a failure or
-   increase collected counts. Test a verified complete path as a positive control, plus no
-   snapshot on redaction/custody failure and no duplicate snapshot after a retrying client.
-6. **Regression and packaging.** Existing shared-device-loader inputs must retain parity;
-   current offline ingest never connects. Require unchanged golden/sample bytes, complete
-   current Python/frontend/distribution/portable gates, closed route/write-site inventories,
-   OpenAPI types when routes exist, and independent applied-source refutation. Add executed
-   owner/consumer tests that forge interface totals, reorder/drop events, supply missing engine
-   status and kill the child before its first event: only the engine owner may produce state,
-   progress and coverage, and every display must equal its bound projection. Pin each new fact
-   to the SSOT registry/reconcile or owner guard and F0/H's shrinking interface-debt/parity gates.
-   A backend Python recount is a failing duplicate just as a browser recount is. Keep every
-   existing guard/test/budget. Packaging proof never substitutes for live field acceptance.
+- **T01 Whole job:** deterministic IOS/NX-OS fake SSH with test key and a wire/auth transcript;
+  real API → supervised child → original engine analysis → scrub/verifier → snapshot store →
+  Investigate handoff. Do not stub the engine/store/redaction to manufacture end-to-end success.
+  Production rejects fixture loopback addresses; a test-only source-harness dependency injection
+  supplies the endpoint policy, absent from packaged entry points and unreachable via HTTP,
+  argv or env. Frozen tests separately prove real bootstrap, path, socket and IPC enforcement;
+  absent packaged coverage stays not verified, never a production bypass.
+- **T02 Original-versus-scrubbed parity:** two lanes over identical original fixtures: existing
+  CLI contract analysing originals then `--redact-collection`, and the proposed RAM evidence
+  backend analysing the same original bytes. Compare the complete engine analysis/check
+  status/severity/count/drift outputs, after narrowly specified identity/payload redaction
+  and run-identity bindings. No missing-check or value-dependent exemption. Include literal
+  SNMP `public`/`private` versus nondefault RO and distinct secret-bearing golden directives;
+  prove high severity and distinct drift survive. A third, deliberately scrubbed-only analysis
+  is the negative oracle: demonstrate the changed results and require replay qualification,
+  not equality to a weakened baseline. The test must fail if app ingest reanalyses scrubbed
+  captures or any pre-analysis filter changes original engine input.
+- **T03 Username/evidence and all-sink leaks:** synthetic username actually in `username ...`,
+  logging/accounting, weak-user findings, metadata and an identity collision; original RAM
+  readers see it, persisted fields use the owner token and qualification, findings retain
+  original fail/severity/count. Password echo/encoded carriers too. Instrument every file
+  creation/write, spool/rollover, argv/env, browser cache/storage, request/progress/log/error,
+  snapshot/database/journal/backup, archive/OOXML and artifact path, not only end-state grep.
+  Scan declared Unicode/JSON/URL/HTML/base64/escape variants. A deliberate transient write
+  deleted before completion must still fail. Refuse unsafe masking/pointer transformations;
+  check credential hashes and original secret-bearing capture digests against every persisted
+  custody/output field too; a retained-tree hash must not be passed off as original custody.
+  no credential appears even transiently on disk. Reports use IDs/counts, never leak values.
+- **T04 Cap preflight:** derive every platform/targeted/prerequisite/failure member from owners;
+  exact-boundary pass and one-over rejection for entries, bytes, pool/RSS, workers, slots and
+  deadline reservations. A 300-device default request and policy-census growth refuse with
+  **zero resolver calls, TCP connections and SSH sessions**. Memory/disk/log-root reservation
+  failure also refuses before SSH. Test the eight-device time arithmetic and stricter serial
+  constraints; fake clocks prove all limits and no timer reset, not real gear throughput.
+- **T05 Start memory:** actual ASGI middleware chain with 64 KiB and one-over, chunked/omitted/
+  false Content-Length, rejected content encodings, high `ASSESSHUB_MAX_JSON_BODY_BYTES`, malformed
+  JSON and cross-site/Host/auth refusals. Spy on tempfile/spool/file-backed APIs and raw logging;
+  all Start/control body paths must have zero disk operations and zero body reflection. Trace
+  bootstrap/stdin copies and failure paths; no ambient credential lookup or fallback.
+- **T06 Privilege:** same-session fake IOS privilege 15 positive; levels 1/7, denied/malformed/
+  missing probe, timeout, and a valid-looking limited `show running-config` ending `end`.
+  Full collection refuses or the explicitly admitted targeted job has engine visibility
+  qualifiers; no config-derived feature-absent/pass/readiness. No enable command. NX-OS role
+  and command-denial controls do not synthesize IOS privilege proof.
+- **T07 Commands and detection:** registry-derived complete per-platform classes/aliases and
+  every pipe grammar; tech-support file/URL forms, sort arguments, later unsafe stages and
+  implicit driver writes all refuse. `active_probe` never runs. Mutate producer admission and
+  independent attestation separately; either check must block a bad send without importing the
+  other's verdict. One TCP/auth session for `show version`, privilege and collection; wrong
+  hint/unknown platform/provider refusal/auth failure causes no second connection/auth attempt.
+- **T08 Auth circuit:** one bad credential across many devices, threshold 2 stops before a
+  third attempt; threshold 1 stops earlier. Serialized auth under concurrency, success reset,
+  neutral failures not resetting, alias/override bypass, and independent group continuation.
+  Remaining rows have refused-by-guard/auth-stop, actual failures auth-failed. Audit no secrets.
+- **T09 Trust:** algorithm-less fingerprint refusal; imported match, optional first-use prompt
+  and exact-key acceptance/refusal/expiry; **zero username/password/auth transmission before
+  acceptance**, including version/auto/reconnect code paths. Changed key always fails; RSA key
+  type versus signature policy, stale/foreign control nonce and downgrade/provider cases.
+  Assert audit/key-ledger bindings and no global known_hosts mutation.
+- **T10 Destinations and inherited grants:** generate cases from every pinned IANA/RFC class,
+  each prefix edge/overlap and new unknown reservation, plus normalized mapped addresses,
+  mixed DNS answers and pinned-answer changes. Require positive membership plus exact job
+  scope. Bare-live server refuses Collect; offline argv/env always strip grant, and an offline
+  child socket attempt stays denied even if the parent was explicitly live. No HTTP/env escape.
+- **T11 Failure facts and peers:** real fake-device auth, timeout, trust, unreachable and guard
+  refusals produce all five engine `collection_completeness` reason codes and exact selected
+  roster reconciliation. CDP/LLDP candidates retain evidence/ambiguity, never trigger DNS/SSH;
+  only an explicitly ticked, preflighted, separately authorized next job may contact one.
+  Targeted unrequested commands stay not-requested/not-assessed, not empty/full coverage.
+- **T12 Paths, liveness and admission:** frozen child external cwd, exact log path and complete
+  output census; inject a bundle/data cwd and shared handler/fallback to prove pre-auth refusal
+  and no shared-log write. Bootstrap death, broken/full pipes, malformed events, cancel during
+  auth/read/key choice, hung thread, parent exit, partial expiry, memory/disk exhaustion,
+  verifier residue/uncovered member, mutation after verification, copy/DB crash and restart.
+  Feed every preserved W60c certified escape through the fake peer and simulate current
+  producer/verifier false-green results: capability admission/persistence must refuse, with
+  zero retained evidence/snapshot/artifact until owner enforcement is independently established.
+  Hard reap/cleanup and one atomic snapshot hold; no late completed state or duplicate ingest.
+- **T13 Foundation/consumer parity:** engine facts/SSOT registrations, closed schemas/OpenAPI,
+  complete capture/write-site census and golden/sample equality; forge app totals and missing
+  engine status to prove there is no backend/browser recount. Original CLI input/analysis
+  behavior and offline routes stay covered. Existing full Python/frontend/distribution/
+  portable/reference gates and budgets stay intact; internal source review is not acceptance.
 
-For this docs-only PR: Rule-7 privacy and commit/message/per-parent/publication marker scans
-before each push; all 15 current protected contexts SUCCESS on the exact final PR head (or
-its verified tree-equivalent GitHub test merge). CodeQL and every applicable workflow retain
-their own terminal results. Post final check evidence on the PR, then **STOP for independent
-design review**. Green CI checks documentation integration, not implemented collection or
-design approval. Implementation PRs may start only after **F0 / ADR 0008 and RC8-P1-H have
-merged**, independent approval of this exact design/open decisions is recorded, and the
-supervisor explicitly resumes this row; each must independently stop at 15/15. No merge,
-release, real-network trial or golden/sample regeneration is authorized here.
+## 13. Review resolution ledger and stop conditions
 
-## Coordination and implementation seams after approval
+All entries mean **specified in this revision, pending independent re-review and later hosted
+implementation evidence**. They do not convert BLOCKED `961f65cd` into approved/implemented.
 
-The [live board](NOW.md) owns status and one-writer assignment. The named companion streams
-were not listed on baseline main's Active table when inspected. Their local boards subsequently
-showed G's Explorer-centred workspace on `codex/rc8-topology-workspace`, P0-C's installer work
-on `codex/rc8-desktop-installer` and P1-E's queued native window on `codex/rc8-desktop-window`.
-Those are unmerged coordination leads; interfaces below are proposals for their holders,
-not evidence of their approval or delivery. Reconcile their current rows/PR
-heads before implementing, and preserve every board handoff during main integration.
-
-| Workstream | Handoff and ownership boundary | Required reconciliation |
+| Finding/addition | Decision and where to review | Closing test contract |
 |---|---|---|
-| F0 / ADR 0008 and RC8-P1-H, foundation | F consumes the merged engine-first/SSOT enforcement, projection and shrinking-debt/parity contracts. Collection, job states and coverage remain engine-owned. | Hard implementation hold until both foundation workstreams have merged; supervisor resumes F. Design approval or one foundation PR alone is insufficient. Reconcile H's complete workstream status, not merely its first summary PR. |
-| RC8-P1-G, topology workspace | F returns committed campaign/snapshot identity, verification scope and complete collection-outcome provenance. G owns canonical navigation/rendering and engine fact projection. | Confirm route/partial-warning contract in NOW; fallback to existing snapshot page until G is ready. No snapshot schema or topology fact invented by F. |
-| RC8-P0-C/P1-E, desktop packaging | Desktop holder owns frozen bootstrap entry, inherited stdin handles, hidden child/process group, private data paths, restart recovery and installed capability admission. F owns collection protocol and gate semantics. | Confirm Windows pipe/Job Object behavior, loopback server profile, early target guard and default-denied offline child in NOW. Missing packaged capability disables Collect with an actionable explanation. |
-| W59 #636 | SSH owner supplies approved profile/consent/negotiation semantics. F renders and binds them. | Re-read merged owner, pins and consent restrictions; no silent transport import or separate algorithm policy. |
-| Redaction/custody owners | Existing producer, independent verifier, raw-input/finalization and store bindings remain authoritative. | Resolve recognition limits and metadata member coverage without waiving tests or certifying excluded files. |
+| P2-1 originals and semantic parity | Section 8: original RAM analysis authoritative; scrub after analysis; ingest its snapshot, not scrubbed-only reanalysis; value-dependent replay qualifiers | T02 |
+| P2-2 username collides with evidence | Section 8: original identity in RAM; post-analysis mask with explicit qualifier/pointer mapping, otherwise persistence refusal; intentionally stricter persistence than CLI | T03 |
+| P2-3 caps versus scale | Section 4: 300 catalog only; exact file/byte/memory/scheduling preflight before any session; conservative max eight or fewer, hard time bounds not SLA | T04 |
+| P2-4 Start spooling | Section 6: fixed 64 KiB non-spooling receive before generic body spool, env override irrelevant; all error/chunk paths memory-only | T05 |
+| P2-5 IOS privilege | Section 3: engine `show privilege`; full assessment requires proven 15; targeted lower-level visibility explicit; never infer absence | T06 |
+| P3-6 inherited live grant | Section 5: bare-live app server refuses; offline argv/env explicitly strip and child denies sockets | T10 |
+| P3-7 destination subset | Section 5: positive RFC/IANA membership with complete pinned class tests plus exact job allowlist | T10 |
+| P3-8 frontend/ADR/hold | Sections 1–2 and NOW: committed #672 `8fd9e520`, five workspaces/Investigate; durable merge evidence and supervisor resume, never Active-row existence | T13; owner review |
+| P3-9 consecutive auth stop | Section 7: engine threshold 2 (lowerable to 1), serialized per-group auth, no alias bypass/retry/third attempt | T08 |
+| P3-10 fingerprint algorithm | Section 7: key blob/type plus digest/signature algorithms, profile-bound acceptance before any credential | T09 |
+| P3-11 staging/shared log | Section 10: external cwd, resolver/log/handler preflight and census; retained writable-data exception only after safe promotion | T12 |
+| Supervisor (a) one command registry | Section 3: command_policy owner, aliases, grammar floor, platform blocks/every pipe, read/active_probe/never, independent attestation | T07 |
+| Supervisor (b) no SSHDetect | Section 3: gated show version, driver on same authenticated channel; no second auth | T07–T08 |
+| Supervisor (c) per-device reason | Section 9: five failure reasons in engine collection_completeness, complete roster and qualifiers | T11 |
+| Supervisor (d) peer seeds | Section 2: engine candidates, operator ticks next job; no automatic following | T11 |
+| Supervisor (e) targeted jobs | Section 2: devices × registered commands, prerequisites/coverage explicit, future console uses same policy/channel | T01/T07/T11 |
+| Supervisor (f) first-use trust | Section 7: recommended optional human-confirmed first use, imported pins preferred; algorithms/audit before auth, changed key hard failure | T09 |
 
-Implementation decomposition is deferred to the supervisor after the foundation hold is lifted.
-This row finishes only this phase-1 design/threat-model PR and stops at 15/15 for review.
-No implementation PR or new workstream starts here; shared-file assignments are reconciled
-only when the supervisor resumes the row.
+Coordination remains through NOW. F0/#672 owns the frontend/ownership ADR; H owns foundation
+enforcement; G owns the app's Investigate canvas/renderer; desktop holders own installed shell,
+pipe/process/path capability proof; engine/SSH/redaction owners own the policies and original
+analysis contracts. Do not implement any of them in this docs PR or claim their delivery.
 
-Independent review must decide the proposed numeric caps, strict out-of-band host-key workflow,
-supported credential mode and W59 dependency, desktop confinement feasibility, and treatment of
-the preserved W60c privacy limits. Until that review is approved, implementation and runtime
-readiness are **not verified**. Even an approved design stays on hold until F0 and RC8-P1-H
-have merged and the supervisor resumes this row. Approval is not authority for live field collection.
+Run fresh Rule-7 repository privacy and every-new-commit/message/per-parent/publication marker
+scans before each push. Require all 15 protected contexts on the exact final PR head and all
+applicable hosted workflow results; earlier-head success, cancellation or partial results do
+not transfer. Post one consolidated finding-by-finding summary and **STOP for independent
+re-review**. CI here checks documentation integration, not the future fake-SSH feature or
+design approval. The implementation hold at the top remains in force; no merge or release.
