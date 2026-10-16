@@ -1,8 +1,10 @@
 # RC8-P1-G: one Atlas App workspace
 
-The owner-approved target is the existing React app inside the native Atlas window. The six-screen Claude Design prototype is the visual specification. Its topology, names, counters, status statements and example outcomes are illustrative, never engine evidence. Existing theme tokens supply the palette. Small visual refinements may follow without changing this structure.
+The target is the existing React app inside the native Atlas window. **Latest owner direction: foundation only while a deeper consolidated concept is prepared.** The owner found the initial six-screen prototype too basic; its navigation, tabs and layout are provisional. Continue the project_topology renderer, projection hooks, selection-panel framework, ADR8 and strangler gates. Do not polish that visual design or open later UI PRs before the new consultant-job/capability concept arrives. Prototype names, counters and outcomes remain illustrative, never evidence.
 
-## Four reviewable increments
+Projection loading lives in router-independent `useSnapshotProjection` hooks. The controlled `InvestigationPanel` accepts presentation metadata and a source-backed body; it computes no assessment. `workspacePresentation.ts` keeps provisional section/tool labels separate from requests, source admission, selection lifetime and canvas geometry. The extraction preserves existing behavior and tests; it grants no product-design acceptance.
+
+## Initial sequencing, held for the consolidated concept
 
 1. **Shell and Network foundation:** engagement rail and New assessment placeholder; snapshot selector and Compare/Reports entry; coverage banner; six tabs; default native d3-force topology/cable canvas; search, collection filter, source legend and selection-driven Details panel. Published collection:false nodes are hatched. Unsupported layers/colour overlays stay visibly unavailable until the engine contract exists. Preserve Classic workflows and their tests through explicit Classic view links.
 2. **Network investigation tools:** five tools in the same panel: Details, If this fails, Path, Endpoint, VLAN. Read device failure_impact, project_path, project_inventory endpoint summaries and stored G14 vlan_carriage/2 through its projection. Label route-model scope, missing identity populations and lower bounds; never imply live traffic/ACL proof or a complete multi-MAC lookup. Evidence stays beside the investigation. Engine-owned map overlays require an exact published join/style contract first.

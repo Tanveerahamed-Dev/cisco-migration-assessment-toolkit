@@ -222,4 +222,13 @@ describe("ADR-0008 native snapshot workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry snapshot" })); await screen.findByTestId("native-canvas");
     expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/ui-projection/")).every(([url]) => /\/ui-projection\/(topology|trust)\?/.test(String(url)))).toBe(true);
   });
+  it("keeps an empty-message topology failure recoverable after extracting the request hook", async () => {
+    let first = true;
+    serve({ topology: (sid) => { if (first) { first = false; throw new Error(""); } return topologyFixture(sid); } });
+    show(); expect(await screen.findByRole("alert")).toHaveTextContent("Snapshot unavailable");
+    expect(screen.queryByText("Loading Network…", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("native-canvas")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry snapshot" }));
+    await screen.findByTestId("native-canvas"); expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });
