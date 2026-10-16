@@ -8,6 +8,13 @@ ends, or a quota runs out: commit to the row's branch and update the board. Push
 user's explicit authority and never applies to a row marked local-only (`docs/NOW.md` rule 5). This
 applies to Claude Code and Codex alike; Codex enters through root `AGENTS.md`.
 
+**Foundation rule (binding; ADR 0008, `docs/decisions/0008-engine-computes-interface-displays.md`):**
+the engine computes, the interface displays. Every fact and analysis is computed once in the engine
+and reaches users through the snapshot or `ui_projection`. AssessHub, the topology workspace, Atlas
+Scope, the HTML explorer and every document only format and display it. A screen that needs a new
+value gets it from a new engine-owned fact registered in `docs/ssot.md`, never from its own
+calculation. CI enforces this; a conflicting change needs an owner amendment to ADR 0008.
+
 ## Repository-review record (CLOSED 2026-08-03)
 
 The whole-repository hardening review is **complete and merged to `main`**. There is nothing to

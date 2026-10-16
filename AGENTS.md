@@ -15,7 +15,10 @@ Claude-only. Before substantive work:
    never for a row marked local-only.
 2. Read `CLAUDE.md` completely.
 3. Read `docs/ssot.md` before using or repeating a shared fact. Read the fact
-   from the owner named there rather than from a cached count or plan.
+   from the owner named there rather than from a cached count or plan. Follow
+   `docs/decisions/0008-engine-computes-interface-displays.md`: the engine
+   computes every fact and analysis, and interfaces and documents only display
+   engine output. A new value goes into the engine first, never into a screen.
 4. Read `docs/quality/learnings.md` when its verified engine lessons are
    relevant to the task.
 5. Inspect the live repository with `git status --short --branch` and recent
