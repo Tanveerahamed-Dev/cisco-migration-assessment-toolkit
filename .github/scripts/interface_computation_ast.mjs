@@ -25,7 +25,7 @@ function htmlSources(text, depth = 0, baseLine = 0) {
   function visit(node) {
     const attrs = node.attrs ?? [];
     if (node.tagName === 'script') {
-      if (attrs.some(attr => attr.name === 'src')) throw new Error('External Explorer scripts cannot escape the census');
+      if (attrs.some(attr => ['src', 'href'].includes(attr.name))) throw new Error('External Explorer scripts cannot escape the census');
       const location = node.sourceCodeLocation;
       if (!location?.startTag) throw new Error('Script source location is unavailable');
       if (text.slice(location.startTag.startOffset, location.startTag.endOffset).trimEnd().endsWith('/>')) throw new Error('Self-closing script syntax is ambiguous');
@@ -154,6 +154,7 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
     if (ts.isBinaryExpression(node)) {
       const op = node.operatorToken.kind;
       if (op === ts.SyntaxKind.EqualsToken && ts.isBinaryExpression(node.right) && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.right.operatorToken.kind) && node.right.left.getText(file) === node.left.getText(file)) emit(node, symbol, 'counter-update');
+      if (op === ts.SyntaxKind.EqualsToken && ts.isElementAccessExpression(node.left) && ts.isBinaryExpression(node.right) && node.right.operatorToken.kind === ts.SyntaxKind.PlusToken) emit(node, symbol, 'indexed-counter-update');
       if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(op) && ts.isNumericLiteral(node.right) && node.right.text === '0' && domain.test(node.left.getText(file))) emit(node, symbol, 'fact-default-zero');
       if ([ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken].includes(op)
           && /\d/.test(node.getText(file))) emit(node, symbol, 'fact-threshold');

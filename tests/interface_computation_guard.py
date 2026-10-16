@@ -269,11 +269,14 @@ if __name__ == "__main__":
         observations = scan(source_map())
         record = {"source_commit": git("rev-parse", "HEAD").decode().strip(),
                   "source_tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+                  "python": sys.version.split()[0], "platform": sys.platform,
+                  "sites_sha256": digest(json.dumps(proposal(observations), sort_keys=True, separators=(",", ":"))),
                   "detectors": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in (
                       "tests/interface_computation_guard.py", ".github/scripts/interface_computation_ast.mjs")},
                   "proposal": proposal(observations), "observations": observations}
         Path(sys.argv[2]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         print(f"Observed {len(observations)} exact static sites; admission still requires review")
+        print(f"DEBT_CENSUS_FINGERPRINT python={record['python']} platform={record['platform']} sites={len(observations)} sha256={record['sites_sha256']}")
     elif sys.argv[1:] == ["--check"]:
         print(f"Interface computation ratchet passed: {check()} exact sites")
     else:
