@@ -1,14 +1,17 @@
 """ADR 0008 static debt census. Application source is parsed as data, never imported.
 
-The detector is deliberately conservative: existing presentation/infrastructure
-calculations are exact-site allowances, not proof of duplicate business logic.
-No new site, changed expression, or resurrected retirement is silently admitted.
+This ratchets a closed, named set of detected computation forms, not absence of
+computation. Undetected forms require review and are not certified absent.
+Existing presentation/infrastructure calculations are conservative exact-site
+allowances, not proof of duplicate business logic.
 """
 from __future__ import annotations
 
 import ast
+import base64
 from collections import Counter
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import re
@@ -16,22 +19,20 @@ import shutil
 import subprocess
 import sys
 
+from interface_computation_lex import lexical_counter, lexical_sites, python_stream, string_payloads
+from interface_computation_sources import SCRIPT_SUFFIXES, python_closure
+
 ROOT = Path(__file__).resolve().parents[1]
+DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
-ORIGIN = "9112a16e4e4d91674ba5cb2881f0d75071c7d78c"
-ROOTS = ("webapp/frontend/src/", "webapp/backend/", "atlas-scope/src/")
-SPECIAL = ("cisco_toolkit/blast_radius_explorer.html", "cisco_toolkit/excel.py", "cisco_toolkit/docmeta.py",
-           "cisco_toolkit/html.py", "atlas-scope/tools/lib/compile-model.mjs")
+ORIGIN = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
+SCHEMA = "interface-computation-debt/2"
+LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")
 VERDICTS = frozenset({"READY", "NOT READY", "CAUTION", "GO", "NO-GO", "CONDITIONAL GO", "Critical", "Excellent", "Good", "Fair", "Poor", "ok", "watch", "risk", "crit", "healthy", "permit", "deny", "allow", "block", "reached", "unreachable"})
-PATTERNS = {
-    "dynamic-code": re.compile(r"\b(?:eval|exec|Function)\s*\("),
-    "graph-worklist": re.compile(r"\b(?:queue|visited|adjacency|neighbours|neighbors)\s*\.\s*(?:shift|pop|popleft|add|push|append)\s*\("),
-    "filter-count": re.compile(r"\.filter\s*\([^;\n]{1,200}\)\s*\.length\b"),
-    "raw-count": re.compile(r"\.\s*(?:length|size)\b|\b(?:len|sum|Counter)\s*\("),
-    "raw-threshold": re.compile(r"(?:>=|<=|>|<)\s*[0-9]+"),
-}
+VERDICT_NAME = re.compile(r"^(?:can|could|should|is|has|may|must|allow|deny|permit|block|ready|safe|eligible|valid|approved|accepted|rejected|blocked|allowed|denied)(?:_|[A-Z]|$)|(?:^|_)(?:verdict|decision|readiness|ready|allowed|denied|eligible|gate|go_no_go|can_cut_over|ok|pass|fail)$")
+VERDICT_RETURNS = {value.casefold().replace("_", "-") for value in (*VERDICTS, "yes", "no", "true", "false", "pass", "fail", "approved", "rejected", "blocked", "allowed", "valid", "invalid")}
 
 
 def git(*args):
@@ -39,23 +40,21 @@ def git(*args):
 
 
 def source_map(revision=None):
-    names = (git("ls-tree", "-r", "--name-only", revision) if revision else
-             git("ls-files", "--cached", "--others", "--exclude-standard")).decode().splitlines()
+    names = (git("ls-tree", "-r", "-z", "--name-only", revision) if revision else
+             git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).decode("utf-8").split("\0")
     read = (lambda p: git("show", revision + ":" + p).decode("utf-8")) if revision else lambda p: (ROOT / p).read_text(encoding="utf-8")
-    # Discover document writers from the real registry without importing generators.
-    registry = ast.parse(read("cisco_toolkit/docmeta.py"))
-    writers = {kw.value.value.replace(".", "/") + ".py"
-               for node in ast.walk(registry) if isinstance(node, ast.Call)
-               for kw in node.keywords if kw.arg == "writer_module" and isinstance(kw.value, ast.Constant)
-               and isinstance(kw.value.value, str)}
-    selected = set()
-    for path in names:
-        if path in SPECIAL or path in writers:
-            selected.add(path)
-        elif path.startswith(ROOTS) and path.endswith((".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")):
-            if path == "webapp/backend/engine.py" or "/test/" in path or "/__tests__/" in path or re.search(r"\.(?:test|spec)\.", path):
-                continue
-            selected.add(path)
+    names = sorted(set(names) - {""})
+    selected = python_closure(names, read)
+    candidates = {path: read(path) for path in names if path.endswith((*SCRIPT_SUFFIXES, ".html"))
+                  or path.endswith(("package.json", ".json")) and ("tsconfig" in path or "jsconfig" in path or path.endswith("package.json"))}
+    if candidates:
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node is required for browser module-closure discovery")
+        reply = subprocess.run([node, str(DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs")],
+                               input=json.dumps(dict(mode="discover", files=candidates, names=names)), cwd=DETECTOR_ROOT,
+                               text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+        selected.update(json.loads(reply.stdout))
     return {path: read(path) for path in sorted(selected)}
 
 
@@ -104,6 +103,19 @@ def ast_form(value):
 
 def python_sites(path, text):
     result, counts = [], Counter()
+    lines = text.splitlines(keepends=True)
+    offsets, offset = [], 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    def segment(node):
+        start = offsets[node.lineno - 1] + len(lines[node.lineno - 1].encode()[:node.col_offset].decode())
+        end = offsets[node.end_lineno - 1] + len(lines[node.end_lineno - 1].encode()[:node.end_col_offset].decode())
+        return text[start:end]
+
+    def literal(node):
+        return isinstance(node, ast.Constant) or (isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant))
 
     class Walk(ast.NodeVisitor):
         scope = "<module>"
@@ -114,17 +126,54 @@ def python_sites(path, text):
             counts[key] += 1
             result.append(dict(path=path, symbol=self.scope, rule=rule, fingerprint=fingerprint,
                                occurrence=counts[key], line=node.lineno,
-                               expression=(ast.get_source_segment(text, node) or "").replace("\n", " ")[:240]))
+                               expression=segment(node).replace("\n", " ")[:240]))
 
         def visit_FunctionDef(self, node):
             old = self.scope
             self.scope = node.name if old == "<module>" else old + "." + node.name
             if SYMBOL.match(node.name):
                 self.emit(node, "analysis-symbol", node.name)
+            if VERDICT_NAME.search(node.name.lstrip("_")):
+                self.emit(node, "verdict-symbol", node.name)
             self.generic_visit(node)
             self.scope = old
 
         visit_AsyncFunctionDef = visit_FunctionDef
+
+        def returned(self, node):
+            pending = [node]
+            while pending:
+                child = pending.pop()
+                if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if isinstance(child, ast.Compare) and any(not literal(n) for n in (child.left, *child.comparators)):
+                    self.emit(child, "returned-comparison")
+                pending.extend(ast.iter_child_nodes(child))
+
+            def verdict(value):
+                if isinstance(value, ast.Constant):
+                    return type(value.value) is bool or (isinstance(value.value, str) and value.value.casefold().replace("_", "-") in VERDICT_RETURNS)
+                if isinstance(value, ast.Name):
+                    return bool(VERDICT_NAME.search(value.id.lstrip("_")))
+                if isinstance(value, ast.Attribute):
+                    return bool(VERDICT_NAME.search(value.attr.lstrip("_")))
+                if isinstance(value, ast.Call):
+                    return verdict(value.func)
+                if isinstance(value, ast.IfExp):
+                    return verdict(value.body) or verdict(value.orelse)
+                if isinstance(value, ast.BoolOp):
+                    return any(verdict(child) for child in value.values)
+                return False
+
+            if verdict(node):
+                self.emit(node, "verdict-return")
+
+        def visit_Lambda(self, node):
+            old = self.scope
+            self.scope = old + ".<lambda>"
+            self.returned(node.body)
+            self.generic_visit(node)
+            self.scope = old
 
         def visit_Call(self, node):
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
@@ -132,6 +181,8 @@ def python_sites(path, text):
                 self.emit(node, "aggregate")
             if name in {"bfs", "dfs", "shortest_path", "dijkstra", "reachable", "flood_fill"}:
                 self.emit(node, "graph-call")
+            if name in {"eval", "exec", "compile", "__import__"}:
+                self.emit(node, "dynamic-code")
             if name in {"append", "extend", "pop", "popleft", "add", "update"}:
                 self.emit(node, "collection-update")
             if name == "get" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0 and DOMAIN.search(ast.unparse(node)):
@@ -141,6 +192,8 @@ def python_sites(path, text):
         def visit_Return(self, node):
             if node.value is not None and any(isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in VERDICTS for n in ast.walk(node.value)):
                 self.emit(node.value, "fact-decision")
+            if node.value is not None:
+                self.returned(node.value)
             self.generic_visit(node)
 
         def visit_Compare(self, node):
@@ -149,6 +202,8 @@ def python_sites(path, text):
             self.generic_visit(node)
 
         def visit_BinOp(self, node):
+            if isinstance(node.op, (ast.Div, ast.FloorDiv)) and not literal(node.left) and not literal(node.right):
+                self.emit(node, "ratio-arithmetic")
             if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)) and DOMAIN.search(ast.unparse(node)):
                 self.emit(node, "fact-arithmetic")
             self.generic_visit(node)
@@ -159,6 +214,10 @@ def python_sites(path, text):
             self.generic_visit(node)
 
         def visit_Assign(self, node):
+            for target in node.targets:
+                for name in ast.walk(target):
+                    if isinstance(name, ast.Name) and VERDICT_NAME.search(name.id):
+                        self.emit(name, "verdict-symbol", name.id)
             if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
                 self.emit(node, "counter-update")
             self.generic_visit(node)
@@ -166,6 +225,12 @@ def python_sites(path, text):
         def visit_IfExp(self, node):
             if re.search(r"Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy", ast.unparse(node.body) + ast.unparse(node.orelse)):
                 self.emit(node.test, "fact-decision")
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            for target in ast.walk(node.target):
+                if isinstance(target, ast.Name) and VERDICT_NAME.search(target.id):
+                    self.emit(target, "verdict-symbol", target.id)
             self.generic_visit(node)
 
         def visit_For(self, node):
@@ -181,31 +246,40 @@ def python_sites(path, text):
 
 
 def scan(sources):
-    sites, javascript = [], []
+    sites, javascript, payloads = [], [], []
+    streams = []
     for path, text in sources.items():
         if path.endswith(".py"):
             sites.extend(python_sites(path, text))
+            tree = ast.parse(text, filename=path)
+            streams.append(dict(path=path, symbol="<forbidden-pattern>", tokens=python_stream(text, tree)))
+            for payload, line in string_payloads(tree):
+                if not re.search(r"len|sum|Counter|length|size|filter|eval|exec|Function|queue|visited|adjacency|neighbors|neighbours|[<>]", payload):
+                    continue
+                try:
+                    payload_tree = ast.parse(payload)
+                    tokens = python_stream(payload, payload_tree)
+                except (SyntaxError, ValueError, IndentationError):
+                    payloads.append(dict(path=path, text=payload, line=line - 1))
+                else:
+                    for token in tokens:
+                        token[2] += line - 1
+                    streams.append(dict(path=path, symbol="<generated-payload>", tokens=tokens))
         else:
             javascript.append(dict(path=path, text=text))
-    if javascript:
+    if javascript or payloads:
         node = shutil.which("node")
         if not node:
             raise RuntimeError("Node is required for the interface AST gate")
-        command = [node, str(ROOT / ".github/scripts/interface_computation_ast.mjs")]
-        reply = subprocess.run(command, input=json.dumps(dict(sources=javascript)), cwd=ROOT,
+        command = [node, str(DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs")]
+        reply = subprocess.run(command, input=json.dumps(dict(sources=javascript, payloads=payloads)), cwd=DETECTOR_ROOT,
                                text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
-        sites.extend(json.loads(reply.stdout))
-    for path, text in sources.items():
-        # Separate lexical tripwire also sees generated code held inside string templates.
-        # It supplements AST analysis; it is not a replacement for parsing.
-        for rule, pattern in PATTERNS.items():
-            occurrences = Counter()
-            for match in pattern.finditer(text):
-                fingerprint = digest(match.group())
-                occurrences[fingerprint] += 1
-                sites.append(dict(path=path, symbol="<forbidden-pattern>", rule=rule,
-                                  fingerprint=fingerprint, occurrence=occurrences[fingerprint],
-                                  line=text[:match.start()].count("\n") + 1, expression=match.group()))
+        observed = json.loads(reply.stdout)
+        sites.extend(observed["sites"])
+        streams.extend(observed["streams"])
+    occurrences = lexical_counter()
+    for stream in streams:
+        sites.extend(lexical_sites(stream["path"], stream["tokens"], stream["symbol"], digest, occurrences))
     return sorted(sites, key=identity)
 
 
@@ -220,13 +294,13 @@ def disposition(row):
 
 
 def proposal(sites):
-    return {"schema": "interface-computation-debt/1", "origin": ORIGIN, "stage": "active",
+    return {"schema": SCHEMA, "origin": ORIGIN, "stage": "active",
             "sites": [{**{key: row[key] for key in ("path", "symbol", "rule", "fingerprint", "occurrence")},
                        "disposition": disposition(row)} for row in sites]}
 
 
 def validate(registry, current, origin, ancestors=()):
-    if set(registry) != {"schema", "origin", "stage", "sites"} or registry["schema"] != "interface-computation-debt/1" or registry["origin"] != ORIGIN or registry["stage"] != "active":
+    if set(registry) != {"schema", "origin", "stage", "sites"} or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
         raise ValueError("Debt register requires source-bound active review")
     expected_keys = {"path", "symbol", "rule", "fingerprint", "occurrence", "disposition"}
     rows = registry["sites"]
@@ -247,6 +321,8 @@ def validate(registry, current, origin, ancestors=()):
     if not registered <= ceiling:
         raise ValueError(f"Register grew beyond the immutable source ceiling: {sorted(registered - ceiling)[:12]}")
     for previous in ancestors:
+        if previous.get("schema") != SCHEMA:
+            raise ValueError("An unauthorized debt policy/schema appeared in history")
         if previous.get("stage") == "active" and not registered <= {identity(row) for row in previous["sites"]}:
             raise ValueError("A removed debt/allowance entry reappeared; the register may only shrink")
 
@@ -261,7 +337,13 @@ def check():
     # Default path history can prune a merge parent when the result matches the
     # other parent, hiding a removal that the merge resurrected.
     for commit in git("log", "--full-history", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
-        previous.append(read_registry(git("show", commit + ":" + REGISTRY)))
+        record = read_registry(git("show", commit + ":" + REGISTRY))
+        if record.get("schema") == "interface-computation-debt/1":
+            # The supervisor explicitly permits widening/reindexing only the
+            # unmerged v1 proposal. No later v1 register may reset this ceiling.
+            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit, LEGACY_REGISTER_HEAD], check=True)
+            continue
+        previous.append(record)
     validate(registry, current, origin, previous)
     return len(current)
 
@@ -274,11 +356,19 @@ if __name__ == "__main__":
                   "python": sys.version.split()[0], "platform": sys.platform,
                   "sites_sha256": digest(json.dumps(proposal(observations), sort_keys=True, separators=(",", ":"))),
                   "detectors": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in (
-                      "tests/interface_computation_guard.py", ".github/scripts/interface_computation_ast.mjs")},
+                      "tests/interface_computation_guard.py", "tests/interface_computation_lex.py",
+                      "tests/interface_computation_sources.py", ".github/scripts/interface_computation_ast.mjs")},
                   "proposal": proposal(observations), "observations": observations}
         Path(sys.argv[2]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         print(f"Observed {len(observations)} exact static sites; admission still requires review")
         print(f"DEBT_CENSUS_FINGERPRINT python={record['python']} platform={record['platform']} sites={len(observations)} sha256={record['sites_sha256']}")
+        # Source-only proposal transport, not an archive upload before the
+        # distribution audit. One bounded line per chunk avoids log line limits.
+        encoded = base64.b64encode(gzip.compress(json.dumps({k: v for k, v in record.items() if k != "observations"}, separators=(",", ":")).encode(), mtime=0)).decode()
+        print("DEBT_PROPOSAL_BEGIN")
+        for offset in range(0, len(encoded), 4000):
+            print("DEBT_PROPOSAL_CHUNK " + encoded[offset:offset + 4000])
+        print("DEBT_PROPOSAL_END")
     elif sys.argv[1:] == ["--check"]:
         print(f"Interface computation ratchet passed: {check()} exact sites")
     else:

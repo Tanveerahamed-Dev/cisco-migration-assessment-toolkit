@@ -1,4 +1,9 @@
-"""ADR 0008: complete discovery, exact sites, immutable ceiling and shrinking history."""
+"""Ratchet a closed, named set of detected computation forms under ADR 0008.
+
+This is not proof of absence of computation. Undetected forms require review,
+not certification; class/closure discovery and harmless-edit controls bind the
+specific syntactic forms this guard actually detects.
+"""
 import ast
 import json
 import os
@@ -27,6 +32,7 @@ def parser():
 
 
 def test_current_interface_has_only_registered_exact_sites(parser):
+    """Checks detected forms only; other computations are not certified absent."""
     assert guard.check() >= 0
 
 
@@ -244,6 +250,10 @@ def test_renderer_without_computation_does_not_create_a_debt(parser):
     assert guard.scan({"webapp/frontend/src/New.tsx": "export function View({fact}) { return <span>{fact.value}</span>; }"}) == []
 
 
+def test_engine_readiness_can_be_displayed_without_a_new_verdict_return(parser):
+    assert guard.scan({"webapp/frontend/src/New.tsx": "export function View({fact}) { return <span>{fact.readiness}</span>; }"}) == []
+
+
 def test_ast_parse_errors_fail_closed(parser):
     with pytest.raises(subprocess.CalledProcessError):
         guard.scan({"webapp/frontend/src/New.ts": "function broken( {"})
@@ -256,7 +266,7 @@ def test_new_canonical_fact_without_check_is_refuted(monkeypatch):
         require_canonical_checks(snap)
 
 
-def test_source_discovery_includes_new_interface_modules_and_registry_writers():
+def test_source_discovery_includes_new_interface_modules_and_registry_writers(parser):
     # No curated list of current files is the scan denominator: new tracked and
     # nonignored modules under every interface root enter automatically.
     sources = guard.source_map()
@@ -268,21 +278,271 @@ def test_source_discovery_includes_new_interface_modules_and_registry_writers():
     assert "cisco_toolkit/mop.py" in sources
     assert "cisco_toolkit/html.py" in sources
     assert "atlas-scope/tools/lib/compile-model.mjs" in sources
-    assert "webapp/backend/engine.py" not in sources
+    assert "webapp/backend/engine.py" in sources  # reached through registered report imports
+    assert "webapp/frontend/index.html" in sources
+    assert "atlas-scope/index.html" in sources
 
 
-@pytest.mark.parametrize("path", ["webapp/backend/new.py", "webapp/frontend/src/New.tsx", "webapp/frontend/src/generated/new.ts", "atlas-scope/src/new.ts", "cisco_toolkit/new_report.py"])
+@pytest.mark.parametrize("path", ["webapp/backend/new.py", "cisco_toolkit/new_report.py"])
 def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, path):
     sources = {"cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.new_report')\n",
-               path: "def f(rows):\n return len(rows)\n" if path.endswith("py") else "function f(rows) { return rows.length; }"}
+               "cisco_toolkit/new_report.py": "from webapp.backend.new import f\n",
+               path: "def f(rows):\n return len(rows)\n"}
     for name, text in sources.items():
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
     monkeypatch.setattr(guard, "ROOT", tmp_path)
-    monkeypatch.setattr(guard, "git", lambda *args: "\n".join(sources).encode())
+    monkeypatch.setattr(guard, "git", lambda *args: ("\0".join(sources) + "\0").encode())
     selected = guard.source_map()
     assert path in selected
+
+
+def source_fixture(tmp_path, monkeypatch, sources):
+    for name, text in sources.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    monkeypatch.setattr(guard, "git", lambda *args: ("\0".join(sources) + "\0").encode())
+
+
+def refuse_unregistered(sources, rule=None):
+    sites = guard.scan(sources)
+    if rule:
+        assert any(site["rule"] == rule for site in sites)
+    with pytest.raises(ValueError, match="Unregistered"):
+        guard.validate(guard.proposal([]), sites, [])
+
+
+def test_unregistered_report_helper_is_discovered_and_refused(tmp_path, monkeypatch):
+    """Full imports, not writer registration, bring a new helper into the named-form gate."""
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')\n",
+        "cisco_toolkit/writer.py": "from .report_metrics import answer\n",
+        "cisco_toolkit/report_metrics.py": "def answer(rows):\n return len(rows)\n",
+    })
+    selected = guard.source_map()
+    assert "cisco_toolkit/report_metrics.py" in selected
+    refuse_unregistered(selected, "aggregate")
+
+
+def test_moving_a_registered_computation_into_a_helper_and_removing_old_rows_refuses(tmp_path, monkeypatch):
+    original = {"cisco_toolkit/writer.py": "def answer(rows):\n return len(rows)\n"}
+    original_sites = guard.scan(original)
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')\n",
+        "cisco_toolkit/writer.py": "from .report_metrics import answer\n",
+        "cisco_toolkit/report_metrics.py": original["cisco_toolkit/writer.py"],
+    })
+    current = guard.scan(guard.source_map())
+    assert any(site["path"] == "cisco_toolkit/report_metrics.py" for site in current)
+    with pytest.raises(ValueError, match="Unregistered"):
+        guard.validate(guard.proposal([]), current, original_sites, [guard.proposal(original_sites)])
+    with pytest.raises(ValueError, match="ceiling"):
+        guard.validate(guard.proposal(current), current, original_sites)
+
+
+@pytest.mark.parametrize("path", ["webapp/frontend/index.html", "atlas-scope/index.html", "other-client/entry.html", "client/entry with space.html", "client/é.html"])
+def test_entry_document_computation_is_discovered_and_refused(parser, tmp_path, monkeypatch, path):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        path: "<script>function answer(rows) { return rows.length; }</script>",
+    })
+    selected = guard.source_map()
+    assert path in selected
+    refuse_unregistered(selected, "count")
+
+
+def test_browser_module_closure_follows_reexports_and_an_out_of_project_helper(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/index.html": '<script type="module" src="./main.ts"></script>',
+        "client/main.ts": "export {answer} from '../shared/index';",
+        "shared/index.ts": "export {answer} from './metrics';",
+        "shared/metrics.ts": "export function answer(rows) { return rows.length; }",
+    })
+    selected = guard.source_map()
+    assert {"client/index.html", "client/main.ts", "shared/index.ts", "shared/metrics.ts"} <= set(selected)
+    refuse_unregistered(selected, "count")
+
+
+def test_browser_alias_dependency_is_closed_without_a_src_prefix(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/package.json": '{"name":"client","dependencies":{"vite":"1"}}',
+        "client/tsconfig.json": '{"compilerOptions":{"baseUrl":".","paths":{"metrics":["../shared/metrics"]}}}',
+        "client/index.html": '<script type="module" src="/main.ts"></script>',
+        "client/main.ts": "export {answer} from 'metrics';",
+        "shared/metrics.ts": "export function answer(a, b) { return a / b; }",
+    })
+    selected = guard.source_map()
+    assert "shared/metrics.ts" in selected
+    refuse_unregistered(selected, "ratio-arithmetic")
+
+
+def test_relative_entry_script_and_template_import_reach_an_unregistered_helper(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/index.html": '<script type="module" src="main.js"></script>',
+        "client/main.js": "export const load = () => import(`../shared/metrics.js`);",
+        "shared/metrics.js": "export function answer(rows) { return rows.length; }",
+    })
+    selected = guard.source_map()
+    assert "shared/metrics.js" in selected
+    refuse_unregistered(selected, "count")
+
+
+def test_importlib_alias_reaches_an_unregistered_report_helper(tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')\n",
+        "cisco_toolkit/writer.py": "from importlib import import_module as load\nhelper = load('cisco_toolkit.report_metrics')\n",
+        "cisco_toolkit/report_metrics.py": "def answer(rows):\n return len(rows)\n",
+    })
+    selected = guard.source_map()
+    assert "cisco_toolkit/report_metrics.py" in selected
+    refuse_unregistered(selected, "aggregate")
+
+
+def test_glob_reaches_a_helper_outside_the_frontend_project(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/index.html": '<script type="module" src="main.js"></script>',
+        "client/main.js": "export const modules = import.meta.glob('../shared/*.js', {eager: true});",
+        "shared/metrics.js": "export function answer(rows) { return rows.length; }",
+    })
+    selected = guard.source_map()
+    assert "shared/metrics.js" in selected
+    refuse_unregistered(selected, "count")
+
+
+def test_alias_without_base_url_uses_its_declaring_configuration(parser, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        "client/package.json": '{"name":"client","dependencies":{"vite":"1"}}',
+        "client/tsconfig.json": '{"compilerOptions":{"paths":{"metrics":["../shared/metrics"]}}}',
+        "client/index.html": '<script type="module" src="main.js"></script>',
+        "client/main.js": "export {answer} from 'metrics';",
+        "shared/metrics.ts": "export function answer(a, b) { return a / b; }",
+    })
+    selected = guard.source_map()
+    assert "shared/metrics.ts" in selected
+    refuse_unregistered(selected, "ratio-arithmetic")
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("def f(value, limit):\n return value <= limit\n", "returned-comparison"),
+    ("def f(n):\n return n == 0\n", "returned-comparison"),
+    ("f = lambda value, limit: value <= limit\n", "returned-comparison"),
+    ("def pct(a, b):\n return 100 * a / b\n", "ratio-arithmetic"),
+    ("def pct(a, b):\n return a / b\n", "ratio-arithmetic"),
+    ("def can_cut_over(value):\n return value\n", "verdict-symbol"),
+    ("def _isReady(value):\n return value\n", "verdict-symbol"),
+    ("def f(ready):\n return ready\n", "verdict-return"),
+    ("def f():\n return True\n", "verdict-return"),
+    ("def f():\n return 'approved'\n", "verdict-return"),
+    ('def f(expr):\n return f"{eval(expr)}"\n', "dynamic-code"),
+])
+def test_named_python_normal_forms_refuse_new_sites(source, rule):
+    """Refuse these named forms; do not certify unrecognized computation absent."""
+    refuse_unregistered({"webapp/backend/new.py": source}, rule)
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("export function canCutOver(n: number) { return n === 0; }", "returned-comparison"),
+    ("function f(value, limit) { return value <= limit; }", "returned-comparison"),
+    ("const f = (value, limit) => value <= limit;", "returned-comparison"),
+    ("function pct(a, b) { return 100 * a / b; }", "ratio-arithmetic"),
+    ("function pct(a, b) { return a / b; }", "ratio-arithmetic"),
+    ("function canCutOver(value) { return value; }", "verdict-symbol"),
+    ("function _isReady(value) { return value; }", "verdict-symbol"),
+    ("function f(ready) { return ready; }", "verdict-return"),
+    ("function f() { return false; }", "verdict-return"),
+    ("function f() { return 'approved'; }", "verdict-return"),
+])
+def test_named_typescript_normal_forms_refuse_new_sites(parser, source, rule):
+    """Refuse these named forms; other forms still require independent review."""
+    refuse_unregistered({"webapp/frontend/new.ts": source}, rule)
+
+
+@pytest.mark.parametrize("before,after", [
+    ("def f(rows):\n return len(rows)\n", "# len(rows), queue.pop(), a >= 1\ndef f ( rows ):\n return len ( rows ) # sum(rows)\n"),
+    ("def f(a, b):\n return a + b\n", "def f(a, b):\n # health queue visited len(rows)\n return a + b\n"),
+    ("def f(rows):\n return len(rows)\n", "def f(rows):\n return len(\n # len(rows)\n rows\n )\n"),
+    ('def f(rows):\n return len(f"""{rows}\nbody\n""")\n', 'def f(rows):\n # len(rows), queue.pop()\n return len ( f"""{rows}\nbody\n""" )\n'),
+])
+def test_python_ast_and_lexical_identities_survive_harmless_edits(before, after):
+    one = guard.scan({"webapp/backend/new.py": before})
+    two = guard.scan({"webapp/backend/new.py": after})
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
+@pytest.mark.parametrize("before,after", [
+    ("function f(rows) { return rows.length; }", "// len(rows), queue.pop(), a >= 1\nfunction f ( rows ) { return rows /* len(rows) */ . length; }"),
+    ("function f(a,b) { return a + b; }", "function f(a,b) { return a /* health queue visited */ + b; }"),
+    ("function f(a,b) { return a > b; }", "function f(a,b) { return a /* 80 */ > b; }"),
+])
+def test_javascript_ast_and_lexical_identities_survive_harmless_edits(parser, before, after):
+    one = guard.scan({"webapp/frontend/new.js": before})
+    two = guard.scan({"webapp/frontend/new.js": after})
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
+def test_entry_comments_and_handler_spacing_do_not_change_identities(parser):
+    before = '<button onclick="return rows.length">go</button><script>function f(rows) { return rows.length; }</script>'
+    after = '<!-- len(rows), queue.pop() --><button onclick="return rows /* len(rows) */ . length">go</button><script>function f(rows) { /* queue.pop() */ return rows . length; }</script>'
+    one = guard.scan({"client/index.html": before})
+    two = guard.scan({"client/index.html": after})
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
+def test_generated_payloads_remain_inspected_while_their_comments_are_ignored(parser):
+    before = 'const template = "function f(xs) { return xs.length; }";'
+    after = 'const template = "function f(xs) { /* queue.pop() */ return xs . length; }";'
+    one = guard.scan({"webapp/frontend/new.js": before})
+    two = guard.scan({"webapp/frontend/new.js": after})
+    assert any(row["rule"] == "raw-count" and row["symbol"] == "<generated-payload>" for row in one)
+    assert [guard.identity(row) for row in one] == [guard.identity(row) for row in two]
+
+
+def test_unknown_historical_policy_cannot_reset_the_ceiling():
+    site = sample_site()
+    previous = {**guard.proposal([]), "schema": "interface-computation-debt/unknown"}
+    with pytest.raises(ValueError, match="unauthorized"):
+        guard.validate(guard.proposal([site]), [site], [site], [previous])
+
+
+def test_v1_register_cannot_be_reintroduced_after_the_authorized_cutoff(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
+             "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
+             "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "--initial-branch=keep")
+    (tmp_path / "basis.txt").write_text("source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir(parents=True)
+    legacy = {**guard.proposal([]), "schema": "interface-computation-debt/1"}
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Historical v1 proposal")
+    monkeypatch.setattr(guard, "LEGACY_REGISTER_HEAD", git("rev-parse", "HEAD"))
+    target.write_text(json.dumps({**legacy, "sites": [sample_site()]}), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Unapproved v1 reset")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Return to current policy")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [])
+    with pytest.raises(subprocess.CalledProcessError):
+        guard.check()
 
 
 def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite():
