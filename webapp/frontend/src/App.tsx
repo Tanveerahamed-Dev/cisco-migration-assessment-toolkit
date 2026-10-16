@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, NavLink, Route, Routes, useLocation } from "react-router";
+import { Link, NavLink, Route, Routes, matchRoutes, useLocation } from "react-router";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import CampaignPage from "./pages/Campaign";
@@ -101,12 +101,14 @@ export default function App() {
     }
   }
 
-  const snapshotRoute = /^\/snapshots\/[^/]+\/?$/.test(shown.pathname);
-  // The router accepts both spellings. A secondary tab canonicalizes the URL, but
-  // must not replace the same snapshot's boundary and destroy its Explorer frame.
-  const boundaryPath = snapshotRoute ? shown.pathname.replace(/\/$/, "") : shown.pathname;
+  // Use the router's own accepted spelling/decoded identity, still from lagged
+  // `shown`. Canonical tab links must not destroy the same snapshot's frame.
+  const snapshotMatch = matchRoutes([{ path: "/snapshots/:id" }], shown)?.[0];
+  const boundaryKey = JSON.stringify(snapshotMatch
+    ? ["snapshot", snapshotMatch.params.id, authGeneration]
+    : ["path", shown.pathname, authGeneration]);
   return (
-    <div className={snapshotRoute ? "app-shell snapshot-app-shell" : "app-shell"}>
+    <div className={snapshotMatch ? "app-shell snapshot-app-shell" : "app-shell"}>
       <TopBar app={app} />
       {authRequired && (
         <div className="auth-overlay">
@@ -130,7 +132,7 @@ export default function App() {
           it fresh and clears a prior error. Keyed to `shown` (the LAGGED pathname), never `location` directly —
           keying to `location` would remount the boundary, and destroy the outgoing page, before the view
           transition below gets to snapshot it, silently defeating the whole mechanism. */}
-      <ErrorBoundary key={`${boundaryPath}:${authGeneration}`}>
+      <ErrorBoundary key={boundaryKey}>
         <Routes location={shown}>
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />

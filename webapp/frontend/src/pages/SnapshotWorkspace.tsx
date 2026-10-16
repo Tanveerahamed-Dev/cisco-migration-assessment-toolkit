@@ -13,7 +13,10 @@ const secondaryViews = [
 // its drawing or mode-local investigation. Explicit Core links keep all source/ref params.
 function SnapshotSession({ id }: { id: string }) {
   const [params] = useSearchParams();
-  const core = params.has("view");
+  // Old source-bound links may omit view (Core defaulted them to Overview).
+  // Keep every recognized Core selector on that guarded reader rather than
+  // silently discarding a source/reference constraint in the default Explorer.
+  const core = ["view", "source", "source_bytes", "ref", "row", "host", "inventory"].some((key) => params.has(key));
   const [visited, setVisited] = useState(!core);
   const [generation, setGeneration] = useState(0);
   const [frameError, setFrameError] = useState(false);
@@ -27,7 +30,7 @@ function SnapshotSession({ id }: { id: string }) {
     if (node) node.onerror = () => setFrameError(true);
   }, []);
   useEffect(() => { if (!core) setVisited(true); }, [core]);
-  const requested = params.get("view");
+  const requested = core ? params.get("view") ?? "overview" : null;
   const sid = Number(id);
   const validId = /^[1-9][0-9]*$/.test(id) && Number.isSafeInteger(sid);
   return <main className="snapshot-workspace">

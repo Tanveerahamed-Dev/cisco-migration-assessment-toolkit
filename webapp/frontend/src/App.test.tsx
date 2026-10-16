@@ -129,7 +129,7 @@ describe("TopBar app identity", () => {
 describe("snapshot workspace routes", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it.each(["/snapshots/1", "/snapshots/1/"])("opens Network through %s and restores its frame after Core navigation", async (path) => {
+  it.each(["/snapshots/1", "/snapshots/1/", "/snapshots/1///", "/SNAPSHOTS/1", "/snapshots/%31"])("opens Network through %s and restores its frame after Core navigation", async (path) => {
     vi.spyOn(api, "meta").mockRejectedValue(new Error("offline identity"));
     vi.spyOn(api, "scopeView").mockResolvedValue({ available: false, href: null, status: "not_built", detail: "Synthetic unavailable Scope" });
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -169,5 +169,27 @@ describe("snapshot workspace routes", () => {
     expect(screen.queryByText("Synthetic finding", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByTitle("Network Migration Explorer")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Findings", exact: true })).toHaveAttribute("aria-current", "page");
+  });
+
+  it.each([false, true])("keeps the original source-only Overview guard (matching=%s)", async (matching) => {
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("offline identity"));
+    vi.spyOn(api, "scopeView").mockResolvedValue({ available: false, href: null, status: "not_built", detail: "Synthetic unavailable Scope" });
+    const document = overviewFixture();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/ui-projection/overview?")) return new Response(JSON.stringify(document));
+      throw new Error(`Unexpected snapshot request: ${String(input)}`);
+    });
+    const query = new URLSearchParams({ source: matching ? document.identity.sha256 : `sha256:${"b".repeat(64)}`,
+      source_bytes: String(document.identity.bytes) });
+    renderApp(`/snapshots/1?${query}`);
+    if (matching) {
+      expect(await screen.findByText("Synthetic fleet needs review")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    } else {
+      expect(await screen.findByRole("alert")).toHaveTextContent("The referenced record belongs to a different stored snapshot");
+      expect(screen.queryByText("Synthetic fleet needs review")).not.toBeInTheDocument();
+    }
+    expect(screen.queryByTitle("Network Migration Explorer")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
   });
 });

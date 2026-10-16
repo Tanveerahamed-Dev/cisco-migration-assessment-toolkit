@@ -68,6 +68,13 @@ describe("Snapshot topology workspace", () => {
     expect(screen.getByRole("link", { name: "Inventory", exact: true })).toHaveAttribute("aria-current", "page");
   });
 
+  it.each(["source", "source_bytes", "ref", "row", "host", "inventory", "view"])("keeps an explicit %s selector on the original Core reader", (key) => {
+    const query = new URLSearchParams({ [key]: "" });
+    show(`/snapshots/1?${query}`);
+    expect(screen.queryByTitle("Network Migration Explorer")).not.toBeInTheDocument();
+    expect(screen.getByTestId("core-body").textContent).toBe(`?${query}`);
+  });
+
   it("starts a new frame on snapshot change rather than carrying the previous investigation", () => {
     show();
     const previous = explorer();

@@ -98,3 +98,24 @@ Add hosted default-Cable-Map screenshots at both application-window widths,
 plus an actual opaque HTTP 503 response followed by explicit Reload topology and
 a successful renderer. This distinguishes HTTP generation refusal/recovery from
 the separately tested non-bubbling frame event. No local browser is used.
+
+## Source review before artifact admission
+
+The corrected-source `bf940c6b` webapp run `38862003665` passed its Windows
+visual job while its producer/browser/backend jobs were still queued. Portable
+job `116846504419` again refused the stale tracked SPA. These are not final
+acceptance results.
+
+An independent source counterexample found a P1 compatibility regression:
+`/snapshots/1?source=<mismatch>&source_bytes=42` omitted `view`, so the workspace
+opened Explorer instead of executing Core's former default-Overview source
+refusal. Keep all seven recognized Core query keys on the original guarded
+reader, including empty/invalid selectors; add actual-App matching/mismatching
+source-only tests and lazy-frame assertions.
+
+Use React Router's own `matchRoutes` against the lagged location for workspace
+layout and boundary identity. This avoids further regex disagreement on accepted
+case, trailing or encoded path spellings while preserving exact decoded ID and
+authentication-generation resets. Actual-App retention cases cover those
+spellings without replacing the browser's actual-Frame assertion. All new
+corrections await hosted verification; no earlier result transfers.
