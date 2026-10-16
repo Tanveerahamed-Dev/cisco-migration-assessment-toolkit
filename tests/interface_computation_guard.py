@@ -39,6 +39,25 @@ def git(*args):
     return subprocess.check_output(["git", "-C", str(ROOT), *args])
 
 
+def node_reply(payload):
+    """Run the locked source parser; keep its refusal diagnostic visible in CI."""
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("Node is required for the interface AST/closure gate")
+    try:
+        reply = subprocess.run([node, str(DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs")],
+                               input=json.dumps(payload), cwd=DETECTOR_ROOT,
+                               text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        diagnostic = error.stderr or ""
+        if isinstance(diagnostic, bytes):
+            diagnostic = diagnostic.decode("utf-8", errors="replace")
+        if diagnostic:
+            print(diagnostic, file=sys.stderr)
+        raise
+    return json.loads(reply.stdout)
+
+
 def source_map(revision=None):
     names = (git("ls-tree", "-r", "-z", "--name-only", revision) if revision else
              git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).decode("utf-8").split("\0")
@@ -48,13 +67,7 @@ def source_map(revision=None):
     candidates = {path: read(path) for path in names if path.endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(("package.json", ".json")) and ("tsconfig" in path or "jsconfig" in path or path.endswith("package.json"))}
     if candidates:
-        node = shutil.which("node")
-        if not node:
-            raise RuntimeError("Node is required for browser module-closure discovery")
-        reply = subprocess.run([node, str(DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs")],
-                               input=json.dumps(dict(mode="discover", files=candidates, names=names)), cwd=DETECTOR_ROOT,
-                               text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
-        selected.update(json.loads(reply.stdout))
+        selected.update(node_reply(dict(mode="discover", files=candidates, names=names)))
     return {path: read(path) for path in sorted(selected)}
 
 
@@ -268,13 +281,7 @@ def scan(sources):
         else:
             javascript.append(dict(path=path, text=text))
     if javascript or payloads:
-        node = shutil.which("node")
-        if not node:
-            raise RuntimeError("Node is required for the interface AST gate")
-        command = [node, str(DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs")]
-        reply = subprocess.run(command, input=json.dumps(dict(sources=javascript, payloads=payloads)), cwd=DETECTOR_ROOT,
-                               text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
-        observed = json.loads(reply.stdout)
+        observed = node_reply(dict(sources=javascript, payloads=payloads))
         sites.extend(observed["sites"])
         streams.extend(observed["streams"])
     occurrences = lexical_counter()

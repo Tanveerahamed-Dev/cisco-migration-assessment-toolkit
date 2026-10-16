@@ -239,3 +239,13 @@ Git merge removes an allowance on one branch, restores it at the merge, and
 requires the real history reader to reject that resurrection. Existing
 current/origin/ancestor comparisons and every CI gate remain intact. Fresh
 exact-head hosted evidence is required for this correction.
+
+## Version 2 first hosted refusal
+
+Capture head `d00643a3`, CI `38949368912`, Linux Python 3.12 job
+`117136578321` (and Python 3.10 job `117136578039`) stops at discovery before
+producing a proposal. Node exits nonzero; Python's captured stderr was not exposed
+by the CLI traceback, so no root cause or valid capture is established. The next
+diagnostic source prints that stderr and rethrows the same failure, retaining the
+original 90-second parser limit. No source edge is waived, and no timeout or test
+is relaxed. The malformed-source control also requires the diagnostic to surface.
