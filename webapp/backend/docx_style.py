@@ -17,6 +17,9 @@ denial of service: the snapshot is persisted verbatim, so ``GET /api/snapshots/{
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 from typing import Any, List
 
 NAVY = (0x1F, 0x38, 0x64)

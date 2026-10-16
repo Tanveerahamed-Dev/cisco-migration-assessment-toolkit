@@ -13,6 +13,9 @@ All reads are bounded, regular-file-only, and container members are never extrac
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 import contextlib
 import bisect
 import hashlib

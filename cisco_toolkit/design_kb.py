@@ -16,6 +16,9 @@ Provenance / copyright: the principles below are an ORIGINAL, distilled re-expre
 Citations point to the originating CCDE topic for traceability only.
 """
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import json
 
 from cisco_toolkit.textutils import (   # native-VLAN-1 unit/basis tokens -- one owner, never restated

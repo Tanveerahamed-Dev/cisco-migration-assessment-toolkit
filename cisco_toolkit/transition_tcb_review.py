@@ -16,6 +16,9 @@ bytes.
 
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import base64
 import re
 from collections.abc import Iterator, Mapping as MappingABC

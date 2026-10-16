@@ -20,13 +20,14 @@ import subprocess
 import sys
 
 from interface_computation_lex import lexical_counter, lexical_sites, python_source, python_stream, string_payloads
-from interface_computation_sources import SCRIPT_SUFFIXES, python_closure
+from interface_computation_sources import SCRIPT_SUFFIXES, compiled_coverage, python_closure
 
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
 ORIGIN = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
 SCHEMA = "interface-computation-debt/2"
+ROLE_ORIGIN = None  # Pinned to the reviewed role-assignment commit before publication.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")
@@ -58,17 +59,29 @@ def node_reply(payload):
     return json.loads(reply.stdout)
 
 
+class SourceMap(dict):
+    """Executable source plus compiled imports covered by a named hosted gate."""
+
+    def __init__(self, sources, compiled=()):
+        super().__init__(sources)
+        self.compiled = sorted(compiled)
+
+
 def source_map(revision=None):
     names = (git("ls-tree", "-r", "-z", "--name-only", revision) if revision else
              git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).decode("utf-8").split("\0")
     read = (lambda p: git("show", revision + ":" + p).decode("utf-8")) if revision else lambda p: (ROOT / p).read_text(encoding="utf-8")
     names = sorted(set(names) - {""})
-    selected = python_closure(names, read)
+    # The old fact ceiling predates role declarations. Its reviewed role basis is
+    # immutable Git source, never inferred from future module names or current roles.
+    role_read = (lambda p: git("show", ROLE_ORIGIN + ":" + p).decode("utf-8")) if revision and ROLE_ORIGIN else None
+    selected = python_closure(names, read, role_read)
+    compiled = compiled_coverage(names, read if not revision else lambda p: (ROOT / p).read_text(encoding="utf-8"))
     candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
     if candidates:
-        selected.update(node_reply(dict(mode="discover", files=candidates, names=names)))
-    return {path: read(path) for path in sorted(selected)}
+        selected.update(node_reply(dict(mode="discover", files=candidates, names=names, compiled=sorted(compiled))))
+    return SourceMap({path: read(path) for path in sorted(selected)}, compiled)
 
 
 def digest(text):
@@ -282,7 +295,7 @@ def scan(sources):
         else:
             javascript.append(dict(path=path, text=text))
     if javascript or payloads:
-        observed = node_reply(dict(sources=javascript, payloads=payloads))
+        observed = node_reply(dict(sources=javascript, payloads=payloads, compiled=getattr(sources, "compiled", [])))
         sites.extend(observed["sites"])
         streams.extend(observed["streams"])
     occurrences = lexical_counter()

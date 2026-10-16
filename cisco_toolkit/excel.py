@@ -5,6 +5,9 @@ header-matching primitives (`norm_header` / `HEADER_TO_FIELD` / `find_header_row
 and cisco_toolkit.textutils (a clean layer above analyze). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 20 (behaviour byte-identical). The sheet
 writers themselves follow in later steps; the monolith imports these back meanwhile."""
+
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
 import ipaddress
 import logging
 import os

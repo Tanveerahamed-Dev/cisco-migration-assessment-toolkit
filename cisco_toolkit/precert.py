@@ -17,6 +17,9 @@ two already-collected snapshots; no egress, no device contact; total on malforme
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import hashlib
 import json
 import os

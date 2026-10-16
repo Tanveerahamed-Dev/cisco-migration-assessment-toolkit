@@ -23,10 +23,10 @@ Discovery is class-derived rather than a prefix/special-file selector:
 - Frontend projects identified by their package metadata; authored modules and
   the complete repository-local module closure, including reexports, relative
   imports and TypeScript configuration aliases. An imported helper outside the
-  project's source directory is still inspected. Generated TypeScript is included.
+  project's source directory is still inspected. Generated authored TypeScript is included; compiled imports require the byte gate below.
 - API modules identified by their API-library imports; registered SPECS writer
   modules and library-backed DOCX/PPTX/workbook/HTML writers; their repository-local
-  Python import closure, including relative imports and unregistered helpers.
+  Python import closure, including relative imports and unregistered helpers, stopping only at declared engine roles.
 
 Test/fixture directories are not initial production seeds; a runtime import into
 one is still followed. Third-party package/CDN modules and non-executable asset
@@ -56,8 +56,8 @@ fragments, so inert markup comments do not become detections. Source is parsed a
 application code is never imported or evaluated. Parse failures refuse.
 
 Every allowance is one file, qualified symbol, operation rule, normalized
-expression digest and occurrence. There are no module-wide or symbol-wide
-exemptions. Comments/formatting do not change AST identities; altered thresholds,
+expression digest and occurrence. Within the interface closure there are no module-wide or symbol-wide
+allowances. Explicit engine roles are traversal terminals, not legacy debt allowances. Comments/formatting do not change AST identities; altered thresholds,
 new counts and a second identical call require admission and fail this ratchet.
 The detector conservatively includes existing presentation/infrastructure
 calculations: an entry is an exact legacy footprint, not an assertion that every
@@ -324,3 +324,70 @@ inside used string payloads is instead represented by exact
 token-inspected. New opaque forms refuse the closed register, and their code is
 not certified absent. Controls pin both the diagnostic-string case and a static
 count beside an opaque script reference. No payload/file is silently discarded.
+
+
+## Owner-approved role and compiled-output boundary (2026-10-16)
+
+The six captures at head `56f79667`, CI `38963784801`, agree on **74,434**
+records, proposal digest
+`b376f6aa0e8b97457863cbc6619a89c4f1bf93d0cdcac1652a2f7f2e1cfc8d1c`.
+All six execute 166 early synthetic controls and the real producer mutation
+check; the full guard reports 167 passes and the two intentional unadmitted
+register failures. These are superseded bootstrap observations, **not admission**:
+they included pure engine computations and minified bundle identities. The owner
+then required explicit module roles and source-to-dist coverage instead. The
+uncommitted proposal was discarded; no active v2 register was published.
+
+Every Python module under `cisco_toolkit/` and `webapp/backend/`, and the CLI
+orchestrator, declares exactly one module-level literal `__atlas_role__`.
+Missing, ambiguous or computed declarations refuse. Every interface-role module
+is a seed, and imports traverse all repository helpers until an engine-role
+module. Pure owners such as `analyze.py`, `parse.py`, `ssot.py` and
+`ui_projection.py` are terminals. Every engine's full local import closure is
+checked for an interface dependency, including an unregistered intermediate
+helper. Registered writers and report/API-library-backed writers cannot declare
+engine role. The role assignments are reviewed source in this PR, not a curated
+exclusion filename list. Future role changes are reviewed diffs; an interface
+module becomes engine only after a reviewed extraction removes interface-side
+computation and the corresponding register entries shrink.
+
+Mixed modules remain interface and their detections remain visible debt:
+
+| Mixed module | Pending extraction owner / named follow-up |
+|---|---|
+| `cisco_toolkit/html.py`, `cisco_toolkit/excel.py` | RC8-P1-H PR-3: move fact helpers to engine owners; keep rendering interface |
+| `COLLECT_PARSE_V3_23_0.py` | RC8-P1-H follow-up `CLI fact assembly extraction`: separate fact assembly from collection/report orchestration |
+| `webapp/backend/engine.py` | RC8-P1-H follow-up `AssessHub engine adapter extraction`: move fact/view ownership out of the renderer adapter |
+| `cisco_toolkit/attestation.py` | RC8-P1-H follow-up `Attestation registry input extraction`: remove the dynamic CLI import used to derive command claims |
+| `cisco_toolkit/archreview.py`, `design.py`, `mop.py`, `crd.py`, `engagement.py`, `runbook.py`, `ops.py` | RC8-P1-H PR-2/PR-3 and follow-up `Document fact helper extraction`: separate mixed planning/fact helpers from their writers |
+| `webapp/backend/summary.py`, `graph.py`, `cutover.py` | RC8-P1-H PR-1/PR-2: remove audited local facts; adapter remains interface |
+| `webapp/backend/app.py`, `gates.py`, `protocol_portfolio.py`, `storage.py`, `execution.py`, `ingest.py`, `serve.py` | RC8-P1-H follow-up `AssessHub orchestration extraction`: isolate remaining computations from API/persistence/orchestration |
+
+Other interface modules are renderer/metadata/export utilities or interface
+adapters; their conservative exact detections remain allowances, not approval.
+These named follow-ups are scope records, not new active branches or build streams.
+
+### Named source-to-dist dependency
+
+Every browser entry document, including checked-in compiled HTML, remains
+inspected for inline/event/URL computations. The only covered generated tree is
+`webapp/frontend/dist/`. Its imported minified modules are excluded from debt
+identities only through `.github/workflows/webapp-ci.yml`, frontend job, step
+**Verify checked-in SPA equals the source-bound build**. That step calls
+`.github/scripts/frontend_build_handoff.py verify-committed`, after the existing
+**Bind immutable frontend inputs before the SPA build**, `npm run build`, and
+**Verify privacy and capture the generated SPA for review**. The prior handoff
+proved source binding but did not compare checked-in output; this PR strengthens
+it with complete Git/build/captured member equality and per-member byte equality.
+All existing build, privacy and receiver gates remain. Capture is preserved before
+the comparison so a stale checked-in tree has reviewable hosted regeneration
+input rather than a waived failure. No local build or regeneration is allowed.
+
+The guard checks this named gate is present, unconditional and ordered after the
+bound build. Any checked-in executable under another `dist`, `dist-hub`, `build`
+or `.next` tree fails closed as uncovered; new roots require a reviewed byte gate.
+Third-party bundle contents rely on the scanned source's locked dependency
+terminal rule; compiled third-party identities never enter the shrink-only
+register. Negative controls cover uncovered bundles/entries, gate removal or
+conditional execution, complete inventory/byte mismatches, and inline computation
+in a compiled entry. Fresh hosted captures and final-head gates remain required.

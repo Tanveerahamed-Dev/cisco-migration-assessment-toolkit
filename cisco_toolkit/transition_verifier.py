@@ -9,6 +9,9 @@ map to ``EVIDENCE_INCOMPLETE`` rather than being papered over by convention.
 
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 from collections.abc import Mapping as ABCMapping
 from copy import deepcopy
 from enum import Enum

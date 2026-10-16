@@ -21,6 +21,9 @@ SAFETY DOCTRINE (read this before pointing it at a fabric):
     Mirrors the SSH collector's 'never run a live collection unless explicitly asked' doctrine.
   * **TLS** verifies by default; pass ``verify_tls=False`` only for a lab/sandbox with a self-signed cert (logged).
 """
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 import base64
 import http.cookiejar
 import json

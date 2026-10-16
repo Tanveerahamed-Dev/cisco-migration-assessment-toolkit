@@ -12,6 +12,9 @@ summary`); VTP higher-revision overwrite of the VLAN DB (Cisco VTP guide); BGP A
 TCP/L3 to :179, OpenSent/OpenConfirm = ASN/auth (Cisco Press BGP Fundamentals); HSRP Init/Learn
 semantics -> Cisco IOS XE Network Services Configuration Guide, "Configuring HSRP"
 (https://www.cisco.com/c/en/us/td/docs/routers/ios-xe/network-services/network-services/m_fhp-hsrp-0.html)."""
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 from typing import Optional
 
 # severity here is the *advisory* severity (how much the operator should care), independent of the

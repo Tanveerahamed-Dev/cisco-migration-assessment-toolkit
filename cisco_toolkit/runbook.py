@@ -20,6 +20,9 @@ python-docx is an OPTIONAL dependency: imported inside the function so the packa
 without it, and a missing library is a warning + skip (the run's workbook/explorer/JSON already
 saved), exactly like the HTML explorer's template-missing path.
 """
+
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
 import logging
 import re
 import textwrap

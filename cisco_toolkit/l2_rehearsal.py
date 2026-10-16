@@ -14,6 +14,9 @@ owner remains ``cutover_gate/1``.
 
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import base64
 from collections import Counter
 from copy import deepcopy

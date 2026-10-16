@@ -13,6 +13,9 @@ slots into ``deliverables.generate`` exactly like the others.
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 from datetime import datetime
 from typing import Any, Dict, List
 

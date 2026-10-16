@@ -5,6 +5,9 @@ selection or pagination; the engine is the sole owner of values, states and cave
 """
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 from copy import deepcopy
 from contextvars import ContextVar
 import hashlib

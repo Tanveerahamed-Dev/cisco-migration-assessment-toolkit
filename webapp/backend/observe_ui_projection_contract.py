@@ -6,6 +6,9 @@ correctly fail. Producer hashes are observations, not independent custody receip
 """
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 import hashlib
 from importlib.metadata import version
 import json

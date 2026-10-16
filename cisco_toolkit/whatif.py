@@ -13,6 +13,9 @@ The input snapshot is never modified (a shallow copy with a filtered `routes` di
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import fib

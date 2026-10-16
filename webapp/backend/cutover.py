@@ -34,6 +34,9 @@ Methodology (grounded in standard network-migration / cutover practice, PPDIOO I
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 from typing import Any, Dict, List, Optional, Set
 
 from . import engine, summary

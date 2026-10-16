@@ -14,6 +14,9 @@ label never replaces an IANA service assignment.
 
 To refresh the shipped data (rarely needed): `python -m cisco_toolkit.data.gen_port_registry`
 (see that module)."""
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 import functools
 import ipaddress
 import json

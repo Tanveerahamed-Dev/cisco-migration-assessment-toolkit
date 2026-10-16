@@ -14,6 +14,9 @@ inside the call, exactly like the writers themselves, and operate on an already-
 writers only call in after their own `from docx import …` has succeeded, so the fail-soft path is
 unchanged.
 """
+
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
 from dataclasses import dataclass
 from datetime import datetime
 import json

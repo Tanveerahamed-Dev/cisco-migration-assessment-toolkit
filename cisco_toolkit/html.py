@@ -3,6 +3,9 @@ contract embedded in the HTML and written beside every workbook) and render outp
 Blast-Radius Explorer HTML (write_html_explorer) and the '--compare OLD NEW' diff workbook
 (write_diff_workbook). Extracted verbatim from COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps
 29-30 (behaviour byte-identical). Depends on openpyxl + stdlib + the package's model/__version__."""
+
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
 import bisect
 import heapq
 import itertools

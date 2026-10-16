@@ -11,6 +11,9 @@ The table remains inline so every supported PID scope, date, bulletin ID, and
 primary Cisco URL is reviewable in the same change.
 """
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import functools
 import hashlib
 import json

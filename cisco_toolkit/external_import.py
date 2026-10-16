@@ -16,6 +16,9 @@ Opt-in (mirrors the `rest_collect` posture): the engine never reads an external 
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import csv
 import io
 from typing import Any, Dict, List

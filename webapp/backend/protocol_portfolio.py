@@ -8,6 +8,9 @@ AssessHub retained the original upload bytes.  The source boundary is the exact 
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 from collections import Counter
 import json
 import re

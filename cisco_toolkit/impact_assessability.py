@@ -51,6 +51,9 @@ Pure and total: no I/O, no clock, never mutates its input, and never raises on a
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import math
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Sequence, Tuple

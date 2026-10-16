@@ -30,6 +30,9 @@ that should shape every session. Pure stdlib, offline, total on bad input.
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import re
 from typing import List
 

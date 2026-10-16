@@ -21,6 +21,9 @@ Authority is intentionally split:
 The authoritative generator is no-egress: it verifies and reads the exact
 hash-pinned official IANA CSV retained under ``reference-data``. The shipped
 ``.tsv.gz`` is fully offline at runtime."""
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 import argparse
 import csv
 import gzip

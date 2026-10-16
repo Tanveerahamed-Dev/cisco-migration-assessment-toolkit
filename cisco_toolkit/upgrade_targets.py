@@ -26,6 +26,9 @@ raises on bad input (it returns ``MANUAL-VERIFY``, the safe direction).
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple

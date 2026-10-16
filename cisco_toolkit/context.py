@@ -9,6 +9,9 @@ the golden + the in-process pipeline test. Mutable by design -- stages fill it i
 today's local-variable flow with zero behaviour change. Leaf module: depends only on stdlib
 dataclasses/typing (no project imports), so it can be imported anywhere without a cycle.
 """
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 

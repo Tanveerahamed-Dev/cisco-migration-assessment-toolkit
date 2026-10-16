@@ -13,6 +13,9 @@ may be relevant but is outside that grammar withholds a positive verdict.
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import copy
 import hashlib
 import ipaddress

@@ -30,6 +30,9 @@ testable without a transcript or a repo).
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import json
 import os
 import re

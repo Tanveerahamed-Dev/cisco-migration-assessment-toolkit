@@ -15,6 +15,7 @@ import yaml
 
 import interface_computation_guard as guard
 from interface_computation_lex import python_stream
+from interface_computation_sources import compiled_coverage, module_roles, python_closure, role_required
 from ssot_contract_guard import require_canonical_checks
 from cisco_toolkit import ssot
 
@@ -293,7 +294,12 @@ def test_source_discovery_includes_new_interface_modules_and_registry_writers(pa
     assert "cisco_toolkit/mop.py" in sources
     assert "cisco_toolkit/html.py" in sources
     assert "atlas-scope/tools/lib/compile-model.mjs" in sources
-    assert "webapp/backend/engine.py" in sources  # reached through registered report imports
+    assert "webapp/backend/engine.py" in sources  # mixed adapter stays interface pending extraction
+    assert "COLLECT_PARSE_V3_23_0.py" in sources
+    assert "cisco_toolkit/analyze.py" not in sources
+    assert "cisco_toolkit/parse.py" not in sources
+    assert "webapp/frontend/dist/index.html" in sources
+    assert not any(path.endswith(".js") and "/dist/" in path for path in sources)
     assert "webapp/frontend/index.html" in sources
     assert "atlas-scope/index.html" in sources
 
@@ -304,6 +310,8 @@ def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, pa
                "cisco_toolkit/new_report.py": "from webapp.backend.new import f\n",
                path: "def f(rows):\n return len(rows)\n"}
     for name, text in sources.items():
+        if role_required(name) and "__atlas_role__" not in text:
+            text = '__atlas_role__ = "interface"\n' + text
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
@@ -315,6 +323,8 @@ def test_new_module_discovery_has_no_curated_file_list(tmp_path, monkeypatch, pa
 
 def source_fixture(tmp_path, monkeypatch, sources):
     for name, text in sources.items():
+        if role_required(name) and "__atlas_role__" not in text:
+            text = '__atlas_role__ = "interface"\n' + text
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
@@ -663,3 +673,85 @@ def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite(
     observation = next(i for i, s in enumerate(steps) if s.get("name") == "Observe exact interface computation sites for review")
     assert synthetic_index < observation < index
     assert any(s.get("run") == "npm ci" and s.get("working-directory") == "atlas-scope" for s in steps[:synthetic_index])
+
+
+@pytest.mark.parametrize("declaration", ["", '__atlas_role__ = "other"',
+    '__atlas_role__ = "engine" if choose else "interface"',
+    '__atlas_role__ = "engine"\n__atlas_role__ = "interface"',
+    'def f():\n global __atlas_role__\n __atlas_role__ = "engine"'])
+@pytest.mark.parametrize("path", ["cisco_toolkit/new.py", "cisco_toolkit/nested/new.py", "webapp/backend/new.py", "COLLECT_PARSE_V3_23_0.py"])
+def test_every_owned_module_requires_exactly_one_literal_role(path, declaration):
+    with pytest.raises(ValueError, match="exactly one literal"):
+        module_roles([path], {path: declaration}.__getitem__)
+
+
+def test_engine_owners_stop_interface_traversal_without_registering_their_computation():
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/renderer.py": '__atlas_role__ = "interface"\nfrom .analyze import compute',
+        "cisco_toolkit/analyze.py": '__atlas_role__ = "engine"\nfrom .parse import load\ndef compute(rows):\n return len(rows)',
+        "cisco_toolkit/parse.py": '__atlas_role__ = "engine"\ndef load():\n return []',
+    }
+    assert python_closure(sources, sources.__getitem__) == {"cisco_toolkit/docmeta.py", "cisco_toolkit/renderer.py"}
+
+
+@pytest.mark.parametrize("edge", ["from .renderer import answer", "from . import renderer", "import cisco_toolkit.renderer", "from helper import answer"])
+def test_engine_cannot_import_interface_directly_or_through_an_unregistered_helper(edge):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/renderer.py": '__atlas_role__ = "interface"\ndef answer(rows):\n return len(rows)',
+        "cisco_toolkit/analyze.py": '__atlas_role__ = "engine"\n' + edge,
+        "helper.py": "from cisco_toolkit.renderer import answer",
+    }
+    with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("writer", ["ArtifactSpec(writer_module='cisco_toolkit.report')", ""])
+def test_a_report_writer_cannot_hide_behind_engine_role(writer):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"\n' + writer,
+        "cisco_toolkit/report.py": '__atlas_role__ = "engine"\nimport openpyxl',
+    }
+    with pytest.raises(ValueError, match="writer cannot declare engine"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("path", ["new/dist/index.html", "new/build/bundle.js", "webapp/frontend/dist-hub/app.js"])
+def test_uncovered_checked_in_generated_entry_or_bundle_refuses(path):
+    with pytest.raises(ValueError, match="no source-to-dist gate"):
+        compiled_coverage([path], lambda name: "")
+
+
+def test_compiled_exclusion_requires_the_named_enforced_build_comparison():
+    names = ["webapp/frontend/dist/index.html", "webapp/frontend/dist/assets/app.js"]
+    read = lambda path: (guard.ROOT / path).read_text(encoding="utf-8")
+    assert compiled_coverage(names, read) == set(names)
+    for before, after in [
+        ("Verify checked-in SPA equals the source-bound build", "Removed gate"),
+        ('      - name: Verify checked-in SPA equals the source-bound build',
+         '      - if: false\n        name: Verify checked-in SPA equals the source-bound build'),
+        ('      - run: npm run build', '      - run: echo build'),
+        ('frontend_build_handoff.py verify-committed', 'frontend_build_handoff.py after'),
+    ]:
+        def changed(path):
+            text = read(path)
+            return text.replace(before, after) if path.endswith("webapp-ci.yml") else text
+        with pytest.raises(ValueError, match="source-to-dist gate"):
+            compiled_coverage(names, changed)
+
+
+def test_compiled_entry_inline_code_stays_scanned_but_covered_bundles_do_not(parser, tmp_path, monkeypatch):
+    workflow = (guard.ROOT / ".github/workflows/webapp-ci.yml").read_text(encoding="utf-8")
+    helper = (guard.ROOT / ".github/scripts/frontend_build_handoff.py").read_text(encoding="utf-8")
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": 'ARTIFACT_SPECS = ()',
+        ".github/workflows/webapp-ci.yml": workflow,
+        ".github/scripts/frontend_build_handoff.py": helper,
+        "webapp/frontend/dist/index.html": '<script src="assets/app.js"></script><script>function answer(rows) {return rows.length}</script>',
+        "webapp/frontend/dist/assets/app.js": "throw new Error('compiled bytes verified by source-to-dist gate')",
+    })
+    selected = guard.source_map()
+    assert "webapp/frontend/dist/assets/app.js" not in selected
+    assert "webapp/frontend/dist/index.html" in selected
+    refuse_unregistered(selected, "count")

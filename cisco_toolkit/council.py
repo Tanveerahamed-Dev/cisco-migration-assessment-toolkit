@@ -24,6 +24,9 @@ load-bearing logic is unit-tested without any model call. Refute-first is **fail
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 from typing import Any, Dict, List
 
 from cisco_toolkit.domain_packs import select_packs

@@ -34,6 +34,9 @@ Pure: stdlib + ``cisco_toolkit.ssot`` only. No I/O, no network, no device access
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import dataclasses
 import re
 from typing import Any, Dict, List, Optional

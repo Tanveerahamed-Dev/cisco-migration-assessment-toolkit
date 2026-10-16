@@ -74,6 +74,9 @@ that checked less than the run that produced the trusted proof.
 
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import argparse
 import base64
 import configparser

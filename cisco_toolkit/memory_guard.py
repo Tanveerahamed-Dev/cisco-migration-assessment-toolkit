@@ -29,6 +29,9 @@ refused, never verified. Pure stdlib, offline, no egress, total on bad input.
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import dataclasses
 import hashlib
 import os

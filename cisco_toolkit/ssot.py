@@ -29,6 +29,9 @@ Read-only and side-effect free: this module derives, it never mutates the snapsh
 """
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import math
 import reprlib
 from fractions import Fraction

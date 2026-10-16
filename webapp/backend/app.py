@@ -7,6 +7,9 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 import base64
 import binascii
 import contextlib

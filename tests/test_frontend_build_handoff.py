@@ -53,6 +53,9 @@ def build(tmp_path, monkeypatch):
         assert command[0] == "git"
         if command[1] == "rev-parse":
             return ("a" * 40 if command[2] == "HEAD" else "b" * 40).encode()
+        if command[1] == "ls-tree" and "--name-only" not in command:
+            return ("\0".join("100644 blob " + "c" * 40 + "\t" + path for path in paths
+                              if path.startswith("webapp/frontend/dist/")) + "\0").encode()
         if command[1] == "cat-file":
             data = committed[command[3].removeprefix("HEAD:")]
             return str(len(data)).encode() if command[2] == "-s" else data
@@ -304,3 +307,38 @@ def test_helper_and_privacy_guard_changes_engage_the_existing_hosted_job():
     upload = workflow.index("name: Preserve the source-bound SPA build handoff", after)
     assert before < build < after < upload
     assert "permissions:\n  contents: read" in workflow
+
+
+
+def _commit_synthetic_bundle(build):
+    name = "webapp/frontend/dist/assets/app.js"
+    build.paths.append(name)
+    build.indexed.append(name)
+    build.committed[name] = (build.root / name).read_bytes()
+
+
+def test_checked_in_dist_gate_compares_the_complete_bound_build(build):
+    _commit_synthetic_bundle(build)
+    build.run("before")
+    build.run("after")
+    build.run("verify-committed")
+
+
+@pytest.mark.parametrize("mutation", ["tracked-byte", "missing-tracked", "extra-tracked", "generated-byte", "captured-byte"])
+def test_checked_in_dist_gate_refuses_changed_missing_extra_or_unbound_bytes(build, mutation):
+    _commit_synthetic_bundle(build)
+    build.run("before")
+    build.run("after")
+    asset = "webapp/frontend/dist/assets/app.js"
+    if mutation == "tracked-byte":
+        build.committed[asset] = b"different checked-in bundle"
+    elif mutation == "missing-tracked":
+        build.paths.remove(asset)
+    elif mutation == "extra-tracked":
+        build.paths.append("webapp/frontend/dist/assets/uncovered.js")
+    elif mutation == "generated-byte":
+        (build.root / asset).write_bytes(b"different generated bundle")
+    else:
+        (build.target / "dist/assets/app.js").write_bytes(b"different captured bundle")
+    with pytest.raises(ValueError, match="compiled (inventory|bytes)"):
+        build.run("verify-committed")

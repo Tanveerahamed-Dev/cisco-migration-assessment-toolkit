@@ -9,6 +9,9 @@ working unchanged. Those extraction steps were byte-identical; the runtime-log
 path and error boundaries below are later additive hardening.
 """
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import os
 import stat
 from pathlib import Path

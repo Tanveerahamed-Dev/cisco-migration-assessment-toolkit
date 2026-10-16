@@ -8,6 +8,9 @@ reported as unavailable instead of becoming a generation failure.
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 import importlib
 import importlib.util
 import logging

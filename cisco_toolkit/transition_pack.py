@@ -9,6 +9,9 @@ QCP-001, or claim that ``CONTRACT_ONLY`` packs are isolated executable sandboxes
 
 from __future__ import annotations
 
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
+
 import base64
 from enum import Enum
 from importlib import resources

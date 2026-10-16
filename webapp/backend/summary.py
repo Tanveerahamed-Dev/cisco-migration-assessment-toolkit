@@ -9,6 +9,9 @@ Failure impact is read from the engine-owned projection (``impact_view``), never
 
 from __future__ import annotations
 
+__atlas_role__ = "interface"  # ADR 0008: reviewed module boundary.
+
+
 import re
 from typing import Any, Dict, List, Optional, Tuple
 

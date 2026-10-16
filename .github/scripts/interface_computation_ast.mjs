@@ -301,7 +301,8 @@ function tokenValue(scanner, kind) {
   return scanner.getTokenText();
 }
 
-const sourcePaths = new Set((input.sources ?? []).map(source => source.path));
+const compiledPaths = new Set(input.compiled ?? []);
+const sourcePaths = new Set([...(input.sources ?? []).map(source => source.path), ...compiledPaths]);
 function scriptIsClosed(path, value) {
   value = value.trim();
   const url = new URL(value, 'https://static-census.invalid/');
@@ -504,7 +505,7 @@ function discoverSourcePaths(files, names) {
   }
   while (pending.length) {
     const path = pending.pop();
-    if (selected.has(path)) continue;
+    if (selected.has(path) || (compiledPaths.has(path) && !path.toLowerCase().endsWith('.html'))) continue;
     if (!(path in files)) throw new Error('Executable source is unavailable: ' + path);
     selected.add(path);
     let fragments;

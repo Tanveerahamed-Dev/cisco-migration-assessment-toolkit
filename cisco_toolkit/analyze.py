@@ -8,6 +8,9 @@ The `compute_*` functions themselves follow in later steps (they entangle with t
 `_load_cmd_output` I/O helper that still lives in the monolith). The Excel
 fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
+
+__atlas_role__ = "engine"  # ADR 0008: reviewed module boundary.
+
 import ipaddress
 import json
 import re
