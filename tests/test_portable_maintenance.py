@@ -19,10 +19,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_frozen_verifier_dispatch_never_loads_the_engine(monkeypatch):
     seen = []
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
     monkeypatch.setattr(verify_release, "main", lambda argv: seen.append(argv) or 23)
     monkeypatch.setattr(serve, "_load_engine_main", lambda: pytest.fail("engine loaded"))
     assert serve._main_scoped(["--verify-release", "--installed", "example"]) == 23
     assert seen == [["--installed", "example"]]
+
+
+def test_unfrozen_wheel_cli_never_imports_the_portable_build_package(monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+
+    def guarded(name, *args, **kwargs):
+        assert not (name == "portable" or name.startswith("portable.")), "wheel imported portable build-only code"
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(serve, "_frozen", lambda: False)
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    with pytest.raises(SystemExit) as exited:
+        serve._main_scoped(["--version"])
+    assert exited.value.code == 0
 
 
 def test_maintenance_command_keeps_engine_argv_opaque(monkeypatch):

@@ -1798,7 +1798,15 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
             item["name"]: item["version"] for item in bundled_python["distributions"]
         }
         if observed_bundled != EXPECTED_BUNDLED_PYTHON:
-            raise PortableReleaseError("PyInstaller bundled dependency set differs from reviewed contract")
+            differences = {
+                name: {"expected": EXPECTED_BUNDLED_PYTHON.get(name), "observed": observed_bundled.get(name)}
+                for name in sorted(set(observed_bundled) | set(EXPECTED_BUNDLED_PYTHON))
+                if observed_bundled.get(name) != EXPECTED_BUNDLED_PYTHON.get(name)
+            }
+            raise PortableReleaseError(
+                "PyInstaller bundled dependency set differs from reviewed contract: "
+                + json.dumps(differences, sort_keys=True, separators=(",", ":"))
+            )
         for field, rows in npm_inventories.items():
             count, digest = _reviewed_npm_inventory(field)
             if len(rows) != count or digest_object(rows) != digest:

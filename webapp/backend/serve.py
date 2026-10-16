@@ -844,16 +844,17 @@ def main(argv=None) -> int:
 
 def _main_scoped(argv: list[str]) -> int:
     # Maintenance uses the code frozen into THIS executable, before server setup.
-    if argv and argv[0] == "--verify-release":
+    if _frozen() and argv and argv[0] == "--verify-release":
         from portable.verify_release import main as verify_release_main
 
         return verify_release_main(argv[1:])
-    from portable.maintenance import COMMANDS as maintenance_commands
+    if _frozen() and argv and argv[0] != ENGINE_SENTINEL:
+        from portable.maintenance import COMMANDS as maintenance_commands
 
-    if argv and argv[0] != ENGINE_SENTINEL and any(argument in maintenance_commands for argument in argv):
-        from portable.maintenance import main as maintenance_main
+        if any(argument in maintenance_commands for argument in argv):
+            from portable.maintenance import main as maintenance_main
 
-        return maintenance_main(argv)
+            return maintenance_main(argv)
     if argv and argv[0] == ENGINE_SENTINEL:
         log_path = None
         if _frozen():

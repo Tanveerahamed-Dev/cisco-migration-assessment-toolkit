@@ -9,8 +9,8 @@ it boots the server, opens the browser, and re-invokes itself as the engine CLI 
 
 First installation needs only a published ZIP, its independently obtained SHA-256,
 Windows PowerShell's `Expand-Archive`, and the bundled executable. Any writable folder
-works; USB is optional. See `README-FIELD.txt`. `Atlas.exe --install DEST --package ZIP
---expected-sha256 SHA` and the installed `Atlas.exe --update ZIP --expected-sha256 SHA`
+works; USB is optional. See `README-FIELD.txt`. `Atlas.exe --install DEST --package ZIP --expected-sha256 SHA`
+and the installed `Atlas.exe --update ZIP --expected-sha256 SHA`
 use the frozen verifier and bundled journaled transaction. The optional `make_stick.ps1`
 is a thin executable wrapper with no checkout/interpreter fallback. Updates hand off
 to a same-drive installed-code recovery helper before exiting; dispatch is pending
@@ -116,10 +116,10 @@ exactly as the AssessHub ingest channel already does (`webapp/backend/ingest.py`
 - `--redact-collection` is opt-in and separate: it rewrites the **raw captures in place** (still
   `--compare`/`--trend`-able).
 
-## Lay out a stick
+## Install to any folder or a stick
 
 ```powershell
-powershell -File portable/make_stick.ps1 -Dest E:\ -Package C:\release\Atlas-<version>-windows-x64.zip
+powershell -File portable/make_stick.ps1 -Dest C:\AtlasField -AtlasExe C:\extracted\Atlas\Atlas.exe -Package C:\release\Atlas-<version>-windows-x64.zip -ExpectedSha256 <published-sha256>
 ```
 
 The package copy is hash-checked and verified before extraction, then the extracted tree and
