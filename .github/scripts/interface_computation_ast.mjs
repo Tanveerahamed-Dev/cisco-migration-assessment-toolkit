@@ -17,6 +17,12 @@ const domain = /health|score|band|severit|readiness|verdict|gate|punch|lifecycle
 const ownerName = /^(?:counterfactualFailure|failureImpact|tracePath|flowBetween|evalAcl|linkCarries|causalFlows|fleetHealthState|scoreToken|HEALTH_TONE|GAUGE_COLOR|(?:compute|calculate|recount|simulate|evaluate|classify|qualify|count|trace)[A-Z_].*)$/;
 const verdicts = new Set(['READY', 'NOT READY', 'CAUTION', 'GO', 'NO-GO', 'CONDITIONAL GO', 'Critical', 'Excellent', 'Good', 'Fair', 'Poor', 'ok', 'watch', 'risk', 'crit', 'healthy', 'permit', 'deny', 'allow', 'block', 'reached', 'unreachable']);
 const hash = text => createHash('sha256').update(text).digest('hex');
+const resourceSchemes = new Set(['http:', 'https:', 'mailto:', 'tel:', 'file:', 'about:']);
+const executableSchemes = new Map([
+  ['javascript:', url => decodeURIComponent(url.href.slice(url.protocol.length))],
+  ['data:', () => { throw new Error('Unsupported executable data URL source'); }],
+  ['vbscript:', () => { throw new Error('Unsupported executable VBScript URL source'); }],
+]);
 
 function htmlSources(text, depth = 0, baseLine = 0) {
   if (depth > 8) throw new Error('Nested HTML exceeds the static census depth');
@@ -38,8 +44,10 @@ function htmlSources(text, depth = 0, baseLine = 0) {
       if (attr.name.startsWith('on') && attr.value) fragments.push({ text: `function html_event_${attr.name}_${hash(attr.value).slice(0,16)}() {\n${attr.value}\n}`, line: line - 2 });
       if (['href', 'action', 'formaction'].includes(attr.name) && attr.value) {
         const url = new URL(attr.value, 'https://static-census.invalid/');
-        if (url.protocol === 'javascript:') {
-          const body = decodeURIComponent(url.href.slice(url.protocol.length));
+        if (!resourceSchemes.has(url.protocol)) {
+          const reader = executableSchemes.get(url.protocol);
+          if (!reader) throw new Error('Unsupported URL scheme in executable-source census');
+          const body = reader(url);
           fragments.push({ text: `function html_url_${hash(body).slice(0,16)}() {\n${body}\n}`, line: line - 2 });
         }
       }

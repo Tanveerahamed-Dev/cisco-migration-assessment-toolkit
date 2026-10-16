@@ -185,6 +185,13 @@ def test_executable_html_attributes_cannot_hide_counts(parser, source):
     assert any(row["rule"] == "count" for row in guard.scan({"cisco_toolkit/blast_radius_explorer.html": source}))
 
 
+@pytest.mark.parametrize("source", ['<a href="data:text/html,hidden-code">x</a>', '<a href="vbscript:MsgBox(1)">x</a>', '<a href="unknown-script:payload">x</a>'])
+def test_unparsed_url_languages_cannot_escape_the_census(parser, source):
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        guard.scan({"cisco_toolkit/blast_radius_explorer.html": source})
+    assert "Unsupported" in refused.value.stderr
+
+
 @pytest.mark.parametrize("source", ['<script src="other.js"></script>', '<svg><script href="other.js"></script></svg>', '<script/>return rows.length;', '<script>return rows.length;'])
 def test_omitted_external_or_unclosed_script_sources_refuse(parser, source):
     with pytest.raises(subprocess.CalledProcessError) as refused:

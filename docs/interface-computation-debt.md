@@ -3,7 +3,7 @@
 RC8-P1-H PR-0 implements the owner's binding foundation direction in #672.
 The machine-readable register is `interface-computation-debt.json`; it is not
 an approval of the computations it records. Initial admission requires the
-hosted observation and review. The initial `observation_required` stage fails CI.
+hosted observation and review. The initial `observation_required` stage fails CI; the captured inventory is now admitted as the first active ceiling, pending fresh whole-suite validation.
 
 ## What the gate checks
 
@@ -113,3 +113,46 @@ The corrected observation must bind its source commit/tree and both detector
 digests before its candidate inventory is reviewed. Initial observations are not
 silently transferred across detector revisions. All 15 protected contexts and
 applicable complete workflows remain required before the independent-review stop.
+
+
+## Initial inventory admission (2026-10-16)
+
+Hosted CI `38883822945`, PR head `61d64c43`, tested source
+`be797fd56ed28308bf7db916ccfb630e200c4d98`, tree
+`9c2c1bcf28b56213ce5113cda53728d3cda8df7e`, captured **20,619** exact static
+operation records. All six legs report the same proposal fingerprint:
+`0877ef77fe780fed4506ddc3a6543dd17c1a6dd226fbb8b0581dc63e968239cf`.
+
+| Platform / Python | Capture artifact | Guard controls |
+|---|---|---|
+| Linux 3.10.22 | `12039690209` | 108 passed; only the two deliberate admission assertions failed |
+| Linux 3.11.17 | `12039191151` | 108 passed; same two admission failures |
+| Linux 3.12.15 | `12039595045` | 108 passed; same two admission failures |
+| Linux 3.13.16 | `12038606651` | 108 passed; same two admission failures |
+| Linux 3.14.8 | `12038876576` | 108 passed; same two admission failures |
+| Windows 3.12.10 | `12038937291` | 108 passed; same two admission failures |
+
+Every leg also passed the real-pipeline canonical-fact mutation check. The
+candidate includes every audited summary/KPI/topology/gate symbol and the Scope
+coverage compiler. 13,040 records are source-retained retired-with-surface
+entries; 7,579 are conservative legacy operation/debt allowances. These are
+tripwire records, often overlapping on one expression, not counts of semantic
+SSOT defects and not an assertion that presentation/infrastructure operations
+are network analyses. Source review and the independent audit still determine
+which operation must move to an engine owner. No whole function/file exemption
+is introduced: even a second identical occurrence must fit the exact recorded
+footprint, and a retired allowance cannot return after removal.
+
+The register imports that reviewed hosted proposal with one site per line.
+No local inspector/test/engine execution or local receipt-verification
+controller supplied its result. Its active current/origin/history comparison
+and the complete default suites must now pass on the admission head; none of
+the deliberately failing bootstrap runs is final validation.
+
+CodeQL on `61d64c43` separately found incomplete URL scheme handling
+(`116916820453`): only JavaScript URLs were inspected. The admission source
+uses a closed scheme dispatcher, explicitly refusing data/VBScript and unknown
+URL languages while retaining JavaScript-body inspection. Negative controls
+remain executable. This only tightens source admission, leaving the inspected
+application/report corpus unchanged. Fresh CodeQL and all protected/applicable
+checks are required on the final combined head; no alert is waived.
