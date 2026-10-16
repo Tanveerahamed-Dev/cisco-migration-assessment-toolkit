@@ -384,6 +384,8 @@ def copy_data_verified(source: Path, destination: Path) -> dict:
 def prove_verified_reinstall(bootstrap: Path, package: Path, expected_sha: str,
                             old_application: Path, environment: dict[str, str], scratch: Path) -> dict:
     """Prove the separate-install path without relying on the old verifier's pins."""
+    from portable.release_contract import canonical_json
+
     source_inventory = data_inventory(old_application)
     legacy = scratch / "synthetic-legacy-without-updater" / "Atlas"
     copy_data_verified(old_application, legacy)
@@ -413,7 +415,7 @@ def prove_verified_reinstall(bootstrap: Path, package: Path, expected_sha: str,
                "database_name": database.name, "input_copy_sha256": digest(database),
                "input_copy_bytes": database.stat().st_size, "requested_action": "open_migrate_copy_and_report"}
     marker = preflight / "atlas-db-preflight.json"
-    marker.write_text(json.dumps(request, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    marker.write_bytes(canonical_json(request))
     checked = run(candidate / "Atlas.exe", ["--database-preflight", str(database)],
                   {**environment, "ATLAS_PORTABLE_DATABASE_PREFLIGHT": nonce}, scratch)
     receipt = json.loads(checked.stdout.strip().splitlines()[-1])
