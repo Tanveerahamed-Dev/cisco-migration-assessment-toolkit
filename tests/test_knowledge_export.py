@@ -1,10 +1,14 @@
 """Refutation controls for the hosted knowledge handoff; no full corpus generation."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -242,3 +246,233 @@ def test_wikilink_filenames_keep_backticks_while_code_is_excluded():
     name = "4. Keep `compass`'s strategic frame--0123456789abcdef"
     assert list(subject.wiki_targets(f"[[{name}|heading]] `[[ignored]]` [[Missing]]")) == [name.casefold(), "missing"]
     assert list(subject.wiki_targets("````md\n[[ignored]]\n```\n[[still-ignored]]\n````\n[[Real]]")) == ["real"]
+
+
+@pytest.fixture
+def diagnostic():
+    spec = importlib.util.spec_from_file_location(
+        "knowledge_report_diagnostics", ROOT / ".github/scripts/knowledge_report_diagnostics.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def audit_inputs(tmp_path, raw):
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_bytes(raw)
+    report = tmp_path / "GRAPH_REPORT.md"
+    report.write_text("# intentionally unparsed report\n", encoding="utf-8")
+    (tmp_path / ".graphify_labels.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".graphify_labels.json.sig").write_text("{}", encoding="utf-8")
+    return graph_path, report
+
+
+@pytest.mark.parametrize("case", ["values", "depth", "malformed", "duplicate", "identifier"])
+def test_probe_attributes_real_auditor_refusals_without_changing_verdict_or_source(
+        tmp_path, monkeypatch, diagnostic, case):
+    auditor_path = ROOT / "tools/verify_graph_report.py"
+    auditor = diagnostic.load_auditor(auditor_path)
+    raw = {"values": b'[0,0,0,0,0,0,0,0]', "depth": b'[[[[0]]]]',
+           "malformed": b'{"CANARY_NEVER_EXPOSED":}',
+           "duplicate": b'{"CANARY_NEVER_EXPOSED":0,"CANARY_NEVER_EXPOSED":1}',
+           "identifier": b'{"directed":false,"multigraph":false,"nodes":[{"id":""}],"links":[]}'}[case]
+    if case == "values":
+        monkeypatch.setattr(auditor, "MAX_JSON_VALUES", 4)
+    if case == "depth":
+        monkeypatch.setattr(auditor, "MAX_JSON_DEPTH", 2)
+    graph_path, report = audit_inputs(tmp_path, raw)
+    before = auditor.audit_graph_report(graph_path, report).as_dict()
+    bounds = {key: getattr(auditor, key) for key in diagnostic.BOUND_NAMES}
+    previous = sys.gettrace()
+    result = diagnostic.observe(auditor, graph_path, report)
+    assert sys.gettrace() is previous
+    assert auditor.audit_graph_report(graph_path, report).as_dict() == before
+    assert {key: getattr(auditor, key) for key in bounds} == bounds
+    assert before["status"] == "block" and before["error_codes"] == ["graph_report_graph_invalid"]
+    assert result["status"] == "observed_block" and result["promotes_export"] is False
+    assert result["probe_audited_graph"] == {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    assert "CANARY_NEVER_EXPOSED" not in json.dumps(result)
+    assert set(result["first_refusal"]) == {"function", "line", "code", "counters", "sub_reason"}
+    assert result["first_refusal"]["sub_reason"] == {
+        "values": "json_lexical_value_limit", "depth": "json_lexical_depth_limit",
+        "malformed": "json_decode_or_resource_failure", "duplicate": "json_duplicate_object_key",
+        "identifier": "graph_identifier_invalid"}[case]
+    if case == "values":
+        assert result["first_refusal"]["counters"]["values"] == 5
+        assert result["first_refusal"]["counters"]["container_depth"] <= auditor.MAX_JSON_DEPTH
+    if case == "depth":
+        assert result["first_refusal"]["counters"]["container_depth"] == 3
+        assert result["first_refusal"]["counters"]["values"] <= auditor.MAX_JSON_VALUES
+    if case == "duplicate":
+        assert result["first_refusal"]["function"] == "_object_no_duplicates"
+    if case == "identifier":
+        assert result["first_refusal"]["function"] == "_identifier"
+    assert hashlib.sha256(auditor_path.read_bytes()).hexdigest() == diagnostic.AUDITOR_SHA256
+
+
+def test_fixed_sub_reason_map_covers_every_pinned_graph_refusal_site(diagnostic):
+    source = (ROOT / "tools/verify_graph_report.py").read_bytes()
+    assert hashlib.sha256(source).hexdigest() == diagnostic.AUDITOR_SHA256
+    found = set()
+
+    class Calls(ast.NodeVisitor):
+        function = ""
+
+        def visit_FunctionDef(self, node):
+            previous, self.function = self.function, node.name
+            self.generic_visit(node)
+            self.function = previous
+
+        def visit_Lambda(self, node):
+            previous, self.function = self.function, "<lambda>"
+            self.generic_visit(node)
+            self.function = previous
+
+        def visit_Call(self, node):
+            if isinstance(node.func, ast.Name) and node.func.id == "_fail" and node.args:
+                code = node.args[0]
+                if ((isinstance(code, ast.Constant) and code.value == "graph_report_graph_invalid")
+                        or (isinstance(code, ast.Name) and code.id == "failure_code"
+                            and self.function in {"_preflight_json_bytes", "count_value"})):
+                    found.add((self.function, node.lineno))
+            self.generic_visit(node)
+
+    Calls().visit(ast.parse(source))
+    assert found == set(diagnostic.GRAPH_REFUSAL_SITES)
+    assert len(found) == 45
+    reasons = list(diagnostic.GRAPH_REFUSAL_SITES.values())
+    assert len(set(reasons)) == len(reasons)
+
+
+@pytest.mark.parametrize("raw,reason,limits", [
+    (b']', "json_container_close_mismatch", {}),
+    (b'"\x01"', "json_string_control_character", {}),
+    (b'"\\', "json_string_escape_truncated", {}),
+    (b'"\\uZZZZ"', "json_unicode_escape_invalid", {}),
+    (b'"\\x"', "json_string_escape_invalid", {}),
+    (b'"long"', "json_string_token_limit_during_scan", {"MAX_JSON_STRING_CHARS": 2}),
+    (b'"abc', "json_string_unterminated", {}),
+    (b'-', "json_number_minus_truncated", {}),
+    (b'01', "json_number_leading_zero", {}),
+    (b'-x', "json_number_integer_invalid", {}),
+    (b'0.', "json_number_fraction_invalid", {}),
+    (b'0e', "json_number_exponent_invalid", {}),
+    (b'1234', "json_number_token_limit", {"MAX_JSON_NUMBER_BYTES": 2}),
+    (b'0x', "json_number_delimiter_invalid", {}),
+    (b'truex', "json_literal_delimiter_invalid", {}),
+    (b'x', "json_token_unrecognized", {}),
+    (b'', "json_document_incomplete_or_empty", {}),
+    (b'[]', "json_root_not_object", {}),
+    (b'18446744073709551616', "json_decoded_integer_limit", {}),
+    (b'1e999', "json_decoded_float_not_finite", {}),
+])
+def test_probe_names_actual_lexical_and_root_refusal_sites(tmp_path, monkeypatch, diagnostic, raw, reason, limits):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    for name, value in limits.items():
+        monkeypatch.setattr(auditor, name, value)  # Synthetic boundary control only.
+    graph_path, report = audit_inputs(tmp_path, raw)
+    before = auditor.audit_graph_report(graph_path, report).as_dict()
+    result = diagnostic.observe(auditor, graph_path, report)
+    assert before["error_codes"] == ["graph_report_graph_invalid"]
+    assert auditor.audit_graph_report(graph_path, report).as_dict() == before
+    assert result["first_refusal"]["sub_reason"] == reason
+    assert result["promotes_export"] is False and result["audit_status"] == "block"
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ({"directed": True}, "graph_directed_or_multigraph_flags_invalid"),
+    ({"nodes": {}}, "graph_nodes_or_links_type_invalid"),
+    ({"nodes": [0]}, "graph_node_type_invalid"),
+    ({"nodes": [{"id": "a", "community": -1}]}, "graph_community_id_invalid"),
+    ({"nodes": [{"id": "a", "community": 1}] * 2}, "graph_duplicate_node_id"),
+    ({"links": [0]}, "graph_link_type_invalid"),
+    ({"links": [{"source": "a", "target": "missing"}]}, "graph_edge_endpoint_missing"),
+    ({"links": [{"source": "a", "target": "a"}] * 2}, "graph_duplicate_edge"),
+    ({"nodes": [{"id": "a", "community": 1, "label": 0}]}, "graph_node_label_type_invalid"),
+    ({"nodes": [{"id": "a", "community": 1, "label": "x", "source_file": 0}]},
+     "graph_source_file_type_invalid"),
+])
+def test_probe_names_actual_graph_shape_refusal_sites(tmp_path, diagnostic, mutation, reason):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    graph = {"directed": False, "multigraph": False, "nodes": [{"id": "a", "community": 1}], "links": []}
+    graph.update(mutation)
+    raw = json.dumps(graph).encode()
+    graph_path, report = audit_inputs(tmp_path, raw)
+    before = auditor.audit_graph_report(graph_path, report).as_dict()
+    result = diagnostic.observe(auditor, graph_path, report)
+    assert before["error_codes"] == ["graph_report_graph_invalid"]
+    assert auditor.audit_graph_report(graph_path, report).as_dict() == before
+    assert result["first_refusal"]["sub_reason"] == reason
+    assert result["promotes_export"] is False and result["audit_status"] == "block"
+
+
+def test_probe_refuses_unknown_auditor_before_executing_it(tmp_path, diagnostic):
+    source = tmp_path / "unreviewed.py"
+    source.write_text("raise AssertionError('must not execute')\n", encoding="utf-8")
+    with pytest.raises(diagnostic.ProbeUnavailable, match="auditor_revision_mismatch"):
+        diagnostic.load_auditor(source)
+
+
+def test_probe_does_not_promote_a_later_passing_read(tmp_path, diagnostic):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    auditor.audit_graph_report = lambda *args: auditor.AuditResult("pass", (), {})
+    result = diagnostic.observe(auditor, tmp_path / "graph.json", tmp_path / "report.md")
+    assert result["status"] == "not_reproduced" and result["promotes_export"] is False
+
+
+def test_probe_transport_never_echoes_unexpected_exception(tmp_path, monkeypatch, capsys, diagnostic):
+    monkeypatch.setattr(diagnostic, "load_auditor", lambda *args: (_ for _ in ()).throw(
+        ValueError("CANARY_NEVER_EXPOSED")))
+    assert diagnostic.main(["--auditor", str(tmp_path / "auditor.py"),
+                            str(tmp_path / "graph.json"), str(tmp_path / "report.md")]) == 0
+    output = capsys.readouterr().out
+    assert "CANARY_NEVER_EXPOSED" not in output
+    assert json.loads(output)["reason"] == "probe_failed"
+
+
+def test_probe_restores_trace_after_unexpected_failure(tmp_path, diagnostic):
+    auditor = diagnostic.load_auditor(ROOT / "tools/verify_graph_report.py")
+    auditor.audit_graph_report = lambda *args: (_ for _ in ()).throw(RuntimeError("private detail"))
+    previous = sys.gettrace()
+    with pytest.raises(RuntimeError):
+        diagnostic.observe(auditor, tmp_path / "graph.json", tmp_path / "report.md")
+    assert sys.gettrace() is previous
+
+
+@pytest.mark.parametrize("status", ["observed_block", "not_reproduced", "unavailable"])
+def test_diagnostic_never_promotes_original_refusal(tmp_path, monkeypatch, status):
+    for key, value in environment().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(subject, "git", lambda root, *args: "a" * 40 if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(subject, "generate", lambda *args: (_ for _ in ()).throw(
+        subject.Refusal("report_audit_refused")))
+    probe = {"schema": "atlas-knowledge-report-diagnostic/1", "status": status, "promotes_export": False}
+    monkeypatch.setattr(subject, "report_diagnostic", lambda root: probe)
+    output, diagnostics = tmp_path / "output", tmp_path / "diagnostics"
+    assert subject.main(["--source-root", str(tmp_path / "source"),
+                         "--expected-source-commit", subject.SOURCE_COMMIT,
+                         "--output", str(output), "--diagnostics", str(diagnostics)]) == 1
+    assert json.loads((diagnostics / "failure.json").read_bytes())["importable_vault"] is False
+    assert json.loads((diagnostics / "report-diagnostic.json").read_bytes()) == probe
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "large", "malformed", "extra_fields"])
+def test_probe_transport_is_bounded_and_credential_free(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(subject, "source_identity", lambda root: {})
+    monkeypatch.setenv("GITHUB_TOKEN", "CANARY_NEVER_EXPOSED")
+
+    def fake_run(command, **kwargs):
+        assert command[1:3] == ["-I", "-B"] and kwargs["timeout"] == 60
+        assert "CANARY_NEVER_EXPOSED" not in kwargs["env"].values()
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 60)
+        raw = {"large": b" " * 8193, "malformed": b"{",
+               "extra_fields": b'{"schema":"atlas-knowledge-report-diagnostic/1",'
+               b'"status":"unavailable","promotes_export":false,"payload":"CANARY_NEVER_EXPOSED"}'}[failure]
+        return SimpleNamespace(returncode=0, stdout=raw)
+
+    monkeypatch.setattr(subject.subprocess, "run", fake_run)
+    result = subject.report_diagnostic(tmp_path)
+    assert result["status"] == "unavailable" and result["promotes_export"] is False
+    assert "CANARY_NEVER_EXPOSED" not in json.dumps(result)

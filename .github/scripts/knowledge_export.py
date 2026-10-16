@@ -109,6 +109,34 @@ def run(source, output, phase, tool, *arguments):
     return result.stdout.decode("utf-8", "strict").strip()
 
 
+def report_diagnostic(source):
+    unavailable = {"schema": "atlas-knowledge-report-diagnostic/1", "status": "unavailable",
+                   "reason": "probe_unavailable", "promotes_export": False}
+    try:
+        source_identity(source)
+        helper = Path(__file__).with_name("knowledge_report_diagnostics.py")
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", str(helper), "--auditor", str(source / "tools/verify_graph_report.py"),
+             str(source / "graphify-out/graph.json"), str(source / "graphify-out/GRAPH_REPORT.md")],
+            cwd=source, env=child_environment(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
+        )
+        source_identity(source)
+        if result.returncode or len(result.stdout) > 8192:
+            return unavailable
+        payload = json.loads(result.stdout)
+        allowed = {"schema", "status", "reason", "promotes_export", "auditor_sha256", "audit_status",
+                   "audit_error_codes", "first_refusal", "probe_audited_graph", "bounds"}
+        if (not isinstance(payload, dict) or payload.get("schema") != unavailable["schema"]
+                or payload.get("status") not in {"observed_block", "not_reproduced", "unavailable"}
+                or set(payload) - allowed
+                or payload.get("promotes_export") is not False):
+            return unavailable
+        return payload
+    except (Refusal, OSError, ValueError, subprocess.SubprocessError):
+        return unavailable
+
+
 def regular_bytes(path):
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or path.is_symlink():
@@ -329,6 +357,8 @@ def main(argv=None):
             audit_log = args.output / "logs/report_audit.txt"
             if audit_log.is_file() and audit_log.stat().st_size <= 32768:
                 shutil.copyfile(audit_log, admitted_diagnostics / "report-audit.txt")
+            if code == "report_audit_refused":
+                write_json(admitted_diagnostics / "report-diagnostic.json", report_diagnostic(source))
         print(f"knowledge-export: BLOCKED: {code}", file=sys.stderr)
         return 1
 

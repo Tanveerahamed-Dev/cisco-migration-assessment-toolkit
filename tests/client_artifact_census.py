@@ -3150,7 +3150,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         "source-pinned repository AST graph, fresh project notes and integrity metadata; privacy/source guards "
         "exclude local untracked material, owner memory and the personal vault"),
     ".github/scripts/knowledge_export.py::main": (
-        3, NON_CLIENT, (), "fixed-code BLOCKED diagnostics and the existing report audit result for that same source"),
+        4, NON_CLIENT, (), "fixed-code BLOCKED diagnostics and bounded non-content audit observations for that same source"),
     ".github/scripts/frontend_artifact_receive.py::write_new": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::record": (1, NON_CLIENT, (), _CI_EVIDENCE),
     ".github/scripts/frontend_artifact_receive.py::GitHub.archive": (1, NON_CLIENT, (), _CI_EVIDENCE),
