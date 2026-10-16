@@ -6,6 +6,13 @@ import { deviceFixture, published, topologyFixture, trustFixture } from "../src/
 const HOST = "synthetic-edge-a";
 const NODE = "Inspect node synthetic-edge-a: Synthetic engine node presentation";
 const TABS = ["Network", "Findings", "Inventory", "Plan", "Change", "Reports"];
+async function capture(page: Page, name: string) {
+  // The line reporter does not retain body-only attachments in test-results.
+  // Persist first so the existing hosted artifact upload carries the actual image.
+  const path = test.info().outputPath(`${name}.png`);
+  await page.screenshot({ path });
+  await test.info().attach(name, { path, contentType: "image/png" });
+}
 function device(sid: number, host: string) {
   const doc = deviceFixture(sid, host);
   const caveat = { id: "synthetic_device_only", owner: "synthetic.device.owner", applies_to: ["/devices/model"], text: "Synthetic device model needs physical confirmation." };
@@ -49,7 +56,7 @@ test("native Engagements opens Network and retains dossier, map geometry and sea
   await expect(page.locator("iframe")).toHaveCount(0); await expect(page.getByRole("link", { name: /Explorer|Scope|Tools|AssessHub/i })).toHaveCount(0);
   const projections = api.calls.filter((url) => url.pathname.includes("/ui-projection/")).map((url) => url.pathname);
   expect(projections.sort()).toEqual(["/api/snapshots/1/ui-projection/topology", "/api/snapshots/1/ui-projection/trust"]);
-  await test.info().attach("adr8-network-desktop-default", { body: await page.screenshot(), contentType: "image/png" });
+  await capture(page, "adr8-network-desktop-default");
   const originalMap = await map(page).elementHandle();
   await page.getByRole("button", { name: NODE }).click();
   const dossier = page.getByRole("complementary", { name: "Device dossier" }); await expect(dossier.getByText("Synthetic chassis", { exact: true })).toBeVisible();
@@ -84,7 +91,7 @@ test("narrow application window reaches canvas, selection evidence and every res
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   const deviceTools = page.getByRole("group", { name: "Device tools" });
   for (const name of ["If this fails", "Path", "Endpoint", "VLAN"]) await expect(deviceTools.getByRole("button", { name, exact: true })).toBeDisabled();
-  await test.info().attach("adr8-network-narrow-default", { body: await page.screenshot(), contentType: "image/png" });
+  await capture(page, "adr8-network-narrow-default");
   await page.getByRole("button", { name: NODE }).click();
   const dossier = page.getByRole("complementary", { name: "Device dossier" });
   await dossier.getByRole("region", { name: "Device identity" }).scrollIntoViewIfNeeded();
@@ -94,7 +101,7 @@ test("narrow application window reaches canvas, selection evidence and every res
   const drawer = page.getByRole("dialog", { name: "Evidence: model" }); await expect(drawer).toBeVisible();
   await expect(drawer).toContainText("Synthetic device model needs physical confirmation.");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await test.info().attach("adr8-dossier-narrow-evidence", { body: await page.screenshot(), contentType: "image/png" });
+  await capture(page, "adr8-dossier-narrow-evidence");
   await page.getByRole("button", { name: "Close evidence" }).click();
   for (const name of TABS.slice(1)) {
     await tab(page, name).click(); await expect(tab(page, name)).toHaveAttribute("aria-current", "page");
