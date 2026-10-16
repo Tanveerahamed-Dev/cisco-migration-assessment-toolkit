@@ -215,3 +215,29 @@ compiler gate and every capacity ceiling remain unchanged. Existing hostile obse
 writer-isolation controls remain, while shared-prefix and actual CLI order/failure tests bind the
 corrected ownership. Fresh exact-source Reference, runtime, golden/sample and all15 gates must pass;
 prior bounded static review and old successful jobs did not close this architectural failure.
+
+## Hosted cached-OpenAPI failure and final-owner correction
+
+Foundation0b48a64a backend run38876448685/job116905008015 fails step11 at09:50:25Z.
+The actual-owner freshness control at test_saved_plan_api.py302 mutates the returned contract's
+list_fields, then a second app.openapi() still returns consumer_only instead of the owner value.
+The94,614-byte complete raw log has SHA-256
+f87b2ab08e5a782f37083b30013703e8bad0f697553ade10deb8d065e182d440. This is an actual failed
+backend gate; its quiet summary provides no numerical passing aggregate.
+
+The cause is the final projection OpenAPI wrapper installed after the app constructor. It calls
+the earlier subclass method only on cold construction, then serves the cache directly. The new
+subclass therefore cannot refresh metadata on cached calls. The correction removes that redundant
+subclass and places the fresh engine-contract assignment after the final wrapper's unchanged native
+cache boundary. Native schema creation stays lazy/cached; no schema reset or recomputation is used.
+The original mutation/domain assertions remain, with added nested mutation, native identity/content
+and per-app construction-count controls. No native pin, generated type, limit or gate is changed.
+
+On0b48, Reference38876448865/job116892547721 separately succeeds with complete162,418-byte
+log SHA-25668af452185ad7077cbefdcbd823a48deddb5acfcdab41c46fbd9e48f77af79a4. All45 capacity
+walls are measured:43 below85%,2 warnings,0 at95% and0 unmeasured. The warnings remain release
+census85.24% and longest JSON string85.00%, within unchanged ceilings. Release status remains
+unsigned_preview_incomplete. That closes the old architecture failure on0b48 only; it does not
+close the new backend failure or transfer validation to this correction. Require fresh exact-head
+backend/cache/export, full source/matrix/Reference/golden/sample and all15/whole workflows before
+independent review. All existing source-bound negatives and external gates remain preserved.

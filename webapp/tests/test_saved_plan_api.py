@@ -289,17 +289,38 @@ def test_export_selection_race_refuses_and_cleans_generated_file(client, monkeyp
 
 def test_actual_openapi_and_offline_export_share_fresh_engine_requirements_contract(client, monkeypatch):
     from cisco_toolkit import design_advisor
+    from backend import ui_projection_api
     from backend.export_ui_projection_openapi import export_schema
+
+    owner_calls = []
+    original_definitions = ui_projection_api.openapi_owner_definitions
+
+    def counted_definitions():
+        owner_calls.append(True)
+        return original_definitions()
+
+    monkeypatch.setattr(ui_projection_api, "openapi_owner_definitions", counted_definitions)
 
     expected = design_advisor.requirements_contract()
     assert expected["scope"] == "saved_plan_admission"
-    assert client.app.openapi()["x-atlas-requirements-contract"] == expected
+    assert client.app.openapi_schema is None
+    schema = client.app.openapi()
+    native_schemas = schema["components"]["schemas"]
+    native_bytes = json.dumps(native_schemas, sort_keys=True)
+    assert schema["x-atlas-requirements-contract"] == expected
     assert export_schema()["x-atlas-requirements-contract"] == expected
+    assert len(owner_calls) == 2  # The runtime app and the independent offline-export app.
 
     # Neither an OpenAPI consumer nor a cached schema may mutate the engine owner.
-    client.app.openapi()["x-atlas-requirements-contract"]["list_fields"].append("consumer_only")
+    schema["x-atlas-requirements-contract"]["list_fields"].append("consumer_only")
+    schema["x-atlas-requirements-contract"]["availability_tiers"].append("consumer_only")
+    schema["x-atlas-requirements-contract"]["vlan_id"]["maximum"] = -1
     assert design_advisor.requirements_contract() == expected
     assert client.app.openapi()["x-atlas-requirements-contract"] == expected
+    assert client.app.openapi() is schema
+    assert schema["components"]["schemas"] is native_schemas
+    assert json.dumps(native_schemas, sort_keys=True) == native_bytes
+    assert len(owner_calls) == 2  # Fresh metadata must not rebuild the cached native schema.
 
     # A new owner domain must reach runtime/export schemas, including after cache creation.
     monkeypatch.setattr(design_advisor, "REQUIREMENTS_AVAILABILITY_TIERS", ("platinum", "standard"))
@@ -309,6 +330,9 @@ def test_actual_openapi_and_offline_export_share_fresh_engine_requirements_contr
     assert changed != expected
     assert client.app.openapi()["x-atlas-requirements-contract"] == changed
     assert export_schema()["x-atlas-requirements-contract"] == changed
+    assert schema["components"]["schemas"] is native_schemas
+    assert json.dumps(native_schemas, sort_keys=True) == native_bytes
+    assert len(owner_calls) == 3  # Only the second offline app needs a new native schema.
 
 
 def test_protocol_sidecar_dispatch_uses_one_live_registry_for_both_download_routes(client, monkeypatch):
