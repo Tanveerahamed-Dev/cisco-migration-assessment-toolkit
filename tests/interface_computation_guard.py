@@ -25,9 +25,9 @@ from interface_computation_sources import SCRIPT_SUFFIXES, compiled_coverage, py
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
-ORIGIN = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
+ORIGIN = "7117ca872198c412ff664f0b32d715aaac3bd3ab"
 SCHEMA = "interface-computation-debt/2"
-ROLE_ORIGIN = None  # Pinned to the reviewed role-assignment commit before publication.
+ROLE_ORIGIN = "7117ca872198c412ff664f0b32d715aaac3bd3ab"  # Reviewed initial roles, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")

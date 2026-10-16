@@ -64,7 +64,7 @@ calculations: an entry is an exact legacy footprint, not an assertion that every
 length check is a network fact. This does not prove arbitrary program semantics
 or eliminate the independent review requirement.
 
-Version 2's source ceiling is foundation main `5f1e067c`. This explicitly widens
+Version 2's source/role ceiling is initial assignment `7117ca872198c412ff664f0b32d715aaac3bd3ab` (foundation main `5f1e067c` plus this PR's guard, role metadata and build-equality gate). This explicitly widens
 the proposed v1 footprint and changes lexical identities; its before/after counts
 must be disclosed with the hosted admission evidence. This permission applies
 only to the still-unmerged PR-0 proposal, not future feature exemptions.
@@ -355,7 +355,7 @@ Mixed modules remain interface and their detections remain visible debt:
 
 | Mixed module | Pending extraction owner / named follow-up |
 |---|---|
-| `cisco_toolkit/html.py`, `cisco_toolkit/excel.py` | RC8-P1-H PR-3: move fact helpers to engine owners; keep rendering interface |
+| `cisco_toolkit/html.py`, `cisco_toolkit/excel.py`, `cisco_toolkit/deck.py` | RC8-P1-H PR-3: move fact helpers to engine owners; keep rendering interface |
 | `COLLECT_PARSE_V3_23_0.py` | RC8-P1-H follow-up `CLI fact assembly extraction`: separate fact assembly from collection/report orchestration |
 | `webapp/backend/engine.py` | RC8-P1-H follow-up `AssessHub engine adapter extraction`: move fact/view ownership out of the renderer adapter |
 | `cisco_toolkit/attestation.py` | RC8-P1-H follow-up `Attestation registry input extraction`: remove the dynamic CLI import used to derive command claims |
@@ -391,3 +391,17 @@ terminal rule; compiled third-party identities never enter the shrink-only
 register. Negative controls cover uncovered bundles/entries, gate removal or
 conditional execution, complete inventory/byte mismatches, and inline computation
 in a compiled entry. Fresh hosted captures and final-head gates remain required.
+
+
+The initial role metadata, detector boundary and compiled-byte gate are frozen in
+`7117ca872198c412ff664f0b32d715aaac3bd3ab`. `ORIGIN` and `ROLE_ORIGIN` pin that reviewed
+source for the initial v2 ceiling. The old foundation source predates role
+metadata, so using it directly would mistake newly authored CI computations for
+legacy product debt or infer future roles. This initial ceiling changes no
+engine-owned values or golden/sample bytes. After admission every active v2
+ancestor still constrains the register, with all merge parents retained.
+
+The source-bound build also refuses tracked modifications outside the generated
+SPA and nonignored untracked repository inputs, so an out-of-project imported
+helper cannot evade the before/after source binding. Its refusal controls run in
+the early matrix step alongside the detector controls, before census admission.

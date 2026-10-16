@@ -113,6 +113,13 @@ def main() -> None:
         return subprocess.check_output(["git", *tokens], cwd=root).decode().strip()
 
     def source_inputs() -> dict[str, object]:
+        # Imports can reach helpers outside the frontend directory. Bind their
+        # tracked source too, without executing a second dependency resolver.
+        subprocess.check_output(["git", "diff", "--exit-code", "--quiet", "HEAD", "--", ".",
+                                 ":(exclude)webapp/frontend/dist"], cwd=root)
+        extras = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root).decode().split("\0")
+        if any(path and not path.startswith("webapp/frontend/dist/") for path in extras):
+            raise ValueError("Untracked repository input can change the frontend source closure")
         paths = subprocess.check_output(
             ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD", "--",
              "webapp/frontend", *PROCESSING_INPUTS], cwd=root,

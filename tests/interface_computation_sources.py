@@ -66,7 +66,8 @@ def python_closure(names, read, role_read=None):
                 raise ValueError("Registered writer module requires a static source owner")
             if keyword.value.value:
                 owners = module_paths(keyword.value.value)
-                if not owners:
+                stem = keyword.value.value.replace(".", "/")
+                if stem + ".py" not in files and stem + "/__init__.py" not in files:
                     raise ValueError("Registered report writer source is absent: " + keyword.value.value)
                 seeds.update(owners)
                 writers.update(path for path in owners if not path.endswith("/__init__.py"))

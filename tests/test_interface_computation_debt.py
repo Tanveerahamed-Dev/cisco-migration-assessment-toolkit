@@ -755,3 +755,13 @@ def test_compiled_entry_inline_code_stays_scanned_but_covered_bundles_do_not(par
     assert "webapp/frontend/dist/assets/app.js" not in selected
     assert "webapp/frontend/dist/index.html" in selected
     refuse_unregistered(selected, "count")
+
+
+
+def test_a_package_initializer_cannot_substitute_for_an_absent_registered_writer():
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"\nArtifactSpec(writer_module="cisco_toolkit.absent")',
+        "cisco_toolkit/__init__.py": '__atlas_role__ = "engine"',
+    }
+    with pytest.raises(ValueError, match="writer source is absent"):
+        python_closure(sources, sources.__getitem__)

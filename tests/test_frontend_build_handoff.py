@@ -51,6 +51,10 @@ def build(tmp_path, monkeypatch):
         if command[0] == "npm":
             return b"11.16.0\n"
         assert command[0] == "git"
+        if command[1] == "diff":
+            return b""
+        if command[1] == "ls-files" and "--others" in command and "webapp/frontend" not in command:
+            return b""
         if command[1] == "rev-parse":
             return ("a" * 40 if command[2] == "HEAD" else "b" * 40).encode()
         if command[1] == "ls-tree" and "--name-only" not in command:
@@ -342,3 +346,30 @@ def test_checked_in_dist_gate_refuses_changed_missing_extra_or_unbound_bytes(bui
         (build.target / "dist/assets/app.js").write_bytes(b"different captured bundle")
     with pytest.raises(ValueError, match="compiled (inventory|bytes)"):
         build.run("verify-committed")
+
+
+
+def test_build_binding_refuses_a_changed_helper_outside_the_frontend_directory(build, monkeypatch):
+    original = handoff.subprocess.check_output
+
+    def changed(command, **kwargs):
+        if command[0:2] == ["git", "diff"]:
+            raise handoff.subprocess.CalledProcessError(1, command)
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(handoff.subprocess, "check_output", changed)
+    with pytest.raises(handoff.subprocess.CalledProcessError):
+        build.run("before")
+
+
+def test_build_binding_refuses_an_untracked_out_of_project_helper(build, monkeypatch):
+    original = handoff.subprocess.check_output
+
+    def changed(command, **kwargs):
+        if command[0:2] == ["git", "ls-files"] and "--others" in command and "webapp/frontend" not in command:
+            return b"shared/metrics.ts\0"
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(handoff.subprocess, "check_output", changed)
+    with pytest.raises(ValueError, match="Untracked repository input"):
+        build.run("before")
