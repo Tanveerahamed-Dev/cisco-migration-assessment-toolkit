@@ -672,3 +672,17 @@ qualification state or frozen/golden/sample byte is changed. Main #666 is
 preserved and its board restored. Fresh exact-head all-15, CodeQL and applicable
 complete workflows, then same-reviewer re-review, remain mandatory. No PR merge
 or release is authorized by these observations.
+
+
+Admission head `2090a81e`, compiler/reference run `38986647728`, job
+`117259695658`, passes the Python compiler/governance test stage, then the exact
+tracked-tree compile refuses `.atlas-role` because the format is not yet in its
+strict text/language vocabulary (root CLI companion and extension errors).
+The correction registers only this JSON metadata extension and its deterministic
+`application/json` media type. It is structured data, never executable source;
+all paths still require architecture ownership, source/Git binding, privacy,
+and the full module-role schema/cardinality/orphan checks. Unrelated unknown
+extensions continue to refuse. A real mini-repository compiler control checks
+both the module and declaration records end-to-end. No census-depth deferral,
+privacy bypass, gate, budget or timeout change is introduced. Downstream
+capacity walls from the failed compile remain unmeasured, not accepted.
