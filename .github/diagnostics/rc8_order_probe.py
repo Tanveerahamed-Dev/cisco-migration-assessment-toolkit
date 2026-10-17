@@ -127,7 +127,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected"), required=True)
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     args = parser.parse_args()
@@ -165,7 +165,7 @@ def main() -> int:
         if collect:
             command.append("--collect-only")
         command.extend(paths)
-        if args.mode == "direct":
+        if args.mode in ("direct", "collected"):
             # Parent-only observations: no observer enters the timed process.
             # Names/PIDs only; never capture command arguments or environment secrets.
             (case / "processes-before.txt").write_text(subprocess.check_output(
@@ -186,7 +186,7 @@ def main() -> int:
                     child.kill()
                     child.wait()
                 code = 124
-        if args.mode == "direct":
+        if args.mode in ("direct", "collected"):
             (case / "processes-after.txt").write_text(subprocess.check_output(
                 ["ps", "-eo", "pid,ppid,etimes,comm"], text=True), encoding="utf-8")
         text = (case / "pytest.log").read_text(encoding="utf-8", errors="replace")
@@ -215,7 +215,8 @@ def main() -> int:
             "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")}
         if plain:
             result["observation_scope"] = (
-                ("Uninstrumented explicit module selection in one pytest process. " if args.mode == "direct" else
+                ("Default collection with disclosed built-in whole-file execution deselections. " if args.mode == "collected" else
+                 "Uninstrumented explicit module selection in one pytest process. " if args.mode == "direct" else
                  "Uninstrumented pytest with disclosed built-in collection exclusions. " if paths else
                  "Uninstrumented full default suite. ")
                 + "No injected plugin or PYTHONPATH; "
@@ -267,7 +268,7 @@ def main() -> int:
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode in ("plain", "minimal", "builtin", "direct"):
+    if args.mode in ("plain", "minimal", "builtin", "direct", "collected"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -279,17 +280,42 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        if args.mode == "direct":
+        if args.mode in ("direct", "collected"):
             selected = [] if args.test_module == "control" else [args.test_module]
             budget_module = TARGET.split("::", 1)[0]
             paths = [*selected, budget_module]
-            (output / "direct-case.json").write_text(json.dumps({
+            plan = {
                 "source": actual, "tree": provenance["tree"], "case_module": args.test_module,
-                "ordered_modules": paths, "same_pytest_process": True,
+                "planned_execution_modules": paths, "same_pytest_process": True,
+                "selection_mode": args.mode,
                 "limits": "A slow case is a candidate; require the control and source-state evidence before attribution.",
                 "process_observation_limit": "Before/after pytest only, not an in-process module-boundary observation.",
-            }, indent=2), encoding="utf-8")
-            run("direct-module-then-budget", plain=True, paths=paths)
+            }
+            if args.mode == "collected":
+                order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
+                if actual != order["source"] or provenance["tree"] != order["tree"] or order["target"] != TARGET:
+                    raise RuntimeError("default-collection navigation is not bound to this exact subject")
+                if any(name not in order["prefix_modules"] for name in selected):
+                    raise RuntimeError("selected module is not before the complete budget module in the order receipt")
+                tracked = subprocess.check_output(
+                    ["git", "ls-files", "--", "tests", "webapp/tests"], cwd=subject, text=True).splitlines()
+                modules = [name for name in tracked if Path(name).name.startswith("test_") and name.endswith(".py")]
+                if not set(paths) <= set(modules):
+                    raise RuntimeError("requested execution module is not tracked under the default test paths")
+                deselected = [name for name in modules if name not in paths]
+                plan.update({
+                    "deselected_execution_modules": deselected,
+                    "expected_collection_count": order["collection_count"],
+                    "order_receipt_artifact": order["order_receipt_artifact"],
+                    "collection_limit": "Default collection runs before built-in deselection. Deselected items may be released; no per-node collection observer is injected. Reconcile raw selected/deselected counts.",
+                })
+                # No explicit collection paths, ignores or injected hook: retain
+                # pytest.ini's complete default collection. The :: suffix makes
+                # each built-in node-prefix deselection an exact whole file.
+                paths = ["--deselect=" + name + "::" for name in deselected]
+            (output / "direct-case.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            label = "default-collected-module-then-budget" if args.mode == "collected" else "direct-module-then-budget"
+            run(label, plain=True, paths=paths)
         elif args.mode == "builtin":
             order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
             if actual != order["source"] or provenance["tree"] != order["tree"] or order["target"] != TARGET:
