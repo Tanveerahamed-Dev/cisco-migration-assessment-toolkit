@@ -88,14 +88,16 @@ def dynamic_imports(path, tree, allowances=DYNAMIC_IMPORT_ALLOWANCES):
         if isinstance(node, ast.Name):
             return set(bindings.get(node.id, (node.id,)))
         if isinstance(node, ast.Attribute):
-            return {base + "." + node.attr for base in qualified(node.value)}
+            # A factory/subscript receiver may be opaque while the import or
+            # loader method is explicit. Never erase that known operation.
+            return {base + "." + node.attr for base in qualified(node.value)} or {node.attr}
         if isinstance(node, ast.BoolOp):
             return {name for value in node.values for name in qualified(value)}
         if isinstance(node, ast.Subscript):
             return {base + ".<dynamic>" for base in qualified(node.value)}
         if isinstance(node, ast.Call) and qualified(node.func) & {"getattr", "builtins.getattr"} and node.args:
             attribute = node.args[1].value if len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str) else "<dynamic>"
-            return {base + "." + attribute for base in qualified(node.args[0])}
+            return {base + "." + attribute for base in qualified(node.args[0])} or {attribute}
         if isinstance(node, ast.Call) and qualified(node.func) & {"vars", "builtins.vars"} and len(node.args) == 1:
             return {base + ".<dynamic>" for base in qualified(node.args[0])}
         return set()

@@ -925,3 +925,15 @@ boundary and the exact negative controls rather than infer product remediation
 from the smaller count. No `cisco_toolkit/`, `webapp/backend/` or CLI-orchestrator
 row was removed by this admission. Exact sampled row identities are included in
 the completion comment; the full deletions remain in the Git diff.
+
+### Opaque loader receivers remain recognized operations
+
+Static follow-up inspection found an additional shape of the same P1-1 class:
+`make_loader().exec_module(module)` could lose the known loader method because
+its receiver had no statically qualified name. Discovery now retains the named
+import/loader operation even when a factory or subscript receiver is opaque.
+Literal `getattr` and named aliases retain that operation too. These forms must
+refuse outside an exact allowance; no unresolved receiver becomes no dependency.
+Both roles have factory, subscript and literal-getattr refusal controls, with
+additional alias controls. This changes no allowance target, role, application
+source, fact-register entry, budget or timeout. Hosted validation remains required.
