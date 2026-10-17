@@ -1,4 +1,5 @@
-"""The ONE owner of the full-gate test-file partition (portable-release.yml `gate_shard` / `gate`).
+"""The ONE owner of the full-gate test-file partition and of the evidence every shard writes
+(portable-release.yml `gate_shard` / `gate`).
 
 The required check "Full source and frontend gate (unprivileged runner)" used to run the whole
 Windows Python suite (~107 minutes) and then the frontend gate in ONE job under a 120-minute limit,
@@ -7,12 +8,24 @@ its share through the root conftest.py options this module implements:
 
 * ``--atlas-shard I/N`` keeps the items whose TEST FILE maps to shard I of N and deselects the rest
   (through ``pytest_deselected``, so the terminal summary still reports them);
-* ``--atlas-shard-manifest PATH`` writes the final selected node ids to a NEW file, sorted, one per
-  line, UTF-8 and LF only.
+* ``--atlas-shard-manifest PATH`` writes the final SELECTED node ids to a NEW file;
+* ``--atlas-shard-executed PATH`` writes, when the session finishes, the node ids that COMPLETED
+  WITHOUT FAILURE (:func:`completed_without_failure`, over every test report pytest logged) to a NEW
+  file;
+* ``--atlas-shard-environment PATH`` writes, before any test can run, the interpreter and every
+  installed distribution (:func:`environment_rows`) to a NEW file.
 
-The required `gate` job then collects the whole suite once with ``--atlas-shard-manifest`` and
-``.github/scripts/verify_shard_union.py`` refuses unless the shard manifests are non-empty, pairwise
-disjoint and together exactly that full collection -- so a shard can never silently drop a file.
+Every one of those files is a manifest (:func:`manifest_text`): rows sorted, one per line, UTF-8 and
+LF only.
+
+A selection is not evidence that anything ran: a ``--collect-only`` or ``--setup-plan`` run, a run cut
+short, and a failure whose exit status a step swallowed all still write the same selection. The
+executed manifest is that evidence, and it is read from the reports themselves, so it holds whatever
+the step's exit-code plumbing does. The required `gate` job collects the whole suite once with
+``--atlas-shard-manifest`` and ``--atlas-shard-environment``, and ``.github/scripts/verify_shard_union.py``
+refuses unless the shards' selections are an exact disjoint cover of that collection, each shard's
+executed manifest is exactly its selection, and every shard recorded the full collection's
+environment.
 
 The partition key is the test FILE (the node id before ``::``, the rootdir-relative path pytest
 already spells with ``/``), never the item: every item of a file lands in one shard, so a module- or
@@ -21,21 +34,30 @@ class-scoped fixture is still built once and in-file order is unchanged. A file'
 (``hash()`` is salted per process by PYTHONHASHSEED) and independent of collection order.
 
 Not a test module: the root conftest.py puts tests/ on sys.path and imports this by name, and only
-when one of the two options is given, so a run without them never loads it. It lives under tests/
+when one of the options is given, so a run without them never loads it. It lives under tests/
 rather than tools/ so that it stays outside the byte-custody LF policy domains, whose tracked-path
 receipts (tests/fixtures/atlas-r2-byte-custody-policy.v1.json) would otherwise move with it -- the
-same reason tests/client_artifact_census.py gives for itself.
+same reason tests/client_artifact_census.py gives for itself. Standard library only.
 """
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import os
 import re
-from typing import Any, Callable, Iterable, List, Sequence, Tuple, TypeVar
+import sys
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 #: ``I/N`` in plain ASCII decimal, no sign, no padding, no blanks: ``\d`` would also admit non-ASCII
 #: digits that ``int()`` silently accepts, and ``$`` would admit a trailing line feed.
 _SPEC = re.compile(r"(0|[1-9][0-9]*)/([1-9][0-9]*)", re.ASCII)
+
+#: The report outcomes that are not a failure. pytest itself reports "passed", "failed" or "skipped";
+#: any other outcome (a rerun plugin's "rerun") is not known to be a success, so it counts as failure.
+_NOT_FAILED = frozenset({"passed", "skipped"})
+
+#: How an environment row spells a name or version a distribution's metadata does not give.
+_UNKNOWN = "?"
 
 _Item = TypeVar("_Item")
 
@@ -95,29 +117,104 @@ def select(items: Sequence[_Item], index: int, total: int,
     return kept, dropped
 
 
-def manifest_text(nodeids: Iterable[str]) -> str:
-    """The manifest bytes' text: every node id, sorted, each followed by one LF (empty when none)."""
-    rows = list(nodeids)
-    for row in rows:
+def completed_without_failure(facts: Iterable[Tuple[str, str, str]]) -> List[str]:
+    """The sorted node ids that completed without failure, from ``(nodeid, when, outcome)`` facts: one
+    per test report pytest logged (``pytest_runtest_logreport``), in any order.
+
+    A node id completed without failure iff
+
+    (i) it has a teardown report -- pytest reports a test's teardown last, so a run cut short (``-x``,
+        an interrupt, a crash) leaves the tests it never finished out;
+    (ii) none of its reports has an outcome other than "passed" or "skipped": "failed" (a failed setup,
+        call or teardown, a strict xpass -- a failed call -- or a failed subtest, which pytest 9 logs
+        through the same hook under its test's node id) and any outcome pytest does not define both
+        disqualify it; and
+    (iii) it has a call report that passed, or a setup or call report that skipped (a skip marker or
+        ``pytest.skip``; an xfail, which pytest reports as a skipped call) -- so a run that never calls
+        the test (``--setup-plan``, ``--setup-only``) leaves it out, as ``--collect-only``, which logs
+        no report at all, does.
+    """
+    torn_down, failed, ran = set(), set(), set()
+    for nodeid, when, outcome in facts:
+        if outcome not in _NOT_FAILED:
+            failed.add(nodeid)
+        if when == "teardown":
+            torn_down.add(nodeid)
+        if (when == "call" and outcome == "passed") or (when in ("setup", "call") and outcome == "skipped"):
+            ran.add(nodeid)
+    return sorted((torn_down & ran) - failed)
+
+
+def python_row(implementation: str, version_info: Sequence[Any]) -> str:
+    """The interpreter's environment row: ``python <implementation> <major>.<minor>.<micro>
+    <releaselevel>``."""
+    major, minor, micro, releaselevel = tuple(version_info)[:4]
+    return f"python {implementation} {major}.{minor}.{micro} {releaselevel}"
+
+
+def normalized_name(name: str) -> str:
+    """A distribution name as PEP 503 normalizes it: each run of ``-``, ``_`` and ``.`` becomes one
+    ``-``, and every letter is lower case."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def installed_distributions() -> List[Tuple[Optional[str], Optional[str]]]:
+    """``(Name, Version)`` of every distribution ``importlib.metadata`` finds on ``sys.path``, in its
+    own order and with every duplicate; a field the metadata lacks is None."""
+    found: List[Tuple[Optional[str], Optional[str]]] = []
+    for distribution in importlib.metadata.distributions():
+        metadata = distribution.metadata
+        # `.get`, never `[...]`: a missing field is a DeprecationWarning on 3.12 and a KeyError later.
+        get = getattr(metadata, "get", None)
+        found.append((get("Name") if get else None, get("Version") if get else None))
+    return found
+
+
+def environment_rows(distributions: Optional[Iterable[Tuple[Optional[str], Optional[str]]]] = None,
+                     implementation: Optional[str] = None,
+                     version_info: Optional[Sequence[Any]] = None) -> List[str]:
+    """The environment evidence: the interpreter's row (:func:`python_row`) and one
+    ``<PEP 503 normalized name>==<version>`` row per distribution (:func:`installed_distributions`),
+    every duplicate kept -- a second copy of a distribution on sys.path is a fact about the
+    environment too -- and a missing field spelled ``?``; sorted, as :func:`manifest_text` writes
+    them. Each argument defaults to this process's own value."""
+    if distributions is None:
+        distributions = installed_distributions()
+    rows = [python_row(sys.implementation.name if implementation is None else implementation,
+                       sys.version_info if version_info is None else version_info)]
+    for name, version in distributions:
+        rows.append(f"{_UNKNOWN if name is None else normalized_name(str(name))}=="
+                    f"{_UNKNOWN if version is None else version}")
+    return sorted(_one_line_rows(rows))
+
+
+def _one_line_rows(rows: Iterable[str]) -> List[str]:
+    checked = list(rows)
+    for row in checked:
         if not isinstance(row, str) or not row or "\n" in row or "\r" in row:
-            raise ShardOptionError(f"a node id cannot be written as one manifest row: {row!r}")
-    return "".join(row + "\n" for row in sorted(rows))
+            raise ShardOptionError(f"cannot be written as one manifest row: {row!r}")
+    return checked
 
 
-def check_manifest_target(path: str) -> None:
-    """Refuse a manifest path that already exists or whose directory does not: a manifest is written
-    exactly once by the run that collected it, never over a stale file from another run."""
+def manifest_text(rows: Iterable[str]) -> str:
+    """The manifest bytes' text: every row, sorted, each followed by one LF (empty when none)."""
+    return "".join(row + "\n" for row in sorted(_one_line_rows(rows)))
+
+
+def check_manifest_target(path: str, option: str = "--atlas-shard-manifest") -> None:
+    """Refuse an evidence path that already exists or whose directory does not: every evidence file is
+    written exactly once by the run that produced it, never over a stale file from another run."""
     if not isinstance(path, str) or not path:
-        raise ShardOptionError(f"--atlas-shard-manifest needs a file path, got {path!r}")
+        raise ShardOptionError(f"{option} needs a file path, got {path!r}")
     if os.path.lexists(path):
-        raise ShardOptionError(f"--atlas-shard-manifest {path!r} already exists; it is written once")
+        raise ShardOptionError(f"{option} {path!r} already exists; it is written once")
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
-        raise ShardOptionError(f"--atlas-shard-manifest {path!r}: directory {parent!r} does not exist")
+        raise ShardOptionError(f"{option} {path!r}: directory {parent!r} does not exist")
 
 
-def write_manifest(path: str, nodeids: Iterable[str]) -> None:
-    """Write the manifest to a NEW file (exclusive create: an existing file is an error, not input)."""
-    text = manifest_text(nodeids)
+def write_manifest(path: str, rows: Iterable[str]) -> None:
+    """Write a manifest to a NEW file (exclusive create: an existing file is an error, not input)."""
+    text = manifest_text(rows)
     with open(path, "x", encoding="utf-8", newline="\n") as handle:
         handle.write(text)

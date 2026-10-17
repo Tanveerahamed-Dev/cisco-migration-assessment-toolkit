@@ -1,12 +1,16 @@
-"""The full gate's shard partition (tests/atlas_shard_partition.py) and the root conftest.py hooks that
-apply it (`--atlas-shard I/N`, `--atlas-shard-manifest PATH`).
+"""The full gate's shard partition and evidence (tests/atlas_shard_partition.py) and the root
+conftest.py hooks that apply them (`--atlas-shard I/N`, `--atlas-shard-manifest PATH`,
+`--atlas-shard-executed PATH`, `--atlas-shard-environment PATH`).
 
 The portable-release.yml `gate_shard` jobs each run one shard of the complete suite and the required
-`gate` job proves their manifests are an exact disjoint cover of one full collection
-(.github/scripts/verify_shard_union.py, tests/test_verify_shard_union.py). Here: the spec grammar,
-the partition's determinism, totality and disjointness, the manifest bytes, the hooks' strict no-op
-without options, their refusals, and -- end to end, in real pytest subprocesses -- that two shards
-and a full collection produce manifests the real verifier accepts and a dropped row it refuses.
+`gate` job proves, from their evidence, that the shards selected an exact disjoint cover of one full
+collection, that each executed its whole selection without failure, and that all ran in that
+collection's environment (.github/scripts/verify_shard_union.py, tests/test_verify_shard_union.py).
+Here: the spec grammar, the partition's determinism, totality and disjointness, the manifest bytes,
+the classification of test reports, the environment rows, the hooks' strict no-op without options,
+their refusals, and -- end to end, in real pytest subprocesses -- that real shards and a real full
+collection produce evidence the real verifier accepts, and that a failing test, a ``--collect-only``
+or ``--setup-plan`` shard and a dropped row are refused, including in the gate's own invocation shape.
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,16 +34,18 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / ".github" / "scripts" / "verify_shard_union.py"
 
 
-def _root_conftest():
-    """The root conftest.py as its own module object (pytest registers it under a reused name)."""
-    spec = importlib.util.spec_from_file_location("_atlas_root_conftest_under_test", ROOT / "conftest.py")
+def _load(name: str, path: Path):
+    """A source file as its own module object (pytest registers the root conftest under a reused name)."""
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-ROOT_CONFTEST = _root_conftest()
+ROOT_CONFTEST = _load("_atlas_root_conftest_under_test", ROOT / "conftest.py")
+#: The verifier owns the evidence layout (its file names), so the end-to-end runs below read it there.
+UNION = _load("_atlas_shard_union_under_test", VERIFIER)
 
 
 # -- the spec ---------------------------------------------------------------------------------------
@@ -171,15 +178,102 @@ def test_a_manifest_is_written_once_never_over_an_existing_file(tmp_path):
         shard.check_manifest_target("")
 
 
+@pytest.mark.parametrize("option", ["--atlas-shard-manifest", "--atlas-shard-executed",
+                                    "--atlas-shard-environment"])
+def test_every_evidence_target_is_checked_and_named_by_its_option(tmp_path, option):
+    existing = tmp_path / "existing.txt"
+    existing.write_bytes(b"")
+    with pytest.raises(shard.ShardOptionError, match=f"^{option} .*already exists"):
+        shard.check_manifest_target(str(existing), option)
+    with pytest.raises(shard.ShardOptionError, match=f"^{option} .*does not exist"):
+        shard.check_manifest_target(str(tmp_path / "absent" / "x.txt"), option)
+    shard.check_manifest_target(str(tmp_path / "new.txt"), option)  # a new file in a real directory
+
+
+# -- which tests completed without failure ----------------------------------------------------------
+
+_NODE = "tests/test_a.py::test_x"
+
+
+@pytest.mark.parametrize("phases,completed", [
+    (("setup:passed", "call:passed", "teardown:passed"), True),
+    (("setup:passed", "call:failed", "teardown:passed"), False),
+    # pytest reports a strict xpass as a failed call (_pytest/skipping.py), a plain xpass as a passed one
+    (("setup:passed", "call:failed", "teardown:passed"), False),
+    (("setup:passed", "call:passed", "teardown:passed"), True),
+    (("setup:failed", "teardown:passed"), False),
+    (("setup:passed", "call:passed", "teardown:failed"), False),
+    (("setup:skipped", "teardown:passed"), True),
+    # an xfail is a skipped call
+    (("setup:passed", "call:skipped", "teardown:passed"), True),
+    (("setup:passed", "call:passed"), False),
+    (("setup:passed", "teardown:passed"), False),
+    (("teardown:passed",), False),
+    # a failed subtest is one more call report under the test's own node id
+    (("setup:passed", "call:failed", "call:passed", "teardown:passed"), False),
+    (("setup:passed", "call:rerun", "setup:passed", "call:passed", "teardown:passed"), False),
+    # the order reports arrive in does not matter
+    (("teardown:passed", "call:passed", "setup:passed"), True),
+], ids=["passed", "failed-call", "strict-xpass", "xpass", "setup-error", "teardown-error", "skip-at-setup",
+        "xfail", "no-teardown", "never-called", "teardown-only", "failed-subtest", "rerun-outcome",
+        "any-order"])
+def test_a_test_completed_without_failure_only_when_every_report_says_so(phases, completed):
+    facts = [(_NODE, *phase.split(":")) for phase in phases]
+    assert shard.completed_without_failure(facts) == ([_NODE] if completed else [])
+
+
+def test_no_reports_complete_nothing_and_each_node_id_is_judged_alone():
+    assert shard.completed_without_failure([]) == []
+    facts = [("tests/test_b.py::ok", "setup", "passed"), ("tests/test_a.py::bad", "setup", "passed"),
+             ("tests/test_a.py::ok", "setup", "skipped"), ("tests/test_b.py::ok", "call", "passed"),
+             ("tests/test_a.py::bad", "call", "failed"), ("tests/test_a.py::ok", "teardown", "passed"),
+             ("tests/test_b.py::ok", "teardown", "passed"), ("tests/test_a.py::bad", "teardown", "passed")]
+    assert shard.completed_without_failure(facts) == ["tests/test_a.py::ok", "tests/test_b.py::ok"]
+    assert shard.completed_without_failure(reversed(facts)) == ["tests/test_a.py::ok", "tests/test_b.py::ok"]
+
+
+# -- the environment --------------------------------------------------------------------------------
+
+def test_the_environment_is_the_interpreter_and_every_distribution_normalized_and_sorted():
+    rows = shard.environment_rows(
+        [("Zope.Interface", "7.2"), ("Foo_Bar.baz", "1.0"), ("foo--bar__baz", "1.0"), ("PyYAML", "6.0.3"),
+         (None, None)],
+        implementation="cpython", version_info=(3, 12, 10, "final", 0))
+    assert rows == ["?==?", "foo-bar-baz==1.0", "foo-bar-baz==1.0", "python cpython 3.12.10 final",
+                    "pyyaml==6.0.3", "zope-interface==7.2"]
+    assert shard.manifest_text(rows) == "".join(row + "\n" for row in rows)  # already in manifest order
+    assert shard.normalized_name("A--B__C..D-_.e") == "a-b-c-d-e"
+
+
+def test_this_processs_environment_has_exactly_one_interpreter_row():
+    rows = shard.environment_rows()
+    assert rows == sorted(rows)
+    assert [row for row in rows if row.startswith("python ")] == [
+        shard.python_row(sys.implementation.name, sys.version_info)]
+    assert all("==" in row for row in rows if not row.startswith("python "))
+    assert "pytest==" + pytest.__version__ in rows  # the scan is live: it sees the running pytest
+
+
+@pytest.mark.parametrize("distribution", [("bad\nname", "1.0"), ("good", "1.0\r"), ("good", "1.0\n2")])
+def test_an_environment_row_that_is_not_one_line_is_refused(distribution):
+    with pytest.raises(shard.ShardOptionError):
+        shard.environment_rows([distribution], implementation="cpython", version_info=(3, 12, 10, "final"))
+
+
 # -- the root conftest.py hooks, in process ---------------------------------------------------------
 
 class _Config:
-    """The few config members the hooks read, with the deselection hook recorded."""
+    """The few config members the hooks read, with the deselection hook and registrations recorded."""
 
-    def __init__(self, spec=None, manifest=None, dist="no", worker=False):
-        self.option = SimpleNamespace(atlas_shard=spec, atlas_shard_manifest=manifest, dist=dist)
+    def __init__(self, spec=None, manifest=None, executed=None, environment=None, dist="no", worker=False):
+        self.option = SimpleNamespace(atlas_shard=spec, atlas_shard_manifest=manifest,
+                                      atlas_shard_executed=executed, atlas_shard_environment=environment,
+                                      dist=dist)
         self.deselected: list = []
+        self.registered: list = []
         self.hook = SimpleNamespace(pytest_deselected=lambda items: self.deselected.extend(items))
+        self.pluginmanager = SimpleNamespace(
+            register=lambda plugin, name=None: self.registered.append((name, plugin)))
         if worker:
             self.workerinput = {"workerid": "gw0"}
 
@@ -191,14 +285,15 @@ def _items():
     return [SimpleNamespace(nodeid=f"tests/test_{name}.py::case[{case}]") for name in "abcdefgh" for case in (1, 2)]
 
 
-def test_without_either_option_the_hooks_change_nothing():
-    """Even under xdist (the Stop hook's `-n auto`): without the options nothing is refused either."""
+def test_without_any_option_the_hooks_change_nothing():
+    """Even under xdist (the Stop hook's `-n auto`): without the options nothing is refused, and no
+    recorder is registered either."""
     for config in (_Config(), _Config(dist="loadfile"), _Config(worker=True)):
         items = _items()
         before, alias = list(items), items
         assert ROOT_CONFTEST.pytest_configure(config) is None
         assert ROOT_CONFTEST.pytest_collection_modifyitems(None, config, items) is None
-        assert items is alias and items == before and config.deselected == []
+        assert items is alias and items == before and config.deselected == [] and config.registered == []
 
 
 def test_a_shard_keeps_its_files_deselects_the_rest_and_records_what_remains(tmp_path):
@@ -212,6 +307,7 @@ def test_a_shard_keeps_its_files_deselects_the_rest_and_records_what_remains(tmp
         assert items == [item for item in everything if shard.shard_of(shard.file_key(item.nodeid), 2) == index]
         assert config.deselected == [item for item in everything if item not in items]
         assert manifest.read_text(encoding="utf-8") == shard.manifest_text(item.nodeid for item in items)
+        assert config.registered == []  # no executed manifest was asked for
         seen.append({item.nodeid for item in items})
     assert seen[0] and seen[1] and not seen[0] & seen[1]
     assert seen[0] | seen[1] == {item.nodeid for item in _items()}
@@ -226,25 +322,84 @@ def test_a_manifest_alone_records_the_full_collection(tmp_path):
     assert manifest.read_text(encoding="utf-8") == shard.manifest_text(item.nodeid for item in _items())
 
 
+def test_the_environment_is_written_at_configure_before_any_test(tmp_path):
+    target = tmp_path / "environment.txt"
+    config = _Config(environment=str(target))
+    ROOT_CONFTEST.pytest_configure(config)
+    assert target.read_text(encoding="utf-8") == shard.manifest_text(shard.environment_rows())
+    assert config.registered == []
+
+
+def test_the_executed_recorder_writes_only_what_completed_without_failure(tmp_path):
+    target = tmp_path / "executed.txt"
+    config = _Config(spec="0/1", executed=str(target))
+    ROOT_CONFTEST.pytest_configure(config)
+    assert not target.exists()  # written when the session finishes, never before
+    [(name, recorder)] = config.registered
+    assert name == "atlas-shard-executed-recorder"
+    for nodeid, when, outcome in [("tests/test_a.py::ok", "setup", "passed"), ("tests/test_a.py::ok", "call", "passed"),
+                                  ("tests/test_a.py::bad", "setup", "passed"), ("tests/test_a.py::bad", "call", "failed"),
+                                  ("tests/test_a.py::bad", "teardown", "passed"),
+                                  ("tests/test_a.py::ok", "teardown", "passed"),
+                                  ("tests/test_a.py::cut", "setup", "passed")]:
+        recorder.pytest_runtest_logreport(SimpleNamespace(nodeid=nodeid, when=when, outcome=outcome))
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.TESTS_FAILED)
+    recorder.pytest_sessionfinish(session)
+    assert target.read_bytes() == b"tests/test_a.py::ok\n"
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED  # the recorder never changes a verdict it may keep
+
+
+def test_an_executed_manifest_that_cannot_be_written_fails_the_run(tmp_path, capsys):
+    target = tmp_path / "executed.txt"
+    config = _Config(executed=str(target))
+    ROOT_CONFTEST.pytest_configure(config)
+    [(_name, recorder)] = config.registered
+    target.write_bytes(b"stale\n")  # appeared after the configure-time check
+    session = SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    recorder.pytest_sessionfinish(session)
+    assert session.exitstatus == pytest.ExitCode.INTERNAL_ERROR
+    assert target.read_bytes() == b"stale\n"
+    assert "the executed manifest was not written" in capsys.readouterr().err
+
+
+def test_the_recorder_and_the_modifyitems_hook_run_after_normally_ordered_implementations():
+    """trylast: the selection is made after -k/-m deselection and fixture reordering, and a report is
+    recorded after the implementations that may amend it. A later-registered trylast implementation
+    or a wrapper still runs afterwards; that is what executed == selected in every shard catches."""
+    assert ROOT_CONFTEST.pytest_collection_modifyitems.pytest_impl["trylast"] is True
+    recorder = ROOT_CONFTEST._AtlasShardExecutedRecorder
+    assert recorder.pytest_runtest_logreport.pytest_impl["trylast"] is True
+    assert recorder.pytest_sessionfinish.pytest_impl["trylast"] is True
+
+
 @pytest.mark.parametrize("config", [
     _Config(spec="2/2"), _Config(spec="0/2 "), _Config(spec="0/2", dist="load"),
     _Config(manifest="full.txt", dist="loadfile"), _Config(spec="0/2", worker=True),
-], ids=["index", "blank", "xdist", "xdist-manifest", "xdist-worker"])
+    _Config(executed="executed.txt", dist="load"), _Config(environment="environment.txt", worker=True),
+], ids=["index", "blank", "xdist", "xdist-manifest", "xdist-worker", "xdist-executed", "xdist-environment"])
 def test_the_hooks_refuse_before_collection(config):
     with pytest.raises(pytest.UsageError):
         ROOT_CONFTEST.pytest_configure(config)
+    assert config.registered == []
 
 
-def test_an_existing_manifest_is_refused_before_collection(tmp_path):
-    stale = tmp_path / "full.txt"
+@pytest.mark.parametrize("field", ["manifest", "executed", "environment"])
+def test_an_existing_or_unplaceable_evidence_file_is_refused_before_collection(tmp_path, field):
+    stale = tmp_path / "stale.txt"
     stale.write_bytes(b"")
     with pytest.raises(pytest.UsageError, match="already exists"):
-        ROOT_CONFTEST.pytest_configure(_Config(manifest=str(stale)))
+        ROOT_CONFTEST.pytest_configure(_Config(**{field: str(stale)}))
+    with pytest.raises(pytest.UsageError, match="does not exist"):
+        ROOT_CONFTEST.pytest_configure(_Config(**{field: str(tmp_path / "absent" / "x.txt")}))
 
 
-def test_the_modifyitems_hook_runs_last():
-    """It must see the item set every other plugin's modifyitems left (-k/-m, fixture reordering)."""
-    assert ROOT_CONFTEST.pytest_collection_modifyitems.pytest_impl["trylast"] is True
+def test_every_evidence_target_is_checked_before_any_evidence_is_written(tmp_path):
+    stale, environment = tmp_path / "stale.txt", tmp_path / "environment.txt"
+    stale.write_bytes(b"")
+    config = _Config(manifest=str(stale), executed=str(tmp_path / "executed.txt"), environment=str(environment))
+    with pytest.raises(pytest.UsageError, match="already exists"):
+        ROOT_CONFTEST.pytest_configure(config)
+    assert not environment.exists() and config.registered == []
 
 
 def test_every_value_option_the_root_conftest_adds_is_known_to_the_invocation_reader():
@@ -259,7 +414,8 @@ def test_every_value_option_the_root_conftest_adds_is_known_to_the_invocation_re
                            and isinstance(keyword.value, ast.Constant)), "store")
             if action in ("store", "append"):
                 taking_value.update(arg.value for arg in node.args if isinstance(arg, ast.Constant))
-    assert {"--atlas-shard", "--atlas-shard-manifest"} <= taking_value, taking_value  # the scan is live
+    assert {"--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed",
+            "--atlas-shard-environment"} <= taking_value, taking_value  # the scan is live
     assert taking_value <= PYTEST_VALUE_OPTIONS, sorted(taking_value - PYTEST_VALUE_OPTIONS)
 
 
@@ -275,6 +431,8 @@ pytest_addoption = _root.pytest_addoption
 pytest_configure = _root.pytest_configure
 pytest_collection_modifyitems = _root.pytest_collection_modifyitems
 """
+#: Every project test file: passing tests, a test that skips in its call and an expected failure,
+#: which pytest reports as a skipped call -- each of which completes without failure.
 _PROJECT_TEST = """\
 import pytest
 
@@ -286,72 +444,265 @@ def test_one():
 @pytest.mark.parametrize("value", [1, 2])
 def test_two(value):
     assert value
+
+
+def test_skipped_in_its_call():
+    pytest.skip("skips in the call")
+
+
+@pytest.mark.xfail(reason="an expected failure", strict=True)
+def test_expected_failure():
+    assert False
 """
+_PROJECT_CASES = ("test_one", "test_two[1]", "test_two[2]", "test_skipped_in_its_call", "test_expected_failure")
+#: The gate-shaped project adds a skip marker, which pytest reports as a skipped SETUP.
+_MARKER_SKIP_TEST = """\
 
 
-def _project(tmp_path: Path) -> tuple[Path, dict[str, int]]:
-    """A throwaway pytest project wired to the REAL root conftest hooks, with files in both shards.
-    Each file's shard is computed here from the spec's formula, independently of the helper."""
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    (project / "conftest.py").write_text(
-        _PROJECT_CONFTEST.format(conftest=str(ROOT / "conftest.py")), encoding="utf-8")
+@pytest.mark.skip(reason="a skip marker")
+def test_skipped_by_a_marker():
+    pass
+"""
+#: A file of tests that fail: a failed call and, where pytest has subtests (9+), a failed subtest.
+_FAILING_TEST = """\
+import pytest
+
+
+def test_fails():
+    assert False
+"""
+_FAILING_SUBTEST = """\
+
+
+def test_a_subtest_fails(subtests):
+    with subtests.test(msg="the failing subtest"):
+        assert False
+"""
+_HAS_SUBTESTS = hasattr(pytest, "Subtests")
+
+
+def _shard_files(directories: tuple[str, ...] = ("",)) -> dict[str, int]:
+    """Three test file paths in each of two shards (rootdir-relative, as node ids spell them), each
+    shard computed here from the spec's formula, independently of the helper. Every file name is
+    unique across the directories: pytest's default import mode refuses two test modules of one name."""
     owners: dict[str, int] = {}
     for number in range(64):
-        name = f"test_part_{number:02d}.py"
-        owner = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16) % 2
-        if sum(1 for value in owners.values() if value == owner) < 3:
-            owners[name] = owner
-            (project / name).write_text(_PROJECT_TEST, encoding="utf-8")
-        if len(owners) == 6:
-            break
+        for directory in directories:
+            path = f"{directory}/test_{directory}_{number:02d}.py" if directory else f"test_part_{number:02d}.py"
+            owner = int(hashlib.sha256(path.encode("utf-8")).hexdigest(), 16) % 2
+            if sum(1 for value in owners.values() if value == owner) < 3:
+                owners[path] = owner
     assert sorted(owners.values()) == [0, 0, 0, 1, 1, 1], owners
+    return owners
+
+
+def _project(tmp_path: Path, *, directories: tuple[str, ...] = ("",), content: str = _PROJECT_TEST,
+             ini: str = "[pytest]\n") -> tuple[Path, dict[str, int]]:
+    """A throwaway pytest project wired to the REAL root conftest hooks, with files in both shards."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pytest.ini").write_text(ini, encoding="utf-8")
+    (project / "conftest.py").write_text(
+        _PROJECT_CONFTEST.format(conftest=str(ROOT / "conftest.py")), encoding="utf-8")
+    owners = _shard_files(directories)
+    for path in owners:
+        (project / path).parent.mkdir(parents=True, exist_ok=True)
+        (project / path).write_text(content, encoding="utf-8")
     return project, owners
 
 
-def _pytest(project: Path, *arguments: str) -> subprocess.CompletedProcess:
-    # The outer run's own pytest controls (PYTEST_ADDOPTS, PYTEST_PLUGINS, an xdist worker's ids) stay out.
+def _expected(owners: dict[str, int], index: int | None = None, cases: tuple[str, ...] = _PROJECT_CASES) -> list[str]:
+    return sorted(f"{path}::{case}" for path, owner in owners.items() if index is None or owner == index
+                  for case in cases)
+
+
+def _environment(addopts: str | None = None) -> dict[str, str]:
+    # The outer run's own pytest controls (PYTEST_ADDOPTS, PYTEST_PLUGINS, an xdist worker's ids) stay
+    # out; a scenario that needs PYTEST_ADDOPTS sets its own, explicitly.
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTEST_")}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if addopts is not None:
+        env["PYTEST_ADDOPTS"] = addopts
+    return env
+
+
+def _pytest(project: Path, *arguments: str, addopts: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-c", str(project / "pytest.ini"), "--rootdir", str(project),
          "-p", "no:cacheprovider", "-q", *arguments, str(project)],
-        cwd=project, env=env, capture_output=True, text=True, timeout=300)
+        cwd=project, env=_environment(addopts), capture_output=True, text=True, timeout=300)
 
 
-def _expected(owners: dict[str, int], index: int | None = None) -> list[str]:
-    return sorted(f"{name}::{case}" for name, owner in owners.items() if index is None or owner == index
-                  for case in ("test_one", "test_two[1]", "test_two[2]"))
+def _pytest_as_the_gate_runs_it(project: Path, *arguments: str) -> subprocess.CompletedProcess:
+    """pytest in the gate's own invocation shape: from the project root with no ini, rootdir or path
+    argument, so pytest finds the ini itself and collects its `testpaths` (the real gate's
+    `tests webapp/tests`)."""
+    return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *arguments],
+                          cwd=project, env=_environment(), capture_output=True, text=True, timeout=300)
 
 
-def test_two_real_shards_and_a_full_collection_are_an_exact_cover_the_verifier_accepts(tmp_path):
-    project, owners = _project(tmp_path)
-    shards, full = tmp_path / "shards", tmp_path / "full.txt"
-    shards.mkdir()
+def _evidence(root: Path, index: int) -> SimpleNamespace:
+    """One shard's evidence files, laid out as the gate's download receives them: one directory per
+    shard artifact, named after the artifact."""
+    directory = root / f"atlas-gate-shard-evidence-{index}"
+    directory.mkdir(parents=True)
+    return SimpleNamespace(directory=directory, selected=directory / UNION.SELECTED,
+                           executed=directory / UNION.EXECUTED, environment=directory / UNION.ENVIRONMENT)
+
+
+def _shard_arguments(evidence: SimpleNamespace, index: int) -> tuple[str, ...]:
+    return ("--atlas-shard", f"{index}/2", "--atlas-shard-manifest", str(evidence.selected),
+            "--atlas-shard-executed", str(evidence.executed),
+            "--atlas-shard-environment", str(evidence.environment))
+
+
+def _full_arguments(base: Path) -> tuple[str, ...]:
+    return ("--collect-only", "--atlas-shard-manifest", str(base / "full-selected.txt"),
+            "--atlas-shard-environment", str(base / "full-environment.txt"))
+
+
+def _verify(base: Path, root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(VERIFIER), "--expected-shards", "2",
+                           "--full", str(base / "full-selected.txt"),
+                           "--environment", str(base / "full-environment.txt"), "--shard-dir", str(root)],
+                          capture_output=True, text=True, timeout=120)
+
+
+def _rows(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _counts(output: str, **expected: int) -> bool:
+    return all(re.search(rf"\b{count} {word}\b", output) for word, count in expected.items())
+
+
+@pytest.fixture(scope="module")
+def accepted(tmp_path_factory):
+    """One project, both real shards run with every evidence option and the full collection with its
+    environment: exactly the evidence the gate accepts. Read-only for the tests that use it."""
+    base = tmp_path_factory.mktemp("accepted")
+    project, owners = _project(base)
+    root = base / "evidence"
+    runs = []
     for index in range(2):
-        manifest = shards / f"shard-{index}.txt"
-        result = _pytest(project, "--atlas-shard", f"{index}/2", "--atlas-shard-manifest", str(manifest))
+        evidence = _evidence(root, index)
+        runs.append((evidence, _pytest(project, *_shard_arguments(evidence, index))))
+    full = _pytest(project, *_full_arguments(base))
+    return SimpleNamespace(base=base, project=project, owners=owners, root=root, runs=runs, full=full)
+
+
+def _copy_of(accepted, tmp_path: Path) -> tuple[Path, Path]:
+    """A private copy of the accepted inputs, so one test's mutation never reaches another."""
+    for name in ("full-selected.txt", "full-environment.txt"):
+        shutil.copyfile(accepted.base / name, tmp_path / name)
+    shutil.copytree(accepted.root, tmp_path / "evidence")
+    return tmp_path, tmp_path / "evidence"
+
+
+def test_real_shards_and_a_full_collection_are_evidence_the_verifier_accepts(accepted):
+    for index, (evidence, result) in enumerate(accepted.runs):
         assert result.returncode == 0, result.stdout + result.stderr
-        assert re.search(r"\b9 passed, 9 deselected\b", result.stdout), result.stdout
-        assert manifest.read_text(encoding="utf-8").splitlines() == _expected(owners, index)
-    result = _pytest(project, "--collect-only", "--atlas-shard-manifest", str(full))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert full.read_text(encoding="utf-8").splitlines() == _expected(owners)
+        assert _counts(result.stdout, passed=9, skipped=3, xfailed=3, deselected=15), result.stdout
+        # every selected test completed without failure: the skips and the expected failures too
+        assert _rows(evidence.selected) == _rows(evidence.executed) == _expected(accepted.owners, index)
+        assert _rows(evidence.environment) == _rows(accepted.base / "full-environment.txt")
+    assert accepted.full.returncode == 0, accepted.full.stdout + accepted.full.stderr
+    assert _rows(accepted.base / "full-selected.txt") == _expected(accepted.owners)
+    environment = _rows(accepted.base / "full-environment.txt")
+    assert [row for row in environment if row.startswith("python ")] == [
+        shard.python_row(sys.implementation.name, sys.version_info)]  # the same interpreter as this one
+    assert "pytest==" + pytest.__version__ in environment
 
-    verified = subprocess.run([sys.executable, str(VERIFIER), "--expected-shards", "2", "--full", str(full),
-                               "--shard-dir", str(shards)], capture_output=True, text=True, timeout=120)
+    verified = _verify(accepted.base, accepted.root)
     assert verified.returncode == 0, verified.stdout + verified.stderr
-    assert "18 collected node ids = 9 + 9 across 2 disjoint shard(s)" in verified.stdout
+    assert "30 collected node ids = 15 + 15 across 2 disjoint shard(s)" in verified.stdout
 
-    # one dropped row -- the shape of a shard that silently lost a test -- is refused
-    shard_zero = shards / "shard-0.txt"
-    rows = shard_zero.read_text(encoding="utf-8").splitlines()
-    shard_zero.write_bytes("".join(row + "\n" for row in rows[1:]).encode("utf-8"))  # LF, on every OS
-    refused = subprocess.run([sys.executable, str(VERIFIER), "--expected-shards", "2", "--full", str(full),
-                              "--shard-dir", str(shards)], capture_output=True, text=True, timeout=120)
+
+def test_a_dropped_selection_row_is_refused(accepted, tmp_path):
+    """The shape of a shard that silently lost a test."""
+    base, root = _copy_of(accepted, tmp_path)
+    selected = root / "atlas-gate-shard-evidence-0" / UNION.SELECTED
+    rows = _rows(selected)
+    selected.write_bytes("".join(row + "\n" for row in rows[1:]).encode("utf-8"))  # LF, on every OS
+    refused = _verify(base, root)
     assert refused.returncode == 1, refused.stdout + refused.stderr
     assert "1 collected node id(s) are in no shard" in refused.stderr, refused.stderr
+
+
+@pytest.mark.parametrize("addopts", ["--collect-only", "--setup-plan"])
+def test_a_shard_that_runs_no_test_still_selects_them_and_is_refused(accepted, tmp_path, addopts):
+    """P2 (a): PYTEST_ADDOPTS in a shard's environment keeps every selection green -- the manifest is
+    written and pytest exits 0 -- while no test runs. The executed manifest records that nothing
+    completed, and the verifier refuses the shard by name."""
+    base, root = _copy_of(accepted, tmp_path)
+    shutil.rmtree(root / "atlas-gate-shard-evidence-0")
+    evidence = _evidence(root, 0)
+    result = _pytest(accepted.project, *_shard_arguments(evidence, 0), addopts=addopts)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _rows(evidence.selected) == _expected(accepted.owners, 0)  # the selection alone looks complete
+    assert evidence.executed.read_bytes() == b""
+    assert _rows(evidence.environment) == _rows(base / "full-environment.txt")
+    refused = _verify(base, root)
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert ("atlas-gate-shard-evidence-0: 15 of its 15 selected node id(s) did not complete without failure"
+            in refused.stderr), refused.stderr
+    # the shard is refused for what it executed alone: its selection and environment are sound
+    assert "in no shard" not in refused.stderr and "is not the full collection's" not in refused.stderr, (
+        refused.stderr)
+
+
+def test_a_failing_test_is_missing_from_its_shards_executed_manifest_and_refused(tmp_path):
+    """P2 (b)/(c): a failure whose exit status a step swallows still leaves the test out of the
+    executed manifest, so the verifier refuses whatever the step's exit-code plumbing did."""
+    project, owners = _project(tmp_path)
+    failing = next(f"test_failing_{number:02d}.py" for number in range(64)
+                   if int(hashlib.sha256(f"test_failing_{number:02d}.py".encode("utf-8")).hexdigest(), 16) % 2 == 0)
+    (project / failing).write_text(_FAILING_TEST + (_FAILING_SUBTEST if _HAS_SUBTESTS else ""), encoding="utf-8")
+    failed = sorted([f"{failing}::test_fails"] + ([f"{failing}::test_a_subtest_fails"] if _HAS_SUBTESTS else []))
+    root = tmp_path / "evidence"
+    results = []
+    for index in range(2):
+        evidence = _evidence(root, index)
+        results.append((evidence, _pytest(project, *_shard_arguments(evidence, index))))
+    full = _pytest(project, *_full_arguments(tmp_path))
+    assert full.returncode == 0, full.stdout + full.stderr
+
+    (evidence_0, failed_run), (evidence_1, passed_run) = results
+    assert failed_run.returncode == 1, failed_run.stdout + failed_run.stderr
+    assert passed_run.returncode == 0, passed_run.stdout + passed_run.stderr
+    assert _rows(evidence_0.selected) == sorted(_expected(owners, 0) + failed)
+    assert _rows(evidence_0.executed) == _expected(owners, 0)  # everything but the failures completed
+    assert _rows(evidence_1.selected) == _rows(evidence_1.executed) == _expected(owners, 1)
+    refused = _verify(tmp_path, root)
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert (f"atlas-gate-shard-evidence-0: {len(failed)} of its {len(_expected(owners, 0)) + len(failed)} "
+            f"selected node id(s) did not complete without failure: {failed}") in refused.stderr, refused.stderr
+
+
+def test_the_gates_own_invocation_shape_produces_evidence_the_verifier_accepts(tmp_path):
+    """The gate runs pytest from the repository root with NO path argument, so pytest itself finds
+    pytest.ini and collects its `testpaths`; the runs above pass -c, --rootdir and a path. Here the
+    whole pipeline runs in the gate's shape: two `testpaths` directories, a decoy test outside them
+    that only a run ignoring `testpaths` would collect, and a skip marker (a skipped setup)."""
+    project, owners = _project(tmp_path, directories=("suite_a", "suite_b"), content=_PROJECT_TEST + _MARKER_SKIP_TEST,
+                               ini="[pytest]\ntestpaths = suite_a suite_b\n")
+    assert {path.split("/", 1)[0] for path in owners} == {"suite_a", "suite_b"}, owners
+    (project / "decoy").mkdir()
+    (project / "decoy" / "test_decoy.py").write_text("def test_decoy():\n    pass\n", encoding="utf-8")
+    cases = _PROJECT_CASES + ("test_skipped_by_a_marker",)
+    root = tmp_path / "evidence"
+    for index in range(2):
+        evidence = _evidence(root, index)
+        result = _pytest_as_the_gate_runs_it(project, "--durations=40", *_shard_arguments(evidence, index))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert _counts(result.stdout, passed=9, skipped=6, xfailed=3, deselected=18), result.stdout
+        assert _rows(evidence.selected) == _rows(evidence.executed) == _expected(owners, index, cases)
+    full = _pytest_as_the_gate_runs_it(project, *_full_arguments(tmp_path))
+    assert full.returncode == 0, full.stdout + full.stderr
+    assert _rows(tmp_path / "full-selected.txt") == _expected(owners, None, cases)  # and no decoy
+    verified = _verify(tmp_path, root)
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "36 collected node ids = 18 + 18 across 2 disjoint shard(s)" in verified.stdout
 
 
 def test_a_real_run_without_the_options_is_unsharded_and_writes_nothing(tmp_path):
@@ -359,7 +710,7 @@ def test_a_real_run_without_the_options_is_unsharded_and_writes_nothing(tmp_path
     before = sorted(path.name for path in tmp_path.rglob("*") if "__pycache__" not in path.parts)
     result = _pytest(project)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert re.search(r"\b18 passed\b", result.stdout) and "deselected" not in result.stdout, result.stdout
+    assert _counts(result.stdout, passed=18, skipped=6, xfailed=6) and "deselected" not in result.stdout, result.stdout
     assert sorted(path.name for path in tmp_path.rglob("*") if "__pycache__" not in path.parts) == before
 
 
@@ -367,10 +718,16 @@ def test_a_real_run_without_the_options_is_unsharded_and_writes_nothing(tmp_path
     (("--atlas-shard", "2/2"), "outside 0..1"),
     (("--atlas-shard", "1-of-2"), "must be I/N"),
     (("--atlas-shard-manifest", "{absent}"), "does not exist"),
+    (("--atlas-shard-executed", "{existing}"), "already exists"),
+    (("--atlas-shard-environment", "{absent}"), "does not exist"),
 ])
 def test_a_real_run_with_a_bad_option_is_a_usage_error(tmp_path, arguments, message):
     project, _owners = _project(tmp_path)
-    arguments = tuple(argument.format(absent=str(tmp_path / "absent" / "m.txt")) for argument in arguments)
+    existing = tmp_path / "existing.txt"
+    existing.write_bytes(b"")
+    arguments = tuple(argument.format(absent=str(tmp_path / "absent" / "m.txt"), existing=str(existing))
+                      for argument in arguments)
     result = _pytest(project, *arguments)
     assert result.returncode == 4, result.stdout + result.stderr
     assert message in result.stderr, result.stderr
+    assert existing.read_bytes() == b""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
 import shlex
@@ -513,10 +514,69 @@ def test_portable_concurrency_contract_rejects_drift(mutation: str) -> None:
 # dependent job when a dependency fails, and `!cancelled()` skips it when the run is cancelled, so the
 # contract below is what keeps a failed, cancelled, skipped or dropped shard from ever turning the
 # required check green.
+#
+# The shards' evidence (.github/scripts/verify_shard_union.py) proves only what the pinned steps
+# ran. One-line edits would otherwise keep every guard green while no test runs or a failure is
+# swallowed: PYTEST_ADDOPTS=--collect-only in a shard's env, a workflow-wide PYTEST_ADDOPTS that drops
+# the same files from the shards and the full collection alike, an exit check replaced by `exit 0`, a
+# shell that discards the script's status, an extra step writing $GITHUB_ENV. So both jobs are pinned
+# exactly: no workflow-level env or defaults, no job-level defaults, exact job env, every step by
+# identity, order and key set, the shard run and the full collection by name, shell, env and every
+# script line, and no PYTEST*/PYTHON* control anywhere in their environment (_interpreter_controls).
 _SHARD_SPEC = re.compile(r"\$\{\{ matrix\.shard \}\}/([1-9][0-9]*)")
 _SHARD_RESULT_REFUSAL = re.compile(r"if \(\$env:SHARD_RESULT -cne 'success'\) \{ throw \"[^\"]+\" \}")
 _UNION_VERIFIER = ".github/scripts/verify_shard_union.py"
 _SHARD_OPTION = re.compile(r"--atlas-shard(?=[\s=]|$)")
+
+
+def _load_union_verifier():
+    """The verifier owns the evidence layout (its file names); the workflow is held to it."""
+    spec = importlib.util.spec_from_file_location("_portable_gate_union_verifier", ROOT / _UNION_VERIFIER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_UNION = _load_union_verifier()
+_TOOLCHAIN = json.loads((ROOT / "portable" / "toolchain.json").read_text(encoding="utf-8"))
+_JOB_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+_CHECKOUT_WITH = {"ref": "${{ github.event_name == 'workflow_dispatch' && inputs.source_commit || github.sha }}",
+                  "fetch-depth": 0}
+_SHARD_EVIDENCE = "${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}"
+_EVIDENCE_ARTIFACT = "atlas-gate-shard-evidence-"
+_EVIDENCE_ROOT = "${{ runner.temp }}/atlas-gate-shard-evidence"
+_RUN_STEP = "Run this shard of the complete Python suite without artifact authority"
+_COLLECT_STEP = ("Collect the complete suite once and prove the shards ran exactly it without failure in one "
+                 "environment")
+_NORMALIZE_STEP = "Normalize the test checkout to committed bytes"
+_FRONTEND_STEP = "Run the frontend tests and prove the tracked build reproduces"
+#: Each job's exact steps, in order: (action or None, name or None, exact key set). An action step is
+#: identified by its action, a run step by its name.
+_SHARD_STEPS = (
+    ("actions/checkout", None, {"uses", "with"}),
+    (None, _NORMALIZE_STEP, {"name", "shell", "run"}),
+    ("actions/setup-python", None, {"uses", "with"}),
+    ("actions/setup-node", None, {"uses", "with"}),
+    (None, _RUN_STEP, {"name", "shell", "env", "run"}),
+    ("actions/upload-artifact", "Upload what this shard selected, executed and ran in", {"name", "uses", "with"}),
+)
+_GATE_STEPS = (
+    (None, "Require every Python shard to have succeeded", {"name", "shell", "env", "run"}),
+    ("actions/checkout", None, {"uses", "with"}),
+    (None, _NORMALIZE_STEP, {"name", "shell", "run"}),
+    ("actions/setup-python", None, {"uses", "with"}),
+    ("actions/setup-node", None, {"uses", "with"}),
+    ("actions/download-artifact", "Download every shard's evidence", {"name", "uses", "with"}),
+    (None, _COLLECT_STEP, {"name", "shell", "env", "run"}),
+    (None, _FRONTEND_STEP, {"name", "shell", "run"}),
+)
+_SHARD_JOB_KEYS = {"name", "runs-on", "timeout-minutes", "strategy", "permissions", "env", "steps"}
+_GATE_JOB_KEYS = {"name", "needs", "if", "runs-on", "timeout-minutes", "permissions", "env", "steps"}
+#: Interpreter and pytest controls that reach every pytest run through the environment
+#: (PYTEST_ADDOPTS, PYTEST_PLUGINS, PYTHONPATH, PYTHONWARNINGS, ...): a class, matched by prefix and
+#: case-insensitively, as Windows reads environment names.
+_INTERPRETER_CONTROL_PREFIXES = ("PYTEST", "PYTHON")
 
 
 def _uses(step: dict, action: str) -> bool:
@@ -532,10 +592,52 @@ def _script_lines(step: dict) -> list[str]:
     return [line.strip() for line in str(step.get("run") or "").splitlines() if line.strip()]
 
 
+def _script(*lines: str) -> str:
+    """A `run: |` block's exact text."""
+    return "".join(line + "\n" for line in lines)
+
+
+def _step_identity(step: dict) -> tuple:
+    action = str(step["uses"]).split("@", 1)[0] if "uses" in step else None
+    return action, step.get("name"), set(step)
+
+
+def _interpreter_controls(document: dict, job_ids: tuple[str, ...] = ("gate_shard", "gate")) -> list[str]:
+    """Every PYTEST*/PYTHON* environment variable the workflow, one of these jobs or one of their steps
+    sets -- except the pinned job-level PYTHONDONTWRITEBYTECODE -- and every env that is not a mapping."""
+    scopes = [("workflow", document.get("env"), frozenset())]
+    for job_id in job_ids:
+        job = document["jobs"][job_id]
+        scopes.append((job_id, job.get("env"), frozenset({"PYTHONDONTWRITEBYTECODE"})))
+        scopes.extend((f"{job_id} step {index}", step.get("env"), frozenset())
+                      for index, step in enumerate(job.get("steps") or []))
+    found = []
+    for where, env, allowed in scopes:
+        if env is None:
+            continue
+        if not isinstance(env, dict):
+            found.append(f"{where}: env is not a mapping: {env!r}")
+            continue
+        found.extend(f"{where}: {key}" for key in env
+                     if str(key).upper().startswith(_INTERPRETER_CONTROL_PREFIXES) and key not in allowed)
+    return found
+
+
 def _assert_gate_shard_contract(document: dict) -> None:
     jobs = document["jobs"]
     shard, gate = jobs["gate_shard"], jobs["gate"]
     shard_steps, gate_steps = shard["steps"], gate["steps"]
+
+    # Nothing outside the two jobs reaches into them: no workflow-level env or defaults (a
+    # PYTEST_ADDOPTS there would drop the same files from every shard AND the full collection, so the
+    # union would still match), and neither job carries defaults or any key beyond the pinned ones
+    # (a container, a deployment environment), and both carry exactly the pinned job env.
+    assert not {"env", "defaults"} & set(document), sorted({"env", "defaults"} & set(document))
+    assert set(shard) == _SHARD_JOB_KEYS and set(gate) == _GATE_JOB_KEYS, (sorted(shard), sorted(gate))
+    for job_id, job in (("gate_shard", shard), ("gate", gate)):
+        assert "defaults" not in job and job.get("env") == _JOB_ENV, (job_id, job.get("env"))
+    # No interpreter or pytest control anywhere in either job's environment, matched as a class.
+    assert _interpreter_controls(document) == []
 
     # Neither job can swallow a failure or skip one of its steps: no continue-on-error on the job or
     # any step, and no step condition at all, so every step runs in order and any failure is final.
@@ -544,6 +646,16 @@ def _assert_gate_shard_contract(document: dict) -> None:
         for step in job["steps"]:
             assert "continue-on-error" not in step and "if" not in step, (
                 job_id, step.get("name") or step.get("uses"))
+    # Every step, by identity and order, with its exact key set (so no step gains an env, a
+    # working-directory, a timeout or a condition), and every run step's shell is exactly pwsh, whose
+    # script GitHub fails on a terminating error: no shell that discards the script's status.
+    assert [_step_identity(step) for step in shard_steps] == list(_SHARD_STEPS)
+    assert [_step_identity(step) for step in gate_steps] == list(_GATE_STEPS)
+    for job_id, steps in (("gate_shard", shard_steps), ("gate", gate_steps)):
+        for step in steps:
+            assert "run" not in step or step.get("shell") == "pwsh", (job_id, step.get("name"), step.get("shell"))
+    pinned_pip = f"python -m pip install --upgrade 'pip=={_TOOLCHAIN['pip']}'"
+    install = (pinned_pip, _EXIT_CHECK, "python -m pip install -r requirements-dev.txt", _EXIT_CHECK)
 
     # The shard count is ONE value: derived from the spec and held by the matrix, the job name and
     # the verifier's --expected-shards, so the four cannot drift apart.
@@ -562,20 +674,36 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert "if" not in shard and "needs" not in shard
     checkouts = [step for step in shard_steps if _uses(step, "actions/checkout")]
     assert len(checkouts) == 1 and str(checkouts[0]["with"].get("fetch-depth")) == "0"
-    # The single gate's exact flags plus the two shard options, each value ONE token, so the shared
+    # The run step, completely: each evidence path is ONE whitespace-free token inside one directory
+    # under RUNNER_TEMP, named as the verifier names them; the directory exists before pytest; the
+    # single gate's exact flags plus the four shard options; and every exit check, so the shared
     # reader sees a full default-suite run and every leg guard holds each shard to account.
-    assert [line for line in _script_lines(run_step) if "-m pytest" in line] == [
-        "python -m pytest -q -p no:cacheprovider --durations=40 "
-        "--atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:ATLAS_SHARD_MANIFEST"]
+    assert run_step["name"] == _RUN_STEP and run_step["shell"] == "pwsh"
+    assert run_env == {
+        "ATLAS_SHARD_SPEC": f"${{{{ matrix.shard }}}}/{total}",
+        "ATLAS_SHARD_EVIDENCE": _SHARD_EVIDENCE,
+        "ATLAS_SHARD_SELECTED": f"{_SHARD_EVIDENCE}/{_UNION.SELECTED}",
+        "ATLAS_SHARD_EXECUTED": f"{_SHARD_EVIDENCE}/{_UNION.EXECUTED}",
+        "ATLAS_SHARD_ENVIRONMENT": f"{_SHARD_EVIDENCE}/{_UNION.ENVIRONMENT}",
+    }, run_env
+    assert run_step["run"] == _script(
+        *install,
+        "New-Item -ItemType Directory -Path $env:ATLAS_SHARD_EVIDENCE | Out-Null",
+        "python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC "
+        "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED "
+        "--atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT",
+        _EXIT_CHECK,
+    ), run_step["run"]
     assert pytest_invocations(run_step["run"]) == [default_testpaths()]
-    manifest = str(run_env.get("ATLAS_SHARD_MANIFEST"))
-    assert manifest.startswith("${{ runner.temp }}/") and "${{ matrix.shard }}" in manifest, manifest
+    evidence = str(run_env.get("ATLAS_SHARD_EVIDENCE"))
+    assert evidence.startswith("${{ runner.temp }}/") and "${{ matrix.shard }}" in evidence, evidence
     upload_index = _one([i for i, step in enumerate(shard_steps) if _uses(step, "actions/upload-artifact")],
-                        "manifest upload")
+                        "evidence upload")
     assert upload_index > run_index
     upload = shard_steps[upload_index].get("with") or {}
-    assert upload.get("path") == manifest and upload.get("if-no-files-found") == "error", upload
-    assert "${{ matrix.shard }}" in str(upload.get("name")), upload
+    # The whole evidence directory, as one artifact per shard; a missing directory fails the upload.
+    assert upload == {"name": f"{_EVIDENCE_ARTIFACT}${{{{ matrix.shard }}}}", "path": evidence,
+                      "if-no-files-found": "error", "overwrite": True, "retention-days": 30}, upload
 
     # The aggregate keeps the exact required context, waits for the whole matrix, and is never skipped:
     # exactly `always()`, because the default success() skips it when a shard fails and `!cancelled()`
@@ -590,48 +718,64 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert first.get("env") == {"SHARD_RESULT": "${{ needs.gate_shard.result }}"}
     assert len(_script_lines(first)) == 1 and _SHARD_RESULT_REFUSAL.fullmatch(_script_lines(first)[0]), first
 
-    # Its full collection runs in the shards' environment, so the union compares like with like.
+    # Its full collection runs on the shards' checkout, interpreter and node, and records its own
+    # environment for the verifier to hold every shard's to.
     for key in ("runs-on", "timeout-minutes", "permissions", "env"):
         assert gate.get(key) == shard.get(key), key
-    for action in ("actions/checkout", "actions/setup-python"):
-        assert [step.get("with") for step in gate_steps if _uses(step, action)] == [
-            step.get("with") for step in shard_steps if _uses(step, action)], action
+    for action in ("actions/checkout", "actions/setup-python", "actions/setup-node"):
+        assert [step["uses"] for step in gate_steps if _uses(step, action)] == [
+            step["uses"] for step in shard_steps if _uses(step, action)], action
+    for steps in (shard_steps, gate_steps):
+        assert [step.get("with") for step in steps if _uses(step, "actions/checkout")] == [_CHECKOUT_WITH]
+        assert [step.get("with") for step in steps if _uses(step, "actions/setup-python")] == [
+            {"python-version": _TOOLCHAIN["python"]}]
     shard_node = [i for i, step in enumerate(shard_steps) if _uses(step, "actions/setup-node")]
     gate_node = [i for i, step in enumerate(gate_steps) if _uses(step, "actions/setup-node")]
     assert len(shard_node) == len(gate_node) == 1 and shard_node[0] < run_index
     # A shard runs no npm, so it restores no npm cache; the aggregate's frontend gate keeps its own.
-    assert shard_steps[shard_node[0]].get("with") == {"node-version": "24.19.0"}
+    node = _TOOLCHAIN["node"].removeprefix("v")
+    assert shard_steps[shard_node[0]].get("with") == {"node-version": node}
     assert gate_steps[gate_node[0]].get("with") == {
-        "node-version": "24.19.0", "cache": "npm", "cache-dependency-path": "webapp/frontend/package-lock.json"}
+        "node-version": node, "cache": "npm", "cache-dependency-path": "webapp/frontend/package-lock.json"}
     pip = [[line for step in steps for line in _script_lines(step) if "pip install" in line]
            for steps in (shard_steps, gate_steps)]
     assert pip[0] and pip[0] == pip[1], pip
 
-    # Download every shard's manifest, collect the whole suite ONCE (never itself a shard), prove the
-    # exact disjoint cover, and only then run the unchanged frontend gate.
+    # Download every shard's evidence -- without merge-multiple, so each artifact keeps its own
+    # directory -- collect the whole suite ONCE (never itself a shard) with its environment, prove the
+    # selection cover, each shard's execution and the one environment, and only then run the
+    # unchanged frontend gate.
     download_index = _one([i for i, step in enumerate(gate_steps) if _uses(step, "actions/download-artifact")],
-                          "manifest download")
+                          "evidence download")
     download = gate_steps[download_index].get("with") or {}
+    assert download == {"pattern": f"{_EVIDENCE_ARTIFACT}*", "path": _EVIDENCE_ROOT}, download
     assert download.get("pattern") == str(upload.get("name")).replace("${{ matrix.shard }}", "*"), download
-    assert download.get("merge-multiple") is True, download
     collect_index = _one([i for i, step in enumerate(gate_steps) if pytest_invocations(str(step.get("run") or ""))],
                          "full collection step")
     assert gate_node[0] < collect_index and download_index < collect_index
     collect = gate_steps[collect_index]
     collect_env = collect.get("env") or {}
-    assert _script_lines(collect)[-4:] == [
-        "python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_MANIFEST",
+    assert collect["name"] == _COLLECT_STEP and collect["shell"] == "pwsh"
+    assert collect_env == {
+        "ATLAS_FULL_SELECTED": "${{ runner.temp }}/atlas-gate-full-selected.txt",
+        "ATLAS_FULL_ENVIRONMENT": "${{ runner.temp }}/atlas-gate-full-environment.txt",
+        "ATLAS_SHARD_EVIDENCE_ROOT": _EVIDENCE_ROOT,
+    }, collect_env
+    assert collect["run"] == _script(
+        *install,
+        "python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_SELECTED "
+        "--atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT",
         _EXIT_CHECK,
-        f"python {_UNION_VERIFIER} --expected-shards {total} --full $env:ATLAS_FULL_MANIFEST "
-        "--shard-dir $env:ATLAS_SHARD_MANIFESTS",
+        f"python {_UNION_VERIFIER} --expected-shards {total} --full $env:ATLAS_FULL_SELECTED "
+        "--environment $env:ATLAS_FULL_ENVIRONMENT --shard-dir $env:ATLAS_SHARD_EVIDENCE_ROOT",
         _EXIT_CHECK,
-    ]
+    ), collect["run"]
     assert pytest_invocations(collect["run"]) == [default_testpaths()]
     assert _SHARD_OPTION.search(collect["run"]) is None, "the full collection must not itself be a shard"
-    assert collect_env.get("ATLAS_SHARD_MANIFESTS") == download.get("path"), (collect_env, download)
-    full_manifest = str(collect_env.get("ATLAS_FULL_MANIFEST"))
-    assert full_manifest.startswith("${{ runner.temp }}/"), full_manifest
-    assert not full_manifest.startswith(str(download.get("path")) + "/"), "the full manifest is not a shard"
+    assert collect_env.get("ATLAS_SHARD_EVIDENCE_ROOT") == download.get("path"), (collect_env, download)
+    for full in (collect_env["ATLAS_FULL_SELECTED"], collect_env["ATLAS_FULL_ENVIRONMENT"]):
+        assert full.startswith("${{ runner.temp }}/"), full
+        assert not full.startswith(str(download.get("path")) + "/"), "the full collection's evidence is no shard's"
     assert (ROOT / _UNION_VERIFIER).is_file()
     frontend_index = _one([i for i, step in enumerate(gate_steps)
                            if "npm ci --ignore-scripts" in str(step.get("run") or "")], "frontend step")
@@ -658,6 +802,13 @@ def _swap(steps: list, first: int, second: int) -> None:
     steps[first], steps[second] = steps[second], steps[first]
 
 
+#: A shell that runs the script and then discards its status: every failure in it would pass.
+_SWALLOWING_SHELL = "pwsh -command \". '{0}'; exit 0\""
+#: A step that steers every later step's pytest through the runner's environment file.
+_GITHUB_ENV_STEP = {"name": "Prepare the suite", "shell": "pwsh",
+                    "run": "\"PYTEST_ADDOPTS=--collect-only\" >> $env:GITHUB_ENV\n"}
+
+
 @pytest.mark.parametrize("mutation", [
     "matrix_short", "spec_three", "name_three", "verifier_three", "spec_as_split_tokens", "shard_conditional",
     "shallow_shard", "upload_elsewhere", "manifest_in_workspace", "different_python", "shard_npm_cache",
@@ -667,6 +818,15 @@ def _swap(steps: list, first: int, second: int) -> None:
     "frontend_before_collect", "shard_continues_on_error", "shard_test_step_continues_on_error",
     "gate_continues_on_error", "collect_continues_on_error", "collect_conditional", "frontend_conditional",
     "verify_candidate_skips_gate",
+    # P2: what would keep the evidence green while no test runs or a failure is swallowed
+    "shard_step_pytest_addopts", "shard_step_lowercase_pytest_addopts", "collect_step_pytest_addopts",
+    "shard_job_pytest_addopts", "gate_job_pytest_addopts", "workflow_pytest_addopts", "workflow_defaults",
+    "shard_job_defaults", "gate_job_defaults", "swallowed_shard_exit", "swallowed_collect_exit",
+    "shard_shell_swallows", "collect_shell_swallows", "frontend_shell_swallows", "shard_extra_step",
+    "gate_extra_step", "no_executed_option", "no_shard_environment_option", "no_full_environment_option",
+    "no_verifier_environment", "extra_collect_line", "extra_shard_line", "merge_multiple_download",
+    "pythonpath_step_env", "pythonpath_run_env", "no_evidence_directory", "upload_one_file",
+    "download_one_artifact", "run_step_working_directory", "gate_job_container",
 ])
 def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     document = _portable_document()
@@ -676,6 +836,9 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     run_step = next(step for step in shard["steps"] if pytest_invocations(str(step.get("run") or "")))
     collect_index = next(i for i, step in enumerate(gate["steps"]) if pytest_invocations(str(step.get("run") or "")))
     collect = gate["steps"][collect_index]
+    upload = next(step for step in shard["steps"] if _uses(step, "actions/upload-artifact"))
+    download = next(step for step in gate["steps"] if _uses(step, "actions/download-artifact"))
+    frontend = next(step for step in gate["steps"] if step.get("name") == _FRONTEND_STEP)
     if mutation == "matrix_short":
         shard["strategy"]["matrix"]["shard"] = [0]
     elif mutation == "spec_three":
@@ -693,7 +856,7 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     elif mutation == "upload_elsewhere":
         next(step for step in shard["steps"] if _uses(step, "actions/upload-artifact"))["with"]["path"] = "x.txt"
     elif mutation == "manifest_in_workspace":
-        run_step["env"]["ATLAS_SHARD_MANIFEST"] = "atlas-gate-shard-${{ matrix.shard }}-nodeids.txt"
+        run_step["env"]["ATLAS_SHARD_SELECTED"] = "atlas-gate-shard-${{ matrix.shard }}/selected.txt"
     elif mutation == "different_python":
         next(step for step in shard["steps"] if _uses(step, "actions/setup-python"))["with"]["python-version"] = "3.12.9"
     elif mutation == "shard_npm_cache":
@@ -739,8 +902,106 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     elif mutation == "frontend_conditional":
         next(step for step in gate["steps"] if "npm ci --ignore-scripts" in str(step.get("run") or ""))["if"] = (
             "${{ false }}")
-    else:
+    elif mutation == "verify_candidate_skips_gate":
         jobs["verify_candidate"]["needs"] = ["portable"]
+    elif mutation == "shard_step_pytest_addopts":
+        run_step["env"]["PYTEST_ADDOPTS"] = "--collect-only"
+    elif mutation == "shard_step_lowercase_pytest_addopts":
+        run_step["env"]["pytest_addopts"] = "--setup-plan"  # Windows reads environment names caselessly
+    elif mutation == "collect_step_pytest_addopts":
+        collect["env"]["PYTEST_ADDOPTS"] = "--ignore=webapp/tests"
+    elif mutation == "shard_job_pytest_addopts":
+        shard["env"]["PYTEST_ADDOPTS"] = "--collect-only"
+    elif mutation == "gate_job_pytest_addopts":
+        gate["env"]["PYTEST_ADDOPTS"] = "--ignore=webapp/tests"
+    elif mutation == "workflow_pytest_addopts":
+        document["env"] = {"PYTEST_ADDOPTS": "--ignore=webapp/tests"}
+    elif mutation == "workflow_defaults":
+        document["defaults"] = {"run": {"shell": _SWALLOWING_SHELL}}
+    elif mutation == "shard_job_defaults":
+        shard["defaults"] = {"run": {"shell": _SWALLOWING_SHELL}}
+    elif mutation == "gate_job_defaults":
+        gate["defaults"] = {"run": {"working-directory": "webapp"}}
+    elif mutation == "swallowed_shard_exit":
+        lines = run_step["run"].splitlines()
+        assert lines[-1] == _EXIT_CHECK and "-m pytest" in lines[-2]
+        run_step["run"] = _script(*lines[:-1], "exit 0")
+    elif mutation == "swallowed_collect_exit":
+        lines = collect["run"].splitlines()
+        after = next(index for index, line in enumerate(lines) if "-m pytest" in line) + 1
+        assert lines[after] == _EXIT_CHECK
+        lines[after] = "$global:LASTEXITCODE = 0"
+        collect["run"] = _script(*lines)
+    elif mutation == "shard_shell_swallows":
+        run_step["shell"] = _SWALLOWING_SHELL
+    elif mutation == "collect_shell_swallows":
+        collect["shell"] = _SWALLOWING_SHELL
+    elif mutation == "frontend_shell_swallows":
+        frontend["shell"] = _SWALLOWING_SHELL
+    elif mutation == "shard_extra_step":
+        shard["steps"].insert(shard["steps"].index(run_step), dict(_GITHUB_ENV_STEP))
+    elif mutation == "gate_extra_step":
+        gate["steps"].insert(collect_index, dict(_GITHUB_ENV_STEP))
+    elif mutation == "no_executed_option":
+        run_step["run"] = run_step["run"].replace(" --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED", "")
+    elif mutation == "no_shard_environment_option":
+        run_step["run"] = run_step["run"].replace(" --atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT", "")
+    elif mutation == "no_full_environment_option":
+        collect["run"] = collect["run"].replace(" --atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT", "")
+    elif mutation == "no_verifier_environment":
+        collect["run"] = collect["run"].replace(" --environment $env:ATLAS_FULL_ENVIRONMENT", "")
+    elif mutation == "extra_collect_line":
+        collect["run"] = "$env:PYTEST_ADDOPTS = '--ignore=webapp/tests'\n" + collect["run"]
+    elif mutation == "extra_shard_line":
+        run_step["run"] = "$env:PYTEST_ADDOPTS = '--collect-only'\n" + run_step["run"]
+    elif mutation == "merge_multiple_download":
+        download["with"]["merge-multiple"] = True
+    elif mutation == "pythonpath_step_env":
+        next(step for step in shard["steps"] if step.get("name") == _NORMALIZE_STEP)["env"] = {"PYTHONPATH": "shim"}
+    elif mutation == "pythonpath_run_env":
+        run_step["env"]["PYTHONPATH"] = "shim"
+    elif mutation == "no_evidence_directory":
+        run_step["run"] = _script(*(line for line in run_step["run"].splitlines() if not line.startswith("New-Item")))
+    elif mutation == "upload_one_file":
+        upload["with"]["path"] = run_step["env"]["ATLAS_SHARD_SELECTED"]
+    elif mutation == "download_one_artifact":
+        download["with"] = {"name": f"{_EVIDENCE_ARTIFACT}0", "path": _EVIDENCE_ROOT}
+    elif mutation == "run_step_working_directory":
+        run_step["working-directory"] = "webapp"
+    elif mutation == "gate_job_container":
+        gate["container"] = "mcr.microsoft.com/windows/servercore:ltsc2025"
+    else:
+        raise AssertionError(f"unknown mutation {mutation!r}")  # outside pytest.raises: a typo fails loudly
+    with pytest.raises(AssertionError):
+        _assert_gate_shard_contract(document)
+
+
+@pytest.mark.parametrize("mutation", [
+    "workflow_env", "job_env_pythonpath", "lowercase_step_env", "frontend_pythonwarnings",
+    "step_pythondontwritebytecode", "expression_env", "pytest_plugins_in_gate_step",
+])
+def test_no_interpreter_or_pytest_control_reaches_either_job_through_its_environment(mutation: str) -> None:
+    """The class, not a list: any PYTEST*/PYTHON* variable at workflow, job or step level (matched
+    caselessly) is found, except the pinned job-level PYTHONDONTWRITEBYTECODE."""
+    document = _portable_document()
+    assert _interpreter_controls(document) == []  # the real workflow sets none
+    shard, gate = document["jobs"]["gate_shard"], document["jobs"]["gate"]
+    if mutation == "workflow_env":
+        document["env"] = {"PYTEST_ADDOPTS": "--ignore=webapp/tests"}
+    elif mutation == "job_env_pythonpath":
+        shard["env"]["PYTHONPATH"] = "shim"
+    elif mutation == "lowercase_step_env":
+        gate["steps"][0]["env"]["pytest_addopts"] = "--collect-only"
+    elif mutation == "frontend_pythonwarnings":
+        next(step for step in gate["steps"] if step.get("name") == _FRONTEND_STEP)["env"] = {"PYTHONWARNINGS": "ignore"}
+    elif mutation == "step_pythondontwritebytecode":
+        next(step for step in shard["steps"] if step.get("name") == _RUN_STEP)["env"]["PYTHONDONTWRITEBYTECODE"] = "0"
+    elif mutation == "expression_env":
+        gate["env"] = "${{ fromJSON(needs.gate_shard.outputs.env) }}"
+    else:
+        next(step for step in gate["steps"] if step.get("name") == _COLLECT_STEP)["env"]["PYTEST_PLUGINS"] = "shim"
+    found = _interpreter_controls(document)
+    assert len(found) == 1, found
     with pytest.raises(AssertionError):
         _assert_gate_shard_contract(document)
 

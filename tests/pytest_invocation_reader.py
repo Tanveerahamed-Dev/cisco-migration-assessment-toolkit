@@ -19,13 +19,15 @@ REPO = Path(__file__).resolve().parent.parent
 
 #: pytest options whose value is the NEXT token, so that value is not read as a collected path
 #: (pytest's own, pytest-xdist's ``-n``, pytest-cov's ``--cov*`` and the root conftest.py's full-gate
-#: shard options: portable-release.yml passes ``--atlas-shard $env:ATLAS_SHARD_SPEC``, whose value
-#: read as a path would make a full-suite shard look path-scoped and drop it from every leg guard).
+#: shard and evidence options: portable-release.yml passes ``--atlas-shard $env:ATLAS_SHARD_SPEC`` and
+#: one ``$env:`` path per evidence file, any of which read as a path would make a full-suite shard look
+#: path-scoped and drop it from every leg guard).
 PYTEST_VALUE_OPTIONS = frozenset({"-p", "-k", "-m", "-o", "-c", "-W", "-n", "--ignore", "--deselect",
                                   "--rootdir", "--basetemp", "--confcutdir", "--junitxml",
                                   "--maxfail", "--durations", "--tb", "--ignore-glob", "--cov",
                                   "--cov-report", "--cov-fail-under", "--cov-config",
-                                  "--atlas-shard", "--atlas-shard-manifest"})
+                                  "--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed",
+                                  "--atlas-shard-environment"})
 
 
 def default_testpaths() -> list[str]:

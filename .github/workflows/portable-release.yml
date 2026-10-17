@@ -31,12 +31,16 @@ jobs:
   # The complete Windows Python suite used to run, then the frontend gate, as ONE job under the
   # 120-minute limit below (~107 + ~1.5 minutes), and runner contention cancelled it. It now runs as
   # these parallel shards, partitioned by test FILE through the root conftest.py --atlas-shard
-  # option (tests/atlas_shard_partition.py owns the partition), and the required `gate` job proves
-  # their selections are exactly one full collection before it runs the frontend gate. The shard
-  # count is written four times -- this matrix, the spec below, this job's name and the verifier's
-  # --expected-shards -- and tests/test_portable_release_workflow.py derives it from the spec and
-  # holds the other three to it. The shard contexts are NOT required checks: the required context
-  # stays on `gate`, which cannot succeed unless every shard did.
+  # option (tests/atlas_shard_partition.py owns the partition and the evidence). Each shard uploads
+  # what it selected, which of those tests completed without failure, and the environment it ran
+  # in, and the required `gate` job proves from that evidence that the shards selected exactly one
+  # full collection, that each ran its whole selection without failure, and that all of them ran in
+  # that collection's environment, before it runs the frontend gate. The shard count is written
+  # four times -- this matrix, the spec below, this job's name and the verifier's --expected-shards
+  # -- and tests/test_portable_release_workflow.py derives it from the spec and holds the other
+  # three to it; the hosted-runner census in tests/test_release_supply_chain.py deliberately pins
+  # it again. The shard contexts are NOT required checks: the required context stays on `gate`,
+  # which cannot succeed unless every shard did.
   gate_shard:
     name: Full source gate Python shard ${{ matrix.shard }} of 2 (unprivileged runner)
     runs-on: windows-2025
@@ -78,28 +82,35 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
-      # The spec and manifest reach pytest through step env so each is ONE whitespace-free token
-      # (tests/pytest_invocation_reader.py reads which paths this step collects), and the manifest is
-      # written under RUNNER_TEMP, outside the checkout every test may inspect.
+      # Every pytest option value reaches pytest through step env, so each is ONE whitespace-free
+      # token (tests/pytest_invocation_reader.py reads which paths this step collects). The evidence
+      # -- what this shard selected, which of those tests completed without failure, and the
+      # environment it ran in -- is written to one directory under RUNNER_TEMP, outside the checkout
+      # every test may inspect. The executed manifest is read from pytest's own test reports, so a
+      # run that executes nothing or swallows a failure cannot produce it whole.
       - name: Run this shard of the complete Python suite without artifact authority
         shell: pwsh
         env:
           ATLAS_SHARD_SPEC: "${{ matrix.shard }}/2"
-          ATLAS_SHARD_MANIFEST: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}-nodeids.txt
+          ATLAS_SHARD_EVIDENCE: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}
+          ATLAS_SHARD_SELECTED: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}/selected.txt
+          ATLAS_SHARD_EXECUTED: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}/executed.txt
+          ATLAS_SHARD_ENVIRONMENT: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}/environment.txt
         run: |
           python -m pip install --upgrade 'pip==26.2.1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:ATLAS_SHARD_MANIFEST
+          New-Item -ItemType Directory -Path $env:ATLAS_SHARD_EVIDENCE | Out-Null
+          python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED --atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # overwrite: a re-run of one failed shard replaces that shard's manifest from the earlier
+      # overwrite: a re-run of one failed shard replaces that shard's evidence from the earlier
       # attempt; the names differ per shard, so one attempt's shards never overwrite each other.
-      - name: Upload the node ids this shard selected
+      - name: Upload what this shard selected, executed and ran in
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: atlas-gate-shard-manifest-${{ matrix.shard }}
-          path: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}-nodeids.txt
+          name: atlas-gate-shard-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}
           if-no-files-found: error
           overwrite: true
           retention-days: 30
@@ -107,13 +118,18 @@ jobs:
   # runs under `always()`. The default success() would skip it when a shard fails, and `!cancelled()`
   # would skip it when the run is cancelled before it starts (a manual cancel, or this PR's
   # concurrency group replacing an in-flight run); either way the required check would pass with no
-  # shard, union proof or frontend gate finished. Instead its first step, before anything else, fails
-  # unless the whole shard matrix succeeded, so a failed, timed-out, cancelled or skipped shard turns
-  # this check red within seconds. The cost: a cancelled run still spends that one short job, and an
-  # ordinary cancel does not stop this job (GitHub's force-cancel does, leaving it cancelled, never
-  # green). Its collection then runs on the same checkout, normalization, interpreter, node and
-  # installed requirements as the shards, so the union check compares like with like, and the
-  # frontend gate follows unchanged.
+  # shard, evidence proof or frontend gate finished. Instead its first step, before anything else,
+  # fails unless the whole shard matrix succeeded, so a failed, timed-out, cancelled or skipped
+  # shard turns this check red as soon as a runner starts it. The cost: a cancelled run still spends
+  # that one short job, and an ordinary cancel does not stop this job (GitHub's force-cancel does,
+  # leaving it cancelled, never green). Its collection then runs on the same checkout,
+  # normalization, interpreter and node as the shards and records its own environment: each job
+  # resolves requirements-dev.txt's ranges itself, so a release between the jobs would otherwise
+  # skew the versions unseen, and the verifier refuses unless every shard recorded exactly this
+  # environment. (So when a release lands between attempts, re-run all jobs: evidence kept from an
+  # earlier attempt then differs from a fresh install.) The frontend gate follows unchanged.
+  # tests/test_portable_release_workflow.py pins both jobs' steps, shells, environments and scripts
+  # exactly, because the evidence can only prove what those steps actually ran.
   gate:
     name: Full source and frontend gate (unprivileged runner)
     needs: [gate_shard]
@@ -158,25 +174,28 @@ jobs:
           node-version: "24.19.0"
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
-      - name: Download the node ids every shard selected
+      # No merge-multiple: download-artifact v8.0.2 extracts each of two or more matched artifacts
+      # into its own directory named after the artifact, which is the layout the verifier requires
+      # (a pattern matching a single artifact would extract it straight into the path, refused).
+      - name: Download every shard's evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: atlas-gate-shard-manifest-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/atlas-gate-shard-manifests
-      - name: Collect the complete Python suite once and prove the shards selected exactly it
+          pattern: atlas-gate-shard-evidence-*
+          path: ${{ runner.temp }}/atlas-gate-shard-evidence
+      - name: Collect the complete suite once and prove the shards ran exactly it without failure in one environment
         shell: pwsh
         env:
-          ATLAS_FULL_MANIFEST: ${{ runner.temp }}/atlas-gate-full-nodeids.txt
-          ATLAS_SHARD_MANIFESTS: ${{ runner.temp }}/atlas-gate-shard-manifests
+          ATLAS_FULL_SELECTED: ${{ runner.temp }}/atlas-gate-full-selected.txt
+          ATLAS_FULL_ENVIRONMENT: ${{ runner.temp }}/atlas-gate-full-environment.txt
+          ATLAS_SHARD_EVIDENCE_ROOT: ${{ runner.temp }}/atlas-gate-shard-evidence
         run: |
           python -m pip install --upgrade 'pip==26.2.1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_MANIFEST
+          python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_SELECTED --atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python .github/scripts/verify_shard_union.py --expected-shards 2 --full $env:ATLAS_FULL_MANIFEST --shard-dir $env:ATLAS_SHARD_MANIFESTS
+          python .github/scripts/verify_shard_union.py --expected-shards 2 --full $env:ATLAS_FULL_SELECTED --environment $env:ATLAS_FULL_ENVIRONMENT --shard-dir $env:ATLAS_SHARD_EVIDENCE_ROOT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the frontend tests and prove the tracked build reproduces
         shell: pwsh

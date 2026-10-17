@@ -74,7 +74,9 @@ _RUNNER_JOBS = {
     },
     "portable-release.yml": {
         # The Python shards are extra, never-required contexts; the required context stays on `gate`,
-        # which aggregates them (tests/test_portable_release_workflow.py owns that contract).
+        # which aggregates them (tests/test_portable_release_workflow.py owns that contract and derives
+        # the shard count from the workflow). This census deliberately pins the count a second time, in
+        # this name and in the matrix below, so a resize is a reviewed census change (docs/ssot.md).
         "gate_shard": ("Full source gate Python shard ${{ matrix.shard }} of 2 (unprivileged runner)", "windows-2025"),
         "gate": ("Full source and frontend gate (unprivileged runner)", "windows-2025"),
         "portable": ("Build and qualify Atlas.exe", "windows-2025"),
@@ -174,7 +176,8 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             },
         },
         ("ci.yml", "projection-performance"): {"matrix": {"os": [_WINDOWS_IMAGE]}},
-        # One axis of shard indices, no include/exclude, every leg reported even when another fails.
+        # One axis of shard indices, no include/exclude, every leg reported even when another fails;
+        # the count is pinned here deliberately (see the job census above).
         ("portable-release.yml", "gate_shard"): {"fail-fast": False, "matrix": {"shard": [0, 1]}},
     }
     direct_names = []
