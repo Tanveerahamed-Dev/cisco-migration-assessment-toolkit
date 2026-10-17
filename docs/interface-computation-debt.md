@@ -857,3 +857,28 @@ ancestor; no reset, new historical cutoff, weaker assertion, source exemption,
 budget increase or timeout increase is authorized by this correction. A closing
 claim requires the corrected hosted census and all fifteen required checks on
 the final head. Until then the correction is implemented but not verified.
+
+### Hosted correction observation and pending admission
+
+On correction head `84b4d8070250234d76e7037b7915d33ab21d5633`, CI run
+`39027083619` produced the same census on Linux Python 3.13 and 3.14:
+**36,891** detected sites, fingerprint
+`c522b7abc383fcfc188b6144f8e5f06471ae228b72e47831fca8930d0e5cec80`.
+Both executed **325 early controls**. Their complete focused guard reported
+**327 passed, one failed**; the sole failure was the unchanged register's stale
+entries, with an empty unregistered/resurrected-site difference. The real-producer
+canonical-fact mutation also passed on the 3.14 leg. Jobs `117380234143` and
+`117380234186` are the hosted evidence; this is a failed head, not admission or
+15/15. The earlier review finding and all prior failures remain negative evidence.
+
+The prepared register update copies the proposal from that hosted 3.14 job. Its
+Git diff is **9,244 deletions and zero additions**, shrinking 46,135 to 36,891.
+These removals reflect elimination of the arbitrary-production import fallback;
+they are not claims that 9,244 duplicate engine facts were fixed. All interface
+role seeds, registered/API/library-backed writer discovery, helper traversal and
+engine direction checks remain enforced. No application or role changes supply
+these removals, and the source ceiling/history validators are unchanged.
+The proposal was decoded only to edit the register; no local census or custody
+controller supplied validation. Final admission and all required checks must be
+executed on the next hosted head. An additional push remains subject to the
+supervisor's answer to the explicit one-push constraint.
