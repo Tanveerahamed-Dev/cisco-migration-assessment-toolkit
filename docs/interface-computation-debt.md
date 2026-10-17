@@ -7,9 +7,8 @@ hosted observation and review. The v1 proposal at `db5f5675` passed 15/15 but
 independent review blocked discovery, detection and lexical identities. The
 supervisor's ruling in #673 comment `6218966243` authorizes a wider, reindexed
 initial register in this PR. The v2 proposal imported 45,940 exact records from six matching hosted captures
-at `34d62535`. Main then advanced through #666. The current v3 initial source
-refresh is `observation_required`, deliberately refusing admission until matching
-hosted data from the updated main is imported. It is not in force on main before
+at `34d62535`. Main then advanced through #666. The current active v3 proposal imports 46,135 records from six matching
+hosted observations on updated main; final exact-head validation remains pending. It is not in force on main before
 reviewed merge; final-head 15/15 and independent re-review remain required.
 
 ## What the gate checks
@@ -631,3 +630,45 @@ six-leg source-bound observations and real-producer/refusal controls must preced
 admission, then every protected/applicable full workflow must pass on the exact
 admission head. After this proposal merges its register may only shrink; this
 initial-development migration is not available to a future old-policy reset.
+
+
+## V3 updated-main admission proposal (2026-10-17)
+
+CI `38985178207`, head `7e0c540a8959fa51a4e3f498c19c727273f08855`,
+reports the same **46,135** records and proposal fingerprint on all six legs:
+`61e173d9f59819a66420f7c8b49cdb21c9ba9f8d3c5caaba3d418d070b88c705`.
+Every leg passes **223 early controls / 3 deselected**, the real producer mutation,
+and **224 full focused controls**, with only the two deliberately inactive
+register assertions failing. No complete default/UTC or whole-workflow pass is
+claimed from this bootstrap. The active proposal is formatted directly from the
+hosted Windows output; all admission/source/history/custody checks execute on
+hosted runners, not in a local receipt/controller comparison.
+
+| Hosted interpreter/platform | Job |
+|---|---|
+| Linux 3.10.22 | 117255214895 |
+| Linux 3.11.17 | 117255214861 |
+| Linux 3.12.15 | 117255214892 |
+| Linux 3.13.16 | 117255214735 |
+| Linux 3.14.8 | 117255214870 |
+| Windows 3.12.10 | 117255215021 |
+
+The Windows producer reports checkout `1cd16bf8cbda00de30cfe5c580db3884eb5667e2`,
+tree `3d99a8952c06374c55cd516ba7707ca2af7945c3`, and the following raw detector
+observations. Their Git-byte/attribute equality control is part of the executed
+hosted suite; local metadata comparisons are not used as closing evidence.
+
+- `tests/interface_computation_guard.py`: `f50146ef6cb92f37c44682d37d75b4af809e6a88ef3e0f45aa29b4bf9bce1f03`
+- `tests/interface_computation_lex.py`: `9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c`
+- `tests/interface_computation_sources.py`: `36e6e9f85de7803901b6979ec25d29d986440142428a4128f95444a17e23686e`
+- `.github/scripts/interface_computation_ast.mjs`: `bc76ad9baddabf1b63611ad916812283d00cf8008c19df2a4aad205c8a26e2f9`
+
+Disclosed initial footprint: v1 **20,619** -> v2 **45,940** -> current-main v3
+**46,135**, a net **+25,516** over v1 and **+195** over the earlier main snapshot.
+These are conservative detected-site totals with additions/removals/reindexing,
+not counts of new semantic defects. This supervised initial refresh is confined
+to this still-unmerged PR. No application/schema version, budget, timeout,
+qualification state or frozen/golden/sample byte is changed. Main #666 is
+preserved and its board restored. Fresh exact-head all-15, CodeQL and applicable
+complete workflows, then same-reviewer re-review, remain mandatory. No PR merge
+or release is authorized by these observations.
