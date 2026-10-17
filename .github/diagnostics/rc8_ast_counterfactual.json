@@ -1,0 +1,14 @@
+{
+  "base_source": "8c4b87d8bc149a30fcd05f5efcd123856a2778e6",
+  "base_tree": "aa003b01248588220d22face7e8218f96a9ada84",
+  "candidate_tree": "95863e1d3e83c92cff25b7a012f00aed90a52205",
+  "changes_sha256": "b4e5250499729a8f72772d57ffa53c9c851c347861666d74db4e9a8e0c0aacae",
+  "author_name": "Atlas diagnostic",
+  "author_email": "atlas-diagnostic@users.noreply.github.com",
+  "author_date": "2026-10-17T00:00:00+00:00",
+  "committer_name": "Atlas diagnostic",
+  "committer_email": "atlas-diagnostic@users.noreply.github.com",
+  "committer_date": "2026-10-17T00:00:00+00:00",
+  "message": "diagnostic: AST visitor disposal counterfactual\n",
+  "candidate_source": "a86ee3d7e7890a86cc2a0b5acb10d28562ef09ca"
+}

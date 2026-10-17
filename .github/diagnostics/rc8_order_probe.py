@@ -139,6 +139,7 @@ def main() -> int:
     parser.add_argument("--subject", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
+    parser.add_argument("--expected-tree")
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected", "collection-cut", "heap"), required=True)
     parser.add_argument("--cut-before", default="")
@@ -155,10 +156,16 @@ def main() -> int:
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=subject, text=True).strip()
     if actual != args.source:
         raise RuntimeError("diagnostic checkout is not the selected exact source")
+    if args.expected_tree is not None:
+        actual_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip()
+        tracked_changes = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=subject, text=True)
+        if not re.fullmatch(r"[0-9a-f]{40}", args.expected_tree) or actual_tree != args.expected_tree or tracked_changes:
+            raise RuntimeError("frozen diagnostic tree or tracked source changed before pytest")
     # Workflow-start budget includes checkout/install time and reserves five
     # minutes inside the unchanged 120-minute job limit for final reporting.
     deadline = time.monotonic() + max(0, int(os.environ["ATLAS_DIAGNOSTIC_DEADLINE"]) - time.time())
-    if args.mode == "heap":
+    if args.mode == "heap" or args.expected_tree is not None:
         deadline -= 10  # Reap/save before the outer watchdog's five-second kill reserve.
     environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent)}
     environment.pop("ATLAS_ORDER_CASE", None)
