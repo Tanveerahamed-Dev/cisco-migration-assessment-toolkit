@@ -160,12 +160,18 @@ def main() -> int:
                 if value.get("kind") == "api":
                     measurements.append(value)
         target = []
+        other_failures = []
         if (case / "durations.jsonl").exists():
-            target = [json.loads(line) for line in (case / "durations.jsonl").read_text().splitlines()
-                      if json.loads(line)["nodeid"] == TARGET and json.loads(line)["when"] == "call"]
+            for line in (case / "durations.jsonl").read_text().splitlines():
+                report = json.loads(line)
+                if report["nodeid"] == TARGET and report["when"] == "call":
+                    target.append(report)
+                elif report["outcome"] == "failed":
+                    other_failures.append(report)
         result = {"label": label, "source": actual, "command": command, "exit_code": code,
                   "wall_seconds": round(time.monotonic() - started, 3), "target": target,
-                  "measurements": measurements, "selected_count": len(selection) if selection is not None else None}
+                  "measurements": measurements, "other_failures": other_failures,
+                  "selected_count": len(selection) if selection is not None else None}
         results.append(result)
         (output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
@@ -195,10 +201,17 @@ def main() -> int:
     altered, _ = run("changed-execution-prefix", selection=[*additions, TARGET])
 
     def over_budget(result):
-        return bool(result["target"] and result["target"][-1]["outcome"] == "failed"
-                    and result["measurements"] and result["measurements"][-1]["first_page_ms"] > 300)
+        return bool(result["exit_code"] == 1 and not result["other_failures"] and len(result["target"]) == 1
+                    and result["target"][0]["outcome"] == "failed" and result["measurements"]
+                    and result["measurements"][-1]["timed"] is True
+                    and result["measurements"][-1]["first_page_ms"] > 300)
 
-    if not isolated["target"] or isolated["target"][-1]["outcome"] != "passed":
+    def passed(result):
+        return bool(result["exit_code"] == 0 and not result["other_failures"] and len(result["target"]) == 1
+                    and result["target"][0]["outcome"] == "passed" and result["measurements"]
+                    and result["measurements"][-1]["timed"] is True)
+
+    if not passed(isolated):
         print("No isolated positive control; no causal polluter conclusion.", flush=True)
         return 0
     collection = over_budget(empty)
@@ -207,7 +220,7 @@ def main() -> int:
         candidates = list(dict.fromkeys(node.split("::", 1)[0] for node in order
                                         if node.split("::", 1)[0] != TARGET.split("::", 1)[0]))
         zero, _ = run("target-module-collection-control", selection=[TARGET], paths=collection_paths(()))
-        if not zero["target"] or zero["target"][-1]["outcome"] != "passed":
+        if not passed(zero):
             print("Target module collection alone is not a positive control; no external polluter conclusion.", flush=True)
             return 0
     elif not over_budget(altered):
@@ -228,7 +241,7 @@ def main() -> int:
             result, _ = run(f"execution-prefix-{middle}", selection=[*selected, TARGET])
         if over_budget(result):
             upper = middle
-        elif result["target"] and result["target"][-1]["outcome"] == "passed":
+        elif passed(result):
             lower = middle
         else:
             print("Prefix had a non-budget error; stopping without causal conclusion.", flush=True)
