@@ -446,12 +446,11 @@ def test_the_history_leg_reader_recognises_every_way_a_step_collects_the_suite()
             # the full gate's shard and evidence options take a value: neither a spec nor an evidence
             # path is a collected path
             ("python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC "
-             "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED "
-             "--atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT", True),
+             "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED",
+             True),
             ("python -m pytest -q --atlas-shard 1/2 --atlas-shard-manifest shard-1.txt", True),
-            ("python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest x "
-             "--atlas-shard-environment y", True),
-            ("python -m pytest --atlas-shard-executed tests/x.txt --atlas-shard-environment tests/y.txt", True),
+            ("python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest x", True),
+            ("python -m pytest --atlas-shard-executed tests/x.txt", True),
             ("python -m pytest --atlas-shard 0/2 webapp/tests", False),
             ("python -m pytest --atlas-shard-executed tests/x.txt webapp/tests", False),
             ("python -m pytest webapp/tests -q", False), ("python -m pytest master-reference/tests", False),

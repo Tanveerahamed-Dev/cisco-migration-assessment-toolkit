@@ -11,9 +11,7 @@ its share through the root conftest.py options this module implements:
 * ``--atlas-shard-manifest PATH`` writes the final SELECTED node ids to a NEW file;
 * ``--atlas-shard-executed PATH`` writes, when the session finishes, the node ids that COMPLETED
   WITHOUT FAILURE (:func:`completed_without_failure`, over every test report pytest logged) to a NEW
-  file;
-* ``--atlas-shard-environment PATH`` writes, before any test can run, the interpreter and every
-  installed distribution (:func:`environment_rows`) to a NEW file.
+  file.
 
 Every one of those files is a manifest (:func:`manifest_text`): rows sorted, one per line, UTF-8 and
 LF only.
@@ -22,10 +20,9 @@ A selection is not evidence that anything ran: a ``--collect-only`` or ``--setup
 short, and a failure whose exit status a step swallowed all still write the same selection. The
 executed manifest is that evidence, and it is read from the reports themselves, so it holds whatever
 the step's exit-code plumbing does. The required `gate` job collects the whole suite once with
-``--atlas-shard-manifest`` and ``--atlas-shard-environment``, and ``.github/scripts/verify_shard_union.py``
-refuses unless the shards' selections are an exact disjoint cover of that collection, each shard's
-executed manifest is exactly its selection, and every shard recorded the full collection's
-environment.
+``--atlas-shard-manifest``, and ``.github/scripts/verify_shard_union.py`` refuses unless the shards'
+selections are an exact disjoint cover of that collection and each shard's executed manifest is
+exactly its selection.
 
 The partition key is the test FILE (the node id before ``::``, the rootdir-relative path pytest
 already spells with ``/``), never the item: every item of a file lands in one shard, so a module- or
@@ -42,11 +39,9 @@ same reason tests/client_artifact_census.py gives for itself. Standard library o
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import os
 import re
-import sys
-from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Iterable, List, Sequence, Tuple, TypeVar
 
 #: ``I/N`` in plain ASCII decimal, no sign, no padding, no blanks: ``\d`` would also admit non-ASCII
 #: digits that ``int()`` silently accepts, and ``$`` would admit a trailing line feed.
@@ -55,9 +50,6 @@ _SPEC = re.compile(r"(0|[1-9][0-9]*)/([1-9][0-9]*)", re.ASCII)
 #: The report outcomes that are not a failure. pytest itself reports "passed", "failed" or "skipped";
 #: any other outcome (a rerun plugin's "rerun") is not known to be a success, so it counts as failure.
 _NOT_FAILED = frozenset({"passed", "skipped"})
-
-#: How an environment row spells a name or version a distribution's metadata does not give.
-_UNKNOWN = "?"
 
 _Item = TypeVar("_Item")
 
@@ -131,8 +123,9 @@ def completed_without_failure(facts: Iterable[Tuple[str, str, str]]) -> List[str
         disqualify it; and
     (iii) it has a call report that passed, or a setup or call report that skipped (a skip marker or
         ``pytest.skip``; an xfail, which pytest reports as a skipped call) -- so a run that never calls
-        the test (``--setup-plan``, ``--setup-only``) leaves it out, as ``--collect-only``, which logs
-        no report at all, does.
+        the test (``--setup-plan``, ``--setup-only``) leaves out every test NOT skipped at setup, and
+        ``--collect-only``, which logs no report at all, leaves out every test. A skip-marked test is
+        still recorded by such a run, harmlessly: a real run skips it too, so neither run executes it.
     """
     torn_down, failed, ran = set(), set(), set()
     for nodeid, when, outcome in facts:
@@ -143,49 +136,6 @@ def completed_without_failure(facts: Iterable[Tuple[str, str, str]]) -> List[str
         if (when == "call" and outcome == "passed") or (when in ("setup", "call") and outcome == "skipped"):
             ran.add(nodeid)
     return sorted((torn_down & ran) - failed)
-
-
-def python_row(implementation: str, version_info: Sequence[Any]) -> str:
-    """The interpreter's environment row: ``python <implementation> <major>.<minor>.<micro>
-    <releaselevel>``."""
-    major, minor, micro, releaselevel = tuple(version_info)[:4]
-    return f"python {implementation} {major}.{minor}.{micro} {releaselevel}"
-
-
-def normalized_name(name: str) -> str:
-    """A distribution name as PEP 503 normalizes it: each run of ``-``, ``_`` and ``.`` becomes one
-    ``-``, and every letter is lower case."""
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def installed_distributions() -> List[Tuple[Optional[str], Optional[str]]]:
-    """``(Name, Version)`` of every distribution ``importlib.metadata`` finds on ``sys.path``, in its
-    own order and with every duplicate; a field the metadata lacks is None."""
-    found: List[Tuple[Optional[str], Optional[str]]] = []
-    for distribution in importlib.metadata.distributions():
-        metadata = distribution.metadata
-        # `.get`, never `[...]`: a missing field is a DeprecationWarning on 3.12 and a KeyError later.
-        get = getattr(metadata, "get", None)
-        found.append((get("Name") if get else None, get("Version") if get else None))
-    return found
-
-
-def environment_rows(distributions: Optional[Iterable[Tuple[Optional[str], Optional[str]]]] = None,
-                     implementation: Optional[str] = None,
-                     version_info: Optional[Sequence[Any]] = None) -> List[str]:
-    """The environment evidence: the interpreter's row (:func:`python_row`) and one
-    ``<PEP 503 normalized name>==<version>`` row per distribution (:func:`installed_distributions`),
-    every duplicate kept -- a second copy of a distribution on sys.path is a fact about the
-    environment too -- and a missing field spelled ``?``; sorted, as :func:`manifest_text` writes
-    them. Each argument defaults to this process's own value."""
-    if distributions is None:
-        distributions = installed_distributions()
-    rows = [python_row(sys.implementation.name if implementation is None else implementation,
-                       sys.version_info if version_info is None else version_info)]
-    for name, version in distributions:
-        rows.append(f"{_UNKNOWN if name is None else normalized_name(str(name))}=="
-                    f"{_UNKNOWN if version is None else version}")
-    return sorted(_one_line_rows(rows))
 
 
 def _one_line_rows(rows: Iterable[str]) -> List[str]:

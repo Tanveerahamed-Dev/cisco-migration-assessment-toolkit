@@ -529,21 +529,11 @@ _SHARD_SPEC = re.compile(r"\$\{\{ matrix\.shard \}\}/([1-9][0-9]*)")
 #: any message would admit a `$(...)` subexpression -- `$(exit 0)` ends the step green.
 _SHARD_RESULT_CHECK = ("if ($env:SHARD_RESULT -cne 'success') { throw \"gate_shard concluded '$env:SHARD_RESULT'; "
                        "this required check passes only when every shard succeeded\" }")
-#: How every job that runs pytest builds its environment, line for line (each native command followed by
-#: the exit check): the pinned pip; every distribution the runner image put into the interpreter removed --
-#: refused on anything but an ephemeral GitHub-hosted runner, so no persistent machine's interpreter is
-#: ever cleared -- so only that pip remains to steer the resolution and two image versions cannot
-#: differ in it; then requirements-dev.txt resolved only from releases uploaded before the checked-out
-#: commit's committer date, which every job of a run and every re-run attempt reads alike. So the
-#: shards and the full collection install ONE resolution by construction, and the verifier's
-#: one-environment refusal fires only when the installs genuinely diverged -- never because a release
-#: landed between two jobs.
-_HOSTED_RUNNER_ONLY = ("if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'only an ephemeral GitHub-hosted "
-                       "runner may have its interpreter cleared' }")
-_IMAGE_DISTRIBUTIONS = "$preinstalled = @(python -m pip freeze --all --exclude pip)"
-_REMOVE_IMAGE_DISTRIBUTIONS = "if ($preinstalled) { python -m pip uninstall --yes $preinstalled }"
-_RESOLUTION_CUTOFF = "$cutoff = git log -1 --format=%cI HEAD"
-_DEV_INSTALL = "python -m pip install --uploaded-prior-to $cutoff -r requirements-dev.txt"
+#: How every job that runs pytest installs, line for line (each native command followed by the exit
+#: check): the pinned pip, then requirements-dev.txt. Each job resolves those ranges itself when it
+#: starts, as ci.yml's legs do, so the jobs' versions can skew: an accepted residual
+#: (.github/scripts/verify_shard_union.py), not something the evidence claims to exclude.
+_DEV_INSTALL = "python -m pip install -r requirements-dev.txt"
 _UNION_VERIFIER = ".github/scripts/verify_shard_union.py"
 _SHARD_OPTION = re.compile(r"--atlas-shard(?=[\s=]|$)")
 
@@ -566,8 +556,7 @@ _SHARD_EVIDENCE = "${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}"
 _EVIDENCE_ARTIFACT = "atlas-gate-shard-evidence-"
 _EVIDENCE_ROOT = "${{ runner.temp }}/atlas-gate-shard-evidence"
 _RUN_STEP = "Run this shard of the complete Python suite without artifact authority"
-_COLLECT_STEP = ("Collect the complete suite once and prove the shards ran exactly it without failure in one "
-                 "environment")
+_COLLECT_STEP = "Collect the complete suite once and prove the shards ran exactly it without failure"
 _NORMALIZE_STEP = "Normalize the test checkout to committed bytes"
 _FRONTEND_STEP = "Run the frontend tests and prove the tracked build reproduces"
 #: Each job's exact steps, in order: (action or None, name or None, exact key set). An action step is
@@ -578,7 +567,7 @@ _SHARD_STEPS = (
     ("actions/setup-python", None, {"uses", "with"}),
     ("actions/setup-node", None, {"uses", "with"}),
     (None, _RUN_STEP, {"name", "shell", "env", "run"}),
-    ("actions/upload-artifact", "Upload what this shard selected, executed and ran in", {"name", "uses", "with"}),
+    ("actions/upload-artifact", "Upload what this shard selected and executed", {"name", "uses", "with"}),
 )
 _GATE_STEPS = (
     (None, "Require every Python shard to have succeeded", {"name", "shell", "env", "run"}),
@@ -674,8 +663,7 @@ def _assert_gate_shard_contract(document: dict) -> None:
         for step in steps:
             assert "run" not in step or step.get("shell") == "pwsh", (job_id, step.get("name"), step.get("shell"))
     pinned_pip = f"python -m pip install --upgrade 'pip=={_TOOLCHAIN['pip']}'"
-    install = (pinned_pip, _EXIT_CHECK, _HOSTED_RUNNER_ONLY, _IMAGE_DISTRIBUTIONS, _EXIT_CHECK,
-               _REMOVE_IMAGE_DISTRIBUTIONS, _EXIT_CHECK, _RESOLUTION_CUTOFF, _EXIT_CHECK, _DEV_INSTALL, _EXIT_CHECK)
+    install = (pinned_pip, _EXIT_CHECK, _DEV_INSTALL, _EXIT_CHECK)
 
     # The shard count is ONE value: derived from the spec and held by the matrix, the job name and
     # the verifier's --expected-shards, so the four cannot drift apart.
@@ -696,7 +684,7 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert len(checkouts) == 1 and str(checkouts[0]["with"].get("fetch-depth")) == "0"
     # The run step, completely: each evidence path is ONE whitespace-free token inside one directory
     # under RUNNER_TEMP, named as the verifier names them; the directory exists before pytest; the
-    # single gate's exact flags plus the four shard options; and every exit check, so the shared
+    # single gate's exact flags plus the three shard options; and every exit check, so the shared
     # reader sees a full default-suite run and every leg guard holds each shard to account.
     assert run_step["name"] == _RUN_STEP and run_step["shell"] == "pwsh"
     assert run_env == {
@@ -704,14 +692,12 @@ def _assert_gate_shard_contract(document: dict) -> None:
         "ATLAS_SHARD_EVIDENCE": _SHARD_EVIDENCE,
         "ATLAS_SHARD_SELECTED": f"{_SHARD_EVIDENCE}/{_UNION.SELECTED}",
         "ATLAS_SHARD_EXECUTED": f"{_SHARD_EVIDENCE}/{_UNION.EXECUTED}",
-        "ATLAS_SHARD_ENVIRONMENT": f"{_SHARD_EVIDENCE}/{_UNION.ENVIRONMENT}",
     }, run_env
     assert run_step["run"] == _script(
         *install,
         "New-Item -ItemType Directory -Path $env:ATLAS_SHARD_EVIDENCE | Out-Null",
         "python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC "
-        "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED "
-        "--atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT",
+        "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED",
         _EXIT_CHECK,
     ), run_step["run"]
     assert pytest_invocations(run_step["run"]) == [default_testpaths()]
@@ -738,9 +724,8 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert first.get("env") == {"SHARD_RESULT": "${{ needs.gate_shard.result }}"}
     assert first.get("run") == _script(_SHARD_RESULT_CHECK), first
 
-    # Its full collection runs on the shards' checkout, interpreter and node, builds its environment
-    # with the shards' exact install lines (pinned in both scripts below), and records it for the
-    # verifier to hold every shard's to.
+    # Its full collection runs on the shards' checkout, interpreter and node, and installs with the
+    # shards' exact install lines (pinned in both scripts below).
     for key in ("runs-on", "timeout-minutes", "permissions", "env"):
         assert gate.get(key) == shard.get(key), key
     for action in ("actions/checkout", "actions/setup-python", "actions/setup-node"):
@@ -763,9 +748,8 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert pip[0] and pip[0] == pip[1], pip
 
     # Download every shard's evidence -- without merge-multiple, so each artifact keeps its own
-    # directory -- collect the whole suite ONCE (never itself a shard) with its environment, prove the
-    # selection cover, each shard's execution and the one environment, and only then run the
-    # unchanged frontend gate.
+    # directory -- collect the whole suite ONCE (never itself a shard), prove the selection cover and
+    # each shard's execution, and only then run the unchanged frontend gate.
     download_index = _one([i for i, step in enumerate(gate_steps) if _uses(step, "actions/download-artifact")],
                           "evidence download")
     download = gate_steps[download_index].get("with") or {}
@@ -779,24 +763,22 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert collect["name"] == _COLLECT_STEP and collect["shell"] == "pwsh"
     assert collect_env == {
         "ATLAS_FULL_SELECTED": "${{ runner.temp }}/atlas-gate-full-selected.txt",
-        "ATLAS_FULL_ENVIRONMENT": "${{ runner.temp }}/atlas-gate-full-environment.txt",
         "ATLAS_SHARD_EVIDENCE_ROOT": _EVIDENCE_ROOT,
     }, collect_env
     assert collect["run"] == _script(
         *install,
-        "python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_SELECTED "
-        "--atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT",
+        "python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_SELECTED",
         _EXIT_CHECK,
         f"python {_UNION_VERIFIER} --expected-shards {total} --full $env:ATLAS_FULL_SELECTED "
-        "--environment $env:ATLAS_FULL_ENVIRONMENT --shard-dir $env:ATLAS_SHARD_EVIDENCE_ROOT",
+        "--shard-dir $env:ATLAS_SHARD_EVIDENCE_ROOT",
         _EXIT_CHECK,
     ), collect["run"]
     assert pytest_invocations(collect["run"]) == [default_testpaths()]
     assert _SHARD_OPTION.search(collect["run"]) is None, "the full collection must not itself be a shard"
     assert collect_env.get("ATLAS_SHARD_EVIDENCE_ROOT") == download.get("path"), (collect_env, download)
-    for full in (collect_env["ATLAS_FULL_SELECTED"], collect_env["ATLAS_FULL_ENVIRONMENT"]):
-        assert full.startswith("${{ runner.temp }}/"), full
-        assert not full.startswith(str(download.get("path")) + "/"), "the full collection's evidence is no shard's"
+    full = collect_env["ATLAS_FULL_SELECTED"]
+    assert full.startswith("${{ runner.temp }}/"), full
+    assert not full.startswith(str(download.get("path")) + "/"), "the full collection's evidence is no shard's"
     assert (ROOT / _UNION_VERIFIER).is_file()
     frontend_index = _one([i for i, step in enumerate(gate_steps)
                            if "npm ci --ignore-scripts" in str(step.get("run") or "")], "frontend step")
@@ -844,16 +826,11 @@ _GITHUB_ENV_STEP = {"name": "Prepare the suite", "shell": "pwsh",
     "shard_job_pytest_addopts", "gate_job_pytest_addopts", "workflow_pytest_addopts", "workflow_defaults",
     "shard_job_defaults", "gate_job_defaults", "swallowed_shard_exit", "swallowed_collect_exit",
     "shard_shell_swallows", "collect_shell_swallows", "frontend_shell_swallows", "shard_extra_step",
-    "gate_extra_step", "no_executed_option", "no_shard_environment_option", "no_full_environment_option",
-    "no_verifier_environment", "extra_collect_line", "extra_shard_line", "merge_multiple_download",
+    "gate_extra_step", "no_executed_option", "extra_collect_line", "extra_shard_line", "merge_multiple_download",
     "pythonpath_step_env", "pythonpath_run_env", "no_evidence_directory", "upload_one_file",
     "download_one_artifact", "run_step_working_directory", "gate_job_container",
     # the shard-result check runs no code of its own
     "result_check_message_runs_code",
-    # one resolution by construction: what would let a release or an image change one job's install
-    "shard_resolves_whatever_is_newest", "collect_resolves_whatever_is_newest", "collect_cutoff_from_its_clock",
-    "shard_cutoff_from_its_clock", "shard_keeps_image_distributions", "collect_keeps_image_distributions",
-    "collect_keeps_image_distributions_unchecked", "shard_clears_any_runner", "collect_clears_any_runner",
 ])
 def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     document = _portable_document()
@@ -971,12 +948,6 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
         gate["steps"].insert(collect_index, dict(_GITHUB_ENV_STEP))
     elif mutation == "no_executed_option":
         run_step["run"] = run_step["run"].replace(" --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED", "")
-    elif mutation == "no_shard_environment_option":
-        run_step["run"] = run_step["run"].replace(" --atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT", "")
-    elif mutation == "no_full_environment_option":
-        collect["run"] = collect["run"].replace(" --atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT", "")
-    elif mutation == "no_verifier_environment":
-        collect["run"] = collect["run"].replace(" --environment $env:ATLAS_FULL_ENVIRONMENT", "")
     elif mutation == "extra_collect_line":
         collect["run"] = "$env:PYTEST_ADDOPTS = '--ignore=webapp/tests'\n" + collect["run"]
     elif mutation == "extra_shard_line":
@@ -1000,29 +971,6 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     elif mutation == "result_check_message_runs_code":
         gate["steps"][0]["run"] = gate["steps"][0]["run"].replace("succeeded\"", "succeeded$(exit 0)\"")
         assert "$(exit 0)" in gate["steps"][0]["run"]
-    elif mutation == "shard_resolves_whatever_is_newest":
-        run_step["run"] = run_step["run"].replace(" --uploaded-prior-to $cutoff", "")
-    elif mutation == "collect_resolves_whatever_is_newest":
-        collect["run"] = collect["run"].replace(" --uploaded-prior-to $cutoff", "")
-    elif mutation == "collect_cutoff_from_its_clock":
-        clock = "$cutoff = (Get-Date).ToUniversalTime().ToString('o')"
-        collect["run"] = collect["run"].replace(_RESOLUTION_CUTOFF, clock)
-    elif mutation == "shard_cutoff_from_its_clock":
-        run_step["run"] = run_step["run"].replace(_RESOLUTION_CUTOFF, "$cutoff = 'P0D'")  # "now", as pip reads it
-    elif mutation == "shard_keeps_image_distributions":
-        run_step["run"] = _script(*(line for line in run_step["run"].splitlines()
-                                    if line != _REMOVE_IMAGE_DISTRIBUTIONS))
-    elif mutation == "collect_keeps_image_distributions":
-        collect["run"] = collect["run"].replace(_IMAGE_DISTRIBUTIONS, "$preinstalled = @()")
-    elif mutation == "collect_keeps_image_distributions_unchecked":
-        lines = collect["run"].splitlines()
-        after = lines.index(_REMOVE_IMAGE_DISTRIBUTIONS) + 1
-        assert lines[after] == _EXIT_CHECK
-        collect["run"] = _script(*lines[:after], *lines[after + 1:])
-    elif mutation == "shard_clears_any_runner":
-        run_step["run"] = _script(*(line for line in run_step["run"].splitlines() if line != _HOSTED_RUNNER_ONLY))
-    elif mutation == "collect_clears_any_runner":
-        collect["run"] = collect["run"].replace("-cne 'github-hosted'", "-cne 'self-hosted'")
     else:
         raise AssertionError(f"unknown mutation {mutation!r}")  # outside pytest.raises: a typo fails loudly
     with pytest.raises(AssertionError):

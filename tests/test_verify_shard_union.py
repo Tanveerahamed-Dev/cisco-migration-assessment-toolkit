@@ -1,8 +1,8 @@
 """The full gate's verifier (.github/scripts/verify_shard_union.py): the required portable gate passes
 only when the Python shards' evidence proves a selection cover (an exact, disjoint, non-empty cover of
-one full collection), execution without failure (each shard executed exactly what it selected) and one
-environment (each shard recorded the full collection's). Every refusal is exercised, each against a
-case that differs from an accepted one in exactly that defect. The end-to-end runs with real pytest
+one full collection) and execution without failure (each shard executed exactly what it selected).
+Every refusal is exercised, each against a case that differs from an accepted one in exactly that
+defect. The end-to-end runs with real pytest
 shards are in tests/test_atlas_shard_partition.py.
 """
 from __future__ import annotations
@@ -31,7 +31,6 @@ FULL = sorted(["tests/test_a.py::one", "tests/test_a.py::two", "tests/test_b.py:
                "webapp/tests/test_c.py::one[x]", "webapp/tests/test_c.py::one[y]"])
 SHARDS = [["tests/test_a.py::one", "tests/test_a.py::two"],
           ["tests/test_b.py::one", "webapp/tests/test_c.py::one[x]", "webapp/tests/test_c.py::one[y]"]]
-ENVIRONMENT = sorted(["python cpython 3.12.10 final", "pytest==9.1.1", "pyyaml==6.0.3", "setuptools==84.0.0"])
 
 
 def _manifest(path: Path, rows) -> Path:
@@ -39,11 +38,10 @@ def _manifest(path: Path, rows) -> Path:
     return path
 
 
-def _layout(tmp_path: Path, full=FULL, shards=SHARDS, executed=None, environments=None,
-            full_environment=ENVIRONMENT) -> tuple[Path, Path, Path]:
-    """``(full selection, full environment, evidence root)`` as the gate receives them: download-artifact
-    gives every shard artifact its own directory, named after it. A shard executes what it selected
-    and records the full environment unless ``executed`` / ``environments`` say otherwise."""
+def _layout(tmp_path: Path, full=FULL, shards=SHARDS, executed=None) -> tuple[Path, Path]:
+    """``(full selection, evidence root)`` as the gate receives them: download-artifact gives every
+    shard artifact its own directory, named after it. A shard executes what it selected unless
+    ``executed`` says otherwise."""
     root = tmp_path / "evidence"
     root.mkdir()
     for index, rows in enumerate(shards):
@@ -51,15 +49,11 @@ def _layout(tmp_path: Path, full=FULL, shards=SHARDS, executed=None, environment
         directory.mkdir()
         _manifest(directory / UNION.SELECTED, sorted(rows))
         _manifest(directory / UNION.EXECUTED, sorted(rows if executed is None else executed[index]))
-        _manifest(directory / UNION.ENVIRONMENT,
-                  sorted(full_environment if environments is None else environments[index]))
-    return (_manifest(tmp_path / "full-selected.txt", sorted(full)),
-            _manifest(tmp_path / "full-environment.txt", sorted(full_environment)), root)
+    return _manifest(tmp_path / "full-selected.txt", sorted(full)), root
 
 
-def _main(full: Path, environment: Path, root: Path, expected: int = 2) -> int:
-    return UNION.main(["--expected-shards", str(expected), "--full", str(full), "--environment", str(environment),
-                       "--shard-dir", str(root)])
+def _main(full: Path, root: Path, expected: int = 2) -> int:
+    return UNION.main(["--expected-shards", str(expected), "--full", str(full), "--shard-dir", str(root)])
 
 
 def _shard_dir(root: Path, index: int) -> Path:
@@ -75,14 +69,13 @@ def _symlink_or_skip(link: Path, target: Path, directory: bool = False) -> None:
 
 # -- the accepted case ------------------------------------------------------------------------------
 
-def test_an_exact_cover_executed_without_failure_in_one_environment_is_accepted(tmp_path, capsys):
+def test_an_exact_cover_executed_without_failure_is_accepted(tmp_path, capsys):
     assert UNION.union_problems(FULL, SHARDS) == []
-    full, environment, root = _layout(tmp_path)
-    assert _main(full, environment, root) == 0
+    full, root = _layout(tmp_path)
+    assert _main(full, root) == 0
     out = capsys.readouterr().out
     assert "5 collected node ids = 2 + 3 across 2 disjoint shard(s)" in out
     assert "every shard executed its whole selection without failure" in out
-    assert f"environment of {len(ENVIRONMENT)} row(s)" in out
 
 
 # -- the selection cover ----------------------------------------------------------------------------
@@ -138,8 +131,8 @@ def test_the_command_exits_one_on_a_refused_union(tmp_path, capsys, mutation):
         shards[0].append("tests/test_b.py::one")
     else:
         shards = [[], FULL]
-    full, environment, root = _layout(tmp_path, shards=shards)  # each shard executed what it selected
-    assert _main(full, environment, root) == 1
+    full, root = _layout(tmp_path, shards=shards)  # each shard executed what it selected
+    assert _main(full, root) == 1
     captured = capsys.readouterr()
     assert "shard union refused" in captured.err and "verified" not in captured.out
 
@@ -156,84 +149,43 @@ def test_the_command_exits_one_on_a_refused_union(tmp_path, capsys, mutation):
      "atlas-gate-shard-evidence-0: 1 node id(s) completed that it did not select: ['tests/test_b.py::one']"),
 ], ids=["a-failed-test", "nothing-ran", "ran-unselected"])
 def test_every_shard_must_execute_exactly_what_it_selected(tmp_path, capsys, executed, needle):
-    full, environment, root = _layout(tmp_path, executed=executed)
-    assert _main(full, environment, root) == 1
+    full, root = _layout(tmp_path, executed=executed)
+    assert _main(full, root) == 1
     err = capsys.readouterr().err
     assert needle in err, err
     assert "in no shard" not in err  # the selections themselves are a sound cover
 
 
-# -- one environment --------------------------------------------------------------------------------
-
-@pytest.mark.parametrize("shard_environment,needle", [
-    ([row.replace("pytest==9.1.1", "pytest==9.1.2") for row in ENVIRONMENT],
-     "1 row(s) only in the full collection ['pytest==9.1.1'], 1 only in the shard ['pytest==9.1.2']"),
-    ([row for row in ENVIRONMENT if not row.startswith("pyyaml")],
-     "1 row(s) only in the full collection ['pyyaml==6.0.3'], 0 only in the shard []"),
-    (sorted(ENVIRONMENT + ["pyyaml==6.0.3"]), "0 row(s) only in the full collection [], 1 only in the shard"),
-    ([row.replace("3.12.10", "3.12.9") for row in ENVIRONMENT], "only in the shard ['python cpython 3.12.9 final']"),
-], ids=["another-version", "a-missing-distribution", "a-second-copy", "another-interpreter"])
-def test_every_shard_must_record_the_full_collections_environment(tmp_path, capsys, shard_environment, needle):
-    full, environment, root = _layout(tmp_path, environments=[ENVIRONMENT, shard_environment])
-    assert _main(full, environment, root) == 1
-    err = capsys.readouterr().err
-    assert "atlas-gate-shard-evidence-1: its environment" in err and needle in err, err
-    assert "atlas-gate-shard-evidence-0" not in err  # the other shard's environment is the full one
-    # every job installs one resolution, so the refusal names a genuine divergence and its remedy
-    assert "genuinely diverged" in err and "re-run all jobs" in err, err
-
-
-@pytest.mark.parametrize("full_environment,count", [
-    ([row for row in ENVIRONMENT if not row.startswith("python ")], 0),
-    (sorted(ENVIRONMENT + ["python cpython 3.13.1 final"]), 2),
-    ([], 0),
-], ids=["no-interpreter", "two-interpreters", "empty"])
-def test_the_environment_must_record_exactly_one_interpreter(tmp_path, capsys, full_environment, count):
-    """Even when every shard agrees with it: an environment that names no interpreter (or two) proves
-    nothing about the one the shards ran on."""
-    full, environment, root = _layout(tmp_path, full_environment=full_environment)
-    assert _main(full, environment, root) == 1
-    assert f"records {count} interpreter row(s), not exactly one" in capsys.readouterr().err
-
-
-def test_a_repeated_environment_row_is_evidence_not_a_defect(tmp_path):
-    """Two copies of one distribution on sys.path are two facts; every shard must record both."""
-    repeated = sorted(ENVIRONMENT + ["pyyaml==6.0.3"])
-    full, environment, root = _layout(tmp_path, full_environment=repeated)
-    assert _main(full, environment, root) == 0
-
-
 # -- the evidence layout ----------------------------------------------------------------------------
 
 def test_the_shard_count_is_given_never_inferred(tmp_path, capsys):
-    full, environment, root = _layout(tmp_path)
-    assert _main(full, environment, root, expected=3) == 1  # a shard that never uploaded
+    full, root = _layout(tmp_path)
+    assert _main(full, root, expected=3) == 1  # a shard that never uploaded
     assert "expected exactly 3 shard evidence director(ies)" in capsys.readouterr().err
     third = _shard_dir(root, 2)
     third.mkdir()
     for name in UNION.SHARD_FILES:
         _manifest(third / name, [])
-    assert _main(full, environment, root, expected=2) == 1  # evidence nobody ran for
+    assert _main(full, root, expected=2) == 1  # evidence nobody ran for
     assert "expected exactly 2 shard evidence director(ies)" in capsys.readouterr().err
 
 
 def test_a_single_artifact_downloaded_straight_into_the_root_is_refused(tmp_path, capsys):
     """download-artifact extracts a pattern that matches only ONE artifact directly into its path, not
-    into a directory named after it: the three files then sit in the root, which is refused."""
-    full, environment, root = _layout(tmp_path, shards=[FULL])
+    into a directory named after it: the two files then sit in the root, which is refused."""
+    full, root = _layout(tmp_path, shards=[FULL])
     only = _shard_dir(root, 0)
     for name in UNION.SHARD_FILES:
         os.replace(only / name, root / name)
     only.rmdir()
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert "not real shard evidence directories" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("change", ["missing-selected", "missing-executed", "missing-environment",
-                                    "extra-file", "extra-directory"])
-def test_a_shard_directory_must_hold_exactly_the_three_evidence_files(tmp_path, capsys, change):
-    full, environment, root = _layout(tmp_path)
-    assert _main(full, environment, root) == 0  # the same layout, complete, is accepted
+@pytest.mark.parametrize("change", ["missing-selected", "missing-executed", "extra-file", "extra-directory"])
+def test_a_shard_directory_must_hold_exactly_the_two_evidence_files(tmp_path, capsys, change):
+    full, root = _layout(tmp_path)
+    assert _main(full, root) == 0  # the same layout, complete, is accepted
     capsys.readouterr()
     directory = _shard_dir(root, 1)
     if change.startswith("missing-"):
@@ -242,34 +194,34 @@ def test_a_shard_directory_must_hold_exactly_the_three_evidence_files(tmp_path, 
         _manifest(directory / "notes.txt", [])
     else:
         (directory / "nested").mkdir()
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     err = capsys.readouterr().err
     assert "atlas-gate-shard-evidence-1 must hold exactly" in err, err
 
 
 def test_a_stray_file_in_the_evidence_root_is_refused(tmp_path, capsys):
-    full, environment, root = _layout(tmp_path)
+    full, root = _layout(tmp_path)
     _manifest(root / "atlas-gate-shard-evidence-2.txt", [])
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert "not real shard evidence directories: ['atlas-gate-shard-evidence-2.txt']" in capsys.readouterr().err
 
 
 def test_a_linked_shard_directory_is_refused(tmp_path, capsys):
-    full, environment, root = _layout(tmp_path)
+    full, root = _layout(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     os.replace(_shard_dir(root, 1), elsewhere)
     _symlink_or_skip(_shard_dir(root, 1), elsewhere, directory=True)
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert "not real shard evidence directories: ['atlas-gate-shard-evidence-1']" in capsys.readouterr().err
 
 
 def test_a_linked_evidence_file_is_refused(tmp_path, capsys):
-    full, environment, root = _layout(tmp_path)
+    full, root = _layout(tmp_path)
     selected = _shard_dir(root, 0) / UNION.SELECTED
     copy = tmp_path / "selected-copy.txt"
     os.replace(selected, copy)
     _symlink_or_skip(selected, copy)
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert f"holds entries that are not regular files: ['{UNION.SELECTED}']" in capsys.readouterr().err
 
 
@@ -283,29 +235,28 @@ def test_a_linked_evidence_file_is_refused(tmp_path, capsys):
     (b"\xef\xbb\xbftests/test_a.py::one\ntests/test_a.py::two\n", "byte-order mark"),
     (b"tests/test_a.py::one\xff\ntests/test_a.py::two\n", "not UTF-8"),
 ], ids=["crlf", "unterminated", "blank", "unsorted", "bom", "not-utf8"])
-@pytest.mark.parametrize("target", ["full", "full-environment", "selected", "executed", "environment"])
+@pytest.mark.parametrize("target", ["full", "selected", "executed"])
 def test_a_malformed_manifest_is_refused_not_normalized(tmp_path, capsys, data, needle, target):
-    full, environment, root = _layout(tmp_path)
-    assert _main(full, environment, root) == 0  # the same layout, well formed, is accepted
-    path = {"full": full, "full-environment": environment, "selected": _shard_dir(root, 0) / UNION.SELECTED,
-            "executed": _shard_dir(root, 0) / UNION.EXECUTED,
-            "environment": _shard_dir(root, 0) / UNION.ENVIRONMENT}[target]
+    full, root = _layout(tmp_path)
+    assert _main(full, root) == 0  # the same layout, well formed, is accepted
+    path = {"full": full, "selected": _shard_dir(root, 0) / UNION.SELECTED,
+            "executed": _shard_dir(root, 0) / UNION.EXECUTED}[target]
     path.write_bytes(data)
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert needle in capsys.readouterr().err
     with pytest.raises(UNION.ManifestError, match=needle):
-        UNION.read_manifest(str(path), unique=target not in ("full-environment", "environment"))
+        UNION.read_manifest(str(path))
 
 
 @pytest.mark.parametrize("target", ["full", "selected", "executed"])
 def test_a_node_id_manifest_that_repeats_a_row_is_refused(tmp_path, capsys, target):
     """No node id manifest may repeat a row: a test collected, selected or executed twice under one id
     would let one run stand in for two."""
-    full, environment, root = _layout(tmp_path)
+    full, root = _layout(tmp_path)
     path = {"full": full, "selected": _shard_dir(root, 0) / UNION.SELECTED,
             "executed": _shard_dir(root, 0) / UNION.EXECUTED}[target]
     _manifest(path, sorted(UNION.read_manifest(str(path)) + ["tests/test_a.py::one"]))
-    assert _main(full, environment, root) == 1
+    assert _main(full, root) == 1
     assert "repeats 1 node id(s): ['tests/test_a.py::one']" in capsys.readouterr().err
 
 
@@ -313,31 +264,27 @@ def test_an_empty_file_is_an_empty_manifest(tmp_path):
     empty = tmp_path / "empty.txt"
     empty.write_bytes(b"")
     assert UNION.read_manifest(str(empty)) == []
-    assert UNION.read_manifest(str(empty), unique=False) == []
 
 
 def test_an_unreadable_input_is_a_refusal(tmp_path, capsys):
-    full, environment, root = _layout(tmp_path)
-    assert _main(tmp_path / "absent.txt", environment, root) == 1
-    assert _main(full, tmp_path / "absent.txt", root) == 1
-    assert _main(full, environment, tmp_path / "absent") == 1
-    assert capsys.readouterr().err.count("shard union refused") == 3
+    full, root = _layout(tmp_path)
+    assert _main(tmp_path / "absent.txt", root) == 1
+    assert _main(full, tmp_path / "absent") == 1
+    assert capsys.readouterr().err.count("shard union refused") == 2
 
 
 @pytest.mark.parametrize("count", ["0", "-1", "02", "2.0", "two", ""])
 def test_the_expected_shard_count_must_be_a_positive_integer(tmp_path, count):
-    full, environment, root = _layout(tmp_path)
+    full, root = _layout(tmp_path)
     with pytest.raises(SystemExit) as excinfo:
-        UNION.main(["--expected-shards", count, "--full", str(full), "--environment", str(environment),
-                    "--shard-dir", str(root)])
+        UNION.main(["--expected-shards", count, "--full", str(full), "--shard-dir", str(root)])
     assert excinfo.value.code == 2
 
 
-@pytest.mark.parametrize("dropped", ["--expected-shards", "--full", "--environment", "--shard-dir"])
+@pytest.mark.parametrize("dropped", ["--expected-shards", "--full", "--shard-dir"])
 def test_every_input_is_required(tmp_path, dropped):
-    full, environment, root = _layout(tmp_path)
-    arguments = {"--expected-shards": "2", "--full": str(full), "--environment": str(environment),
-                 "--shard-dir": str(root)}
+    full, root = _layout(tmp_path)
+    arguments = {"--expected-shards": "2", "--full": str(full), "--shard-dir": str(root)}
     del arguments[dropped]
     with pytest.raises(SystemExit) as excinfo:
         UNION.main([token for pair in arguments.items() for token in pair])

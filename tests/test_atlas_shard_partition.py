@@ -1,13 +1,13 @@
 """The full gate's shard partition and evidence (tests/atlas_shard_partition.py) and the root
 conftest.py hooks that apply them (`--atlas-shard I/N`, `--atlas-shard-manifest PATH`,
-`--atlas-shard-executed PATH`, `--atlas-shard-environment PATH`).
+`--atlas-shard-executed PATH`).
 
 The portable-release.yml `gate_shard` jobs each run one shard of the complete suite and the required
 `gate` job proves, from their evidence, that the shards selected an exact disjoint cover of one full
-collection, that each executed its whole selection without failure, and that all ran in that
-collection's environment (.github/scripts/verify_shard_union.py, tests/test_verify_shard_union.py).
+collection and that each executed its whole selection without failure
+(.github/scripts/verify_shard_union.py, tests/test_verify_shard_union.py).
 Here: the spec grammar, the partition's determinism, totality and disjointness, the manifest bytes,
-the classification of test reports, the environment rows, the hooks' strict no-op without options,
+the classification of test reports, the hooks' strict no-op without options,
 their refusals, and -- end to end, in real pytest subprocesses -- that real shards and a real full
 collection produce evidence the real verifier accepts, and that every kind of failing test (a failed
 call, a setup or teardown error, a strict xpass, a failed subtest), a session ended early with a success
@@ -180,8 +180,7 @@ def test_a_manifest_is_written_once_never_over_an_existing_file(tmp_path):
         shard.check_manifest_target("")
 
 
-@pytest.mark.parametrize("option", ["--atlas-shard-manifest", "--atlas-shard-executed",
-                                    "--atlas-shard-environment"])
+@pytest.mark.parametrize("option", ["--atlas-shard-manifest", "--atlas-shard-executed"])
 def test_every_evidence_target_is_checked_and_named_by_its_option(tmp_path, option):
     existing = tmp_path / "existing.txt"
     existing.write_bytes(b"")
@@ -233,43 +232,14 @@ def test_no_reports_complete_nothing_and_each_node_id_is_judged_alone():
     assert shard.completed_without_failure(reversed(facts)) == ["tests/test_a.py::ok", "tests/test_b.py::ok"]
 
 
-# -- the environment --------------------------------------------------------------------------------
-
-def test_the_environment_is_the_interpreter_and_every_distribution_normalized_and_sorted():
-    rows = shard.environment_rows(
-        [("Zope.Interface", "7.2"), ("Foo_Bar.baz", "1.0"), ("foo--bar__baz", "1.0"), ("PyYAML", "6.0.3"),
-         (None, None)],
-        implementation="cpython", version_info=(3, 12, 10, "final", 0))
-    assert rows == ["?==?", "foo-bar-baz==1.0", "foo-bar-baz==1.0", "python cpython 3.12.10 final",
-                    "pyyaml==6.0.3", "zope-interface==7.2"]
-    assert shard.manifest_text(rows) == "".join(row + "\n" for row in rows)  # already in manifest order
-    assert shard.normalized_name("A--B__C..D-_.e") == "a-b-c-d-e"
-
-
-def test_this_processs_environment_has_exactly_one_interpreter_row():
-    rows = shard.environment_rows()
-    assert rows == sorted(rows)
-    assert [row for row in rows if row.startswith("python ")] == [
-        shard.python_row(sys.implementation.name, sys.version_info)]
-    assert all("==" in row for row in rows if not row.startswith("python "))
-    assert "pytest==" + pytest.__version__ in rows  # the scan is live: it sees the running pytest
-
-
-@pytest.mark.parametrize("distribution", [("bad\nname", "1.0"), ("good", "1.0\r"), ("good", "1.0\n2")])
-def test_an_environment_row_that_is_not_one_line_is_refused(distribution):
-    with pytest.raises(shard.ShardOptionError):
-        shard.environment_rows([distribution], implementation="cpython", version_info=(3, 12, 10, "final"))
-
-
 # -- the root conftest.py hooks, in process ---------------------------------------------------------
 
 class _Config:
     """The few config members the hooks read, with the deselection hook and registrations recorded."""
 
-    def __init__(self, spec=None, manifest=None, executed=None, environment=None, dist="no", worker=False):
+    def __init__(self, spec=None, manifest=None, executed=None, dist="no", worker=False):
         self.option = SimpleNamespace(atlas_shard=spec, atlas_shard_manifest=manifest,
-                                      atlas_shard_executed=executed, atlas_shard_environment=environment,
-                                      dist=dist)
+                                      atlas_shard_executed=executed, dist=dist)
         self.deselected: list = []
         self.registered: list = []
         self.hook = SimpleNamespace(pytest_deselected=lambda items: self.deselected.extend(items))
@@ -323,14 +293,6 @@ def test_a_manifest_alone_records_the_full_collection(tmp_path):
     assert manifest.read_text(encoding="utf-8") == shard.manifest_text(item.nodeid for item in _items())
 
 
-def test_the_environment_is_written_at_configure_before_any_test(tmp_path):
-    target = tmp_path / "environment.txt"
-    config = _Config(environment=str(target))
-    ROOT_CONFTEST.pytest_configure(config)
-    assert target.read_text(encoding="utf-8") == shard.manifest_text(shard.environment_rows())
-    assert config.registered == []
-
-
 def test_the_executed_recorder_writes_only_what_completed_without_failure(tmp_path):
     target = tmp_path / "executed.txt"
     config = _Config(spec="0/1", executed=str(target))
@@ -376,15 +338,15 @@ def test_the_recorder_and_the_modifyitems_hook_run_after_normally_ordered_implem
 @pytest.mark.parametrize("config", [
     _Config(spec="2/2"), _Config(spec="0/2 "), _Config(spec="0/2", dist="load"),
     _Config(manifest="full.txt", dist="loadfile"), _Config(spec="0/2", worker=True),
-    _Config(executed="executed.txt", dist="load"), _Config(environment="environment.txt", worker=True),
-], ids=["index", "blank", "xdist", "xdist-manifest", "xdist-worker", "xdist-executed", "xdist-environment"])
+    _Config(executed="executed.txt", dist="load"), _Config(executed="executed.txt", worker=True),
+], ids=["index", "blank", "xdist", "xdist-manifest", "xdist-worker", "xdist-executed", "xdist-worker-executed"])
 def test_the_hooks_refuse_before_collection(config):
     with pytest.raises(pytest.UsageError):
         ROOT_CONFTEST.pytest_configure(config)
     assert config.registered == []
 
 
-@pytest.mark.parametrize("field", ["manifest", "executed", "environment"])
+@pytest.mark.parametrize("field", ["manifest", "executed"])
 def test_an_existing_or_unplaceable_evidence_file_is_refused_before_collection(tmp_path, field):
     stale = tmp_path / "stale.txt"
     stale.write_bytes(b"")
@@ -394,13 +356,13 @@ def test_an_existing_or_unplaceable_evidence_file_is_refused_before_collection(t
         ROOT_CONFTEST.pytest_configure(_Config(**{field: str(tmp_path / "absent" / "x.txt")}))
 
 
-def test_every_evidence_target_is_checked_before_any_evidence_is_written(tmp_path):
-    stale, environment = tmp_path / "stale.txt", tmp_path / "environment.txt"
+def test_every_evidence_target_is_checked_before_any_recorder_is_registered(tmp_path):
+    stale, executed = tmp_path / "stale.txt", tmp_path / "executed.txt"
     stale.write_bytes(b"")
-    config = _Config(manifest=str(stale), executed=str(tmp_path / "executed.txt"), environment=str(environment))
+    config = _Config(manifest=str(stale), executed=str(executed))
     with pytest.raises(pytest.UsageError, match="already exists"):
         ROOT_CONFTEST.pytest_configure(config)
-    assert not environment.exists() and config.registered == []
+    assert not executed.exists() and config.registered == []
 
 
 def test_every_value_option_the_root_conftest_adds_is_known_to_the_invocation_reader():
@@ -415,8 +377,8 @@ def test_every_value_option_the_root_conftest_adds_is_known_to_the_invocation_re
                            and isinstance(keyword.value, ast.Constant)), "store")
             if action in ("store", "append"):
                 taking_value.update(arg.value for arg in node.args if isinstance(arg, ast.Constant))
-    assert {"--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed",
-            "--atlas-shard-environment"} <= taking_value, taking_value  # the scan is live
+    assert {"--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed"} <= taking_value, (
+        taking_value)  # the scan is live
     assert taking_value <= PYTEST_VALUE_OPTIONS, sorted(taking_value - PYTEST_VALUE_OPTIONS)
 
 
@@ -600,24 +562,21 @@ def _evidence(root: Path, index: int) -> SimpleNamespace:
     directory = root / f"atlas-gate-shard-evidence-{index}"
     directory.mkdir(parents=True)
     return SimpleNamespace(directory=directory, selected=directory / UNION.SELECTED,
-                           executed=directory / UNION.EXECUTED, environment=directory / UNION.ENVIRONMENT)
+                           executed=directory / UNION.EXECUTED)
 
 
 def _shard_arguments(evidence: SimpleNamespace, index: int) -> tuple[str, ...]:
     return ("--atlas-shard", f"{index}/2", "--atlas-shard-manifest", str(evidence.selected),
-            "--atlas-shard-executed", str(evidence.executed),
-            "--atlas-shard-environment", str(evidence.environment))
+            "--atlas-shard-executed", str(evidence.executed))
 
 
 def _full_arguments(base: Path) -> tuple[str, ...]:
-    return ("--collect-only", "--atlas-shard-manifest", str(base / "full-selected.txt"),
-            "--atlas-shard-environment", str(base / "full-environment.txt"))
+    return ("--collect-only", "--atlas-shard-manifest", str(base / "full-selected.txt"))
 
 
 def _verify(base: Path, root: Path) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(VERIFIER), "--expected-shards", "2",
-                           "--full", str(base / "full-selected.txt"),
-                           "--environment", str(base / "full-environment.txt"), "--shard-dir", str(root)],
+                           "--full", str(base / "full-selected.txt"), "--shard-dir", str(root)],
                           capture_output=True, text=True, timeout=120)
 
 
@@ -631,8 +590,8 @@ def _counts(output: str, **expected: int) -> bool:
 
 @pytest.fixture(scope="module")
 def accepted(tmp_path_factory):
-    """One project, both real shards run with every evidence option and the full collection with its
-    environment: exactly the evidence the gate accepts. Read-only for the tests that use it."""
+    """One project, both real shards run with every evidence option, and the full collection: exactly
+    the evidence the gate accepts. Read-only for the tests that use it."""
     base = tmp_path_factory.mktemp("accepted")
     project, owners = _project(base)
     root = base / "evidence"
@@ -646,8 +605,7 @@ def accepted(tmp_path_factory):
 
 def _copy_of(accepted, tmp_path: Path) -> tuple[Path, Path]:
     """A private copy of the accepted inputs, so one test's mutation never reaches another."""
-    for name in ("full-selected.txt", "full-environment.txt"):
-        shutil.copyfile(accepted.base / name, tmp_path / name)
+    shutil.copyfile(accepted.base / "full-selected.txt", tmp_path / "full-selected.txt")
     shutil.copytree(accepted.root, tmp_path / "evidence")
     return tmp_path, tmp_path / "evidence"
 
@@ -658,13 +616,8 @@ def test_real_shards_and_a_full_collection_are_evidence_the_verifier_accepts(acc
         assert _counts(result.stdout, passed=9, skipped=3, xfailed=3, deselected=15), result.stdout
         # every selected test completed without failure: the skips and the expected failures too
         assert _rows(evidence.selected) == _rows(evidence.executed) == _expected(accepted.owners, index)
-        assert _rows(evidence.environment) == _rows(accepted.base / "full-environment.txt")
     assert accepted.full.returncode == 0, accepted.full.stdout + accepted.full.stderr
     assert _rows(accepted.base / "full-selected.txt") == _expected(accepted.owners)
-    environment = _rows(accepted.base / "full-environment.txt")
-    assert [row for row in environment if row.startswith("python ")] == [
-        shard.python_row(sys.implementation.name, sys.version_info)]  # the same interpreter as this one
-    assert "pytest==" + pytest.__version__ in environment
 
     verified = _verify(accepted.base, accepted.root)
     assert verified.returncode == 0, verified.stdout + verified.stderr
@@ -694,14 +647,12 @@ def test_a_shard_that_runs_no_test_still_selects_them_and_is_refused(accepted, t
     assert result.returncode == 0, result.stdout + result.stderr
     assert _rows(evidence.selected) == _expected(accepted.owners, 0)  # the selection alone looks complete
     assert evidence.executed.read_bytes() == b""
-    assert _rows(evidence.environment) == _rows(base / "full-environment.txt")
     refused = _verify(base, root)
     assert refused.returncode == 1, refused.stdout + refused.stderr
     assert ("atlas-gate-shard-evidence-0: 15 of its 15 selected node id(s) did not complete without failure"
             in refused.stderr), refused.stderr
-    # the shard is refused for what it executed alone: its selection and environment are sound
-    assert "in no shard" not in refused.stderr and "is not the full collection's" not in refused.stderr, (
-        refused.stderr)
+    # the shard is refused for what it executed alone: its selection is sound
+    assert "in no shard" not in refused.stderr, refused.stderr
 
 
 def _shard_zero_file(stem: str) -> str:
@@ -837,7 +788,7 @@ def test_a_real_run_without_the_options_is_unsharded_and_writes_nothing(tmp_path
     (("--atlas-shard", "1-of-2"), "must be I/N"),
     (("--atlas-shard-manifest", "{absent}"), "does not exist"),
     (("--atlas-shard-executed", "{existing}"), "already exists"),
-    (("--atlas-shard-environment", "{absent}"), "does not exist"),
+    (("--atlas-shard-executed", "{absent}"), "does not exist"),
 ])
 def test_a_real_run_with_a_bad_option_is_a_usage_error(tmp_path, arguments, message):
     project, _owners = _project(tmp_path)

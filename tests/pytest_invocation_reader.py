@@ -26,8 +26,7 @@ PYTEST_VALUE_OPTIONS = frozenset({"-p", "-k", "-m", "-o", "-c", "-W", "-n", "--i
                                   "--rootdir", "--basetemp", "--confcutdir", "--junitxml",
                                   "--maxfail", "--durations", "--tb", "--ignore-glob", "--cov",
                                   "--cov-report", "--cov-fail-under", "--cov-config",
-                                  "--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed",
-                                  "--atlas-shard-environment"})
+                                  "--atlas-shard", "--atlas-shard-manifest", "--atlas-shard-executed"})
 
 
 def default_testpaths() -> list[str]:

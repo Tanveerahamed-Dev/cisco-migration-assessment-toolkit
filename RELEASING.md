@@ -96,10 +96,11 @@ project version (`3.33.0rc7` maps to `v3.33.0-rc.7`). It:
 1. pins Python, PyInstaller, Node, npm, and a hash-locked Windows dependency set;
 2. runs broad source/frontend tests on separate read-only runners: the complete Python suite as
    parallel shards, partitioned by test file, then one required aggregate job that refuses unless
-   every shard succeeded, the shards' selections exactly cover its own full collection, each shard
-   executed its whole selection without failure and all ran in that collection's environment, and
-   only then runs the frontend tests; meanwhile the artifact runner executes only hash-checked
-   Python/npm inputs and reproduces the tracked SPA;
+   every shard succeeded, the shards' selections are an exact disjoint cover of its own full
+   collection and each shard executed its whole selection without failure, and only then runs the
+   frontend tests (each job resolves `requirements-dev.txt` itself, as `ci.yml`'s legs do, so
+   dependency-version skew between the jobs is an accepted residual); meanwhile the artifact runner
+   executes only hash-checked Python/npm inputs and reproduces the tracked SPA;
 3. builds and executes the real `Atlas.exe`;
 4. runs the four-step smoke plus offline-boundary, sanitized-Python-path, Unicode-path,
    drive-letter, database-copy, and frozen-redaction checks;

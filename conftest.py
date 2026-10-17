@@ -1,8 +1,7 @@
 """Pytest bootstrap: put the repo root and tests/ on sys.path so tests can
 `import COLLECT_PARSE_V3_23_0` (single-file script, not a package) and
 `import synthetic_fixtures`; and own the full gate's shard options (`--atlas-shard`,
-`--atlas-shard-manifest`, `--atlas-shard-executed`, `--atlas-shard-environment`;
-tests/atlas_shard_partition.py)."""
+`--atlas-shard-manifest`, `--atlas-shard-executed`; tests/atlas_shard_partition.py)."""
 import importlib
 import logging
 import os
@@ -19,11 +18,10 @@ for p in (ROOT, os.path.join(ROOT, "tests")):
 # -- the full gate's shards (.github/workflows/portable-release.yml `gate_shard` / `gate`) ---------
 # One required job ran the whole Windows suite plus the frontend gate under one 120-minute limit and
 # was cancelled under runner contention, so the suite is split by TEST FILE across parallel jobs. Each
-# shard records what it selected, which of those tests completed without failure, and the environment
-# it ran in, and the required job proves from that evidence (.github/scripts/verify_shard_union.py)
-# that the shards selected exactly one full collection, that each ran its whole selection without
-# failure, and that all of them ran in the environment of that collection. The partition and the
-# evidence are tests/atlas_shard_partition.py.
+# shard records what it selected and which of those tests completed without failure, and the required
+# job proves from that evidence (.github/scripts/verify_shard_union.py) that the shards selected
+# exactly one full collection and that each ran its whole selection without failure. The partition
+# and the evidence are tests/atlas_shard_partition.py.
 #
 # Without any of the options every hook below returns before touching anything: no item is moved or
 # deselected, no plugin is registered, no file is written and the helper module is not even imported
@@ -43,10 +41,6 @@ def pytest_addoption(parser):
                     metavar="PATH",
                     help="when the session finishes, write the node ids that completed without failure "
                          "to the NEW file PATH (the same format)")
-    group.addoption("--atlas-shard-environment", action="store", default=None,
-                    dest="atlas_shard_environment", metavar="PATH",
-                    help="before any test runs, write the interpreter and every installed distribution "
-                         "to the NEW file PATH (the same format)")
 
 
 #: Each shard option's flag and the pytest option name its value is stored under.
@@ -54,7 +48,6 @@ _ATLAS_SHARD_DESTS = (
     ("--atlas-shard", "atlas_shard"),
     ("--atlas-shard-manifest", "atlas_shard_manifest"),
     ("--atlas-shard-executed", "atlas_shard_executed"),
-    ("--atlas-shard-environment", "atlas_shard_environment"),
 )
 
 
@@ -94,8 +87,7 @@ class _AtlasShardExecutedRecorder:
 def pytest_configure(config):
     """Refuse a malformed spec, a stale or unplaceable evidence file, and any pytest-xdist run, before
     collection starts: a pytest usage error (exit 4), never a quietly unsharded, partial or unevidenced
-    run. Then, before any test can install or change a distribution, write the environment evidence,
-    and register the recorder that writes the executed evidence."""
+    run. Then register the recorder that writes the executed evidence."""
     options = _atlas_shard_options(config)
     if all(value is None for value in options.values()):
         return
@@ -107,15 +99,13 @@ def pytest_configure(config):
     import atlas_shard_partition as shard
 
     targets = [(flag, options[flag]) for flag in
-               ("--atlas-shard-manifest", "--atlas-shard-executed", "--atlas-shard-environment")
+               ("--atlas-shard-manifest", "--atlas-shard-executed")
                if options[flag] is not None]
     try:
         if options["--atlas-shard"] is not None:
             shard.parse_spec(options["--atlas-shard"])
         for flag, path in targets:
             shard.check_manifest_target(path, flag)
-        if options["--atlas-shard-environment"] is not None:
-            shard.write_manifest(options["--atlas-shard-environment"], shard.environment_rows())
     except (shard.ShardOptionError, OSError) as error:
         raise pytest.UsageError(f"atlas shard: {error}") from None
     if options["--atlas-shard-executed"] is not None:
