@@ -14,12 +14,18 @@ import time
 TARGET = "tests/test_vlan_carriage_budget.py::test_the_first_document_and_one_full_page_stay_within_their_api_budgets"
 _current_node = None
 _gc_started = None
+_duration_stream = None
+_gc_stream = None
+# Diagnostic-only references survive subject tests that replace shared module
+# attributes. Product calls still see every original test patch and assertion.
+_encode_report = json.dumps
+_observed_clock = time.monotonic
 
 
 def _gc_observer(phase, info):
     """Observe generation-2 cost/stack only; never collect or alter GC policy."""
     global _gc_started
-    if info.get("generation") != 2 or not os.environ.get("ATLAS_ORDER_CASE"):
+    if info.get("generation") != 2 or _gc_stream is None:
         return
     if phase == "start":
         stack = []
@@ -30,24 +36,34 @@ def _gc_observer(phase, info):
             stack.append((os.path.basename(frame.f_code.co_filename), frame.f_code.co_name, frame.f_lineno))
             frame = frame.f_back
         del frame
-        _gc_started = (time.monotonic(), stack, _current_node)
+        _gc_started = (_observed_clock(), stack, _current_node)
     elif phase == "stop" and _gc_started is not None:
         started, stack, node = _gc_started
         _gc_started = None
-        with (Path(os.environ["ATLAS_ORDER_CASE"]) / "gc-generation2.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"seconds": time.monotonic() - started, "stack": stack,
+        _gc_stream.write(_encode_report({"seconds": _observed_clock() - started, "stack": stack,
                                      "nodeid": node, "collected": info.get("collected"),
                                      "uncollectable": info.get("uncollectable")}) + "\n")
 
 
 def pytest_configure(config):
-    if os.environ.get("ATLAS_ORDER_CASE"):
+    global _duration_stream, _gc_stream
+    output = os.environ.get("ATLAS_ORDER_CASE")
+    if output:
+        # Open only external diagnostic reports before subject fixtures can
+        # prohibit I/O. Never bypass or replace their product-side guards.
+        _duration_stream = (Path(output) / "durations.jsonl").open("a", encoding="utf-8", buffering=1)
+        _gc_stream = (Path(output) / "gc-generation2.jsonl").open("a", encoding="utf-8", buffering=1)
         gc.callbacks.append(_gc_observer)
 
 
 def pytest_unconfigure(config):
+    global _duration_stream, _gc_stream
     if _gc_observer in gc.callbacks:
         gc.callbacks.remove(_gc_observer)
+    for stream in (_duration_stream, _gc_stream):
+        if stream is not None:
+            stream.close()
+    _duration_stream = _gc_stream = None
 
 
 def pytest_runtest_logstart(nodeid, location):
@@ -78,12 +94,10 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_runtest_logreport(report):
-    output = os.environ.get("ATLAS_ORDER_CASE")
-    if output:
+    if _duration_stream is not None:
         # Streaming records survive a job deadline; --durations=0 remains enabled too.
-        with (Path(output) / "durations.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"nodeid": report.nodeid, "when": report.when,
-                                     "seconds": report.duration, "outcome": report.outcome}) + "\n")
+        _duration_stream.write(_encode_report({"nodeid": report.nodeid, "when": report.when,
+                                         "seconds": report.duration, "outcome": report.outcome}) + "\n")
 
 
 def pytest_runtest_setup(item):
@@ -184,6 +198,14 @@ def main() -> int:
         run("changed-test-cost", paths=present)
         return 0  # diagnostic outcomes stay in the report, never become an acceptance receipt
 
+    guard, _ = run("diagnostic-io-guard-control", paths=[
+        "tests/test_ui_projection.py::test_t11_pure_no_file_socket_or_process_io",
+        "tests/test_ui_projection_vlan_carriage.py::test_small_materialized_foreign_values_and_keys_keep_the_original_hook_order",
+        "tests/test_ui_projection_vlan_carriage.py::test_small_materialized_replaced_stream_factory_keeps_original_calls_and_exact_bytes",
+        "tests/test_research_http_guard.py::test_overall_deadline_is_enforced_during_slow_body_reads",
+    ])
+    if guard["exit_code"] != 0:
+        raise RuntimeError("diagnostic writer did not survive the unchanged product I/O guard")
     _result, collected = run("collect-default", collect=True)
     order = json.loads((collected / "collection.json").read_text(encoding="utf-8"))
     all_modules = list(dict.fromkeys(node.split("::", 1)[0] for node in order))
