@@ -1,19 +1,5 @@
-import type { Summary } from "../api";
-import type { Fact } from "../projection";
+import type { Summary, SummaryFact } from "../api";
 import { StateLabel, ValueText } from "../pages/core/ProjectionEvidence";
-
-export type SummaryFact = Fact & { minimum?: boolean };
-export type SummaryAssessment = {
-  schema: "assesshub_summary/1";
-  facts: Record<string, { fact: SummaryFact }>;
-  bands: { band: string; n: SummaryFact }[];
-  readiness: { k: string; n: SummaryFact }[];
-  punchlist: {
-    total: SummaryFact; crit_high: SummaryFact;
-    by_severity: { k: string; n: SummaryFact }[];
-    by_category: { k: string; n: SummaryFact }[];
-  };
-};
 
 // Render the engine's state and minimum mark. No threshold, evidence rule, or verdict lives here.
 export function SummaryValue({ fact }: { fact?: SummaryFact }) {

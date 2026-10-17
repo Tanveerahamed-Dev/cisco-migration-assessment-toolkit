@@ -290,7 +290,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
       {selNode.health && <SummaryValue fact={selNode.health.band} />}
       <div data-testid="topology-failure-impact" style={{ marginTop: 8, maxHeight: "60vh", overflow: "auto" }}>
-        <DeviceFailure key={`${snapId}:${selNode.id}`} snapId={snapId} host={selNode.id} engine={g.data.engine} />
+        <DeviceFailure key={`${snapId}:${selNode.id}`} snapId={snapId} host={selNode.id} engine={g.data?.engine} />
       </div>
     </div>
   );

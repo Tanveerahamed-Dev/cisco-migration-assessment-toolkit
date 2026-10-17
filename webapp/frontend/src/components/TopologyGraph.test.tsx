@@ -166,7 +166,7 @@ describe("Tools failures use source-bound engine pages", () => {
   });
   it.each(["identity", "engine", "host"])("rejects a device with changed %s", async (key) => {
     const device: any = deviceWith(published(17));
-    if (key === "identity") device.identity.sha256 = "f".repeat(64);
+    if (key === "identity") device.identity.sha256 = `sha256:${"f".repeat(64)}`;
     if (key === "engine") device.engine = { ...device.engine, script_version: "foreign" };
     if (key === "host") device.payload.host = "different-device";
     ownerMock(topologyFixture(), device); render(<TopologyGraph snapId={1} />);

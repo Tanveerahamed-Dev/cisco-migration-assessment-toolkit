@@ -1,5 +1,19 @@
-import type { SummaryAssessment } from "./components/SummaryFacts";
 // Typed client for the AssessHub backend. One origin in prod; Vite proxies /api -> :8000 in dev.
+
+// Data-only types: Atlas Scope imports this API module without AssessHub's React
+// installation. Keep component imports out of its TypeScript module closure.
+export type SummaryFact = import("./projection").Fact & { minimum?: boolean };
+export type SummaryAssessment = {
+  schema: "assesshub_summary/1";
+  facts: Record<string, { fact: SummaryFact }>;
+  bands: { band: string; n: SummaryFact }[];
+  readiness: { k: string; n: SummaryFact }[];
+  punchlist: {
+    total: SummaryFact; crit_high: SummaryFact;
+    by_severity: { k: string; n: SummaryFact }[];
+    by_category: { k: string; n: SummaryFact }[];
+  };
+};
 
 export interface Summary {
   version: string;

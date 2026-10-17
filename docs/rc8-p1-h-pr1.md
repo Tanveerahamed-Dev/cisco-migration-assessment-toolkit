@@ -46,3 +46,23 @@ build handoff and imported as source-edit data; no local build or receipt/custod
 controller can supply validation. Any failing or superseded run remains negative
 evidence. Completion requires 15/15 on the final head and a completion comment,
 then STOP for independent review. No merge or release.
+
+## First hosted candidate: negative evidence
+
+`7cc017c9` is not a passing head. CI `39078559467` stopped Python 3.10/3.11
+at the full download-name source bindings (658 passed, 2 failed), before the
+interface census. The three changed bound sources are API types, Tools rendering
+and the app's summary/graph readers; inspection preserves the download URL
+factories, caller arguments, catalogue, successful response names and sanitized
+headers. Their exact Git-blob pins are rejoined; discovery, refusal, bindings and
+mutation controls are unchanged.
+
+Distribution's frontend run reported 547 passed and 2 failed: the compiler
+reported a nullable closure access and an unused import; the new identity
+counterexample also omitted the required digest prefix, exercising malformed
+identity refusal instead of the intended valid-but-different identity. The
+repair uses a correctly shaped different identity and retains the refusal check.
+Webapp's Scope build exposed a type-only API import that reached a React
+component without AssessHub's dependency installation. Summary data types now
+live in the data-only API module, preserving that separate build closure.
+No gate, assertion target, budget, timeout or stored output is relaxed.

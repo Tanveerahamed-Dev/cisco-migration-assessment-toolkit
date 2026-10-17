@@ -3,7 +3,6 @@ import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   api,
-  sevColor,
   LifecycleSummary,
   PROTOCOL_SUBJECT_DETAIL_FIELDS,
   ProtocolAssuranceSection,
