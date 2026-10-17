@@ -140,7 +140,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected", "collection-cut"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected", "collection-cut", "heap"), required=True)
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     parser.add_argument("--collection-case", choices=tuple(COLLECTION_CASES), default="pr-full")
@@ -158,6 +158,8 @@ def main() -> int:
     # Workflow-start budget includes checkout/install time and reserves five
     # minutes inside the unchanged 120-minute job limit for final reporting.
     deadline = time.monotonic() + max(0, int(os.environ["ATLAS_DIAGNOSTIC_DEADLINE"]) - time.time())
+    if args.mode == "heap":
+        deadline -= 10  # Reap/save before the outer watchdog's five-second kill reserve.
     environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent)}
     environment.pop("ATLAS_ORDER_CASE", None)
     environment.pop("ATLAS_ORDER_SELECTION", None)
@@ -171,6 +173,9 @@ def main() -> int:
             env.pop("ATLAS_ORDER_CASE", None)
             env.pop("ATLAS_ORDER_SELECTION", None)
             env.pop("PROFILE_MODE", None)  # Parent-only matrix selector, never a child input.
+            env.pop("HEAP_CASE", None)
+            for name in ("ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE"):
+                env.pop(name, None)
         if minimal:
             env = {**environment, "ATLAS_MINIMAL_REPORT": str(case / "target-result.json"),
                    "ATLAS_MINIMAL_CUT_BEFORE": args.cut_before}
@@ -182,6 +187,14 @@ def main() -> int:
                    [sys.executable, "-m", "pytest", "-p", "rc8_order_probe", "--durations=0"])
         if minimal:
             command = [sys.executable, "-m", "pytest", "-p", "rc8_minimal_prefix", "--durations=40"]
+        if args.mode == "heap":
+            # Full default collection AND execution. Only this diagnostic plugin
+            # enters the child; the historical order/GC observer stays inactive.
+            env.update({"PYTHONPATH": str(Path(__file__).resolve().parent),
+                        "ATLAS_HEAP_REPORT": str(case / "heap.json"),
+                        "ATLAS_HEAP_SOURCE_ROOT": str(subject),
+                        "ATLAS_HEAP_SOURCE": actual, "ATLAS_HEAP_TREE": provenance["tree"]})
+            command = [sys.executable, "-m", "pytest", "-p", "rc8_heap_roots", "--durations=40"]
         if collect:
             command.append("--collect-only")
         command.extend(paths)
@@ -299,6 +312,17 @@ def main() -> int:
                 + "No injected plugin or PYTHONPATH; "
                 "no per-test reports. Read pytest.log for all failures and terminal summary."
             )
+        if args.mode == "heap":
+            heap_path = case / "heap.json"
+            result["heap_report_present"] = heap_path.is_file()
+            result["heap_child_environment"] = {name: env[name] for name in (
+                "ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE")}
+            result["observation_scope"] = (
+                "Full default collection and execution with one post-fixture heap snapshot before TARGET. "
+                "Injected plugin/PYTHONPATH and snapshot allocations can change automatic GC and timing. "
+                "No manual GC, order/selection change or per-test reporter. Instrumented timings are diagnostic only. "
+                "Read heap.json limits and pytest.log actual exits, failures and terminal summary."
+            )
         if minimal:
             report_path = case / "target-result.json"
             minimal_report = json.loads(report_path.read_text()) if report_path.exists() else None
@@ -345,7 +369,7 @@ def main() -> int:
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode in ("plain", "minimal", "builtin", "direct", "collected", "collection-cut"):
+    if args.mode in ("plain", "minimal", "builtin", "direct", "collected", "collection-cut", "heap"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -357,7 +381,21 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        if args.mode in ("direct", "collected", "collection-cut"):
+        if args.mode == "heap":
+            if args.collection_case not in ("pr-full", "main-full"):
+                raise ValueError("heap comparison permits only the two fixed full-suite sources")
+            expected_source, expected_tree, ignored, expected_count = COLLECTION_CASES[args.collection_case]
+            if actual != expected_source or provenance["tree"] != expected_tree or ignored:
+                raise RuntimeError("heap comparison source/tree differs from its fixed full-suite case")
+            (output / "heap-case.json").write_text(json.dumps({
+                "case": args.collection_case, "source": actual, "tree": provenance["tree"],
+                "expected_collection_count": expected_count, "target": TARGET,
+                "default_collection": True, "full_execution": True,
+                "ignored_modules": [], "deselected_modules": [],
+                "limits": "Expected count is navigation until the fresh raw summary. Observer changes allocations and may change automatic GC; no timing acceptance or ownership attribution from presence alone.",
+            }, indent=2), encoding="utf-8")
+            run("heap-full-default-suite", plain=True)
+        elif args.mode in ("direct", "collected", "collection-cut"):
             selected = [] if args.test_module == "control" else [args.test_module]
             budget_module = TARGET.split("::", 1)[0]
             paths = [*selected, budget_module]

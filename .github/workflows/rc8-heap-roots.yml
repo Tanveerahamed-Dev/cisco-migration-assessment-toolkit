@@ -1,0 +1,112 @@
+name: RC8 full-suite heap ownership diagnostic
+on:
+  push:
+    branches: [codex/rc8-order-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  heap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: pr-full
+            source: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          - case: main-full
+            source: b300a57b991746a9c284d513a365b330476480b4
+    steps:
+      - name: Start bounded diagnostic clock
+        shell: bash
+        run: echo "ATLAS_DIAGNOSTIC_DEADLINE=$(( $(date +%s) + 6900 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 5
+        with:
+          path: control
+          persist-credentials: false
+      - name: Budget the source checkout
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          ref: ${{ matrix.source }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Budget Python setup
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          python-version: "3.12.15"
+      - run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pip install --upgrade pip
+          bounded python -m pip install -r requirements-dev.txt
+        working-directory: subject
+      - name: Hosted diagnostic self-check in a separate process
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B control/.github/diagnostics/rc8_heap_roots.py --self-check
+      # Match the production Python-3.12 leg's preceding fresh-process commands.
+      # Their bytecode/filesystem state is part of the full-suite precondition.
+      - name: Original preflight commands before the full suite
+        working-directory: subject
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pytest tests/test_scope_compile_handoff.py
+          bounded python -m pytest tests/test_client_artifact_census.py
+          bounded python -m pytest tests/test_knowledge_export.py tests/test_knowledge_export_workflow.py
+          bounded python -m pytest tests/test_transition_runtime_discovery.py -k debug_helper_receive
+          bounded python -u -m pytest -vv tests/test_bound_snapshot_source.py
+      - run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pip install graphifyy==0.9.51
+        working-directory: subject
+      - run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B tools/graphify_guarded.py --probe
+        working-directory: subject
+      - name: Budget Node setup
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          node-version: "24.19.0"
+      - run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded npm ci
+        working-directory: subject/atlas-scope
+      - name: Original G14 focused process before the full suite
+        working-directory: subject
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pytest tests/test_vlan_carriage.py tests/test_ui_projection_vlan_carriage.py tests/test_vlan_carriage_budget.py tests/test_operator_evidence_contract.py tests/test_bound_snapshot_source.py webapp/tests/test_ui_projection_api.py webapp/tests/test_carriage_ingestion.py webapp/tests/test_snapshot_raw.py webapp/tests/test_carriage_lifecycle.py webapp/tests/test_atlas_unplug_safety.py::test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot
+      - name: Full default suite with one post-fixture heap snapshot
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+          HEAP_CASE: ${{ matrix.case }}
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python control/.github/diagnostics/rc8_order_probe.py --subject subject \
+            --output "$RUNNER_TEMP/heap-full" --source ${{ matrix.source }} \
+            --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 \
+            --mode heap --collection-case "$HEAP_CASE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rc8-heap-${{ matrix.case }}-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/heap-full
+          if-no-files-found: error
