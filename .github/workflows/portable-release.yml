@@ -103,15 +103,21 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 30
-  # The required context. A SKIPPED required job counts as passing, so this job is not skipped when a
-  # shard fails (`!cancelled()`, unlike the default success()); instead its first step, before
-  # anything else, fails unless the whole shard matrix succeeded. Its collection then runs on the same
-  # checkout, normalization, interpreter, node and installed requirements as the shards, so the union
-  # check compares like with like, and the frontend gate follows unchanged.
+  # The required context. A SKIPPED required job counts as passing, so this job is never skipped: it
+  # runs under `always()`. The default success() would skip it when a shard fails, and `!cancelled()`
+  # would skip it when the run is cancelled before it starts (a manual cancel, or this PR's
+  # concurrency group replacing an in-flight run); either way the required check would pass with no
+  # shard, union proof or frontend gate finished. Instead its first step, before anything else, fails
+  # unless the whole shard matrix succeeded, so a failed, timed-out, cancelled or skipped shard turns
+  # this check red within seconds. The cost: a cancelled run still spends that one short job, and an
+  # ordinary cancel does not stop this job (GitHub's force-cancel does, leaving it cancelled, never
+  # green). Its collection then runs on the same checkout, normalization, interpreter, node and
+  # installed requirements as the shards, so the union check compares like with like, and the
+  # frontend gate follows unchanged.
   gate:
     name: Full source and frontend gate (unprivileged runner)
     needs: [gate_shard]
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: windows-2025
     timeout-minutes: 120
     permissions:

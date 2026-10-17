@@ -499,9 +499,10 @@ def test_portable_concurrency_contract_rejects_drift(mutation: str) -> None:
 # -- the sharded full gate -------------------------------------------------------------------------
 # `gate_shard` runs the complete Python suite as parallel jobs partitioned by test file (the root
 # conftest.py --atlas-shard option, tests/atlas_shard_partition.py); the required `gate` context
-# aggregates them. GitHub counts a SKIPPED required job as passing and a plain `needs` skips the
-# dependent job when a dependency fails, so the contract below is what keeps a failed, skipped or
-# dropped shard from ever turning the required check green.
+# aggregates them. GitHub counts a SKIPPED required job as passing, a plain `needs` skips the
+# dependent job when a dependency fails, and `!cancelled()` skips it when the run is cancelled, so the
+# contract below is what keeps a failed, cancelled, skipped or dropped shard from ever turning the
+# required check green.
 _SHARD_SPEC = re.compile(r"\$\{\{ matrix\.shard \}\}/([1-9][0-9]*)")
 _SHARD_RESULT_REFUSAL = re.compile(r"if \(\$env:SHARD_RESULT -cne 'success'\) \{ throw \"[^\"]+\" \}")
 _UNION_VERIFIER = ".github/scripts/verify_shard_union.py"
@@ -558,11 +559,13 @@ def _assert_gate_shard_contract(document: dict) -> None:
     assert upload.get("path") == manifest and upload.get("if-no-files-found") == "error", upload
     assert "${{ matrix.shard }}" in str(upload.get("name")), upload
 
-    # The aggregate keeps the exact required context, waits for the whole matrix, is not skipped when
-    # a shard fails, and refuses anything but a successful matrix before it does anything else.
+    # The aggregate keeps the exact required context, waits for the whole matrix, and is never skipped:
+    # exactly `always()`, because the default success() skips it when a shard fails and `!cancelled()`
+    # (alone or behind `always() &&`) skips it when the run is cancelled before it starts, and a
+    # skipped required job passes. It refuses anything but a successful matrix before anything else.
     assert gate.get("name") == "Full source and frontend gate (unprivileged runner)"
     assert gate.get("needs") == ["gate_shard"]
-    assert gate.get("if") == "${{ !cancelled() }}"
+    assert gate.get("if") == "${{ always() }}"
     assert "strategy" not in gate
     first = gate_steps[0]
     assert "uses" not in first and first.get("shell") == "pwsh", first
@@ -640,7 +643,8 @@ def _swap(steps: list, first: int, second: int) -> None:
 @pytest.mark.parametrize("mutation", [
     "matrix_short", "spec_three", "name_three", "verifier_three", "spec_as_split_tokens", "shard_conditional",
     "shallow_shard", "upload_elsewhere", "manifest_in_workspace", "different_python", "shard_npm_cache",
-    "no_result_check", "result_check_after_checkout", "lenient_result_check", "always", "default_if",
+    "no_result_check", "result_check_after_checkout", "lenient_result_check", "not_cancelled",
+    "always_unless_cancelled", "success_if", "default_if",
     "needs_nothing", "sharded_collection", "no_verifier", "no_frontend", "collect_before_download",
     "frontend_before_collect", "verify_candidate_skips_gate",
 ])
@@ -680,8 +684,12 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
         _swap(gate["steps"], 0, 1)
     elif mutation == "lenient_result_check":
         gate["steps"][0]["run"] = gate["steps"][0]["run"].replace("-cne 'success'", "-eq 'failure'")
-    elif mutation == "always":
-        gate["if"] = "${{ always() }}"
+    elif mutation == "not_cancelled":
+        gate["if"] = "${{ !cancelled() }}"
+    elif mutation == "always_unless_cancelled":
+        gate["if"] = "${{ always() && !cancelled() }}"
+    elif mutation == "success_if":
+        gate["if"] = "${{ success() }}"
     elif mutation == "default_if":
         del gate["if"]
     elif mutation == "needs_nothing":
