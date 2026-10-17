@@ -589,3 +589,38 @@ visible-document checks, supplies the published request count, and is removed in
 The original native promise/Response capture, every prior identity/hash/XML assertion, and the
 32 MiB limit remain. This strengthens test observation only; no application computation, request,
 retry, wait or timeout is added. Hosted execution of the correction is still pending.
+
+
+## Enforced-main integration preflight — 2026-10-18
+
+The supervisor reports #673 merged as main
+`92490340e3c55c34c7a8d26e878ee5de7c729601`; the live PR and main ref confirm it. This
+main is integrated locally with parent `0ec0c11f51a0a658a965e0a65442b7944d3fcf10`.
+The only source-control conflict is the SSOT index: preserve main's enforcement/shard rows and
+this feature's saved-plan workflow ownership pointers. `docs/NOW.md` remains exactly main's copy.
+Incoming guards, role declarations, tests, shard workflow and debt register are not changed.
+
+**Pre-push compliance is BLOCKED.** The merged v3 register contains no sites for
+`webapp/frontend/src/pages/SavedPlan.tsx`. Its `samePin` return compares the revision, digest and
+selection; the unchanged TypeScript detector explicitly emits `returned-comparison` for it.
+The same new page's `planDraft` uses `zoneLines.push`, an explicitly detected `collection-update`.
+The new `src/api.ts :: planKeys` key counts and `planResponseChunks` byte-counter updates also
+have no permitted path/symbol/rule entries. These are direct source/rule/closed-register
+counterexamples, not an executed local census or a claimed hosted result.
+
+The registered footprint conservatively includes presentation, client input admission and
+transport safety operations as well as analysis. In particular, the new bounded stream reader
+and requested-selection validation protect an untrusted HTTP response; moving those checks to
+the response-producing server is not equivalent client-side protection. Main has no existing
+bounded browser stream reader to reuse in the app or Scope source. Removing checks would weaken
+the retained hostile-response and identity tests. Re-expressing operations to evade detection,
+misdeclaring browser code as engine code, growing the register or changing the guard is not an
+authorized closure.
+
+The ONE authorized push has not been used, and no new CI was started. Main's register remains
+byte-identical while the feature's tests and response limits are preserved. A supervisor decision
+on a compliant protocol/UI-state boundary is needed before publication; a conservative legacy
+footprint is not a semantic admission for this new feature. The exact-source hosted guard,
+complete current-tree runtime validation and 15/15 remain unverified. No completion or
+independent-review readiness is claimed. The earlier draft-only/unsigned/external-pending and
+historical failure records remain unchanged.
