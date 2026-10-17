@@ -580,7 +580,9 @@ AtlasNext folder, then run its verifier before copying any data:
   C:\AtlasNext\Atlas\Atlas.exe --verify-release --zip C:\Downloads\Atlas-new.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
 Require SELF_CONSISTENCY_PASS and exit 0. Selftest MUST use a fresh database in
 a separate disposable directory, outside BOTH kits and the reserved offline
-backup/staging paths. Do not run default --selftest here: it creates data\backups
+backup/staging paths. Use ordinary local-drive paths: the v1 selftest fence
+refuses UNC, extended-length and device namespace spellings rather than guessing
+whether they alias application or custody data. Do not run default --selftest here: it creates data\backups
 in the new kit, which step 5 correctly refuses as nonempty. For the example paths:
   $ErrorActionPreference = 'Stop'
   $selftestRoot = 'C:\AtlasSelftest'

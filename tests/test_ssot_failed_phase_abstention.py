@@ -443,6 +443,8 @@ def test_r1_every_direct_phase_to_section_edge_is_registered():
 def test_r1_every_failure_label_is_classified():
     tree, _main = _engine()
     literal, prefixes = _all_labels(tree)
+    assert {"Design blueprint", "Unknown evidence", "SSOT self-check", "Schema census / fact lineage"} <= literal, \
+        "the four assessment late-phase failure owners must remain visible in the CLI"
     assert len(literal) >= 150, "the label extractor went blind"
     unclassified = sorted(lab for lab in literal if ssot.phase_classification(lab) == "unknown")
     assert not unclassified, f"classify these in ssot (sections / intermediate / non-section): {unclassified}"

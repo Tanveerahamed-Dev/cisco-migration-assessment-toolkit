@@ -141,6 +141,119 @@ def _qualification(source: dict, bundle: Path) -> dict:
     }
 
 
+def _saved_plan_journey_evidence() -> dict:
+    counts = {table: 0 for table in subject.receipt_schema_shapes()[subject.QUALIFICATION_SCHEMA]["database_row_counts"]}
+    counts.update({"campaigns": 1, "snapshots": 1, "plan_revisions": 2,
+                   "plan_revision_authority": 2, "plan_selection_events": 3})
+    evidence = {
+        "status": "pass", "campaign_id": 1, "snapshot_id": 1, "upload_sha256": "1" * 64, "upload_bytes": 100,
+        "assessment_sha256": "sha256:" + "2" * 64, "assessment_bytes": 120,
+        "assessment_binding_sha256": "3" * 64, "plan_revision": 1, "plan_sha256": "sha256:" + "4" * 64,
+        "selection_id": 3, "saved_revision_count": 2, "selected_record_sha256": "5" * 64,
+        "reopened_record_sha256": "5" * 64, "server_restarted": True, "assessment_unchanged": True,
+        "zero_requirement_preserved": True, "stale_selection_refused": True, "wrong_plan_refused": True,
+        "database_copy": {
+            "status": "pass", "copy_migrated": False, "source_store_unchanged": True,
+            "row_counts": counts, "before_table_count": len(counts), "after_table_count": len(counts),
+            "before_table_set_digest": "6" * 64, "after_table_set_digest": "6" * 64,
+            "prior_table_preservation_digest": "7" * 64, "request_sha256": "8" * 64,
+            "source_sha256": "9" * 64, "migrated_copy_sha256": "9" * 64,
+        },
+        "documents": [],
+    }
+    for kind, digest in (("mop", "a" * 64), ("nrfu", "b" * 64)):
+        evidence["documents"].append({
+            "kind": kind, "bytes": 1000, "sha256": digest,
+            "assessment_sha256": evidence["assessment_sha256"], "plan_revision": evidence["plan_revision"],
+            "plan_sha256": evidence["plan_sha256"], "selection_id": evidence["selection_id"],
+            "unapproved_draft": True, "provenance_bound": True,
+        })
+    return evidence
+
+
+def test_saved_plan_journey_requires_owned_complete_restart_documents_and_populated_database_proof():
+    evidence = _saved_plan_journey_evidence()
+    subject._validate_saved_plan_documents_evidence(evidence)
+    assert subject.AUTOMATED_CHECK_EVIDENCE["offline_saved_plan_documents"] is not None
+    assert {"plan_revisions", "plan_revision_authority", "plan_selection_events"} <= set(evidence["database_copy"]["row_counts"])
+
+
+@pytest.mark.parametrize("change", [
+    "missing_journey_field", "extra_journey_field", "boolean_snapshot", "short_plan_digest",
+    "changed_reopened_record", "no_restart", "assessment_mutated", "zero_lost", "stale_accepted", "wrong_digest_accepted",
+    "missing_document", "duplicate_document_kind", "same_document_bytes", "changed_document_source",
+    "changed_document_plan", "changed_document_selection", "boolean_document_revision", "not_visible_unapproved",
+    "missing_plan_table", "lost_plan_rows", "lost_campaign_parent", "lost_snapshot_parent",
+    "changed_database_copy", "source_database_modified",
+])
+def test_saved_plan_journey_refuses_missing_stale_misattributed_or_vacuous_proof(change):
+    evidence = _saved_plan_journey_evidence()
+    if change == "missing_journey_field":
+        del evidence["assessment_binding_sha256"]
+    elif change == "extra_journey_field":
+        evidence["unowned"] = True
+    elif change == "boolean_snapshot":
+        evidence["snapshot_id"] = True
+    elif change == "short_plan_digest":
+        evidence["plan_sha256"] = "sha256:short"
+    elif change == "changed_reopened_record":
+        evidence["reopened_record_sha256"] = "0" * 64
+    elif change in ("no_restart", "assessment_mutated", "zero_lost", "stale_accepted", "wrong_digest_accepted"):
+        field = {"no_restart": "server_restarted", "assessment_mutated": "assessment_unchanged",
+                 "zero_lost": "zero_requirement_preserved", "stale_accepted": "stale_selection_refused",
+                 "wrong_digest_accepted": "wrong_plan_refused"}[change]
+        evidence[field] = False
+    elif change == "missing_document":
+        evidence["documents"].pop()
+    elif change == "duplicate_document_kind":
+        evidence["documents"][1]["kind"] = "mop"
+    elif change == "same_document_bytes":
+        evidence["documents"][1]["sha256"] = evidence["documents"][0]["sha256"]
+    elif change in ("changed_document_source", "changed_document_plan", "changed_document_selection", "boolean_document_revision", "not_visible_unapproved"):
+        field, value = {
+            "changed_document_source": ("assessment_sha256", "sha256:" + "0" * 64),
+            "changed_document_plan": ("plan_sha256", "sha256:" + "0" * 64),
+            "changed_document_selection": ("selection_id", 2),
+            "boolean_document_revision": ("plan_revision", True),
+            "not_visible_unapproved": ("unapproved_draft", False),
+        }[change]
+        evidence["documents"][0][field] = value
+    elif change == "missing_plan_table":
+        del evidence["database_copy"]["row_counts"]["plan_revision_authority"]
+    elif change == "lost_plan_rows":
+        evidence["database_copy"]["row_counts"]["plan_revisions"] = 0
+    elif change == "lost_campaign_parent":
+        evidence["database_copy"]["row_counts"]["campaigns"] = 0
+    elif change == "lost_snapshot_parent":
+        evidence["database_copy"]["row_counts"]["snapshots"] = 0
+    elif change == "changed_database_copy":
+        evidence["database_copy"]["after_table_set_digest"] = "0" * 64
+    else:
+        evidence["database_copy"]["source_store_unchanged"] = False
+    with pytest.raises(subject.PortableReleaseError, match="offline saved-plan"):
+        subject._validate_saved_plan_documents_evidence(evidence)
+
+
+def test_real_qualification_does_not_accept_new_saved_plan_check_without_its_evidence(tmp_path):
+    source = {"repository": "https://example.invalid/repository.git", "commit": "1" * 40,
+              "tree": "2" * 40, "version": "3.33.0rc7", "tracked_status": "clean"}
+    qualification = _qualification(source, _bundle(tmp_path))
+    journey = next(row for row in qualification["checks"] if row["id"] == "offline_saved_plan_documents")
+    qualification["checks"].remove(journey)
+    qualification["checks"].insert(0, journey)
+    with pytest.raises(subject.PortableReleaseError, match="offline saved-plan journey evidence shape"):
+        subject._validate_qualification(qualification, source, qualification["bundle_member_set_digest"], real_runtime=True)
+
+
+def test_pre_saved_plan_qualification_is_refused_instead_of_promoted(tmp_path):
+    source = {"repository": "https://example.invalid/repository.git", "commit": "1" * 40,
+              "tree": "2" * 40, "version": "3.33.0rc7", "tracked_status": "clean"}
+    qualification = _qualification(source, _bundle(tmp_path))
+    qualification["schema"] = "atlas.portable-qualification/3"
+    with pytest.raises(subject.PortableReleaseError, match="superseded.*saved plan"):
+        subject._validate_qualification(qualification, source, qualification["bundle_member_set_digest"], real_runtime=False)
+
+
 def _installed_bundle(tmp_path: Path, *, longest_member: bool = False) -> Path:
     repository = _repository(tmp_path)
     bundle = _bundle(tmp_path)
@@ -1272,7 +1385,7 @@ _PINNED_SCHEMA_SHAPES = {
     "atlas.portable-toolchain-receipt/2": "0ce3a0c0a1244f58ae8d17c3011a493b5ecd728936edb898536d57eb43b1cd41",
     "atlas.portable-signing/1": "9d5fd0888866cff704b03b7e5189dee91fa9e8137c005dcee5606097673e6fc2",
     "atlas.portable-authenticode-verification/1": "037244250cd1a7c1c69ec2543f99ae306cc3b411aa2ef0cc4e33294bacbe8501",
-    "atlas.portable-qualification/3": "be5128e695f59ebac413df716661ff6a728faaaa9f64132bcce37b40b321125b",
+    "atlas.portable-qualification/4": "d9e3c1a787990d0999b904d189807dcbb8fbff3139316ecc87f7965227a753dc",
     "atlas.portable-provenance/1": "52a6a2857f97c0afbc383234b6947ffcc880000d40c906ca58234da7eb8f7041",
     "atlas.portable-third-party-notices/2": "bc31159a8c08daf3ffb5eb2639a6e6cc8e10dfe50e19a2def69846162720b281",
     "atlas.portable-license-fallbacks/1": "1c87ae0649fcc76c6974fbe6473473a023f51d0f2846b6d7c19211bcf07b42f1",

@@ -613,6 +613,29 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
                 require(not (selected.parent / "data").exists(), "fenced selftest created application/helper data")
                 require(data_inventory(destination) == interrupted_tree,
                         "fenced selftest changed interrupted application, helper or authority bytes")
+        # Ordinary and aliased names must not change the lexical fence's answer.
+        # Namespace refusals must come from Atlas, before Windows can resolve a
+        # UNC share or device spelling (the admin share need not be enabled).
+        for owner in (active, helper.parent, destination / ".Atlas.database-preflight"):
+            for database_path in (owner / "data/selftest.db", owner / "data/backups/selftest.db"):
+                ordinary = str(database_path)
+                require(re.fullmatch(r"[A-Za-z]:", database_path.drive) is not None,
+                        "namespace proof requires an ordinary local-drive fixture")
+                unc = "\\\\localhost\\" + database_path.drive[0] + "$" + ordinary[2:]
+                spellings = (ordinary, "\\\\?\\" + ordinary, unc,
+                             "\\\\?\\UNC\\" + unc[2:], "\\\\.\\" + ordinary, "\\??\\" + ordinary)
+                for selected in (executable, helper):
+                    for spelling in spellings:
+                        refused = subprocess.run([str(selected), "--selftest", "--db", spelling],
+                                                 env=environment, cwd=scratch, capture_output=True,
+                                                 text=True, encoding="utf-8", errors="replace",
+                                                 timeout=180, check=False)
+                        require(refused.returncode != 0 and "refusing to write" in refused.stderr,
+                                "Windows namespace selftest did not hit the maintenance fence")
+                        require(not (active / "data").exists() and not (helper.parent / "data").exists(),
+                                "namespace selftest recreated active/helper data")
+                require(data_inventory(destination) == interrupted_tree,
+                        "namespace selftest changed application, helper or custody bytes/directories")
         run(helper, ["--selftest", "--db", str(scratch / "recovery-helper-check/selftest.db")],
             environment, scratch, timeout=180)
         require(data_inventory(destination) == interrupted_tree,
@@ -712,6 +735,7 @@ def prove(release_directory: Path, *, baseline_package: Path | None = None) -> d
             "verified_fresh_reinstall": reinstall,
             "managed_policy_fallback": managed_reinstall,
             "selftest_write_fence": "active_and_recorded_helper_default_and_local_db_refused_external_db_passed_data_reattached",
+            "selftest_namespace_fence": "ordinary_extended_unc_device_active_helper_custody_db_and_backup_refused",
             "interruption_phases": ["data_moved", "activated", "active_moved", "rollback_active_moved"],
             "install_update_interruption_recovery_rollback_database_restore": "PASS",
             "qualification_limit": "host interpreter remains installed; disconnected Python-free host remains external"}

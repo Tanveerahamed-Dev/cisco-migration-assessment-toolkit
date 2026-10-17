@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -177,6 +178,91 @@ def test_journaled_selftest_refuses_external_db_with_backups_redirected_into_kit
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("redirected write probe reached"))
     assert serve.run_selftest(db_path=str(disposable / "selftest.db")) == 1
     assert list((application / "data").iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace semantics")
+@pytest.mark.parametrize("helper_caller", [False, True])
+@pytest.mark.parametrize("owner", ["active", "helper", "custody"])
+@pytest.mark.parametrize("backup", [False, True])
+@pytest.mark.parametrize("namespace", ["ordinary", "extended", "unc", "extended_unc", "device", "nt_device"])
+def test_windows_selftest_namespaces_cannot_recreate_kit_or_custody_data(
+    tmp_path, monkeypatch, capsys, helper_caller, owner, backup, namespace,
+):
+    installation = tmp_path / "installed"
+    active = installation / "Atlas"
+    helper = installation / ("Atlas.maintenance-" + "c" * 32) / "Atlas"
+    active.mkdir(parents=True)
+    helper.mkdir(parents=True)
+    (installation / "Atlas.update-state.json").write_text("data_moved", encoding="ascii")
+    application = helper if helper_caller else active
+    selected_owner = {"active": active, "helper": helper,
+                      "custody": installation / ".Atlas.database-preflight"}[owner]
+    database = selected_owner / ("data/backups/selftest.db" if backup else "data/selftest.db")
+    ordinary = str(database)
+    unc = "\\\\localhost\\" + database.drive[0] + "$" + ordinary[2:]
+    spelling = {"ordinary": ordinary, "extended": "\\\\?\\" + ordinary,
+                "unc": unc, "extended_unc": "\\\\?\\UNC\\" + unc[2:],
+                "device": "\\\\.\\" + ordinary, "nt_device": "\\??\\" + ordinary}[namespace]
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(serve, "_explorer_template_path", lambda: pytest.fail("namespace reached selftest assets"))
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("namespace reached a write probe"))
+    assert serve._main_scoped(["--selftest", "--db", spelling]) == 1
+    assert "refusing to write" in capsys.readouterr().err
+    assert not (active / "data").exists()
+    assert not (helper / "data").exists()
+    assert not (installation / ".Atlas.database-preflight").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace semantics")
+@pytest.mark.parametrize("namespace", ["extended", "unc", "device", "nt_device"])
+def test_namespace_spelling_is_refused_before_resolution_or_journal_lookup(tmp_path, monkeypatch, capsys, namespace):
+    ordinary = str(tmp_path / "Atlas")
+    unc = "\\\\localhost\\" + tmp_path.drive[0] + "$" + ordinary[2:]
+    application = Path({"extended": "\\\\?\\" + ordinary, "unc": unc,
+                        "device": "\\\\.\\" + ordinary, "nt_device": "\\??\\" + ordinary}[namespace])
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(Path, "resolve", lambda *a, **k: pytest.fail("unsupported namespace was resolved"))
+    monkeypatch.setattr(serve.os.path, "lexists", lambda *a: pytest.fail("unsupported root reached journal lookup"))
+    assert serve._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
+    assert "namespace" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace semantics")
+@pytest.mark.parametrize("namespace", ["extended", "unc", "device", "nt_device"])
+def test_executable_namespace_is_refused_before_production_exe_dir_resolves(tmp_path, monkeypatch, capsys, namespace):
+    ordinary = str(tmp_path / "Atlas/Atlas.exe")
+    unc = "\\\\localhost\\" + tmp_path.drive[0] + "$" + ordinary[2:]
+    executable = {"extended": "\\\\?\\" + ordinary, "unc": unc,
+                  "device": "\\\\.\\" + ordinary, "nt_device": "\\??\\" + ordinary}[namespace]
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve.sys, "executable", executable)
+    monkeypatch.setattr(Path, "resolve", lambda *a, **k: pytest.fail("executable namespace reached resolution"))
+    assert serve._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
+    assert "namespace" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace semantics")
+def test_resolved_namespace_alias_is_not_treated_as_external(tmp_path, monkeypatch, capsys):
+    application = tmp_path / "Atlas"
+    application.mkdir()
+    (tmp_path / "Atlas.update-state.json").write_text("data_moved", encoding="ascii")
+    database = tmp_path / "external/selftest.db"
+    original = Path.resolve
+
+    def resolved(path, *args, **kwargs):
+        if path == database:
+            return Path("\\\\?\\" + str(application / "data/selftest.db"))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(serve, "_exe_dir", lambda: application)
+    monkeypatch.setattr(Path, "resolve", resolved)
+    monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("resolved alias reached a probe"))
+    assert serve.run_selftest(db_path=str(database)) == 1
+    assert "namespace" in capsys.readouterr().err
+    assert not (application / "data").exists()
 
 
 def test_helper_copies_only_application_code_and_never_opens_data(tmp_path, monkeypatch):
