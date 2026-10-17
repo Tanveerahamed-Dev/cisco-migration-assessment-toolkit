@@ -15,7 +15,7 @@ import yaml
 
 import interface_computation_guard as guard
 from interface_computation_lex import python_stream
-from interface_computation_sources import compiled_coverage, module_roles, python_closure, role_required
+from interface_computation_sources import DYNAMIC_IMPORT_ALLOWANCES, WRITER_TARGETS, compiled_coverage, dynamic_imports, module_roles, python_closure, role_required
 from ssot_contract_guard import require_canonical_checks
 from pytest_invocation_reader import pytest_invocations
 from cisco_toolkit import ssot
@@ -458,6 +458,154 @@ def test_importlib_alias_reaches_an_unregistered_report_helper(tmp_path, monkeyp
     selected = guard.source_map()
     assert "cisco_toolkit/report_metrics.py" in selected
     refuse_unregistered(selected, "aggregate")
+
+
+@pytest.mark.parametrize("load", [
+    "import importlib\nhelper = importlib.import_module('.metrics', package='report_helpers')",
+    "import importlib as il\nhelper = il.import_module('.metrics', 'report_helpers')",
+    "from importlib import import_module as load\nhelper = load(name='.metrics', package='report_helpers')",
+    "import importlib\nload = importlib.import_module\nhelper = load('..metrics', package='report_helpers.nested')",
+    "import importlib\nhelper = getattr(importlib, 'import_module')('.metrics', 'report_helpers')",
+])
+def test_relative_importlib_writer_reaches_an_outside_role_helper_and_refuses_its_count(load, tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')",
+        "cisco_toolkit/writer.py": load,
+        "report_helpers/metrics.py": "def answer(rows):\n return len(rows)",
+    })
+    selected = guard.source_map()
+    assert "report_helpers/metrics.py" in selected
+    refuse_unregistered(selected, "aggregate")
+
+
+def test_moving_a_registered_count_into_a_relative_dynamic_helper_does_not_remove_the_obligation(tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')",
+        "cisco_toolkit/writer.py": "def answer(rows):\n return len(rows)",
+    })
+    old = guard.scan(guard.source_map())
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')",
+        "cisco_toolkit/writer.py": "import importlib\nhelper = importlib.import_module('.metrics', package='report_helpers')",
+        "report_helpers/metrics.py": "def answer(rows):\n return len(rows)",
+    })
+    current = guard.scan(guard.source_map())
+    assert any(site["path"] == "report_helpers/metrics.py" and site["rule"] == "aggregate" for site in current)
+    # Deleting all the old writer's allowances cannot admit the moved helper.
+    with pytest.raises(ValueError, match="Unregistered"):
+        guard.validate(guard.proposal([]), current, old)
+
+
+@pytest.mark.parametrize("load", [
+    "import importlib\nimportlib.import_module('.renderer', package='cisco_toolkit')",
+    "from importlib import import_module as load\nload('.renderer', 'cisco_toolkit')",
+])
+def test_engine_relative_dynamic_import_must_fail_the_interface_direction_check(load):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/renderer.py": '__atlas_role__ = "interface"\ndef answer(rows):\n return len(rows)',
+        "cisco_toolkit/owner.py": '__atlas_role__ = "engine"\n' + load,
+    }
+    with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("role", ["engine", "interface"])
+@pytest.mark.parametrize("call", [
+    "importlib.import_module(name)",
+    "importlib.import_module('report_helpers.' + suffix)",
+    "importlib.import_module('.metrics', package=package)",
+    "importlib.import_module('report_helpers.metrics', package=package)",
+    "importlib.import_module('.metrics')",
+    "importlib.import_module('...metrics', 'report_helpers')",
+    "importlib.import_module(**arguments)",
+    "__import__('report_helpers.metrics')",
+    "builtins.__import__('report_helpers.metrics')",
+    "importlib.util.spec_from_file_location('metrics', path)",
+    "importlib.util.spec_from_loader('metrics', loader)",
+    "importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "loader.load_module('report_helpers.metrics')",
+    "importlib.machinery.SourceFileLoader('metrics', path)",
+    "getattr(importlib, selector)(name)",
+    "importlib.__dict__[selector](name)",
+    "vars(importlib)[selector](name)",
+    "list(map(importlib.import_module, names))",
+    "callbacks = [importlib.import_module]",
+])
+def test_unresolved_dynamic_loads_are_refused_for_both_roles(role, call):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/owner.py": '__atlas_role__ = ' + repr(role) + '\nimport importlib\nimport builtins\n' + call,
+    }
+    with pytest.raises(ValueError, match="Unresolved dynamic import"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("source", [
+    "from builtins import __import__ as load\nload('helper')",
+    "from importlib.util import spec_from_file_location as load\nload('helper', path)",
+    "from importlib.machinery import SourceFileLoader as Load\nLoad('helper', path)",
+    "import importlib\nload = importlib.import_module\nload(name)",
+    "load = spec.loader.exec_module\nload(module)",
+    "import importlib\nlookup = getattr\nload = lookup(importlib, selector)\nload(name)",
+    "import importlib\nlookup = vars\nlookup(importlib)[selector](name)",
+])
+def test_aliases_do_not_hide_unresolved_dynamic_imports(source):
+    with pytest.raises(ValueError, match="Unresolved dynamic import"):
+        dynamic_imports("report_helpers/writer.py", ast.parse(source), ())
+
+
+def test_an_exact_dynamic_allowance_adds_targets_and_cannot_cover_a_move_or_a_second_occurrence(monkeypatch):
+    import interface_computation_sources as discovery
+    allowance = (("cisco_toolkit/owner.py", "load", "importlib.import_module(name)", ("cisco_toolkit.renderer",)),)
+    original = discovery.dynamic_imports
+    monkeypatch.setattr(discovery, "dynamic_imports", lambda path, tree: original(path, tree, allowance))
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/renderer.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/owner.py": '__atlas_role__ = "engine"\nimport importlib\ndef load(name):\n return importlib.import_module(name)',
+    }
+    with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+    source = sources["cisco_toolkit/owner.py"]
+    assert original("cisco_toolkit/owner.py", ast.parse(source), allowance) == {"cisco_toolkit.renderer"}
+    for path, changed in [
+        ("elsewhere.py", source),
+        ("cisco_toolkit/owner.py", source.replace("def load(", "def moved(")),
+        ("cisco_toolkit/owner.py", source.replace("import_module(name)", "import_module(other)")),
+        ("cisco_toolkit/owner.py", source + "\n importlib.import_module(name)"),
+    ]:
+        with pytest.raises(ValueError, match="Unresolved dynamic import"):
+            original(path, ast.parse(changed), allowance)
+
+
+def test_dynamic_allowances_are_exact_existing_calls_and_writer_targets_equal_the_registry():
+    keys = set()
+    for path, symbol, expression, targets in DYNAMIC_IMPORT_ALLOWANCES:
+        key = (path, symbol, ast.dump(ast.parse(expression, mode="eval").body))
+        assert key not in keys
+        keys.add(key)
+        tree = ast.parse((guard.ROOT / path).read_text(encoding="utf-8"))
+        owners = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol]
+        assert len(owners) == 1, (path, symbol)
+        matches = [node for node in ast.walk(owners[0]) if isinstance(node, ast.Call) and ast.dump(node) == key[2]]
+        assert len(matches) == 1, (path, symbol, expression)
+        assert targets and all("*" not in target for target in targets)
+    registry = ast.parse((guard.ROOT / "cisco_toolkit/docmeta.py").read_text(encoding="utf-8"))
+    writers = {keyword.value.value for node in ast.walk(registry) if isinstance(node, ast.Call)
+               for keyword in node.keywords if keyword.arg == "writer_module" and isinstance(keyword.value, ast.Constant) and keyword.value.value}
+    assert set(WRITER_TARGETS) == writers
+
+
+def test_static_import_aliases_and_inert_edits_keep_identical_targets():
+    sources = [
+        "import importlib\nimportlib.import_module('.metrics', package='report_helpers')",
+        "import importlib as il\n# harmless\nil.import_module( '.metrics' , 'report_helpers' )",
+        "from importlib import import_module as first\nsecond = first\nsecond(name='.metrics', package='report_helpers')",
+    ]
+    for source in sources:
+        assert dynamic_imports("helper.py", ast.parse(source), ()) == {"report_helpers.metrics"}
 
 
 def test_glob_reaches_a_helper_outside_the_frontend_project(parser, tmp_path, monkeypatch):

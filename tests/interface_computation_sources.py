@@ -23,6 +23,188 @@ def role_required(path):
     return python_module(path) and (folded.startswith(("cisco_toolkit/", "webapp/backend/")) or folded == "collect_parse_v3_23_0.py")
 
 
+# Exact-site proposals for independent review, never whole-function exemptions.
+# Targets are dependencies, not permission to omit their computation or direction.
+# Strings normalize through the AST so comments/quote/spacing edits stay harmless.
+WRITER_TARGETS = (
+    "cisco_toolkit.engagement", "cisco_toolkit.crd", "cisco_toolkit.runbook",
+    "cisco_toolkit.design", "cisco_toolkit.archreview", "cisco_toolkit.mop",
+    "webapp.backend.cutover_docx", "webapp.backend.nrfu_docx", "cisco_toolkit.ops",
+    "cisco_toolkit.deck", "webapp.backend.pir_docx",
+)
+DYNAMIC_IMPORT_ALLOWANCES = (
+    ("cisco_toolkit/attestation.py", "_claim_read_only", "importlib.import_module(collector_module)", ("COLLECT_PARSE_V3_23_0",)),
+    ("cisco_toolkit/attestation.py", "_claim_no_llm", "importlib.util.find_spec(collector_module)", ("COLLECT_PARSE_V3_23_0",)),
+    ("webapp/backend/deliverables.py", "resolve_writer", "importlib.import_module(module_name)", WRITER_TARGETS),
+    ("webapp/backend/deliverables.py", "_have", "importlib.util.find_spec(_LIB_MODULE[lib])", ("docx", "pptx")),
+    ("cisco_toolkit/transition_runtime_inventory.py", "_find_distribution_import_root", "importlib.util.find_spec(package)", ("cryptography",)),
+    ("tools/graphify_guarded.py", "_prepare_overlay", "import_module(EXTRACTOR_MODULE)", ("graphify.extractors.json_config",)),
+    ("tools/graphify_guarded.py", "_prepare_overlay", "import_module(REPORT_MODULE)", ("graphify.report",)),
+    ("tools/graphify_guarded.py", "_prepare_overlay", "import_module(WATCH_MODULE)", ("graphify.watch",)),
+    ("tools/graphify_guarded.py", "_prepare_overlay", "importlib.util.spec_from_loader(EXTRACTOR_MODULE, loader=None, origin=str(source_path))", ("graphify.extractors.json_config",)),
+    ("tools/graphify_guarded.py", "_prepare_overlay", "importlib.util.spec_from_loader(REPORT_MODULE, loader=None, origin=str(report_source_path))", ("graphify.report",)),
+    ("tools/bind_atlas_r2_authority_decision.py", "_load_module", "importlib.util.spec_from_file_location(name, path)", ("tools.build_atlas_r2_authority_candidate", "cisco_toolkit.transition_contract")),
+    ("tools/bind_atlas_r2_authority_decision.py", "_load_module", "importlib.util.module_from_spec(spec)", ("tools.build_atlas_r2_authority_candidate", "cisco_toolkit.transition_contract")),
+    ("tools/bind_atlas_r2_authority_decision.py", "_load_module", "spec.loader.exec_module(module)", ("tools.build_atlas_r2_authority_candidate", "cisco_toolkit.transition_contract")),
+    ("tools/generate_prior_database_fixture.py", "build_fixture", "importlib.util.spec_from_file_location('atlas_prior_storage_fixture', storage_path)", ("webapp.backend.storage",)),
+    ("tools/generate_prior_database_fixture.py", "build_fixture", "importlib.util.module_from_spec(spec)", ("webapp.backend.storage",)),
+    ("tools/generate_prior_database_fixture.py", "build_fixture", "spec.loader.exec_module(module)", ("webapp.backend.storage",)),
+    ("webapp/frontend/e2e-real/serve_real_backend.py", "load_fixtures", "importlib.util.spec_from_file_location('_real_backend_e2e_synthetic_fixtures', path)", ("tests.synthetic_fixtures",)),
+    ("webapp/frontend/e2e-real/serve_real_backend.py", "load_fixtures", "importlib.util.module_from_spec(spec)", ("tests.synthetic_fixtures",)),
+    ("webapp/frontend/e2e-real/serve_real_backend.py", "load_fixtures", "spec.loader.exec_module(module)", ("tests.synthetic_fixtures",)),
+)
+
+
+def dynamic_imports(path, tree, allowances=DYNAMIC_IMPORT_ALLOWANCES):
+    """Resolve named import forms, refusing opaque loads rather than dropping edges.
+
+    This is a closed syntactic guard, not proof of absence of Python reflection.
+    An allowance binds one path, enclosing symbol, normalized call and occurrence;
+    its exact target modules still enter closure and engine direction validation.
+    """
+    bindings, scopes, assignments = {}, {}, []
+
+    def visit(node, scope="<module>"):
+        scopes[node] = scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scope = node.name if scope == "<module>" else scope + "." + node.name
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings.setdefault(alias.asname or alias.name.split(".")[0], []).append(alias.name if alias.asname else alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bindings.setdefault(alias.asname or alias.name, []).append((node.module or "") + "." + alias.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and node.value is not None:
+                    assignments.append((target.id, node.value))
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+
+    visit(tree)
+
+    def qualified(node):
+        if isinstance(node, ast.Name):
+            return set(bindings.get(node.id, (node.id,)))
+        if isinstance(node, ast.Attribute):
+            return {base + "." + node.attr for base in qualified(node.value)}
+        if isinstance(node, ast.BoolOp):
+            return {name for value in node.values for name in qualified(value)}
+        if isinstance(node, ast.Subscript):
+            return {base + ".<dynamic>" for base in qualified(node.value)}
+        if isinstance(node, ast.Call) and qualified(node.func) & {"getattr", "builtins.getattr"} and node.args:
+            attribute = node.args[1].value if len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str) else "<dynamic>"
+            return {base + "." + attribute for base in qualified(node.args[0])}
+        if isinstance(node, ast.Call) and qualified(node.func) & {"vars", "builtins.vars"} and len(node.args) == 1:
+            return {base + ".<dynamic>" for base in qualified(node.args[0])}
+        return set()
+
+    def kind(name):
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in {"import_module", "find_spec"}:
+            return leaf
+        if (leaf in {"__import__", "module_from_spec", "exec_module", "load_module"}
+                or leaf.startswith("spec_from_") or leaf in {"SourceFileLoader", "SourcelessFileLoader", "ExtensionFileLoader", "zipimporter"}
+                or name.startswith(("importlib.", "builtins.")) and "<dynamic>" in name):
+            return "opaque"
+        return None
+
+    # Only importer/namespace aliases enter this finite fixed point. Ordinary
+    # data bindings never recursively expand across a large engine's AST.
+    canonical = {"import_module": "importlib.import_module", "find_spec": "importlib.util.find_spec", "opaque": "importlib.<dynamic>"}
+    namespaces = {"importlib", "importlib.util", "importlib.machinery", "builtins", "getattr", "vars", "builtins.getattr", "builtins.vars"}
+    changed = True
+    while changed:
+        changed = False
+        for name, value in assignments:
+            resolved = {canonical[kind(item)] if kind(item) else item for item in qualified(value) if kind(item) or item in namespaces}
+            previous = set(bindings.get(name, ()))
+            if resolved - previous:
+                bindings[name] = sorted(previous | resolved)
+                changed = True
+
+    allowed = {}
+    for owner, symbol, expression, targets in allowances:
+        if owner == path:
+            key = (symbol, ast.dump(ast.parse(expression, mode="eval").body))
+            if key in allowed or not targets or any(not target or not all(part.isidentifier() for part in target.split(".")) for target in targets):
+                raise ValueError("Invalid exact dynamic import allowance: " + path)
+            allowed[key] = tuple(targets)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    occurrences = {}
+    for node in calls:
+        key = (scopes[node], ast.dump(node))
+        occurrences[key] = occurrences.get(key, 0) + 1
+
+    def static_target(node):
+        # Expansions, duplicate/unknown arguments and computed names/packages are
+        # never interpreted as no dependency, even for absolute module names.
+        if len(node.args) > 2 or any(isinstance(arg, ast.Starred) for arg in node.args):
+            return None
+        arguments = dict(zip(("name", "package"), node.args))
+        for keyword in node.keywords:
+            if keyword.arg not in {"name", "package"} or keyword.arg in arguments:
+                return None
+            arguments[keyword.arg] = keyword.value
+        if "name" not in arguments:
+            return None
+        name = arguments["name"]
+        package = arguments.get("package", ast.Constant(None))
+        if not isinstance(name, ast.Constant) or not isinstance(name.value, str) or not isinstance(package, ast.Constant):
+            return None
+        name, package = name.value, package.value
+        if package is not None and (not isinstance(package, str) or not package or not all(part.isidentifier() for part in package.split("."))):
+            return None
+        if name.startswith("."):
+            if not package:
+                return None
+            level = len(name) - len(name.lstrip("."))
+            parts = package.split(".")
+            if level > len(parts):
+                return None
+            name = ".".join([*parts[:len(parts) - level + 1], *([name[level:]] if name[level:] else [])])
+        return name if name and all(part.isidentifier() for part in name.split(".")) else None
+
+    result = set()
+    for node in calls:
+        kinds = {kind(name) for name in qualified(node.func)} - {None}
+        if not kinds:
+            continue
+        target = static_target(node) if kinds <= {"import_module", "find_spec"} else None
+        if target is not None:
+            result.add(target)
+            continue
+        key = (scopes[node], ast.dump(node))
+        if key not in allowed or occurrences[key] != 1:
+            raise ValueError("Unresolved dynamic import: " + path + ":" + str(node.lineno) + " (" + scopes[node] + ")")
+        result.update(allowed[key])
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):
+            continue
+        if not isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)) or not any(kind(name) for name in qualified(node)):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Call) and parent.func is node:
+            continue  # Already resolved or refused above.
+        while isinstance(parent, (ast.Attribute, ast.BoolOp)):
+            node, parent = parent, parents.get(parent)
+        if isinstance(parent, (ast.Assign, ast.AnnAssign)) and parent.value is node:
+            targets = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
+            if all(isinstance(target, ast.Name) for target in targets):
+                continue  # Named aliases are resolved at every use, not dropped.
+        # An importer escaping as a value (map/callback/return/container) has no
+        # statically bound invocation. Its enclosing call must be reviewed too.
+        if isinstance(parent, ast.Call):
+            key = (scopes[parent], ast.dump(parent))
+            if key in allowed and occurrences[key] == 1:
+                result.update(allowed[key])
+                continue
+        raise ValueError("Unresolved dynamic import reference: " + path + ":" + str(node.lineno))
+    return result
+
+
 def module_roles(names, read, declaration_names=None):
     """Require one explicit role per owned module, never an exemption filename list.
 
@@ -192,10 +374,8 @@ def python_closure(names, read, role_read=None, role_names=None):
             return dependency_cache[path]
         dependencies = set()
         package = str(PurePosixPath(path).parent).replace("/", ".")
-        import_names = {"import_module", "__import__"}
-        for node in ast.walk(tree(path)):
-            if isinstance(node, ast.ImportFrom) and node.module in {"importlib", "builtins"}:
-                import_names.update(alias.asname or alias.name for alias in node.names if alias.name in import_names)
+        for module in dynamic_imports(path, tree(path)):
+            dependencies.update(module_paths(module))
         for node in ast.walk(tree(path)):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -211,16 +391,6 @@ def python_closure(names, read, role_read=None, role_names=None):
                 for alias in node.names:
                     if alias.name != "*":
                         dependencies.update(module_paths(".".join(filter(None, (module, alias.name)))))
-            elif isinstance(node, ast.Call):
-                name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
-                if name in import_names:
-                    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                        dependencies.update(module_paths(node.args[0].value))
-                    else:
-                        # A dynamic selector may select any repository production
-                        # module. Conservatively close that class, not just today's
-                        # literal registry targets; never execute the selector.
-                        dependencies.update(production)
         dependency_cache[path] = dependencies
         return dependencies
 

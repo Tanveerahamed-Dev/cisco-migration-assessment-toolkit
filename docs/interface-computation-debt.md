@@ -801,3 +801,59 @@ The preceding head's reference workflow `39001989991` succeeded with measured
 JSON token **85.00%**; zero walls at/above the unchanged **95%** failure threshold
 and zero unmeasured. These warnings remain capacity risk for review, not waivers.
 Fresh corrected-head capacity evidence is still required.
+
+## Relative and unresolved Python loads — remaining P1-1
+
+The independent re-review of `0dfa372f` verified P1-2 and P2 closed but found
+one remaining P1-1 edge: `import_module('.metrics', package='report_helpers')`
+ignored its package and omitted the helper. A moved count could disappear from
+inspection, and an engine could load an interface without the direction check.
+The earlier 15/15 and the board-only `630a0fe8` integration do not close this edge.
+
+`tests/interface_computation_sources.py :: dynamic_imports` now resolves literal
+relative names against their actual positional or keyword package, before both
+closure and engine-to-interface validation. Import aliases, named function
+aliases and literal `getattr` spellings retain the same target. Missing packages,
+invalid relative levels, argument expansions, computed names and nonliteral
+packages refuse, including a nonliteral package supplied with an absolute name.
+`__import__`, spec factories, module-from-spec calls and loader operations refuse
+unless the exact call site has an explicit target allowance. Importer references
+escaping into callbacks, returns or containers also refuse. A refused load is
+never silently represented as an empty dependency set or an arbitrary-production
+fallback. These checks apply to every reached helper and every engine owner,
+including engines not reached by any interface.
+
+The exception owner is `DYNAMIC_IMPORT_ALLOWANCES` in that same source module.
+Each row binds the actual repository path, enclosing symbol, normalized call
+expression, a single occurrence and the exact dependency targets. It exempts
+neither a file nor a function from scanning; its targets enter the ordinary
+closure and direction checks. A moved/changed/duplicated call is refused. The
+allowance inventory test requires every proposed site to exist exactly once,
+with non-wildcard targets; the writer selector's targets must exactly equal the
+registered writer modules. These are author proposals for the same independent
+review, not a claim of prior reviewer approval or runtime input confinement.
+
+The proposed sites are the attestation collector selector and source probe;
+the AssessHub registered-writer selector and optional-library probes; the
+cryptography distribution probe; Graphify's pinned module selectors and overlay
+specs; and the existing R2, historical-database and browser-E2E file loaders.
+Their exact targets are code-owned in the allowance rows, not duplicated here.
+The two backend package spellings resolve to the same repository writer owners.
+File-loader targets name the repository source they load, including the synthetic
+fixture rather than its temporary runtime module alias. A broader runtime input
+or different target requires a reviewed allowance change; this static guard does
+not execute or certify those selectors' runtime input validation.
+
+New controls require an outside-role relative helper to be scanned, refuse a
+registered count moved there even after its original allowances are deleted,
+and require the specific engine-to-interface direction error for a relative
+engine load. Both roles have unresolved-name/package, builtin-import, spec and
+loader refusal controls. Alias, reflection, callback, exact-allowance target,
+move/duplicate refusal and inert-edit controls cover the same boundary.
+
+Replacing the old arbitrary-production fallback with exact targets can change
+the source census. The fact register remains shrink-only against every active
+ancestor; no reset, new historical cutoff, weaker assertion, source exemption,
+budget increase or timeout increase is authorized by this correction. A closing
+claim requires the corrected hosted census and all fifteen required checks on
+the final head. Until then the correction is implemented but not verified.
