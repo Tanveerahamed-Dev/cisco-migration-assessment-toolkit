@@ -721,6 +721,66 @@ print("prior AST retained; current AST released without cyclic GC")
     assert result.stdout.strip() == "prior AST retained; current AST released without cyclic GC"
 
 
+def test_python_detector_releases_source_and_discarded_facts_without_cyclic_gc():
+    # The prior local visitor class forms a type/closure cycle that captures
+    # per-source buffers and facts. Keep this lifetime/parity probe isolated
+    # from the main test process and every application timing measurement.
+    probe = r'''
+import gc
+import json
+from pathlib import Path
+import subprocess
+import sys
+import types
+import weakref
+sys.path.insert(0, str(Path.cwd() / "tests"))
+import interface_computation_guard as current
+prior_source = subprocess.check_output([
+    "git", "show", "453ed3b152bd64634299690a3a1bb9aecdaaa797:tests/interface_computation_guard.py"
+], text=True, encoding="utf-8")
+prior = types.ModuleType("prior_detector")
+prior.__file__ = str(Path.cwd() / "tests/interface_computation_guard.py")
+exec(compile(prior_source, prior.__file__, "exec"), prior.__dict__)
+class Witness:
+    pass
+class SourceLines(list):
+    pass
+class Fingerprint(str):
+    pass
+def observe(detector):
+    source_refs, fact_refs = [], []
+    original_source, original_digest = detector.python_source, detector.digest
+    def source(text):
+        text, lines, offsets = original_source(text)
+        tagged = SourceLines(lines)
+        tagged.witness = Witness()
+        source_refs.append(weakref.ref(tagged.witness))
+        return text, tagged, offsets
+    def digest(text):
+        tagged = Fingerprint(original_digest(text))
+        tagged.witness = Witness()
+        fact_refs.append(weakref.ref(tagged.witness))
+        return tagged
+    detector.python_source, detector.digest = source, digest
+    facts = detector.python_sites("probe.py", "def answer(rows):\n return len(rows)\n")
+    assert facts and source_refs and fact_refs
+    serialized = json.dumps(facts, sort_keys=True)
+    retained_source = any(ref() is not None for ref in source_refs)
+    del facts
+    retained_facts = any(ref() is not None for ref in fact_refs)
+    return serialized, retained_source, retained_facts
+gc.disable()
+before, after = observe(prior), observe(current)
+assert before[0] == after[0], "Detector changed emitted fact identities or display evidence"
+assert before[1:] == (True, True), "Negative control did not expose prior payload retention"
+assert after[1:] == (False, False), "Detector retained source/discarded facts until cyclic GC"
+print("identical facts; prior payloads retained; current payloads released without cyclic GC")
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", probe], cwd=guard.ROOT,
+                            capture_output=True, text=True, timeout=30, check=True)
+    assert result.stdout.strip() == "identical facts; prior payloads retained; current payloads released without cyclic GC"
+
+
 def test_glob_reaches_a_helper_outside_the_frontend_project(parser, tmp_path, monkeypatch):
     source_fixture(tmp_path, monkeypatch, {
         "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",

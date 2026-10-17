@@ -963,3 +963,28 @@ cannot collect or warm the main test process. This proves the lifetime property
 if it passes; it does not establish that retention caused the observed 912.1 ms
 budget violation. The original timing failure remains recorded even if subsequent
 complete jobs pass. All original assertions, budgets and timeouts remain intact.
+
+### Repeated timing violation and detector payload lifetime
+
+The `453ed3b1` full Linux 3.12 suite reproduced the same first-page budget failure:
+744.7 ms versus the unchanged 300 ms limit, with 20,027 other tests passed. Its
+earlier G14 first page measured 142.5 ms; its following page measured 148.4 ms.
+The isolated discovery AST-lifetime control passed. Therefore that repair did
+not establish a resolution of the timing violation. No blind retry or claim of
+contention is justified by these observations; the timing cause remains open.
+
+Further source inspection found the Python fact detector's local visitor class
+captured each source buffer and emitted-fact collection in a type/closure cycle.
+The detector now uses one module-level visitor class with per-source instance
+state and a module-level recursive verdict helper. All detection conditions,
+normalization, source evidence and identities are intended to remain identical;
+the current register and existing mutation controls still require that. No
+application, timing test, timer, warm-up, collection policy or budget is changed.
+
+A separate isolated subprocess probe disables cyclic GC only inside that child,
+loads the immutable `453ed3b1` detector as a negative control, and requires exact
+emitted-output parity while the current detector releases normalized source
+buffers and caller-discarded facts without cyclic collection. It cannot collect
+or prime the main pytest process. A passing probe establishes that payload
+lifetime property, not the cause or resolution of either timing violation. Both
+full-suite budget failures remain negative evidence for independent review.

@@ -186,144 +186,150 @@ def ast_form(value):
     return value
 
 
+def _python_literal(node):
+    return isinstance(node, ast.Constant) or (isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant))
+
+
+def _python_return_verdict(value):
+    if isinstance(value, ast.Constant):
+        return type(value.value) is bool or (isinstance(value.value, str) and value.value.casefold().replace("_", "-") in VERDICT_RETURNS)
+    if isinstance(value, ast.Name):
+        return bool(VERDICT_NAME.search(value.id.lstrip("_")))
+    if isinstance(value, ast.Attribute):
+        return bool(VERDICT_NAME.search(value.attr.lstrip("_")))
+    if isinstance(value, ast.Call):
+        return _python_return_verdict(value.func)
+    if isinstance(value, ast.IfExp):
+        return _python_return_verdict(value.body) or _python_return_verdict(value.orelse)
+    if isinstance(value, ast.BoolOp):
+        return any(_python_return_verdict(child) for child in value.values)
+    return False
+
+
+class _PythonFactWalk(ast.NodeVisitor):
+    def __init__(self, path, text, lines, offsets):
+        self.path, self.text, self.lines, self.offsets = path, text, lines, offsets
+        self.result, self.counts, self.scope = [], Counter(), "<module>"
+
+    def segment(self, node):
+        start = self.offsets[node.lineno - 1] + len(self.lines[node.lineno - 1].encode()[:node.col_offset].decode())
+        end = self.offsets[node.end_lineno - 1] + len(self.lines[node.end_lineno - 1].encode()[:node.end_col_offset].decode())
+        return self.text[start:end]
+
+    def emit(self, node, rule, normalized=None):
+        fingerprint = digest(normalized if normalized is not None else json.dumps(ast_form(node), sort_keys=True, separators=(",", ":")))
+        key = (self.scope, rule, fingerprint)
+        self.counts[key] += 1
+        self.result.append(dict(path=self.path, symbol=self.scope, rule=rule, fingerprint=fingerprint,
+                           occurrence=self.counts[key], line=node.lineno,
+                           expression=self.segment(node).replace("\n", " ")[:240]))
+
+    def visit_FunctionDef(self, node):
+        old = self.scope
+        self.scope = node.name if old == "<module>" else old + "." + node.name
+        if SYMBOL.match(node.name):
+            self.emit(node, "analysis-symbol", node.name)
+        if VERDICT_NAME.search(node.name.lstrip("_")):
+            self.emit(node, "verdict-symbol", node.name)
+        self.generic_visit(node)
+        self.scope = old
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def returned(self, node):
+        pending = [node]
+        while pending:
+            child = pending.pop()
+            if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if isinstance(child, ast.Compare) and any(not _python_literal(n) for n in (child.left, *child.comparators)):
+                self.emit(child, "returned-comparison")
+            pending.extend(ast.iter_child_nodes(child))
+
+        if _python_return_verdict(node):
+            self.emit(node, "verdict-return")
+
+    def visit_Lambda(self, node):
+        old = self.scope
+        self.scope = old + ".<lambda>"
+        self.returned(node.body)
+        self.generic_visit(node)
+        self.scope = old
+
+    def visit_Call(self, node):
+        name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        if name in {"len", "sum", "any", "all", "Counter", "mean", "average", "count", "count_by", "_count_by"}:
+            self.emit(node, "aggregate")
+        if name in {"bfs", "dfs", "shortest_path", "dijkstra", "reachable", "flood_fill"}:
+            self.emit(node, "graph-call")
+        if name in {"eval", "exec", "compile", "__import__"}:
+            self.emit(node, "dynamic-code")
+        if name in {"append", "extend", "pop", "popleft", "add", "update"}:
+            self.emit(node, "collection-update")
+        if name == "get" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0 and DOMAIN.search(ast.unparse(node)):
+            self.emit(node, "fact-default-zero")
+        self.generic_visit(node)
+
+    def visit_Return(self, node):
+        if node.value is not None and any(isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in VERDICTS for n in ast.walk(node.value)):
+            self.emit(node.value, "fact-decision")
+        if node.value is not None:
+            self.returned(node.value)
+        self.generic_visit(node)
+
+    def visit_Compare(self, node):
+        if any(isinstance(n, ast.Constant) and type(n.value) in (int, float) for n in ast.walk(node)):
+            self.emit(node, "fact-threshold")
+        self.generic_visit(node)
+
+    def visit_BinOp(self, node):
+        if isinstance(node.op, (ast.Div, ast.FloorDiv)) and not _python_literal(node.left) and not _python_literal(node.right):
+            self.emit(node, "ratio-arithmetic")
+        if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)) and DOMAIN.search(ast.unparse(node)):
+            self.emit(node, "fact-arithmetic")
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node):
+        if isinstance(node.op, (ast.Add, ast.Sub)):
+            self.emit(node, "counter-update")
+        self.generic_visit(node)
+
+    def visit_Assign(self, node):
+        for target in node.targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name) and VERDICT_NAME.search(name.id):
+                    self.emit(name, "verdict-symbol", name.id)
+        if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
+            self.emit(node, "counter-update")
+        self.generic_visit(node)
+
+    def visit_IfExp(self, node):
+        if re.search(r"Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy", ast.unparse(node.body) + ast.unparse(node.orelse)):
+            self.emit(node.test, "fact-decision")
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        for target in ast.walk(node.target):
+            if isinstance(target, ast.Name) and VERDICT_NAME.search(target.id):
+                self.emit(target, "verdict-symbol", target.id)
+        self.generic_visit(node)
+
+    def visit_For(self, node):
+        if re.search(r"\badj\b|\bnbrs?\b|\bqueue\b|\bvisited\b|adjacen|neighbou?rs", ast.unparse(node), re.I):
+            self.emit(node, "graph-traversal")
+        self.generic_visit(node)
+
+    visit_While = visit_For
+    visit_AsyncFor = visit_For
+
+
 def python_sites(path, text):
-    result, counts = [], Counter()
+    # A module-level visitor keeps per-source buffers on an acyclic instance,
+    # rather than in a fresh local class's function closures/MRO cycle.
     text, lines, offsets = python_source(text)
-
-    def segment(node):
-        start = offsets[node.lineno - 1] + len(lines[node.lineno - 1].encode()[:node.col_offset].decode())
-        end = offsets[node.end_lineno - 1] + len(lines[node.end_lineno - 1].encode()[:node.end_col_offset].decode())
-        return text[start:end]
-
-    def literal(node):
-        return isinstance(node, ast.Constant) or (isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant))
-
-    class Walk(ast.NodeVisitor):
-        scope = "<module>"
-
-        def emit(self, node, rule, normalized=None):
-            fingerprint = digest(normalized if normalized is not None else json.dumps(ast_form(node), sort_keys=True, separators=(",", ":")))
-            key = (self.scope, rule, fingerprint)
-            counts[key] += 1
-            result.append(dict(path=path, symbol=self.scope, rule=rule, fingerprint=fingerprint,
-                               occurrence=counts[key], line=node.lineno,
-                               expression=segment(node).replace("\n", " ")[:240]))
-
-        def visit_FunctionDef(self, node):
-            old = self.scope
-            self.scope = node.name if old == "<module>" else old + "." + node.name
-            if SYMBOL.match(node.name):
-                self.emit(node, "analysis-symbol", node.name)
-            if VERDICT_NAME.search(node.name.lstrip("_")):
-                self.emit(node, "verdict-symbol", node.name)
-            self.generic_visit(node)
-            self.scope = old
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def returned(self, node):
-            pending = [node]
-            while pending:
-                child = pending.pop()
-                if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                if isinstance(child, ast.Compare) and any(not literal(n) for n in (child.left, *child.comparators)):
-                    self.emit(child, "returned-comparison")
-                pending.extend(ast.iter_child_nodes(child))
-
-            def verdict(value):
-                if isinstance(value, ast.Constant):
-                    return type(value.value) is bool or (isinstance(value.value, str) and value.value.casefold().replace("_", "-") in VERDICT_RETURNS)
-                if isinstance(value, ast.Name):
-                    return bool(VERDICT_NAME.search(value.id.lstrip("_")))
-                if isinstance(value, ast.Attribute):
-                    return bool(VERDICT_NAME.search(value.attr.lstrip("_")))
-                if isinstance(value, ast.Call):
-                    return verdict(value.func)
-                if isinstance(value, ast.IfExp):
-                    return verdict(value.body) or verdict(value.orelse)
-                if isinstance(value, ast.BoolOp):
-                    return any(verdict(child) for child in value.values)
-                return False
-
-            if verdict(node):
-                self.emit(node, "verdict-return")
-
-        def visit_Lambda(self, node):
-            old = self.scope
-            self.scope = old + ".<lambda>"
-            self.returned(node.body)
-            self.generic_visit(node)
-            self.scope = old
-
-        def visit_Call(self, node):
-            name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
-            if name in {"len", "sum", "any", "all", "Counter", "mean", "average", "count", "count_by", "_count_by"}:
-                self.emit(node, "aggregate")
-            if name in {"bfs", "dfs", "shortest_path", "dijkstra", "reachable", "flood_fill"}:
-                self.emit(node, "graph-call")
-            if name in {"eval", "exec", "compile", "__import__"}:
-                self.emit(node, "dynamic-code")
-            if name in {"append", "extend", "pop", "popleft", "add", "update"}:
-                self.emit(node, "collection-update")
-            if name == "get" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0 and DOMAIN.search(ast.unparse(node)):
-                self.emit(node, "fact-default-zero")
-            self.generic_visit(node)
-
-        def visit_Return(self, node):
-            if node.value is not None and any(isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in VERDICTS for n in ast.walk(node.value)):
-                self.emit(node.value, "fact-decision")
-            if node.value is not None:
-                self.returned(node.value)
-            self.generic_visit(node)
-
-        def visit_Compare(self, node):
-            if any(isinstance(n, ast.Constant) and type(n.value) in (int, float) for n in ast.walk(node)):
-                self.emit(node, "fact-threshold")
-            self.generic_visit(node)
-
-        def visit_BinOp(self, node):
-            if isinstance(node.op, (ast.Div, ast.FloorDiv)) and not literal(node.left) and not literal(node.right):
-                self.emit(node, "ratio-arithmetic")
-            if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv)) and DOMAIN.search(ast.unparse(node)):
-                self.emit(node, "fact-arithmetic")
-            self.generic_visit(node)
-
-        def visit_AugAssign(self, node):
-            if isinstance(node.op, (ast.Add, ast.Sub)):
-                self.emit(node, "counter-update")
-            self.generic_visit(node)
-
-        def visit_Assign(self, node):
-            for target in node.targets:
-                for name in ast.walk(target):
-                    if isinstance(name, ast.Name) and VERDICT_NAME.search(name.id):
-                        self.emit(name, "verdict-symbol", name.id)
-            if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
-                self.emit(node, "counter-update")
-            self.generic_visit(node)
-
-        def visit_IfExp(self, node):
-            if re.search(r"Critical|Excellent|Good|Poor|READY|GO|risk|watch|healthy", ast.unparse(node.body) + ast.unparse(node.orelse)):
-                self.emit(node.test, "fact-decision")
-            self.generic_visit(node)
-
-        def visit_AnnAssign(self, node):
-            for target in ast.walk(node.target):
-                if isinstance(target, ast.Name) and VERDICT_NAME.search(target.id):
-                    self.emit(target, "verdict-symbol", target.id)
-            self.generic_visit(node)
-
-        def visit_For(self, node):
-            if re.search(r"\badj\b|\bnbrs?\b|\bqueue\b|\bvisited\b|adjacen|neighbou?rs", ast.unparse(node), re.I):
-                self.emit(node, "graph-traversal")
-            self.generic_visit(node)
-
-        visit_While = visit_For
-        visit_AsyncFor = visit_For
-
-    Walk().visit(ast.parse(text, filename=path))
-    return result
+    walker = _PythonFactWalk(path, text, lines, offsets)
+    walker.visit(ast.parse(text, filename=path))
+    return walker.result
 
 
 def scan(sources):
