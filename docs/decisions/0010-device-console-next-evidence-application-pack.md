@@ -88,11 +88,13 @@ These findings were fact-checked against primary sources:
        - **The printed-command test starts as an inventory.** Wave 0 classifies every command-shaped
          string that today's printing producers emit. Some strings fit no class, for example a telnet
          port test, a prose instruction, or several commands in one cell. These go into an explicit,
-         reviewed **printed-exception register**, which is shrink-only like the ADR 0008 debt
-         register. Wave 0 therefore changes no printed output.
-       - Later work may shrink the register by splitting cells, adding a reviewed class (such as a
-         printed connectivity test) or rewording instructions. A new string that fits no class fails
-         the test unless it is reviewed into the register.
+         reviewed **printed-exception register**. Wave 0 therefore changes no printed output.
+       - **After Wave 0 seeds it, the register is strictly shrink-only**, like the ADR 0008 debt
+         register: entries can only be removed, and nothing is ever added.
+       - A new printed string that fits no class fails the test. It must be fixed before it lands,
+         either by rewording or splitting it into registered forms, or by adding a reviewed form or
+         class (such as a printed connectivity test) to the policy.
+       - Later work shrinks the register the same ways.
      - **Provenance references** are not producers. These are engine strings that only name the
        command a fact came from, such as the capture labels in baseline rows, capture integrity and
        parse yield.
@@ -122,7 +124,8 @@ These findings were fact-checked against primary sources:
        `compute_validation_plan`, `compute_remediation_plan`, the NRFU export (including its document
        view) and the MOP.
      - A structural scan fails if any module builds a device command string outside a declared producer,
-       except provenance references that resolve to a catalogue form.
+       except provenance references that resolve to a catalogue form or a registered
+       `cmdio.PARSER_CONTRACTS` variant, or that are empty (no source command).
    - **Rules and edits.** Rules are written from Cisco documentation and verified against real device
      output, never copied from another vendor's policy files. There is no operator-editable policy in
      v1: a policy change is code plus review, and the block list is a floor nothing can relax.
