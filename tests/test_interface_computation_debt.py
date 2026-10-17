@@ -968,13 +968,13 @@ def test_initial_companion_migration_preserves_roles_and_frozen_application_byte
     foundation = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
 
     def declarations(revision):
-        names, snapshot = guard.revision_sources(revision)
+        names, snapshot = guard.revision_sources(revision, roles_only=True)
         roles = module_roles(names, lambda path: snapshot[path].decode("utf-8"))
         return set(names), roles, snapshot
 
     _legacy_names, legacy_roles, _legacy_source = declarations(legacy)
     migrated_names, migrated_roles, migrated_source = declarations(guard.ROLE_ORIGIN)
-    _foundation_names, foundation_source = guard.revision_sources(foundation)
+    _foundation_names, foundation_source = guard.revision_sources(foundation, roles_only=True)
     assert migrated_roles == legacy_roles
     assert all(path + ".atlas-role" in migrated_names for path in migrated_roles)
     # The same exact byte assertion over immutable objects, without hundreds of
@@ -1089,6 +1089,8 @@ def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blob
              "client/icon.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>\n',
              "cisco_toolkit/é.py": "value = 'é'\n".encode(),
              "helpers/Reader.PY": b"value = 1\n",
+             "COLLECT_PARSE_V3_23_0.py": b"value = 1\n",
+             "webapp/backend/Adapter.py": b"value = 1\n",
              "cisco_toolkit/é.py.atlas-role": b'{"role":"engine"}\n',
              "large-unrelated.json": b'{"not_a_source_input":true}\n'}
     for path, data in files.items():
@@ -1104,9 +1106,16 @@ def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blob
     assert set(snapshot) == set(files) - {"large-unrelated.json"}
     for path in snapshot:
         assert snapshot[path] == git("cat-file", "blob", revision + ":" + path)
+    role_names, role_snapshot = guard.revision_sources(revision, roles_only=True)
+    assert role_names == names  # The complete name/orphan census is never narrowed.
+    assert set(role_snapshot) == {"cisco_toolkit/é.py", "cisco_toolkit/é.py.atlas-role",
+                                  "COLLECT_PARSE_V3_23_0.py", "webapp/backend/Adapter.py"}
+    assert all(data == snapshot[path] for path, data in role_snapshot.items())
     # Immutable bytes never follow a dirty worktree or mutable timestamp cache.
     (tmp_path / "client/shared.ts").write_bytes(b"different worktree source\n")
+    (tmp_path / "cisco_toolkit/é.py").write_bytes(b"different role source\n")
     assert guard.revision_sources(revision)[1] == snapshot
+    assert guard.revision_sources(revision, roles_only=True)[1] == role_snapshot
 
 
 @pytest.mark.parametrize("batch", [

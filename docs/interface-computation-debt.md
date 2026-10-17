@@ -775,3 +775,29 @@ controls exercise this boundary. The existing active register, source ceiling,
 module roles, detector forms, whole-suite commands, budgets and timeouts stay
 unchanged. Fresh exact-head hosted execution is required; preceding successful
 guards alone do not certify this correction.
+
+## Complete-command success is not a passed job
+
+On `b7e0ceb6`, portable run `39001989988`, job `117306891888`, the complete
+Python/frontend/build/source-comparison step is **SUCCESS** (ended 06:18:23 UTC).
+Python returned successfully, all **537 frontend tests / 38 files** passed, and
+the production build completed. The job is nevertheless **CANCELLED** at its
+unchanged 120-minute window during post-job cleanup (ended 06:18:28 UTC).
+This remains negative whole-gate evidence, not a green required context or
+recovered budget. The original commands and cleanup still have to fit the window.
+
+The immutable role-origin/migration consumers had fetched all browser/helper
+source blobs despite using only the complete module-role class. They now fetch
+that class while retaining the entire Git name census, every owned Python module,
+every declaration, and all previous role/value/raw-byte assertions. Full fact
+discovery keeps the full source mode; current workspace reads stay uncached.
+Hosted byte-parity controls compare both modes, cover collector/backend/toolkit
+roles, retain outside helpers in full mode, and prove dirty worktree changes
+cannot alter either immutable result. The effect on the complete job remains
+unverified until a fresh required context succeeds; no local timing is used.
+
+The preceding head's reference workflow `39001989991` succeeded with measured
+**WARN** capacity: release census **94.19%**, expanded projection **92.36%**, longest
+JSON token **85.00%**; zero walls at/above the unchanged **95%** failure threshold
+and zero unmeasured. These warnings remain capacity risk for review, not waivers.
+Fresh corrected-head capacity evidence is still required.

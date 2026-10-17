@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 from interface_computation_lex import lexical_counter, lexical_sites, python_source, python_stream, string_payloads
-from interface_computation_sources import BROWSER_DOCUMENT_SUFFIXES, SCRIPT_SUFFIXES, compiled_coverage, python_closure, python_module
+from interface_computation_sources import BROWSER_DOCUMENT_SUFFIXES, SCRIPT_SUFFIXES, compiled_coverage, python_closure, python_module, role_required
 
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
@@ -42,12 +42,15 @@ def git(*args, input=None):
     return subprocess.check_output(["git", "-C", str(ROOT), *args], input=input)
 
 
-def revision_sources(revision):
+def revision_sources(revision, *, roles_only=False):
     """Read immutable source blobs in one strict cat-file batch, never per-path processes.
 
     Names still come from the complete Git tree. Only executable/parser inputs
     and module declarations are materialized; large unrelated graph/data blobs
     are not loaded. Git object identity/type/size and batch framing must match.
+    Immutable declaration/migration consumers can request the complete role
+    class instead of materializing unrelated browser and helper blobs. Names
+    still come from the whole tree; the fact-source census uses the full mode.
     Nothing is extracted to disk, imported, evaluated or content-normalized.
     """
     names, selected = [], {}
@@ -58,10 +61,11 @@ def revision_sources(revision):
         mode, kind, oid = metadata.split()
         path = raw_path.decode("utf-8")
         names.append(path)
-        wanted = (python_module(path) or path.endswith(".atlas-role")
+        wanted = ((role_required(path) or path.endswith(".atlas-role")) if roles_only else
+                  (python_module(path) or path.endswith(".atlas-role")
                   or path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path
-                                                or path.endswith(("package.json", "package-lock.json"))))
+                                                or path.endswith(("package.json", "package-lock.json")))))
         if wanted:
             if mode not in {b"100644", b"100755"} or kind != b"blob":
                 raise ValueError("Refused nonregular immutable source: " + path)
@@ -128,7 +132,7 @@ def source_map(revision=None):
     # role snapshot is immutable Git source, never current workspace guesses.
     role_names, role_read = None, None
     if revision and ROLE_ORIGIN:
-        role_names, role_snapshot = revision_sources(ROLE_ORIGIN)
+        role_names, role_snapshot = revision_sources(ROLE_ORIGIN, roles_only=True)
         role_read = lambda path: role_snapshot[path].decode("utf-8")  # noqa: E731
     selected = python_closure(names, read, role_read, role_names)
     candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))
