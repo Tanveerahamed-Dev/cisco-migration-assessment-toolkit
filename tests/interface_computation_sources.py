@@ -83,6 +83,9 @@ def dynamic_imports(path, tree, allowances=DYNAMIC_IMPORT_ALLOWANCES):
             visit(child, scope)
 
     visit(tree)
+    # Break the recursive function-cell cycle: otherwise its scopes/assignments
+    # retain the complete input AST until cyclic GC, after discovery returns.
+    visit = None
 
     def qualified(node):
         if isinstance(node, ast.Name):
@@ -204,6 +207,7 @@ def dynamic_imports(path, tree, allowances=DYNAMIC_IMPORT_ALLOWANCES):
                 result.update(allowed[key])
                 continue
         raise ValueError("Unresolved dynamic import reference: " + path + ":" + str(node.lineno))
+    qualified = None  # Its recursive binding must not retain alias dictionaries.
     return result
 
 

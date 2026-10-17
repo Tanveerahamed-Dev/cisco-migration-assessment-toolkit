@@ -937,3 +937,29 @@ refuse outside an exact allowance; no unresolved receiver becomes no dependency.
 Both roles have factory, subscript and literal-getattr refusal controls, with
 additional alias controls. This changes no allowance target, role, application
 source, fact-register entry, budget or timeout. Hosted validation remains required.
+
+### Discovery lifetime and the unchanged carriage timing gate
+
+On `4e9b28f6`, the complete Linux 3.12 default suite failed only the cold first-page
+budget: 912.1 ms versus its unchanged 300 ms ceiling; 20,026 other tests passed.
+The same job's earlier G14 run measured 195.3 ms at the same gate, and the failing
+run's following page measured 188.9 ms. This is real negative evidence. The
+application/test sources on that path are unchanged; process/host timing effects
+remain a hypothesis, not a confirmed cause. PR comment 6237191013 records the
+full-job retry rationale. GitHub did not accept that retry while CI was active;
+no rerun was accepted and no narrow test replaced the complete job.
+
+Follow-up code inspection identified a separate guard-owned retention hazard:
+recursive visitor/qualifier function-cell cycles could retain their captured
+AST/alias dictionaries until cyclic garbage collection. Discovery now breaks
+those bindings after their last use. No manual collection, cache priming, request
+warm-up, timer change or application change is added. The parser's source reads,
+closure decisions and returned targets remain the same.
+
+An isolated hosted subprocess control disables cyclic GC only inside that child,
+uses an immutable `4e9b28f6` discovery module as a negative control, and requires
+the current module to release an unreachable input AST without cyclic GC. It
+cannot collect or warm the main test process. This proves the lifetime property
+if it passes; it does not establish that retention caused the observed 912.1 ms
+budget violation. The original timing failure remains recorded even if subsequent
+complete jobs pass. All original assertions, budgets and timeouts remain intact.

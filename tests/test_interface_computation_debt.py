@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -680,6 +681,44 @@ def test_static_import_aliases_and_inert_edits_keep_identical_targets():
     ]
     for source in sources:
         assert dynamic_imports("helper.py", ast.parse(source), ()) == {"report_helpers.metrics"}
+
+
+def test_discovery_releases_input_trees_without_requiring_cyclic_gc():
+    # Isolate GC state in a child. This neither collects/warm-ups the test suite
+    # nor changes any cold-request performance gate. Execute the immutable prior
+    # pure discovery module as a negative control, never an application module.
+    probe = r'''
+import ast
+import gc
+from pathlib import Path
+import subprocess
+import sys
+import types
+import weakref
+sys.path.insert(0, str(Path.cwd() / "tests"))
+from interface_computation_sources import dynamic_imports
+prior_source = subprocess.check_output([
+    "git", "show", "4e9b28f631231a21ec02e9d32ddb80a4a14629eb:tests/interface_computation_sources.py"
+], text=True, encoding="utf-8")
+prior = types.ModuleType("prior_discovery")
+exec(compile(prior_source, "prior_discovery.py", "exec"), prior.__dict__)
+class Witness:
+    pass
+def retained_by(discover):
+    tree = ast.parse("import importlib\nvalue = 1\n")
+    tree.lifetime_witness = Witness()
+    witness = weakref.ref(tree.lifetime_witness)
+    assert discover("probe.py", tree, ()) == set()
+    del tree
+    return witness() is not None
+gc.disable()
+assert retained_by(prior.dynamic_imports), "Negative control did not expose prior AST retention"
+assert not retained_by(dynamic_imports), "Discovery retained an unreachable input AST"
+print("prior AST retained; current AST released without cyclic GC")
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", probe], cwd=guard.ROOT,
+                            capture_output=True, text=True, timeout=30, check=True)
+    assert result.stdout.strip() == "prior AST retained; current AST released without cyclic GC"
 
 
 def test_glob_reaches_a_helper_outside_the_frontend_project(parser, tmp_path, monkeypatch):
