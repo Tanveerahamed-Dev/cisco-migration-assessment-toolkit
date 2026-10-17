@@ -14,8 +14,13 @@ SCRIPT_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
 BROWSER_DOCUMENT_SUFFIXES = (".html", ".htm", ".xhtml", ".svg")
 
 
+def python_module(path):
+    return path.lower().endswith(".py")
+
+
 def role_required(path):
-    return path.endswith(".py") and (path.startswith(("cisco_toolkit/", "webapp/backend/")) or path == "COLLECT_PARSE_V3_23_0.py")
+    folded = path.casefold()
+    return python_module(path) and (folded.startswith(("cisco_toolkit/", "webapp/backend/")) or folded == "collect_parse_v3_23_0.py")
 
 
 def module_roles(names, read, declaration_names=None):
@@ -65,7 +70,13 @@ def module_roles(names, read, declaration_names=None):
 
 
 def python_closure(names, read, role_read=None, role_names=None):
-    files = {path for path in names if path.endswith(".py")}
+    files = {path for path in names if python_module(path)}
+    folded_files = {}
+    for path in sorted(files):
+        folded = path.casefold()
+        if folded in folded_files:
+            raise ValueError("Ambiguous Windows Python module identity: " + path)
+        folded_files[folded] = path
     cache = {}
     roles = module_roles(names, role_read or read, role_names)
 
@@ -74,12 +85,17 @@ def python_closure(names, read, role_read=None, role_names=None):
             cache[path] = ast.parse(read(path), filename=path)
         return cache[path]
 
+    def module_file(path):
+        actual = folded_files.get(path.casefold())
+        return {actual} if actual else set()
+
     def module_paths(module):
         parts = module.split(".") if module else []
-        result = {"/".join(parts[:n]) + "/__init__.py" for n in range(1, len(parts) + 1)} & files
+        result = set()
+        for n in range(1, len(parts) + 1):
+            result.update(module_file("/".join(parts[:n]) + "/__init__.py"))
         stem = "/".join(parts)
-        if stem + ".py" in files:
-            result.add(stem + ".py")
+        result.update(module_file(stem + ".py"))
         return result
 
     registry = tree("cisco_toolkit/docmeta.py")
@@ -96,10 +112,11 @@ def python_closure(names, read, role_read=None, role_names=None):
             if keyword.value.value:
                 owners = module_paths(keyword.value.value)
                 stem = keyword.value.value.replace(".", "/")
-                if stem + ".py" not in files and stem + "/__init__.py" not in files:
+                leaves = module_file(stem + ".py") | module_file(stem + "/__init__.py")
+                if not leaves:
                     raise ValueError("Registered report writer source is absent: " + keyword.value.value)
                 seeds.update(owners)
-                writers.update(path for path in owners if not path.endswith("/__init__.py"))
+                writers.update(leaves)  # A package initializer can itself be the registered writer.
 
     def authored(path):
         parts = PurePosixPath(path).parts

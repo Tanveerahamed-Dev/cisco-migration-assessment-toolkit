@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 from interface_computation_lex import lexical_counter, lexical_sites, python_source, python_stream, string_payloads
-from interface_computation_sources import BROWSER_DOCUMENT_SUFFIXES, SCRIPT_SUFFIXES, compiled_coverage, python_closure
+from interface_computation_sources import BROWSER_DOCUMENT_SUFFIXES, SCRIPT_SUFFIXES, compiled_coverage, python_closure, python_module
 
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
@@ -57,7 +57,7 @@ def revision_sources(revision):
         mode, kind, oid = metadata.split()
         path = raw_path.decode("utf-8")
         names.append(path)
-        wanted = (path.endswith((".py", ".atlas-role"))
+        wanted = (python_module(path) or path.endswith(".atlas-role")
                   or path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path
                                                 or path.endswith(("package.json", "package-lock.json"))))
@@ -325,7 +325,7 @@ def scan(sources):
     sites, javascript, payloads = [], [], []
     streams = []
     for path, text in sources.items():
-        if path.endswith(".py"):
+        if python_module(path):
             sites.extend(python_sites(path, text))
             tree = ast.parse(text, filename=path)
             try:

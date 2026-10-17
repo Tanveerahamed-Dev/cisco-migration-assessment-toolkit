@@ -713,7 +713,7 @@ def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite(
     '__atlas_role__ = "engine" if choose else "interface"',
     '__atlas_role__ = "engine"\n__atlas_role__ = "interface"',
     'def f():\n global __atlas_role__\n __atlas_role__ = "engine"'])
-@pytest.mark.parametrize("path", ["cisco_toolkit/new.py", "cisco_toolkit/nested/new.py", "webapp/backend/new.py", "COLLECT_PARSE_V3_23_0.py"])
+@pytest.mark.parametrize("path", ["cisco_toolkit/new.py", "cisco_toolkit/nested/new.py", "webapp/backend/new.py", "COLLECT_PARSE_V3_23_0.py", "cisco_toolkit/NEW.PY", "WEBAPP/backend/new.Py"])
 def test_every_owned_module_requires_exactly_one_literal_role(path, declaration):
     with pytest.raises(ValueError, match="exactly one literal"):
         module_roles([path], {path: declaration}.__getitem__)
@@ -729,7 +729,7 @@ def test_engine_owners_stop_interface_traversal_without_registering_their_comput
     assert python_closure(sources, sources.__getitem__) == {"cisco_toolkit/docmeta.py", "cisco_toolkit/renderer.py"}
 
 
-@pytest.mark.parametrize("edge", ["from .renderer import answer", "from . import renderer", "import cisco_toolkit.renderer", "from helper import answer"])
+@pytest.mark.parametrize("edge", ["from .renderer import answer", "from . import renderer", "import cisco_toolkit.renderer", "from helper import answer", "from .ReNdErEr import answer"])
 def test_engine_cannot_import_interface_directly_or_through_an_unregistered_helper(edge):
     sources = {
         "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
@@ -738,6 +738,37 @@ def test_engine_cannot_import_interface_directly_or_through_an_unregistered_help
         "helper.py": "from cisco_toolkit.renderer import answer",
     }
     with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+
+
+@pytest.mark.parametrize("leaf", ["cisco_toolkit/report/__init__.py", "cisco_toolkit/Report/__INIT__.PY"])
+def test_registered_package_initializer_is_a_writer_not_an_engine_terminal(leaf):
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"\nArtifactSpec(writer_module="cisco_toolkit.report")',
+        leaf: '__atlas_role__ = "engine"\ndef render(rows):\n return len(rows)',
+    }
+    with pytest.raises(ValueError, match="writer cannot declare engine"):
+        python_closure(sources, sources.__getitem__)
+
+
+def test_windows_case_variant_helper_remains_in_the_full_report_closure(tmp_path, monkeypatch):
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ArtifactSpec(writer_module='cisco_toolkit.writer')\n",
+        "cisco_toolkit/writer.py": "from helpercase import answer\n",
+        "HelperCase.PY": "def answer(rows):\n return len(rows)\n",
+    })
+    selected = guard.source_map()
+    assert "HelperCase.PY" in selected
+    refuse_unregistered(selected, "aggregate")
+
+
+def test_windows_case_colliding_module_identities_refuse():
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "helpers/Twin.py": "value = 1",
+        "helpers/twin.PY": "value = 2",
+    }
+    with pytest.raises(ValueError, match="Ambiguous Windows Python module"):
         python_closure(sources, sources.__getitem__)
 
 
@@ -1004,6 +1035,7 @@ def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blob
              "client/ENTRY.XHTML": b"<script>const count = rows.length;</script>\n",
              "client/icon.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>\n',
              "cisco_toolkit/é.py": "value = 'é'\n".encode(),
+             "helpers/Reader.PY": b"value = 1\n",
              "cisco_toolkit/é.py.atlas-role": b'{"role":"engine"}\n',
              "large-unrelated.json": b'{"not_a_source_input":true}\n'}
     for path, data in files.items():

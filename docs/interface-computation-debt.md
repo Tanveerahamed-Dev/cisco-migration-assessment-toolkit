@@ -736,3 +736,23 @@ parity includes these formats. Existing registered footprints and all original
 gates, assertions, budgets and timeouts remain unchanged. This correction
 requires fresh exact-head hosted evidence; the superseded `f25e53a5` results
 are not final validation.
+
+## Windows Python identities and registered package writers
+
+The module class also includes case variants of `.py` and of the owned directory
+names. Repository import lookup conservatively follows Windows case-insensitive
+identities while retaining the actual Git path in every debt record. Case-colliding
+Python files refuse rather than depending on which platform resolves them. This
+closes uppercase `.PY` helper/missing-role escapes and mixed-case engine-to-interface
+edges. Immutable reads, closure discovery and Python AST/lexical dispatch use the
+same Python-file predicate; hosted controls cover each boundary.
+
+Static review also found that excluding every package initializer from the
+registered-writer obligation could mistake a registered package's own `__init__.py`
+writer for an engine terminal. The registered leaf is now explicitly required,
+whether it is a module file or package initializer; parent initializers cannot
+substitute for an absent leaf. Normal/mixed-case package-writer refusal controls
+join the existing absent-leaf controls. No module role, existing exact allowance,
+source ceiling, test, gate, budget or timeout is relaxed. The already-green focused
+controls on `0a4d2937` remain earlier-head evidence; this correction needs fresh
+exact-head execution and complete workflows.
