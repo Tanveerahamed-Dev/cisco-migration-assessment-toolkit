@@ -27,8 +27,12 @@ which refuses unless:
   failure whose exit status a step swallowed, a ``--collect-only`` or ``--setup-plan`` run, and a run
   cut short all leave a row missing, and a test that ran without being selected is an extra row; and
 * ONE ENVIRONMENT: the full collection recorded exactly one interpreter row, and every shard recorded
-  exactly the full collection's environment rows, so a release that lands between the jobs' own
-  dependency resolutions cannot skew the shards unseen.
+  exactly the full collection's environment rows. Every job builds its environment the same way --
+  the runner image's distributions removed from the interpreter, then requirements-dev.txt resolved
+  only from releases uploaded before the checked-out commit's committer date -- so the rows agree by
+  construction, however far apart the jobs (or a re-run of only the failed ones) install; a mismatch
+  means the installs genuinely diverged (a release yanked between them, another hosted interpreter)
+  and is refused rather than letting the shards' versions skew unseen.
 
 A skipped, cancelled or failed shard never reaches this script: the `gate` job's first step refuses
 any `gate_shard` result but success. Each refusal names the shard directory, its counts and a sample.
@@ -38,9 +42,11 @@ pytest configuration and the gate's pinned invocation collect -- a change to pyt
 hook or the workflow changes both sides alike; tests/test_portable_release_workflow.py pins the
 invocation and refuses interpreter and pytest environment controls); that the evidence came from the
 runs it describes (the files are unsigned artifacts of this workflow run); identity beyond
-``name==version`` (no file hashes, environment variables or runner image); or cross-file interference:
-each shard runs only its own files in one interpreter, so ci.yml's required "Tests · py3.12 ·
-windows-latest" leg is what runs the whole suite in one.
+``name==version`` (no file hashes, environment variables or runner image); or cross-file interference
+on this toolchain: each shard runs only its own files in one interpreter. ci.yml's required "Tests"
+legs (five Linux interpreters and "Tests · py3.12 · windows-latest") and its required "Coverage" job
+each run the whole suite in one interpreter -- on Windows only that one leg does, with its own
+interpreter resolution and floating dependency install, not this gate's pinned toolchain.
 
 Read-only and stdlib-only by design: it reads its inputs, prints, and exits 0 (verified), 1 (refused)
 or 2 (usage). It imports no repository module, so it adds no static import edge to the
@@ -85,7 +91,7 @@ def read_manifest(path: str, *, unique: bool = True) -> list[str]:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ManifestError(f"{path} is not UTF-8 ({error.reason} at byte {error.start})") from None
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         raise ManifestError(f"{path} starts with a byte-order mark")
     if "\r" in text:
         raise ManifestError(f"{path} carries a carriage return")
@@ -218,7 +224,10 @@ def environment_problems(full: list[str], shards: list[Shard]) -> list[str]:
         problems.append(f"shard {shard.directory}: its environment ({len(shard.environment)} row(s)) is not "
                         f"the full collection's ({len(full)} row(s)): {len(only_full)} row(s) only in the "
                         f"full collection {only_full[:SAMPLE]}, {len(only_shard)} only in the shard "
-                        f"{only_shard[:SAMPLE]}")
+                        f"{only_shard[:SAMPLE]}. Every job installs one resolution (releases uploaded before "
+                        "the commit's committer date, onto an interpreter cleared of the image's "
+                        "distributions), so these installs genuinely diverged -- a release yanked between "
+                        "them, or another hosted interpreter; re-run all jobs")
     return problems
 
 

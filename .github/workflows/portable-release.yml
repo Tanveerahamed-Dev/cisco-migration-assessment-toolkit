@@ -88,6 +88,16 @@ jobs:
       # environment it ran in -- is written to one directory under RUNNER_TEMP, outside the checkout
       # every test may inspect. The executed manifest is read from pytest's own test reports, so a
       # run that executes nothing or swallows a failure cannot produce it whole.
+      #
+      # The environment is built the same way in every shard and in the gate, so the gate's
+      # one-environment proof holds by construction rather than by luck: first every distribution
+      # the runner image put into this interpreter is removed (the image installs pipx and its
+      # dependencies into it, and an image rollout can put two jobs of one run on different images),
+      # so nothing but the pinned pip remains to steer the resolution -- refused on anything but an
+      # ephemeral GitHub-hosted runner, whose interpreter no one else uses; then requirements-dev.txt is
+      # resolved only from releases uploaded before the checked-out commit's committer date, a time
+      # every job of the run, and every re-run attempt, reads alike from the same commit (a commit
+      # dated before a release it requires cannot install that release, and fails here, visibly).
       - name: Run this shard of the complete Python suite without artifact authority
         shell: pwsh
         env:
@@ -99,7 +109,14 @@ jobs:
         run: |
           python -m pip install --upgrade 'pip==26.2.1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pip install -r requirements-dev.txt
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'only an ephemeral GitHub-hosted runner may have its interpreter cleared' }
+          $preinstalled = @(python -m pip freeze --all --exclude pip)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($preinstalled) { python -m pip uninstall --yes $preinstalled }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cutoff = git log -1 --format=%cI HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --uploaded-prior-to $cutoff -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Path $env:ATLAS_SHARD_EVIDENCE | Out-Null
           python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED --atlas-shard-environment $env:ATLAS_SHARD_ENVIRONMENT
@@ -123,11 +140,13 @@ jobs:
   # shard turns this check red as soon as a runner starts it. The cost: a cancelled run still spends
   # that one short job, and an ordinary cancel does not stop this job (GitHub's force-cancel does,
   # leaving it cancelled, never green). Its collection then runs on the same checkout,
-  # normalization, interpreter and node as the shards and records its own environment: each job
-  # resolves requirements-dev.txt's ranges itself, so a release between the jobs would otherwise
-  # skew the versions unseen, and the verifier refuses unless every shard recorded exactly this
-  # environment. (So when a release lands between attempts, re-run all jobs: evidence kept from an
-  # earlier attempt then differs from a fresh install.) The frontend gate follows unchanged.
+  # normalization, interpreter and node as the shards, builds its environment exactly as they do
+  # (the image's distributions removed, then requirements-dev.txt as uploaded before the commit's
+  # committer date) and records it; the verifier refuses unless every shard recorded exactly this
+  # environment. Because no job resolves "whatever is newest when it starts", a release between the
+  # jobs, or between a shard's attempt and a later re-run of only the failed jobs, changes nothing;
+  # a refusal means the installs genuinely diverged (a release yanked between them, another hosted
+  # interpreter), and the remedy is to re-run all jobs. The frontend gate follows unchanged.
   # tests/test_portable_release_workflow.py pins both jobs' steps, shells, environments and scripts
   # exactly, because the evidence can only prove what those steps actually ran.
   gate:
@@ -191,7 +210,14 @@ jobs:
         run: |
           python -m pip install --upgrade 'pip==26.2.1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pip install -r requirements-dev.txt
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'only an ephemeral GitHub-hosted runner may have its interpreter cleared' }
+          $preinstalled = @(python -m pip freeze --all --exclude pip)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($preinstalled) { python -m pip uninstall --yes $preinstalled }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cutoff = git log -1 --format=%cI HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install --uploaded-prior-to $cutoff -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_SELECTED --atlas-shard-environment $env:ATLAS_FULL_ENVIRONMENT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

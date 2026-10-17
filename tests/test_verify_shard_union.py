@@ -179,6 +179,8 @@ def test_every_shard_must_record_the_full_collections_environment(tmp_path, caps
     err = capsys.readouterr().err
     assert "atlas-gate-shard-evidence-1: its environment" in err and needle in err, err
     assert "atlas-gate-shard-evidence-0" not in err  # the other shard's environment is the full one
+    # every job installs one resolution, so the refusal names a genuine divergence and its remedy
+    assert "genuinely diverged" in err and "re-run all jobs" in err, err
 
 
 @pytest.mark.parametrize("full_environment,count", [

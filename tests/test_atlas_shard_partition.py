@@ -9,8 +9,10 @@ collection's environment (.github/scripts/verify_shard_union.py, tests/test_veri
 Here: the spec grammar, the partition's determinism, totality and disjointness, the manifest bytes,
 the classification of test reports, the environment rows, the hooks' strict no-op without options,
 their refusals, and -- end to end, in real pytest subprocesses -- that real shards and a real full
-collection produce evidence the real verifier accepts, and that a failing test, a ``--collect-only``
-or ``--setup-plan`` shard and a dropped row are refused, including in the gate's own invocation shape.
+collection produce evidence the real verifier accepts, and that every kind of failing test (a failed
+call, a setup or teardown error, a strict xpass, a failed subtest), a session ended early with a success
+status, a ``--collect-only`` or ``--setup-plan`` shard and a dropped row are refused, including in the
+gate's own invocation shape.
 """
 from __future__ import annotations
 
@@ -195,12 +197,12 @@ def test_every_evidence_target_is_checked_and_named_by_its_option(tmp_path, opti
 _NODE = "tests/test_a.py::test_x"
 
 
+#: The report shapes, synthetic. Which shape pytest itself gives each kind of test -- a strict xpass a
+#: failed call, a plain xpass a passed one, a setup or teardown error, a failed subtest, a session ended
+#: early -- is proven against REAL pytest runs below, never assumed here.
 @pytest.mark.parametrize("phases,completed", [
     (("setup:passed", "call:passed", "teardown:passed"), True),
     (("setup:passed", "call:failed", "teardown:passed"), False),
-    # pytest reports a strict xpass as a failed call (_pytest/skipping.py), a plain xpass as a passed one
-    (("setup:passed", "call:failed", "teardown:passed"), False),
-    (("setup:passed", "call:passed", "teardown:passed"), True),
     (("setup:failed", "teardown:passed"), False),
     (("setup:passed", "call:passed", "teardown:failed"), False),
     (("setup:skipped", "teardown:passed"), True),
@@ -214,9 +216,8 @@ _NODE = "tests/test_a.py::test_x"
     (("setup:passed", "call:rerun", "setup:passed", "call:passed", "teardown:passed"), False),
     # the order reports arrive in does not matter
     (("teardown:passed", "call:passed", "setup:passed"), True),
-], ids=["passed", "failed-call", "strict-xpass", "xpass", "setup-error", "teardown-error", "skip-at-setup",
-        "xfail", "no-teardown", "never-called", "teardown-only", "failed-subtest", "rerun-outcome",
-        "any-order"])
+], ids=["passed", "failed-call", "setup-error", "teardown-error", "skip-at-setup", "xfail", "no-teardown",
+        "never-called", "teardown-only", "failed-subtest", "rerun-outcome", "any-order"])
 def test_a_test_completed_without_failure_only_when_every_report_says_so(phases, completed):
     facts = [(_NODE, *phase.split(":")) for phase in phases]
     assert shard.completed_without_failure(facts) == ([_NODE] if completed else [])
@@ -463,13 +464,65 @@ _MARKER_SKIP_TEST = """\
 def test_skipped_by_a_marker():
     pass
 """
-#: A file of tests that fail: a failed call and, where pytest has subtests (9+), a failed subtest.
+#: A file of every kind of failure, as pytest itself reports it: a failed call, a setup error, a
+#: teardown error, a strict xfail that passes (a failed call) and, where pytest has subtests (9+), a
+#: failed subtest -- beside a plain xfail that passes, which pytest counts as no failure.
 _FAILING_TEST = """\
 import pytest
 
 
+@pytest.fixture
+def setup_fails():
+    raise RuntimeError("the fixture's setup fails")
+
+
+@pytest.fixture
+def teardown_fails():
+    yield
+    raise RuntimeError("the fixture's teardown fails")
+
+
 def test_fails():
     assert False
+
+
+def test_setup_fails(setup_fails):
+    pass
+
+
+def test_teardown_fails(teardown_fails):
+    pass
+
+
+@pytest.mark.xfail(reason="passes, which a strict xfail reports as a failure", strict=True)
+def test_strict_xpass():
+    pass
+
+
+@pytest.mark.xfail(reason="passes, which a plain xfail allows", strict=False)
+def test_plain_xpass():
+    pass
+"""
+_FAILING_CASES = ("test_fails", "test_setup_fails", "test_teardown_fails", "test_strict_xpass")
+_PASSING_CASES_OF_THE_FAILING_FILE = ("test_plain_xpass",)
+#: A module-scoped fixture whose teardown fails: pytest reports that error on the teardown of the
+#: module's LAST item, whatever that item did, so the first item completes and the last does not.
+_MODULE_TEARDOWN_TEST = """\
+import pytest
+
+
+@pytest.fixture(scope="module")
+def module_resource():
+    yield
+    raise RuntimeError("the module fixture's teardown fails")
+
+
+def test_first_of_the_module(module_resource):
+    pass
+
+
+def test_last_of_the_module(module_resource):
+    pass
 """
 _FAILING_SUBTEST = """\
 
@@ -651,32 +704,97 @@ def test_a_shard_that_runs_no_test_still_selects_them_and_is_refused(accepted, t
         refused.stderr)
 
 
-def test_a_failing_test_is_missing_from_its_shards_executed_manifest_and_refused(tmp_path):
-    """P2 (b)/(c): a failure whose exit status a step swallows still leaves the test out of the
-    executed manifest, so the verifier refuses whatever the step's exit-code plumbing did."""
-    project, owners = _project(tmp_path)
-    failing = next(f"test_failing_{number:02d}.py" for number in range(64)
-                   if int(hashlib.sha256(f"test_failing_{number:02d}.py".encode("utf-8")).hexdigest(), 16) % 2 == 0)
-    (project / failing).write_text(_FAILING_TEST + (_FAILING_SUBTEST if _HAS_SUBTESTS else ""), encoding="utf-8")
-    failed = sorted([f"{failing}::test_fails"] + ([f"{failing}::test_a_subtest_fails"] if _HAS_SUBTESTS else []))
-    root = tmp_path / "evidence"
+def _shard_zero_file(stem: str) -> str:
+    """The first ``<stem>_NN.py`` whose SHA-256 residue puts it in shard 0 of 2 (computed here, from the
+    spec's formula, independently of the helper)."""
+    return next(f"{stem}_{number:02d}.py" for number in range(64)
+                if int(hashlib.sha256(f"{stem}_{number:02d}.py".encode("utf-8")).hexdigest(), 16) % 2 == 0)
+
+
+def _both_shards_and_the_full_collection(project: Path, base: Path) -> tuple[list, subprocess.CompletedProcess]:
+    """Both real shards, each with every evidence option, and the real full collection."""
+    root = base / "evidence"
     results = []
     for index in range(2):
         evidence = _evidence(root, index)
         results.append((evidence, _pytest(project, *_shard_arguments(evidence, index))))
-    full = _pytest(project, *_full_arguments(tmp_path))
+    return results, _pytest(project, *_full_arguments(base))
+
+
+def test_a_failing_test_is_missing_from_its_shards_executed_manifest_and_refused(tmp_path):
+    """P2 (b)/(c): a failure whose exit status a step swallows still leaves the test out of the
+    executed manifest, so the verifier refuses whatever the step's exit-code plumbing did -- for every
+    kind of failure as REAL pytest reports it (a failed call, a setup error, a teardown error, a module
+    fixture's teardown error on the module's last item, a strict xpass and a failed subtest), while a
+    plain xpass, no failure to pytest, completes."""
+    project, owners = _project(tmp_path)
+    failing = _shard_zero_file("test_failing")
+    (project / failing).write_text(_FAILING_TEST + (_FAILING_SUBTEST if _HAS_SUBTESTS else ""), encoding="utf-8")
+    module = _shard_zero_file("test_module_teardown")
+    (project / module).write_text(_MODULE_TEARDOWN_TEST, encoding="utf-8")
+    failed = sorted([f"{failing}::{case}" for case in _FAILING_CASES] + [f"{module}::test_last_of_the_module"]
+                    + ([f"{failing}::test_a_subtest_fails"] if _HAS_SUBTESTS else []))
+    completed = sorted(_expected(owners, 0) + [f"{failing}::{case}" for case in _PASSING_CASES_OF_THE_FAILING_FILE]
+                       + [f"{module}::test_first_of_the_module"])
+    results, full = _both_shards_and_the_full_collection(project, tmp_path)
     assert full.returncode == 0, full.stdout + full.stderr
 
     (evidence_0, failed_run), (evidence_1, passed_run) = results
     assert failed_run.returncode == 1, failed_run.stdout + failed_run.stderr
+    # pytest itself classified each case: three errors (a setup, a teardown, the module's teardown),
+    # and the plain xpass as one
+    assert _counts(failed_run.stdout, errors=3, xpassed=1), failed_run.stdout
     assert passed_run.returncode == 0, passed_run.stdout + passed_run.stderr
-    assert _rows(evidence_0.selected) == sorted(_expected(owners, 0) + failed)
-    assert _rows(evidence_0.executed) == _expected(owners, 0)  # everything but the failures completed
+    assert _rows(evidence_0.selected) == sorted(completed + failed)
+    assert _rows(evidence_0.executed) == completed  # everything but the failures completed
     assert _rows(evidence_1.selected) == _rows(evidence_1.executed) == _expected(owners, 1)
-    refused = _verify(tmp_path, root)
+    refused = _verify(tmp_path, tmp_path / "evidence")
     assert refused.returncode == 1, refused.stdout + refused.stderr
-    assert (f"atlas-gate-shard-evidence-0: {len(failed)} of its {len(_expected(owners, 0)) + len(failed)} "
+    assert (f"atlas-gate-shard-evidence-0: {len(failed)} of its {len(completed) + len(failed)} "
             f"selected node id(s) did not complete without failure: {failed}") in refused.stderr, refused.stderr
+
+
+#: A file whose second test ends the whole session early WITH A SUCCESS STATUS.
+_EXITING_TEST = """\
+import pytest
+
+
+def test_before_the_exit():
+    pass
+
+
+def test_exits():
+    pytest.exit("ends the session early, with a success status", returncode=0)
+
+
+def test_after_the_exit():
+    pass
+"""
+
+
+def test_a_session_ended_early_with_a_success_status_is_refused(tmp_path):
+    """``pytest.exit(returncode=0)`` mid-run exits 0, so every exit check passes; but the interrupted
+    test logs no report after its setup and the tests after it never run, so they are missing from the
+    executed manifest -- the shape of any run cut short behind a green exit status -- and refused."""
+    project, owners = _project(tmp_path)
+    exiting = _shard_zero_file("test_zexit")  # sorts after the "test_part" files, which all run first
+    (project / exiting).write_text(_EXITING_TEST, encoding="utf-8")
+    results, full = _both_shards_and_the_full_collection(project, tmp_path)
+    assert full.returncode == 0, full.stdout + full.stderr
+
+    (evidence_0, exited_run), (evidence_1, passed_run) = results
+    assert exited_run.returncode == 0, exited_run.stdout + exited_run.stderr  # the status says success
+    assert passed_run.returncode == 0, passed_run.stdout + passed_run.stderr
+    cut = sorted(f"{exiting}::{case}" for case in ("test_exits", "test_after_the_exit"))
+    completed = sorted(_expected(owners, 0) + [f"{exiting}::test_before_the_exit"])
+    assert _rows(evidence_0.selected) == sorted(completed + cut)
+    assert _rows(evidence_0.executed) == completed
+    assert _rows(evidence_1.selected) == _rows(evidence_1.executed) == _expected(owners, 1)
+    refused = _verify(tmp_path, tmp_path / "evidence")
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert (f"atlas-gate-shard-evidence-0: {len(cut)} of its {len(completed) + len(cut)} selected node id(s) "
+            f"did not complete without failure: {cut}") in refused.stderr, refused.stderr
+    assert "in no shard" not in refused.stderr, refused.stderr  # its selection is sound; its run is not
 
 
 def test_the_gates_own_invocation_shape_produces_evidence_the_verifier_accepts(tmp_path):

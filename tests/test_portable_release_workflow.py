@@ -521,10 +521,29 @@ def test_portable_concurrency_contract_rejects_drift(mutation: str) -> None:
 # the same files from the shards and the full collection alike, an exit check replaced by `exit 0`, a
 # shell that discards the script's status, an extra step writing $GITHUB_ENV. So both jobs are pinned
 # exactly: no workflow-level env or defaults, no job-level defaults, exact job env, every step by
-# identity, order and key set, the shard run and the full collection by name, shell, env and every
-# script line, and no PYTEST*/PYTHON* control anywhere in their environment (_interpreter_controls).
+# identity, order and key set, the shard run, the full collection and the shard-result check by name,
+# shell, env and every script line, and no PYTEST*/PYTHON* control anywhere in their environment
+# (_interpreter_controls).
 _SHARD_SPEC = re.compile(r"\$\{\{ matrix\.shard \}\}/([1-9][0-9]*)")
-_SHARD_RESULT_REFUSAL = re.compile(r"if \(\$env:SHARD_RESULT -cne 'success'\) \{ throw \"[^\"]+\" \}")
+#: The aggregate's first step, exactly: its message is an expandable string, so a pattern admitting
+#: any message would admit a `$(...)` subexpression -- `$(exit 0)` ends the step green.
+_SHARD_RESULT_CHECK = ("if ($env:SHARD_RESULT -cne 'success') { throw \"gate_shard concluded '$env:SHARD_RESULT'; "
+                       "this required check passes only when every shard succeeded\" }")
+#: How every job that runs pytest builds its environment, line for line (each native command followed by
+#: the exit check): the pinned pip; every distribution the runner image put into the interpreter removed --
+#: refused on anything but an ephemeral GitHub-hosted runner, so no persistent machine's interpreter is
+#: ever cleared -- so only that pip remains to steer the resolution and two image versions cannot
+#: differ in it; then requirements-dev.txt resolved only from releases uploaded before the checked-out
+#: commit's committer date, which every job of a run and every re-run attempt reads alike. So the
+#: shards and the full collection install ONE resolution by construction, and the verifier's
+#: one-environment refusal fires only when the installs genuinely diverged -- never because a release
+#: landed between two jobs.
+_HOSTED_RUNNER_ONLY = ("if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'only an ephemeral GitHub-hosted "
+                       "runner may have its interpreter cleared' }")
+_IMAGE_DISTRIBUTIONS = "$preinstalled = @(python -m pip freeze --all --exclude pip)"
+_REMOVE_IMAGE_DISTRIBUTIONS = "if ($preinstalled) { python -m pip uninstall --yes $preinstalled }"
+_RESOLUTION_CUTOFF = "$cutoff = git log -1 --format=%cI HEAD"
+_DEV_INSTALL = "python -m pip install --uploaded-prior-to $cutoff -r requirements-dev.txt"
 _UNION_VERIFIER = ".github/scripts/verify_shard_union.py"
 _SHARD_OPTION = re.compile(r"--atlas-shard(?=[\s=]|$)")
 
@@ -655,7 +674,8 @@ def _assert_gate_shard_contract(document: dict) -> None:
         for step in steps:
             assert "run" not in step or step.get("shell") == "pwsh", (job_id, step.get("name"), step.get("shell"))
     pinned_pip = f"python -m pip install --upgrade 'pip=={_TOOLCHAIN['pip']}'"
-    install = (pinned_pip, _EXIT_CHECK, "python -m pip install -r requirements-dev.txt", _EXIT_CHECK)
+    install = (pinned_pip, _EXIT_CHECK, _HOSTED_RUNNER_ONLY, _IMAGE_DISTRIBUTIONS, _EXIT_CHECK,
+               _REMOVE_IMAGE_DISTRIBUTIONS, _EXIT_CHECK, _RESOLUTION_CUTOFF, _EXIT_CHECK, _DEV_INSTALL, _EXIT_CHECK)
 
     # The shard count is ONE value: derived from the spec and held by the matrix, the job name and
     # the verifier's --expected-shards, so the four cannot drift apart.
@@ -716,10 +736,11 @@ def _assert_gate_shard_contract(document: dict) -> None:
     first = gate_steps[0]
     assert "uses" not in first and first.get("shell") == "pwsh", first
     assert first.get("env") == {"SHARD_RESULT": "${{ needs.gate_shard.result }}"}
-    assert len(_script_lines(first)) == 1 and _SHARD_RESULT_REFUSAL.fullmatch(_script_lines(first)[0]), first
+    assert first.get("run") == _script(_SHARD_RESULT_CHECK), first
 
-    # Its full collection runs on the shards' checkout, interpreter and node, and records its own
-    # environment for the verifier to hold every shard's to.
+    # Its full collection runs on the shards' checkout, interpreter and node, builds its environment
+    # with the shards' exact install lines (pinned in both scripts below), and records it for the
+    # verifier to hold every shard's to.
     for key in ("runs-on", "timeout-minutes", "permissions", "env"):
         assert gate.get(key) == shard.get(key), key
     for action in ("actions/checkout", "actions/setup-python", "actions/setup-node"):
@@ -827,6 +848,12 @@ _GITHUB_ENV_STEP = {"name": "Prepare the suite", "shell": "pwsh",
     "no_verifier_environment", "extra_collect_line", "extra_shard_line", "merge_multiple_download",
     "pythonpath_step_env", "pythonpath_run_env", "no_evidence_directory", "upload_one_file",
     "download_one_artifact", "run_step_working_directory", "gate_job_container",
+    # the shard-result check runs no code of its own
+    "result_check_message_runs_code",
+    # one resolution by construction: what would let a release or an image change one job's install
+    "shard_resolves_whatever_is_newest", "collect_resolves_whatever_is_newest", "collect_cutoff_from_its_clock",
+    "shard_cutoff_from_its_clock", "shard_keeps_image_distributions", "collect_keeps_image_distributions",
+    "collect_keeps_image_distributions_unchecked", "shard_clears_any_runner", "collect_clears_any_runner",
 ])
 def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     document = _portable_document()
@@ -970,6 +997,32 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
         run_step["working-directory"] = "webapp"
     elif mutation == "gate_job_container":
         gate["container"] = "mcr.microsoft.com/windows/servercore:ltsc2025"
+    elif mutation == "result_check_message_runs_code":
+        gate["steps"][0]["run"] = gate["steps"][0]["run"].replace("succeeded\"", "succeeded$(exit 0)\"")
+        assert "$(exit 0)" in gate["steps"][0]["run"]
+    elif mutation == "shard_resolves_whatever_is_newest":
+        run_step["run"] = run_step["run"].replace(" --uploaded-prior-to $cutoff", "")
+    elif mutation == "collect_resolves_whatever_is_newest":
+        collect["run"] = collect["run"].replace(" --uploaded-prior-to $cutoff", "")
+    elif mutation == "collect_cutoff_from_its_clock":
+        clock = "$cutoff = (Get-Date).ToUniversalTime().ToString('o')"
+        collect["run"] = collect["run"].replace(_RESOLUTION_CUTOFF, clock)
+    elif mutation == "shard_cutoff_from_its_clock":
+        run_step["run"] = run_step["run"].replace(_RESOLUTION_CUTOFF, "$cutoff = 'P0D'")  # "now", as pip reads it
+    elif mutation == "shard_keeps_image_distributions":
+        run_step["run"] = _script(*(line for line in run_step["run"].splitlines()
+                                    if line != _REMOVE_IMAGE_DISTRIBUTIONS))
+    elif mutation == "collect_keeps_image_distributions":
+        collect["run"] = collect["run"].replace(_IMAGE_DISTRIBUTIONS, "$preinstalled = @()")
+    elif mutation == "collect_keeps_image_distributions_unchecked":
+        lines = collect["run"].splitlines()
+        after = lines.index(_REMOVE_IMAGE_DISTRIBUTIONS) + 1
+        assert lines[after] == _EXIT_CHECK
+        collect["run"] = _script(*lines[:after], *lines[after + 1:])
+    elif mutation == "shard_clears_any_runner":
+        run_step["run"] = _script(*(line for line in run_step["run"].splitlines() if line != _HOSTED_RUNNER_ONLY))
+    elif mutation == "collect_clears_any_runner":
+        collect["run"] = collect["run"].replace("-cne 'github-hosted'", "-cne 'self-hosted'")
     else:
         raise AssertionError(f"unknown mutation {mutation!r}")  # outside pytest.raises: a typo fails loudly
     with pytest.raises(AssertionError):
