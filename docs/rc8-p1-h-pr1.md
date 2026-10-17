@@ -66,3 +66,11 @@ Webapp's Scope build exposed a type-only API import that reached a React
 component without AssessHub's dependency installation. Summary data types now
 live in the data-only API module, preserving that separate build closure.
 No gate, assertion target, budget, timeout or stored output is relaxed.
+
+The repaired `b4ecd442` passes the frontend tests/build. Its browser re-entry
+gate fails on both attempts at the unchanged viewport-containment assertion:
+the hosted record places the 480px-high canvas at y=240.125 in a 720px viewport,
+with window/document scroll y=1554. The test is unchanged. A CSS scroll margin
+on the interactive canvas supplies room when the browser rounds scrolling over
+fractional layout coordinates; its effect remains unverified until the original
+hosted re-entry gate passes. No timeout, pixel tolerance or baseline is changed.
