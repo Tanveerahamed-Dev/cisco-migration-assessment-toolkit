@@ -28,10 +28,23 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  gate:
-    name: Full source and frontend gate (unprivileged runner)
+  # The complete Windows Python suite used to run, then the frontend gate, as ONE job under the
+  # 120-minute limit below (~107 + ~1.5 minutes), and runner contention cancelled it. It now runs as
+  # these parallel shards, partitioned by test FILE through the root conftest.py --atlas-shard
+  # option (tests/atlas_shard_partition.py owns the partition), and the required `gate` job proves
+  # their selections are exactly one full collection before it runs the frontend gate. The shard
+  # count is written four times -- this matrix, the spec below, this job's name and the verifier's
+  # --expected-shards -- and tests/test_portable_release_workflow.py derives it from the spec and
+  # holds the other three to it. The shard contexts are NOT required checks: the required context
+  # stays on `gate`, which cannot succeed unless every shard did.
+  gate_shard:
+    name: Full source gate Python shard ${{ matrix.shard }} of 2 (unprivileged runner)
     runs-on: windows-2025
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     permissions:
       contents: read
     env:
@@ -60,20 +73,108 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.10"
+      # The suite drives node, so node is on PATH exactly as it was for the single gate job. No npm
+      # command runs in a shard, so no npm cache is restored here (or saved from an absent folder).
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.19.0"
-          cache: npm
-          cache-dependency-path: webapp/frontend/package-lock.json
-      - name: Run complete Python and frontend tests without artifact authority
+      # The spec and manifest reach pytest through step env so each is ONE whitespace-free token
+      # (tests/pytest_invocation_reader.py reads which paths this step collects), and the manifest is
+      # written under RUNNER_TEMP, outside the checkout every test may inspect.
+      - name: Run this shard of the complete Python suite without artifact authority
         shell: pwsh
+        env:
+          ATLAS_SHARD_SPEC: "${{ matrix.shard }}/2"
+          ATLAS_SHARD_MANIFEST: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}-nodeids.txt
         run: |
           python -m pip install --upgrade 'pip==26.2.1'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q -p no:cacheprovider --durations=40
+          python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:ATLAS_SHARD_MANIFEST
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # overwrite: a re-run of one failed shard replaces that shard's manifest from the earlier
+      # attempt; the names differ per shard, so one attempt's shards never overwrite each other.
+      - name: Upload the node ids this shard selected
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: atlas-gate-shard-manifest-${{ matrix.shard }}
+          path: ${{ runner.temp }}/atlas-gate-shard-${{ matrix.shard }}-nodeids.txt
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+  # The required context. A SKIPPED required job counts as passing, so this job is not skipped when a
+  # shard fails (`!cancelled()`, unlike the default success()); instead its first step, before
+  # anything else, fails unless the whole shard matrix succeeded. Its collection then runs on the same
+  # checkout, normalization, interpreter, node and installed requirements as the shards, so the union
+  # check compares like with like, and the frontend gate follows unchanged.
+  gate:
+    name: Full source and frontend gate (unprivileged runner)
+    needs: [gate_shard]
+    if: ${{ !cancelled() }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Require every Python shard to have succeeded
+        shell: pwsh
+        env:
+          SHARD_RESULT: ${{ needs.gate_shard.result }}
+        run: |
+          if ($env:SHARD_RESULT -cne 'success') { throw "gate_shard concluded '$env:SHARD_RESULT'; this required check passes only when every shard succeeded" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_commit || github.sha }}
+          # The full history, as in every shard: this job's full collection collects the
+          # history-needing tests too (tests/test_ssot_registry.py guards every such leg).
+          fetch-depth: 0
+      - name: Normalize the test checkout to committed bytes
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config core.eol lf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git rm --cached -r --quiet .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git reset --hard --quiet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (git status --porcelain) { throw 'test checkout normalization left a dirty tree' }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - name: Download the node ids every shard selected
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: atlas-gate-shard-manifest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/atlas-gate-shard-manifests
+      - name: Collect the complete Python suite once and prove the shards ran exactly it
+        shell: pwsh
+        env:
+          ATLAS_FULL_MANIFEST: ${{ runner.temp }}/atlas-gate-full-nodeids.txt
+          ATLAS_SHARD_MANIFESTS: ${{ runner.temp }}/atlas-gate-shard-manifests
+        run: |
+          python -m pip install --upgrade 'pip==26.2.1'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest $env:ATLAS_FULL_MANIFEST
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/verify_shard_union.py --expected-shards 2 --full $env:ATLAS_FULL_MANIFEST --shard-dir $env:ATLAS_SHARD_MANIFESTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run the frontend tests and prove the tracked build reproduces
+        shell: pwsh
+        run: |
           npm install --global npm@11.16.0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Set-Location webapp/frontend

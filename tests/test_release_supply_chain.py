@@ -73,6 +73,9 @@ _RUNNER_JOBS = {
         "receive": ("Verify downloaded portable draft", _LINUX_IMAGE),
     },
     "portable-release.yml": {
+        # The Python shards are extra, never-required contexts; the required context stays on `gate`,
+        # which aggregates them (tests/test_portable_release_workflow.py owns that contract).
+        "gate_shard": ("Full source gate Python shard ${{ matrix.shard }} of 2 (unprivileged runner)", "windows-2025"),
         "gate": ("Full source and frontend gate (unprivileged runner)", "windows-2025"),
         "portable": ("Build and qualify Atlas.exe", "windows-2025"),
         "verify_candidate": ("Reverify candidate and current-main gates (unprivileged runner)", _LINUX_IMAGE),
@@ -171,6 +174,8 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             },
         },
         ("ci.yml", "projection-performance"): {"matrix": {"os": [_WINDOWS_IMAGE]}},
+        # One axis of shard indices, no include/exclude, every leg reported even when another fails.
+        ("portable-release.yml", "gate_shard"): {"fail-fast": False, "matrix": {"shard": [0, 1]}},
     }
     direct_names = []
     linux_selectors = 0
@@ -411,10 +416,21 @@ def test_hosted_runner_contract_rejects_census_drift(mutation):
 @pytest.mark.parametrize("mutation", [
     "floating_linux", "dropped_python", "dropped_windows", "extra_include", "extra_axis", "excluded_leg",
     "fail_fast", "floating_windows", "windows_image", "performance_linux", "performance_floating",
-    "extra_job_strategy",
+    "extra_job_strategy", "dropped_shard", "extra_shard", "shard_fail_fast", "shard_as_text", "gate_matrix",
 ])
 def test_hosted_runner_contract_rejects_matrix_drift(mutation):
     documents = _runner_documents()
+    portable_jobs = documents["portable-release.yml"]["jobs"]
+    if mutation == "dropped_shard":
+        portable_jobs["gate_shard"]["strategy"]["matrix"]["shard"] = [0]
+    elif mutation == "extra_shard":
+        portable_jobs["gate_shard"]["strategy"]["matrix"]["shard"].append(2)
+    elif mutation == "shard_fail_fast":
+        portable_jobs["gate_shard"]["strategy"]["fail-fast"] = True
+    elif mutation == "shard_as_text":
+        portable_jobs["gate_shard"]["strategy"]["matrix"]["shard"] = ["0", "1"]
+    elif mutation == "gate_matrix":
+        portable_jobs["gate"]["strategy"] = {"matrix": {"shard": [0, 1]}}
     jobs = documents["ci.yml"]["jobs"]
     strategy = jobs["test"]["strategy"]
     matrix = strategy["matrix"]
@@ -440,8 +456,12 @@ def test_hosted_runner_contract_rejects_matrix_drift(mutation):
         jobs["projection-performance"]["strategy"]["matrix"]["os"] = ["ubuntu-24.04"]
     elif mutation == "performance_floating":
         jobs["projection-performance"]["strategy"]["matrix"]["os"] = ["windows-latest"]
-    else:
+    elif mutation == "extra_job_strategy":
         jobs["lint"]["strategy"] = {"matrix": {"os": ["self-hosted"]}}
+    else:
+        # A portable-release shard mutation, applied above: exactly ONE drift per case, so each
+        # case proves its own mutation is refused rather than riding on another.
+        assert mutation in {"dropped_shard", "extra_shard", "shard_fail_fast", "shard_as_text", "gate_matrix"}
     with pytest.raises(AssertionError):
         _assert_hosted_runner_contract(documents, _required_main_contexts())
 
