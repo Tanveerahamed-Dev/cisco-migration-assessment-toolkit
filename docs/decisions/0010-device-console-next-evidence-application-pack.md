@@ -59,17 +59,17 @@ These findings were fact-checked against primary sources:
      marks it as a value the engineer supplies. A sent form never has one.
    - **Classes:**
      - `read`;
-     - `session_control`: exact strings the SSH transport sends to manage the session. These are
-       `TERMINAL_SETUP_CMDS` at session start and the transport's `exit` at teardown, and nothing
-       else;
+     - `session_control`: exact strings the SSH transport sends to manage the session, and nothing
+       else. These are `TERMINAL_SETUP_CMDS` at session start, the bare newlines the transport sends
+       to find the prompt, and its `exit` at teardown;
      - `active_probe`: ping and traceroute;
      - `change`: configuration lines;
      - `never`.
    - **Channels.** The catalogue today mixes SSH CLI commands, controller REST paths and offline-only
      names. The registry keys every form by channel:
      - SSH CLI forms follow the rules below;
-     - REST forms follow the existing controller boundary: GET requests only, after one authentication
-       login per controller;
+     - REST forms follow the existing controller boundary: GET requests only, plus at most one
+       authentication login per controller (ISE uses per-request credentials and has none);
      - offline-only names are never sent.
    - **Sent versus printed.** The registry distinguishes commands Atlas *sends* to a device from commands
      it only *prints* for an engineer to run.
@@ -85,11 +85,21 @@ These findings were fact-checked against primary sources:
        `active_probe` and `change` are allowed only here, because the engineer runs them under the
        change process.
        - Comment lines (starting with `!`) are explanatory text, not commands, and are exempt.
-       - This keeps today's printed ping, traceroute, remediation and comment lines unchanged.
+       - **The printed-command test starts as an inventory.** Wave 0 classifies every command-shaped
+         string that today's printing producers emit. Some strings fit no class, for example a telnet
+         port test, a prose instruction, or several commands in one cell. These go into an explicit,
+         reviewed **printed-exception register**, which is shrink-only like the ADR 0008 debt
+         register. Wave 0 therefore changes no printed output.
+       - Later work may shrink the register by splitting cells, adding a reviewed class (such as a
+         printed connectivity test) or rewording instructions. A new string that fits no class fails
+         the test unless it is reviewed into the register.
      - **Provenance references** are not producers. These are engine strings that only name the
        command a fact came from, such as the capture labels in baseline rows, capture integrity and
-       parse yield. Each must resolve to a catalogue form, and the structural scan accepts it on that
-       basis.
+       parse yield.
+       - Each must resolve to a catalogue form or to a registered parser variant in
+         `cmdio.PARSER_CONTRACTS` (for example `show hsrp all`). An empty reference means "no source
+         command".
+       - The structural scan accepts provenance references on that basis.
    - **Evaluation order.** Steps 1 and 2 apply to every command; steps 3 to 5 apply to sent SSH CLI
      commands only:
      1. canonicalize aliases;
@@ -107,9 +117,10 @@ These findings were fact-checked against primary sources:
    - **Class tests.** Producers declare themselves to the registry, and the tests enumerate those
      declarations; they never use a hand-named list.
      - Every command a *sending* producer can emit passes both gates for its class and channel.
-     - Every command a *printing* producer can emit is a registered, non-`never` form. Printing
-       producers include `compute_validation_plan`, `compute_remediation_plan`, the NRFU export and the
-       MOP.
+     - Every command a *printing* producer can emit is a registered, non-`never` form, a `!` comment,
+       or an entry in the printed-exception register. Printing producers include
+       `compute_validation_plan`, `compute_remediation_plan`, the NRFU export (including its document
+       view) and the MOP.
      - A structural scan fails if any module builds a device command string outside a declared producer,
        except provenance references that resolve to a catalogue form.
    - **Rules and edits.** Rules are written from Cisco documentation and verified against real device
