@@ -6,13 +6,16 @@ on:
 permissions:
   contents: read
 jobs:
-  order:
+  natural:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [8c4b87d8bc149a30fcd05f5efcd123856a2778e6, c2de3bf8005912c29c052dcedaa71b0acc3ca9f0]
     env:
       ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
       ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Start bounded diagnostic clock
         shell: bash
@@ -23,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          ref: ${{ matrix.source }}
           path: subject
           fetch-depth: 0
           persist-credentials: false
@@ -37,18 +40,20 @@ jobs:
         working-directory: subject
       - run: npm ci
         working-directory: subject/atlas-scope
-      - name: Exact-source default-order prefix bisection
+      - name: Uninstrumented original full default suite
         run: >-
           python control/.github/diagnostics/rc8_order_probe.py --subject subject
-          --output "$RUNNER_TEMP/order" --source 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
-          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode order
+          --output "$RUNNER_TEMP/plain" --source ${{ matrix.source }}
+          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode plain
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: rc8-order-${{ github.sha }}
-          path: ${{ runner.temp }}/order
+          name: rc8-plain-${{ matrix.source }}-${{ github.sha }}
+          path: ${{ runner.temp }}/plain
           if-no-files-found: error
   added-time:
+    # Both direct-cost pairs are retained already; another cost run is opt-in.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2025
     timeout-minutes: 120
     strategy:

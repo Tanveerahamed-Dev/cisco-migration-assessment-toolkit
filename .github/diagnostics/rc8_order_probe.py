@@ -122,7 +122,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain"), required=True)
     args = parser.parse_args()
     subject, output = args.subject.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -137,15 +137,19 @@ def main() -> int:
     environment.pop("ATLAS_ORDER_SELECTION", None)
     results = []
 
-    def run(label, *, selection=None, paths=(), collect=False):
+    def run(label, *, selection=None, paths=(), collect=False, plain=False):
         case = output / label
         case.mkdir()
-        env = {**environment, "ATLAS_ORDER_CASE": str(case)}
+        env = dict(os.environ) if plain else {**environment, "ATLAS_ORDER_CASE": str(case)}
+        if plain:
+            env.pop("ATLAS_ORDER_CASE", None)
+            env.pop("ATLAS_ORDER_SELECTION", None)
         if selection is not None:
             selected = case / "request.json"
             selected.write_text(json.dumps(selection), encoding="utf-8")
             env["ATLAS_ORDER_SELECTION"] = str(selected)
-        command = [sys.executable, "-m", "pytest", "-p", "rc8_order_probe", "--durations=0"]
+        command = ([sys.executable, "-m", "pytest", "--durations=40"] if plain else
+                   [sys.executable, "-m", "pytest", "-p", "rc8_order_probe", "--durations=0"])
         if collect:
             command.append("--collect-only")
         command.extend(paths)
@@ -186,10 +190,30 @@ def main() -> int:
                   "wall_seconds": round(time.monotonic() - started, 3), "target": target,
                   "measurements": measurements, "other_failures": other_failures,
                   "selected_count": len(selection) if selection is not None else None}
+        if plain:
+            result["observation_scope"] = (
+                "Uninstrumented full default suite. No injected plugin or PYTHONPATH; "
+                "no per-test reports. Read pytest.log for all failures and terminal summary."
+            )
         results.append(result)
         (output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
+
+    if args.mode == "plain":
+        provenance = {
+            "source": actual,
+            "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
+            "python": sys.version,
+            "pip_freeze": subprocess.check_output([sys.executable, "-m", "pip", "freeze"],
+                                                   cwd=subject, text=True).splitlines(),
+            "pytest_environment": {name: os.environ.get(name) for name in (
+                "GITHUB_ACTIONS", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTEST_ADDOPTS",
+                "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
+        }
+        (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+        run("plain-full-default-suite", plain=True)
+        return 0  # retain the actual pytest exit in results, never an acceptance claim
 
     if args.mode == "cost":
         names = changed_tests(subject, args.baseline, "8c4b87d8bc149a30fcd05f5efcd123856a2778e6")
