@@ -17,6 +17,17 @@ DIRECT_MODULES = (
     "tests/test_portable_maintenance_handoff.py", "tests/test_portable_managed_pe.py",
     "tests/test_portable_source_view.py", "tests/test_readme_field.py",
 )
+_PR_SOURCE = "8c4b87d8bc149a30fcd05f5efcd123856a2778e6"
+_PR_TREE = "aa003b01248588220d22face7e8218f96a9ada84"
+_DIRECT_NODE_COUNTS = (36, 132, 63, 86, 6, 35)  # Reconciled selected counts from run 39056614314 minus budget's 134.
+COLLECTION_CASES = {
+    "pr-full": (_PR_SOURCE, _PR_TREE, (), 20137),
+    "main-full": ("b300a57b991746a9c284d513a365b330476480b4", "8242621d5e0650991ed4d0c50192b5421e43da87", (), 19784),
+    "pr-without-six": (_PR_SOURCE, _PR_TREE, DIRECT_MODULES, 20137 - sum(_DIRECT_NODE_COUNTS)),
+    **{"pr-without-" + Path(name).stem.removeprefix("test_"):
+       (_PR_SOURCE, _PR_TREE, (name,), 20137 - count)
+       for name, count in zip(DIRECT_MODULES, _DIRECT_NODE_COUNTS)},
+}
 _current_node = None
 _gc_started = None
 _duration_stream = None
@@ -127,9 +138,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct", "collected", "collection-cut"), required=True)
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
+    parser.add_argument("--collection-case", choices=tuple(COLLECTION_CASES), default="pr-full")
     args = parser.parse_args()
     subject, output = args.subject.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -165,7 +177,7 @@ def main() -> int:
         if collect:
             command.append("--collect-only")
         command.extend(paths)
-        if args.mode in ("direct", "collected"):
+        if args.mode in ("direct", "collected", "collection-cut"):
             # Parent-only observations: no observer enters the timed process.
             # Names/PIDs only; never capture command arguments or environment secrets.
             (case / "processes-before.txt").write_text(subprocess.check_output(
@@ -186,7 +198,7 @@ def main() -> int:
                     child.kill()
                     child.wait()
                 code = 124
-        if args.mode in ("direct", "collected"):
+        if args.mode in ("direct", "collected", "collection-cut"):
             (case / "processes-after.txt").write_text(subprocess.check_output(
                 ["ps", "-eo", "pid,ppid,etimes,comm"], text=True), encoding="utf-8")
         text = (case / "pytest.log").read_text(encoding="utf-8", errors="replace")
@@ -215,7 +227,8 @@ def main() -> int:
             "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")}
         if plain:
             result["observation_scope"] = (
-                ("Default collection with disclosed built-in whole-file execution deselections. " if args.mode == "collected" else
+                ("Default collection minus declared collection exclusions, with built-in execution deselections. " if args.mode == "collection-cut" else
+                 "Default collection with disclosed built-in whole-file execution deselections. " if args.mode == "collected" else
                  "Uninstrumented explicit module selection in one pytest process. " if args.mode == "direct" else
                  "Uninstrumented pytest with disclosed built-in collection exclusions. " if paths else
                  "Uninstrumented full default suite. ")
@@ -268,7 +281,7 @@ def main() -> int:
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode in ("plain", "minimal", "builtin", "direct", "collected"):
+    if args.mode in ("plain", "minimal", "builtin", "direct", "collected", "collection-cut"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -280,7 +293,7 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        if args.mode in ("direct", "collected"):
+        if args.mode in ("direct", "collected", "collection-cut"):
             selected = [] if args.test_module == "control" else [args.test_module]
             budget_module = TARGET.split("::", 1)[0]
             paths = [*selected, budget_module]
@@ -291,9 +304,16 @@ def main() -> int:
                 "limits": "A slow case is a candidate; require the control and source-state evidence before attribution.",
                 "process_observation_limit": "Before/after pytest only, not an in-process module-boundary observation.",
             }
-            if args.mode == "collected":
+            if args.mode in ("collected", "collection-cut"):
                 order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
-                if actual != order["source"] or provenance["tree"] != order["tree"] or order["target"] != TARGET:
+                ignored = ()
+                expected_count = order["collection_count"]
+                expected_source, expected_tree = order["source"], order["tree"]
+                if args.mode == "collection-cut":
+                    expected_source, expected_tree, ignored, expected_count = COLLECTION_CASES[args.collection_case]
+                    if selected:
+                        raise ValueError("collection-cut cases execute the complete budget module only")
+                if actual != expected_source or provenance["tree"] != expected_tree or order["target"] != TARGET:
                     raise RuntimeError("default-collection navigation is not bound to this exact subject")
                 if any(name not in order["prefix_modules"] for name in selected):
                     raise RuntimeError("selected module is not before the complete budget module in the order receipt")
@@ -302,19 +322,27 @@ def main() -> int:
                 modules = [name for name in tracked if Path(name).name.startswith("test_") and name.endswith(".py")]
                 if not set(paths) <= set(modules):
                     raise RuntimeError("requested execution module is not tracked under the default test paths")
-                deselected = [name for name in modules if name not in paths]
+                if not set(ignored) <= set(modules):
+                    raise RuntimeError("requested collection exclusion is not tracked in this source")
+                deselected = [name for name in modules if name not in paths and name not in ignored]
                 plan.update({
                     "deselected_execution_modules": deselected,
-                    "expected_collection_count": order["collection_count"],
-                    "order_receipt_artifact": order["order_receipt_artifact"],
-                    "collection_limit": "Default collection runs before built-in deselection. Deselected items may be released; no per-node collection observer is injected. Reconcile raw selected/deselected counts.",
+                    "ignored_collection_modules": list(ignored),
+                    "collection_case": args.collection_case if args.mode == "collection-cut" else None,
+                    "expected_collection_count": expected_count,
+                    "order_receipt_artifact": order["order_receipt_artifact"] if actual == order["source"] else None,
+                    "count_receipt_artifact": 12099901646 if args.mode == "collection-cut" and args.collection_case == "main-full" else 12110325686,
+                    "count_basis": "Prior observed full-collection count minus reconciled whole-module counts; fresh raw counts must confirm the expectation.",
+                    "collection_limit": "Default collection minus declared ignores runs before built-in deselection. Counts are navigation expectations until raw reconciliation. Deselected items may be released; no per-node observer is injected. Ignores do not prove absence from transitive imports. Excluding all six whole modules is not main-equivalent; README tests also exist on main.",
                 })
-                # No explicit collection paths, ignores or injected hook: retain
-                # pytest.ini's complete default collection. The :: suffix makes
-                # each built-in node-prefix deselection an exact whole file.
-                paths = ["--deselect=" + name + "::" for name in deselected]
+                # No explicit collection paths or injected hook. Collection-cut
+                # cases disclose any whole-file ignores; otherwise keep the full
+                # default collection. The :: node-prefix suffix is an exact file.
+                paths = [*("--ignore=" + name for name in ignored),
+                         *("--deselect=" + name + "::" for name in deselected)]
             (output / "direct-case.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
-            label = "default-collected-module-then-budget" if args.mode == "collected" else "direct-module-then-budget"
+            label = ("collection-cut-budget" if args.mode == "collection-cut" else
+                     "default-collected-module-then-budget" if args.mode == "collected" else "direct-module-then-budget")
             run(label, plain=True, paths=paths)
         elif args.mode == "builtin":
             order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
