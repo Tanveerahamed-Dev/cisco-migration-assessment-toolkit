@@ -20,7 +20,7 @@ is registered and shrink-only after this proposal merges.
 
 Discovery is class-derived rather than a prefix/special-file selector:
 
-- Every repository browser `*.html` entry document, including inline scripts,
+- Every repository browser HTML/HTM/XHTML/SVG entry document (case-insensitive suffix class), including inline scripts,
   event/URL bodies, nested srcdoc and local script imports.
 - Frontend projects identified by their package metadata; authored modules and
   the complete repository-local module closure, including reexports, relative
@@ -721,3 +721,18 @@ gate; no local timing, custody controller or runtime probe is performed. The
 board-only main update `d3c79ae0` is integrated with this substantive correction,
 and main's `docs/NOW.md` restored in that same push, not as a standalone board
 push while checks run. No application source or frozen/golden/sample byte changes.
+
+## Browser document suffix closure
+
+Static review of `f25e53a5` found that the discovery class covered `.html` but
+would miss the same inline computation in a newly added `.htm` or `.xhtml`
+entry. The class now includes case-insensitive HTML/HTM/XHTML/SVG documents,
+through immutable source reads, discovery, local script closure, AST/lexical
+inspection and compiled-output coverage. SVG entries can execute scripts or
+event handlers when opened as documents, so they cannot be treated as inert
+image assets merely by suffix. New controls exercise alternate-case document
+entry calculations and uncovered compiled XHTML/SVG refusal; immutable-reader
+parity includes these formats. Existing registered footprints and all original
+gates, assertions, budgets and timeouts remain unchanged. This correction
+requires fresh exact-head hosted evidence; the superseded `f25e53a5` results
+are not final validation.

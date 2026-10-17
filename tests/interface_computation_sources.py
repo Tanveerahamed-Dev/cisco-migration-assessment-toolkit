@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 
 
 SCRIPT_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+BROWSER_DOCUMENT_SUFFIXES = (".html", ".htm", ".xhtml", ".svg")
 
 
 def role_required(path):
@@ -254,7 +255,7 @@ def compiled_coverage(names, read, generated=None):
     if generated is None:
         generated = {path for path in names if any(part in {"dist", "dist-hub", ".next"}
                      for part in PurePosixPath(path).parts[:-1])
-                     and path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))}
+                     and path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))}
     if not generated:
         return set()
     uncovered = sorted(path for path in generated if not path.startswith(COMPILED_ROOT))

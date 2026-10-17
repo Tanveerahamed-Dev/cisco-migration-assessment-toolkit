@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 from interface_computation_lex import lexical_counter, lexical_sites, python_source, python_stream, string_payloads
-from interface_computation_sources import SCRIPT_SUFFIXES, compiled_coverage, python_closure
+from interface_computation_sources import BROWSER_DOCUMENT_SUFFIXES, SCRIPT_SUFFIXES, compiled_coverage, python_closure
 
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
@@ -58,7 +58,7 @@ def revision_sources(revision):
         path = raw_path.decode("utf-8")
         names.append(path)
         wanted = (path.endswith((".py", ".atlas-role"))
-                  or path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
+                  or path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path
                                                 or path.endswith(("package.json", "package-lock.json"))))
         if wanted:
@@ -130,11 +130,11 @@ def source_map(revision=None):
         role_names, role_snapshot = revision_sources(ROLE_ORIGIN)
         role_read = lambda path: role_snapshot[path].decode("utf-8")  # noqa: E731
     selected = python_closure(names, read, role_read, role_names)
-    candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
+    candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, *BROWSER_DOCUMENT_SUFFIXES))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
     discovered = node_reply(dict(mode="discover", files=candidates, names=names)) if candidates else {"paths": [], "generated": []}
     compiled = compiled_coverage(names, read if not revision else lambda p: (ROOT / p).read_text(encoding="utf-8"), discovered["generated"])
-    selected.update(path for path in discovered["paths"] if path not in compiled or path.lower().endswith(".html"))
+    selected.update(path for path in discovered["paths"] if path not in compiled or path.lower().endswith(BROWSER_DOCUMENT_SUFFIXES))
     return SourceMap({path: read(path) for path in sorted(selected)}, compiled)
 
 

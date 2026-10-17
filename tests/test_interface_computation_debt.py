@@ -369,15 +369,45 @@ def test_moving_a_registered_computation_into_a_helper_and_removing_old_rows_ref
         guard.validate(guard.proposal(current), current, original_sites)
 
 
-@pytest.mark.parametrize("path", ["webapp/frontend/index.html", "atlas-scope/index.html", "other-client/entry.html", "client/entry with space.html", "client/é.html", "client/PREVIEW.HTML"])
+@pytest.mark.parametrize("path", ["webapp/frontend/index.html", "atlas-scope/index.html", "other-client/entry.html", "client/entry with space.html", "client/é.html", "client/PREVIEW.HTML", "client/entry.htm", "client/ENTRY.HTM", "client/entry.xhtml", "client/ENTRY.XHTML", "client/entry.svg", "client/ENTRY.SVG"])
 def test_entry_document_computation_is_discovered_and_refused(parser, tmp_path, monkeypatch, path):
+    document = "<script>function answer(rows) { return rows.length; }</script>"
+    if path.lower().endswith(".svg"):
+        document = '<svg xmlns="http://www.w3.org/2000/svg">' + document + '</svg>'
     source_fixture(tmp_path, monkeypatch, {
         "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
-        path: "<script>function answer(rows) { return rows.length; }</script>",
+        path: document,
     })
     selected = guard.source_map()
     assert path in selected
     refuse_unregistered(selected, "count")
+
+
+@pytest.mark.parametrize("suffix", ["htm", "xhtml", "svg"])
+def test_alternate_browser_document_follows_its_local_script(parser, tmp_path, monkeypatch, suffix):
+    path = "client/entry." + suffix
+    document = '<script type="module" src="./answer.js"></script>'
+    if suffix == "svg":
+        document = '<svg xmlns="http://www.w3.org/2000/svg"><script href="./answer.js"></script></svg>'
+    source_fixture(tmp_path, monkeypatch, {
+        "cisco_toolkit/docmeta.py": "ARTIFACT_SPECS = ()\n",
+        path: document,
+        "client/answer.js": "export const answer = rows => rows.length;",
+    })
+    selected = guard.source_map()
+    assert {path, "client/answer.js"} <= set(selected)
+    refuse_unregistered(selected, "count")
+
+
+@pytest.mark.parametrize("document", [
+    '<svg xmlns="http://www.w3.org/2000/svg"><script><![CDATA[function answer(rows) {return rows.length;}]]></script></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" onload="eval(source)"></svg>',
+])
+def test_svg_document_cdata_and_event_payloads_remain_executable_sources(parser, document):
+    rows = guard.scan({"client/entry.svg": document})
+    assert any(row["rule"] in {"count", "dynamic-code"} for row in rows)
+    with pytest.raises(ValueError, match="Unregistered"):
+        guard.validate(guard.proposal([]), rows, [])
 
 
 def test_browser_module_closure_follows_reexports_and_an_out_of_project_helper(parser, tmp_path, monkeypatch):
@@ -721,7 +751,7 @@ def test_a_report_writer_cannot_hide_behind_engine_role(writer):
         python_closure(sources, sources.__getitem__)
 
 
-@pytest.mark.parametrize("path", ["new/dist/index.html", "new/dist-hub/bundle.js", "webapp/frontend/dist-hub/app.js"])
+@pytest.mark.parametrize("path", ["new/dist/index.html", "new/dist/index.XHTML", "new/dist/icon.svg", "new/dist-hub/bundle.js", "webapp/frontend/dist-hub/app.js"])
 def test_uncovered_checked_in_generated_entry_or_bundle_refuses(path):
     with pytest.raises(ValueError, match="no source-to-dist gate"):
         compiled_coverage([path], lambda name: "")
@@ -971,6 +1001,8 @@ def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blob
     git("init", "--initial-branch=main")
     files = {"client/a with space.ts": b"export const count = 2;\n",
              "client/shared.ts": b"export const count = 2;\n",
+             "client/ENTRY.XHTML": b"<script>const count = rows.length;</script>\n",
+             "client/icon.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>\n',
              "cisco_toolkit/é.py": "value = 'é'\n".encode(),
              "cisco_toolkit/é.py.atlas-role": b'{"role":"engine"}\n',
              "large-unrelated.json": b'{"not_a_source_input":true}\n'}
@@ -984,7 +1016,7 @@ def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blob
     monkeypatch.setattr(guard, "ROOT", tmp_path)
     names, snapshot = guard.revision_sources(revision)
     assert set(names) == set(files)
-    assert "large-unrelated.json" not in snapshot
+    assert set(snapshot) == set(files) - {"large-unrelated.json"}
     for path in snapshot:
         assert snapshot[path] == git("cat-file", "blob", revision + ":" + path)
     # Immutable bytes never follow a dirty worktree or mutable timestamp cache.

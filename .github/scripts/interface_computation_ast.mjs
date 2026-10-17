@@ -19,6 +19,10 @@ const verdicts = new Set(['READY', 'NOT READY', 'CAUTION', 'GO', 'NO-GO', 'CONDI
 const verdictName = /^(?:can|could|should|is|has|may|must|allow|deny|permit|block|ready|safe|eligible|valid|approved|accepted|rejected|blocked|allowed|denied)(?:_|[A-Z]|$)|(?:^|_)(?:verdict|decision|readiness|ready|allowed|denied|eligible|gate|go_no_go|can_cut_over|ok|pass|fail)$/;
 const verdictReturns = new Set([...verdicts, 'yes', 'no', 'true', 'false', 'pass', 'fail', 'approved', 'rejected', 'blocked', 'allowed', 'valid', 'invalid'].map(value => value.toLowerCase().replaceAll('_', '-')));
 const hash = text => createHash('sha256').update(text).digest('hex');
+// Browser document class, including executable SVG entries and HTML aliases.
+// Mirror BROWSER_DOCUMENT_SUFFIXES in the Python source census; controls execute
+// discovery, immutable reads, AST and lexical refusal for each spelling.
+const browserDocument = path => /\.(?:html?|xhtml|svg)$/i.test(path);
 const generatedOpaqueSites = [], generatedOpaqueOccurrences = new Map();
 const resourceSchemes = new Set(['http:', 'https:', 'mailto:', 'tel:', 'file:', 'about:']);
 const executableSchemes = new Map([
@@ -281,7 +285,7 @@ function scanJavaScript(path, text, occurrences, lineOffset = 0, sharedResolver 
 
 export function scan(path, text) {
   const occurrences = new Map();
-  if (!path.toLowerCase().endsWith('.html')) return scanJavaScript(path, text, occurrences);
+  if (!browserDocument(path)) return scanJavaScript(path, text, occurrences);
   const fragments = htmlSources(text, 0, 0, value => scriptIsClosed(path, value));
   // Classic scripts and inline handlers share document scope. Bind static count
   // property aliases across every fragment, then retain each fragment's source line.
@@ -440,7 +444,7 @@ function discoverSourcePaths(files, names) {
     /(?:^|\/)(?:dist|dist-hub|\.next)(?:\/|$)/.test(path) || outputRoots.some(root => path.startsWith(root))));
   const authored = path => !generated.has(path) && !/(?:^|\/)(?:node_modules|test|tests|__tests__|fixtures)(?:\/|$)/.test(path) && !/\.(?:test|spec)\./.test(path);
   for (const path of paths) {
-    if (path.toLowerCase().endsWith('.html') || (script(path) && authored(path) && browserRoots.some(root => path.startsWith(root + '/')))) pending.push(path);
+    if (browserDocument(path) || (script(path) && authored(path) && browserRoots.some(root => path.startsWith(root + '/')))) pending.push(path);
   }
   const directories = new Set(['.']);
   for (const path of paths) {
@@ -512,11 +516,11 @@ function discoverSourcePaths(files, names) {
   }
   while (pending.length) {
     const path = pending.pop();
-    if (selected.has(path) || (generated.has(path) && !path.toLowerCase().endsWith('.html'))) continue;
+    if (selected.has(path) || (generated.has(path) && !browserDocument(path))) continue;
     if (!(path in files)) throw new Error('Executable source is unavailable: ' + path);
     selected.add(path);
     let fragments;
-    if (path.toLowerCase().endsWith('.html')) {
+    if (browserDocument(path)) {
       fragments = htmlSources(files[path], 0, 0, value => {
         pending.push(...dependency(path, value, true)); return true;
       });
@@ -565,7 +569,7 @@ function discoverSourcePaths(files, names) {
       visit(file);
     }
   }
-  return {paths: [...selected].sort(), generated: [...generated].filter(path => script(path) || path.toLowerCase().endsWith('.html')).sort()};
+  return {paths: [...selected].sort(), generated: [...generated].filter(path => script(path) || browserDocument(path)).sort()};
 }
 
 if (input.mode === 'discover') {
@@ -578,7 +582,7 @@ for (const source of input.sources ?? []) {
   process.stderr.write('DEBT_AST_START ' + source.path + '\n');
   sites.push(...scan(source.path, source.text));
   process.stderr.write('DEBT_LEX_START ' + source.path + '\n');
-  const observed = source.path.toLowerCase().endsWith('.html')
+  const observed = browserDocument(source.path)
     ? htmlSources(source.text, 0, 0, value => scriptIsClosed(source.path, value)).flatMap(fragment => tokenStreams(source.path, fragment.text, '<forbidden-pattern>', fragment.line))
     : tokenStreams(source.path, source.text);
   streams.push(...observed);
