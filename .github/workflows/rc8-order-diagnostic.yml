@@ -17,6 +17,9 @@ permissions:
   contents: read
 jobs:
   builtin:
+    # Supervisor's seven-case direct experiment owns the next push. Existing
+    # prefix runs remain pinned to their original control commit and continue.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:

@@ -12,6 +12,11 @@ import sys
 import time
 
 TARGET = "tests/test_vlan_carriage_budget.py::test_the_first_document_and_one_full_page_stay_within_their_api_budgets"
+DIRECT_MODULES = (
+    "tests/test_portable_desktop_proof.py", "tests/test_portable_maintenance.py",
+    "tests/test_portable_maintenance_handoff.py", "tests/test_portable_managed_pe.py",
+    "tests/test_portable_source_view.py", "tests/test_readme_field.py",
+)
 _current_node = None
 _gc_started = None
 _duration_stream = None
@@ -122,8 +127,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin", "direct"), required=True)
     parser.add_argument("--cut-before", default="")
+    parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     args = parser.parse_args()
     subject, output = args.subject.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -159,6 +165,11 @@ def main() -> int:
         if collect:
             command.append("--collect-only")
         command.extend(paths)
+        if args.mode == "direct":
+            # Parent-only observations: no observer enters the timed process.
+            # Names/PIDs only; never capture command arguments or environment secrets.
+            (case / "processes-before.txt").write_text(subprocess.check_output(
+                ["ps", "-eo", "pid,ppid,etimes,comm"], text=True), encoding="utf-8")
         started = time.monotonic()
         remaining = deadline - started
         if remaining <= 0:
@@ -175,6 +186,9 @@ def main() -> int:
                     child.kill()
                     child.wait()
                 code = 124
+        if args.mode == "direct":
+            (case / "processes-after.txt").write_text(subprocess.check_output(
+                ["ps", "-eo", "pid,ppid,etimes,comm"], text=True), encoding="utf-8")
         text = (case / "pytest.log").read_text(encoding="utf-8", errors="replace")
         measurements = []
         for line in text.splitlines():
@@ -201,7 +215,8 @@ def main() -> int:
             "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")}
         if plain:
             result["observation_scope"] = (
-                ("Uninstrumented pytest with disclosed built-in collection exclusions. " if paths else
+                ("Uninstrumented explicit module selection in one pytest process. " if args.mode == "direct" else
+                 "Uninstrumented pytest with disclosed built-in collection exclusions. " if paths else
                  "Uninstrumented full default suite. ")
                 + "No injected plugin or PYTHONPATH; "
                 "no per-test reports. Read pytest.log for all failures and terminal summary."
@@ -252,7 +267,7 @@ def main() -> int:
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode in ("plain", "minimal", "builtin"):
+    if args.mode in ("plain", "minimal", "builtin", "direct"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -264,7 +279,18 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        if args.mode == "builtin":
+        if args.mode == "direct":
+            selected = [] if args.test_module == "control" else [args.test_module]
+            budget_module = TARGET.split("::", 1)[0]
+            paths = [*selected, budget_module]
+            (output / "direct-case.json").write_text(json.dumps({
+                "source": actual, "tree": provenance["tree"], "case_module": args.test_module,
+                "ordered_modules": paths, "same_pytest_process": True,
+                "limits": "A slow case is a candidate; require the control and source-state evidence before attribution.",
+                "process_observation_limit": "Before/after pytest only, not an in-process module-boundary observation.",
+            }, indent=2), encoding="utf-8")
+            run("direct-module-then-budget", plain=True, paths=paths)
+        elif args.mode == "builtin":
             order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
             if actual != order["source"] or provenance["tree"] != order["tree"] or order["target"] != TARGET:
                 raise RuntimeError("built-in prefix navigation is not bound to this exact subject")
