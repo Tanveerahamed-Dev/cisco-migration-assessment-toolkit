@@ -756,3 +756,22 @@ join the existing absent-leaf controls. No module role, existing exact allowance
 source ceiling, test, gate, budget or timeout is relaxed. The already-green focused
 controls on `0a4d2937` remain earlier-head evidence; this correction needs fresh
 exact-head execution and complete workflows.
+
+## Inactive-history refusal
+
+Static review of `b7e0ceb6` found an actual ratchet loophole: historical v3
+records with a non-active stage did not constrain the active register. A later
+commit could set `observation_required`, remove an entry, then restore the entry
+and active stage before the final CI run. Unknown historical stages were also
+silently ignored. This is not closed by requiring only the final head to be active.
+
+Only the immutable ancestry through initial empty v3 capture `7e0c540a` may use
+`observation_required`. A later inactive capture fails its ancestry check;
+unknown/non-active stages and foreign source origins fail the historical policy
+check. Every remaining v3 record must be active and constrain removals. The
+existing v1/v2 ancestry cutoffs and all-parent history traversal remain intact.
+New pure refusal controls and real-Git positive-bootstrap/disable-delete-restore
+controls exercise this boundary. The existing active register, source ceiling,
+module roles, detector forms, whole-suite commands, budgets and timeouts stay
+unchanged. Fresh exact-head hosted execution is required; preceding successful
+guards alone do not certify this correction.

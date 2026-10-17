@@ -1022,6 +1022,59 @@ def test_v2_register_cannot_be_reintroduced_after_the_main_refresh_cutoff(tmp_pa
 
 
 
+@pytest.mark.parametrize("stage", ["observation_required", "disabled", None, 0])
+def test_inactive_or_unknown_historical_stage_cannot_hide_a_removed_entry(stage):
+    site = sample_site()
+    prior = {**guard.proposal([]), "stage": stage}
+    with pytest.raises(ValueError, match="unauthorized"):
+        guard.validate(guard.proposal([site]), [site], [site], [prior])
+
+
+def test_a_different_historical_source_origin_cannot_reset_the_ceiling():
+    prior = {**guard.proposal([]), "origin": "b" * 40}
+    with pytest.raises(ValueError, match="unauthorized"):
+        guard.validate(guard.proposal([]), [], [], [prior])
+
+
+@pytest.mark.parametrize("stage", ["observation_required", "disabled"])
+def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_path, monkeypatch, stage):
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
+            "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
+            "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir(parents=True)
+
+    def record(value, message):
+        target.write_text(json.dumps(value), encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", message)
+
+    record({**guard.proposal([]), "stage": "observation_required"}, "Initial empty capture")
+    monkeypatch.setattr(guard, "LEGACY_V3_OBSERVATION_HEAD", git("rev-parse", "HEAD"))
+    site = sample_site()
+    record(guard.proposal([site]), "Admitted exact site")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [site])
+    assert guard.check() == 1  # The genuine pinned bootstrap remains admissible.
+    record({**guard.proposal([]), "stage": stage}, "Remove while attempting to disable")
+    record(guard.proposal([site]), "Restore the removed allowance and active stage")
+    if stage == "observation_required":
+        with pytest.raises(subprocess.CalledProcessError):
+            guard.check()
+    else:
+        with pytest.raises(ValueError, match="unauthorized"):
+            guard.check()
+
+
 def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blobs(tmp_path, monkeypatch):
     def git(*args):
         return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Snapshot Test",

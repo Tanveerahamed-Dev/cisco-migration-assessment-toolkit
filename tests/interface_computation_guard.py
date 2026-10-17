@@ -27,9 +27,10 @@ DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
 ORIGIN = "fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1"
 SCHEMA = "interface-computation-debt/3"
-ROLE_ORIGIN = "2efe2fd77a1e67ea3c298408141a466e65cf3945"  # Reviewed initial roles, pinned independently of future edits.
+ROLE_ORIGIN = "2efe2fd77a1e67ea3c298408141a466e65cf3945"  # Initial role proposal, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 LEGACY_V2_REGISTER_HEAD = "2920e79b2a80093e16fb0d9982cb9baf29cebda1"
+LEGACY_V3_OBSERVATION_HEAD = "7e0c540a8959fa51a4e3f498c19c727273f08855"
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")
 VERDICTS = frozenset({"READY", "NOT READY", "CAUTION", "GO", "NO-GO", "CONDITIONAL GO", "Critical", "Excellent", "Good", "Fair", "Poor", "ok", "watch", "risk", "crit", "healthy", "permit", "deny", "allow", "block", "reached", "unreachable"})
@@ -396,9 +397,10 @@ def validate(registry, current, origin, ancestors=()):
     if not registered <= ceiling:
         raise ValueError(f"Register grew beyond the immutable source ceiling: {sorted(registered - ceiling)[:12]}")
     for previous in ancestors:
-        if previous.get("schema") != SCHEMA:
+        if (previous.get("schema") != SCHEMA or previous.get("origin") != ORIGIN
+                or previous.get("stage") != "active"):
             raise ValueError("An unauthorized debt policy/schema appeared in history")
-        if previous.get("stage") == "active" and not registered <= {identity(row) for row in previous["sites"]}:
+        if not registered <= {identity(row) for row in previous["sites"]}:
             raise ValueError("A removed debt/allowance entry reappeared; the register may only shrink")
 
 
@@ -421,6 +423,13 @@ def check():
             # ancestry is historical. A later old-policy reset still refuses.
             subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit,
                             legacy_heads[record["schema"]]], check=True)
+            continue
+        if record.get("schema") == SCHEMA and record.get("stage") == "observation_required":
+            # The initial capture had an empty register before admission. Only
+            # that fixed ancestry is historical; later inactive commits cannot
+            # hide removal/resurrection between green heads.
+            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit,
+                            LEGACY_V3_OBSERVATION_HEAD], check=True)
             continue
         previous.append(record)
     validate(registry, current, origin, previous)
