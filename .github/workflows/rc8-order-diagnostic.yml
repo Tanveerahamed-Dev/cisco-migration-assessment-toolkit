@@ -3,16 +3,26 @@ on:
   push:
     branches: [codex/rc8-order-diagnostic]
   workflow_dispatch:
+    inputs:
+      prefixes_json:
+        description: 'JSON array of whole-file cut points; [""] means the full prefix'
+        type: string
+        required: true
+        default: '[""]'
+      measure_changed_cost:
+        description: "Also repeat the retained Windows changed-module cost probe"
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
-  natural:
+  minimal:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        source: [8c4b87d8bc149a30fcd05f5efcd123856a2778e6, c2de3bf8005912c29c052dcedaa71b0acc3ca9f0]
+        cut_before: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.prefixes_json || '["", "tests/test_memory_guard.py"]') }}
     steps:
       - name: Start bounded diagnostic clock
         shell: bash
@@ -23,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ matrix.source }}
+          ref: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
           path: subject
           fetch-depth: 0
           persist-credentials: false
@@ -63,23 +73,24 @@ jobs:
           webapp/tests/test_carriage_ingestion.py webapp/tests/test_snapshot_raw.py
           webapp/tests/test_carriage_lifecycle.py
           webapp/tests/test_atlas_unplug_safety.py::test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot
-      - name: Uninstrumented original full default suite
+      - name: Minimal observer with full collection and whole-file prefix
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+          CUT_BEFORE: ${{ matrix.cut_before }}
         run: >-
           python control/.github/diagnostics/rc8_order_probe.py --subject subject
-          --output "$RUNNER_TEMP/plain" --source ${{ matrix.source }}
-          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode plain
+          --output "$RUNNER_TEMP/minimal" --source 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode minimal --cut-before "$CUT_BEFORE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: rc8-plain-${{ matrix.source }}-${{ github.sha }}
-          path: ${{ runner.temp }}/plain
+          name: rc8-minimal-${{ strategy.job-index }}-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/minimal
           if-no-files-found: error
   added-time:
     # Both direct-cost pairs are retained already; another cost run is opt-in.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.measure_changed_cost
     runs-on: windows-2025
     timeout-minutes: 120
     strategy:

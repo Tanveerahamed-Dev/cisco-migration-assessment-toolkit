@@ -122,7 +122,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal"), required=True)
+    parser.add_argument("--cut-before", default="")
     args = parser.parse_args()
     subject, output = args.subject.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -137,19 +138,24 @@ def main() -> int:
     environment.pop("ATLAS_ORDER_SELECTION", None)
     results = []
 
-    def run(label, *, selection=None, paths=(), collect=False, plain=False):
+    def run(label, *, selection=None, paths=(), collect=False, plain=False, minimal=False):
         case = output / label
         case.mkdir()
         env = dict(os.environ) if plain else {**environment, "ATLAS_ORDER_CASE": str(case)}
         if plain:
             env.pop("ATLAS_ORDER_CASE", None)
             env.pop("ATLAS_ORDER_SELECTION", None)
+        if minimal:
+            env = {**environment, "ATLAS_MINIMAL_REPORT": str(case / "target-result.json"),
+                   "ATLAS_MINIMAL_CUT_BEFORE": args.cut_before}
         if selection is not None:
             selected = case / "request.json"
             selected.write_text(json.dumps(selection), encoding="utf-8")
             env["ATLAS_ORDER_SELECTION"] = str(selected)
         command = ([sys.executable, "-m", "pytest", "--durations=40"] if plain else
                    [sys.executable, "-m", "pytest", "-p", "rc8_order_probe", "--durations=0"])
+        if minimal:
+            command = [sys.executable, "-m", "pytest", "-p", "rc8_minimal_prefix", "--durations=40"]
         if collect:
             command.append("--collect-only")
         command.extend(paths)
@@ -195,12 +201,53 @@ def main() -> int:
                 "Uninstrumented full default suite. No injected plugin or PYTHONPATH; "
                 "no per-test reports. Read pytest.log for all failures and terminal summary."
             )
+        if minimal:
+            report_path = case / "target-result.json"
+            minimal_report = json.loads(report_path.read_text()) if report_path.exists() else None
+            result["minimal"] = minimal_report
+            valid = False
+            if minimal_report:
+                nodes = minimal_report["collection"]
+                modules = [node.split("::", 1)[0] for node in nodes]
+                runs = [name for i, name in enumerate(modules) if i == 0 or name != modules[i - 1]]
+                whole_files = len(runs) == len(set(runs))
+                expected_failures = int(minimal_report["call"] == "failed")
+                valid = bool(
+                    code == minimal_report["pytest_exit"] == 2
+                    and minimal_report["planned_stop"] and minimal_report["target_finishes"] == 1
+                    and minimal_report["setup"] == minimal_report["teardown"] == "passed"
+                    and minimal_report["call"] in ("passed", "failed")
+                    and minimal_report["session_testsfailed"] == expected_failures
+                    and nodes.count(TARGET) == 1 and whole_files
+                    and ((not args.cut_before and minimal_report["omitted"] == 0)
+                         or (bool(args.cut_before) and minimal_report["cut_seen"]
+                             and minimal_report["omitted"] == nodes.index(TARGET) - modules.index(args.cut_before)
+                             and nodes.index(TARGET) >= modules.index(args.cut_before)))
+                    and len(measurements) == 1 and measurements[0]["timed"] is True
+                )
+            result["minimal_valid"] = valid
+            result["first_page_budget_outcome"] = "invalid"
+            if valid:
+                first_ms = measurements[0]["first_page_ms"]
+                if minimal_report["call"] == "passed" and first_ms <= 300:
+                    result["first_page_budget_outcome"] = "within_budget"
+                elif (minimal_report["call"] == "failed" and first_ms > 300
+                      and re.search(r"assert\s+" + re.escape(str(first_ms)) + r"\s*<=\s*300\b",
+                                    minimal_report["failure"] or "")):
+                    result["first_page_budget_outcome"] = "over_budget"
+                else:
+                    result["first_page_budget_outcome"] = "other_failure"
+            result["observation_scope"] = (
+                "Minimal whole-file prefix; original collection/items/nextitem retained. "
+                "Planned interrupted exit is not success. Requires a failing full-prefix control "
+                "on this same observer before interpreting any reduction. No GC/per-test reporter."
+            )
         results.append(result)
         (output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode == "plain":
+    if args.mode in ("plain", "minimal"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -212,7 +259,13 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        run("plain-full-default-suite", plain=True)
+        if args.mode == "minimal":
+            if args.cut_before and (not re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", args.cut_before)
+                                    or not (subject / args.cut_before).is_file()):
+                raise ValueError("prefix cut must be one existing whole test file")
+            run("minimal-default-prefix", minimal=True)
+        else:
+            run("plain-full-default-suite", plain=True)
         return 0  # retain the actual pytest exit in results, never an acceptance claim
 
     if args.mode == "cost":
