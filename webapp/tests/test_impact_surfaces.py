@@ -1114,17 +1114,18 @@ def test_a_valid_empty_failure_impact_list_stays_an_empty_table(client):
 def test_the_graph_badge_and_a_cached_summary_never_keep_a_withheld_keystone(client, sample):
     snap, _why = _held_core1(sample, "no_run_config")
     sid = _upload(client, snap)
-    nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
-    assert nodes["core1"]["keystone"] is False          # the raw ranking made it the first keystone (High, 45)
-    assert nodes["access1"]["keystone"] is True
+    projected = client.get(f"/api/snapshots/{sid}/graph").json()
+    impacts = {row["host"]["value"]: row for row in projected["topology"]["failure_impact"]["items"]}
+    assert impacts["core1"]["stranded"]["state"] != "published"
+    assert impacts["access1"]["stranded"]["state"] == "published"
     # a summary cached by the raw-row ranking (no keystone contract) that still names core1
     store = client.app.state.store
     stale = dict(store.get_snapshot_meta(sid)["summary"])
     assert stale.pop("keystone_contract") == summary.KEYSTONE_CONTRACT_VERSION
     stale["keystones"] = [{"host": "core1", "severity": "High", "stranded": 45, "vlans_impacted": 3, "detail": ""}]
     store.update_summary(sid, stale)
-    nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
-    assert nodes["core1"]["keystone"] is False          # the badge reads the snapshot, never the stale cache
+    repeated = client.get(f"/api/snapshots/{sid}/graph").json()
+    assert repeated == projected  # the entire source-bound graph ignores the stale summary cache
     fresh = client.get(f"/api/snapshots/{sid}").json()["summary"]
     assert fresh["keystone_contract"] == summary.KEYSTONE_CONTRACT_VERSION
     assert "core1" not in {k["host"] for k in fresh["keystones"]}

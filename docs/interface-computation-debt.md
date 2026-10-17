@@ -912,7 +912,8 @@ The patch's removal categories are:
 | `portable` packaging/release helpers outside that closure | 860 |
 | `research_lane` helpers | 148 |
 | Root embedding/local-model research scripts (`embed_qbank.py`, `ollama_judge.py`, `ollama_recall.py`, `ollama_retrieval_judge.py`) | 55 |
-| `webapp/dev.py` development launcher | 16 |
+| `webapp/dev.py` development launcher | 7 |
+| `webapp/frontend/e2e-real/serve_real_backend.py` fixture server | 9 |
 | `.claude` hook | 10 |
 | `setup.py` packaging | 3 |
 | **Total** | **9,244** |

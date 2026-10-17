@@ -1,5 +1,9 @@
 import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, bandColor, type TopologyGraphData, type TopologyNode } from "../api";
+import { equalJson, loadProjection, sameIdentity } from "../projection";
+import { EvidenceProvider, ImpactFactView } from "../pages/core/ProjectionEvidence";
+import { ProjectionList } from "../pages/core/ProjectionList";
+import { SummaryValue } from "./SummaryFacts";
 import { shortName } from "./CableMap";
 import { ErrorBox, Loading, SkelLines, useAsync } from "./ui";
 
@@ -147,81 +151,22 @@ export function linkPath(l: LaidEdge): string {
 
 const unassessed = (n: { band: string }) => !n.band || n.band === "Insufficient Data";
 
-export interface FailureImpact {
-  /** Deterministic stand-in for the fabric's northbound/root attachment: best-connected assessed node, id tie-break. */
-  anchor: string | null;
-  baselineReachable: number;
-  failedWasReachable: boolean;
-  /** The removed device is itself the reference, so loss-of-reference is tautological, not impact. */
-  referenceFailed: boolean;
-  /** Nodes that lose their resolved path to `anchor` when `failed` is removed. */
-  stranded: string[];
-}
-
-/** Re-solve the resolved topology without one device.
- *
- * This intentionally reports the result *inside the observed graph*, not a real-world bound: an
- * unobserved alternate link can shrink the set, while an uncollected downstream device can enlarge
- * it. The caller must keep that uncertainty visible next to the count.
- */
-export function counterfactualFailure(
-  raw: Pick<TopologyGraphData, "nodes" | "edges">,
-  failed: string,
-): FailureImpact {
-  const ids = new Set(raw.nodes.map((n) => n.id));
-  const adj = new Map<string, Set<string>>();
-  for (const id of ids) adj.set(id, new Set());
-  for (const e of raw.edges) {
-    if (!ids.has(e.source) || !ids.has(e.target) || e.source === e.target) continue;
-    adj.get(e.source)!.add(e.target);
-    adj.get(e.target)!.add(e.source);
-  }
-
-  const candidates = raw.nodes
-    .filter((n) => !unassessed(n))
-    .sort((a, b) => (adj.get(b.id)!.size - adj.get(a.id)!.size)
-      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const anchor = candidates[0]?.id ?? null;
-  if (anchor === null || !ids.has(failed)) {
-    return { anchor, baselineReachable: 0, failedWasReachable: false, referenceFailed: false, stranded: [] };
-  }
-
-  const reach = (skip: string | null): Set<string> => {
-    const seen = new Set<string>();
-    if (anchor === skip) return seen;
-    const queue = [anchor];
-    seen.add(anchor);
-    for (let i = 0; i < queue.length; i++) {
-      for (const next of adj.get(queue[i]) || []) {
-        if (next === skip || seen.has(next)) continue;
-        seen.add(next);
-        queue.push(next);
-      }
-    }
-    return seen;
-  };
-
-  const baseline = reach(null);
-  if (failed === anchor) {
-    return {
-      anchor,
-      baselineReachable: baseline.size,
-      failedWasReachable: true,
-      referenceFailed: true,
-      stranded: [],
-    };
-  }
-  const after = reach(failed);
-  const stranded = [...baseline]
-    .filter((id) => id !== failed && !after.has(id))
-    .sort((a, b) => a.localeCompare(b));
-  return {
-    anchor,
-    baselineReachable: baseline.size,
-    failedWasReachable: baseline.has(failed),
-    referenceFailed: false,
-    stranded,
-  };
+function DeviceFailure({ snapId, host, engine }: { snapId: number; host: string; engine: TopologyGraphData["engine"] }) {
+  const result = useAsync(async () => {
+    const topology = await loadProjection(snapId, "topology");
+    if (engine && !equalJson(engine, topology.engine)) throw new Error("Diagram evidence changed. Reload the topology.");
+    const device = await loadProjection(snapId, "device", host);
+    if (!sameIdentity(device.identity, topology.identity) || !equalJson(device.engine, topology.engine)
+        || !equalJson(device.limitations, topology.limitations)) throw new Error("Device evidence changed. Reload the topology.");
+    return device;
+  }, [snapId, host, engine]);
+  if (result.loading) return <Loading label="Loading engine failure impact…" />;
+  if (result.error) return <ErrorBox msg={result.error} />;
+  if (!result.data) return null;
+  return <EvidenceProvider identity={result.data.identity} limitations={result.data.limitations}><ProjectionList title={`If ${host} fails`} document={result.data} host={host} initial={result.data.payload.failure_impact}
+    renderRow={(row) => <>{(["host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp", "off_scan_gw_vlans", "detail"] as const)
+      .map((name) => <ImpactFactView key={name} label={name.replaceAll("_", " ")} field={name}
+        fact={row[name]} row={row.pointer} />)}</>} /></EvidenceProvider>;
 }
 
 export default function TopologyGraph({ snapId }: { snapId: number }) {
@@ -261,12 +206,6 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
     };
   }, [g.data, linkedOnly]);
   const view = useMemo(() => (model ? layout(model) : null), [model]);
-  const impact = useMemo(
-    () => (sel && g.data ? counterfactualFailure(g.data, sel) : null),
-    [g.data, sel],
-  );
-  const stranded = useMemo(() => new Set(impact?.stranded || []), [impact]);
-  const failureVisible = !!(sel && impact && impact.anchor !== null && impact.failedWasReachable && !impact.referenceFailed);
   // Port stubs, indexed once per layout. This used to be a `view.links.flatMap(...)` INSIDE the
   // per-node render map — O(nodes x links) on EVERY render, and this component re-renders on every
   // mousemove of a pan-drag (setT) and on every chassis hover (setHover). At fleet scale (~300
@@ -286,7 +225,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   if (g.loading) return <SkelLines label="Building topology…" />;
   if (g.error) return <ErrorBox msg={g.error} />;
   if (!g.data || !g.data.nodes.length || !view)
-    return <div className="faint" style={{ fontSize: 13 }}>No topology to draw.</div>;
+    return <div className="faint" style={{ fontSize: 13 }}>No topology to draw.<SummaryValue fact={g.data?.diagram} /></div>;
   const nUnlinked = g.data.nodes.filter((n) => !n.degree).length;
   const nAssessedEdges = g.data.edges.filter((e) => e.bridge_assessed === true).length;
   const nUnassessedEdges = g.data.edges.length - nAssessedEdges;
@@ -313,11 +252,9 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       if (e.target.id === focus) neighbors.add(e.source.id);
     }
   }
-  const dim = (id: string) => failureVisible
-    ? id !== sel && !stranded.has(id)
-    : (focus ? !neighbors.has(id) : false);
+  const dim = (id: string) => focus && !neighbors.has(id);
   const selNode = sel ? view.nodes.find((n) => n.id === sel) ?? g.data.nodes.find((n) => n.id === sel) : null;
-  const selDeg = sel ? view.links.filter((e) => e.source.id === sel || e.target.id === sel).length : 0;
+  const selDeg = selNode?.degree;
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault();
@@ -351,27 +288,9 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       <div className="dim">Band: <b style={{ color: "var(--text)" }}>{selNode.band || "—"}</b> · score {selNode.score ?? "—"}/100</div>
       <div className="dim">Role: {selNode.role || "—"}</div>
       <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
-      <div data-testid="topology-failure-impact" style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)", lineHeight: 1.35 }}>
-        {!impact?.anchor ? (
-          <span style={{ color: "var(--crit)" }}><b>[NOT ASSESSED]</b> No assessed device is available as the failure-analysis anchor.</span>
-        ) : impact.referenceFailed ? (
-          <span style={{ color: "var(--crit)" }}>
-            <b>[REFERENCE ANCHOR SELECTED]</b> <span className="mono">{impact.anchor}</span> is the comparison reference (the best-connected assessed device), so deleting it makes loss of that reference tautological; no failure-impact count is claimed.
-          </span>
-        ) : !impact.failedWasReachable ? (
-          <span style={{ color: "var(--text-dim)" }}>
-            <b>[OUTSIDE BASELINE]</b> This device was not reachable from anchor <span className="mono">{impact.anchor}</span> before failure; no counterfactual is claimed.
-          </span>
-        ) : (
-          <>
-            <div style={{ color: impact.stranded.length ? "var(--crit)" : "var(--text)" }}>
-              <b>{impact.stranded.length}</b> baseline-reached device{impact.stranded.length === 1 ? "" : "s"} lose{impact.stranded.length === 1 ? "s" : ""} the resolved path to reference anchor <span className="mono">{impact.anchor}</span> (the best-connected assessed device) if this device fails.
-            </div>
-            <div className="faint" style={{ marginTop: 4 }}>
-              Resolved-topology result, not a fleet-wide bound: an unobserved alternate link can shrink it; an uncollected downstream device can enlarge it.
-            </div>
-          </>
-        )}
+      {selNode.health && <SummaryValue fact={selNode.health.band} />}
+      <div data-testid="topology-failure-impact" style={{ marginTop: 8, maxHeight: "60vh", overflow: "auto" }}>
+        <DeviceFailure key={`${snapId}:${selNode.id}`} snapId={snapId} host={selNode.id} engine={g.data.engine} />
       </div>
     </div>
   );
@@ -424,7 +343,6 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
           ))}
           {nAssessedEdges > 0 && <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px solid var(--crit)", display: "inline-block" }} /> assessed single point of failure</span>}
           {nUnassessedEdges > 0 && <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px dashed var(--text)", display: "inline-block" }} /> redundancy not assessed</span>}
-          {failureVisible && <span className="item"><span style={{ width: 16, height: 0, borderTop: "3px dashed var(--crit)", display: "inline-block" }} /> selected failure — loses path to {impact!.anchor}</span>}
           <span className="item"><span style={{ width: 9, height: 9, background: "var(--accent)", transform: "rotate(45deg)", display: "inline-block" }} /> keystone</span>
         </div>
         <div className="row-flex" style={{ gap: 8 }}>
@@ -454,7 +372,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
         <div className="tabfade" style={{ position: "relative", display: mode === "3d" ? undefined : "none" }}>
           <Suspense fallback={<div style={{ height: 480, display: "grid", placeItems: "center", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)" }}><Loading label="Loading 3D engine…" /></div>}>
             <Topology3D raw={model!} sel={sel} hover={hover} active={mode === "3d"}
-              failureAnchor={failureVisible ? impact?.anchor ?? null : null} stranded={impact?.stranded ?? EMPTY_STRANDED}
+              failureAnchor={null} stranded={EMPTY_STRANDED}
               onPick={(id) => setSel((s) => (s === id ? null : id))} onHover={setHover} />
           </Suspense>
           {selPanel(true)}
@@ -483,28 +401,17 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             ))}
             {/* links (under the chassis) */}
             {view.links.map((e, i) => {
-              const failureEdge = failureVisible && !!sel && (
-                e.source.id === sel || e.target.id === sel
-                || (stranded.has(e.source.id) && stranded.has(e.target.id))
-              );
-              // Valid failure analysis highlights removed/stranded paths. A fail-closed selection
-              // (reference anchor or outside baseline) falls back to ordinary neighbor focus so it
-              // does not dim every link while the panel says no counterfactual was claimed.
-              const lit = failureVisible
-                ? failureEdge
-                : !!focus && (e.source.id === focus || e.target.id === focus);
+              const lit = !!focus && (e.source.id === focus || e.target.id === focus);
               const faded = !!focus && !lit;
               const notAssessed = !e.bridge_assessed;
               return (
                 <path key={i} d={linkPath(e)} fill="none"
-                  stroke={failureEdge || e.is_bridge ? "var(--crit)" : notAssessed ? "var(--text)" : "var(--border-strong)"}
+                  stroke={e.is_bridge ? "var(--crit)" : notAssessed ? "var(--text)" : "var(--border-strong)"}
                   strokeWidth={lit ? 3 : e.is_bridge ? 1.8 + Math.min(1.6, e.pairs_cut * 0.2) : notAssessed ? 2 : 1.4}
-                  strokeOpacity={faded ? 0.1 : failureEdge ? 0.9 : e.is_bridge ? 0.75 : notAssessed ? 0.85 : 0.55}
-                  strokeDasharray={failureEdge ? "3 3" : notAssessed ? "7 4" : undefined}
+                  strokeOpacity={faded ? 0.1 : e.is_bridge ? 0.75 : notAssessed ? 0.85 : 0.55}
+                  strokeDasharray={notAssessed ? "7 4" : undefined}
                   strokeLinecap="round">
-                  <title>{failureEdge
-                    ? "Path removed or stranded in the selected-device failure counterfactual"
-                    : e.is_bridge ? "Assessed single point of failure"
+                  <title>{e.is_bridge ? "Assessed single point of failure"
                     : notAssessed ? "Redundancy not assessed — discovered link, not a healthy verdict"
                     : "Assessed non-bridge link"}</title>
                 </path>
@@ -514,17 +421,15 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             {view.nodes.map((n) => {
               const faded = dim(n.id);
               const na = unassessed(n);
-              const isStranded = failureVisible && stranded.has(n.id);
               const stubs = stubsByNode.get(n.id) || [];
               return (
                 <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer", opacity: faded ? 0.25 : 1 }}
                   onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}
                   onClick={() => setSel((s) => (s === n.id ? null : n.id))}>
                   <rect x={-NW / 2} y={-NH / 2} rx={9} width={NW} height={NH}
-                    fill={isStranded ? "color-mix(in srgb, var(--surface) 72%, var(--crit))" : na ? "var(--surface)" : `color-mix(in srgb, var(--surface) 86%, ${bandColor(n.band)})`}
-                    stroke={sel === n.id ? "var(--accent)" : isStranded ? "var(--crit)" : na ? "var(--text-faint)" : "var(--border-strong)"}
-                    strokeWidth={sel === n.id ? 2.4 : isStranded ? 2.2 : 1.5} strokeDasharray={na && sel !== n.id ? "4 4" : undefined}>
-                    {isStranded && <title>Loses its resolved path to {impact!.anchor} if {sel} fails</title>}
+                    fill={na ? "var(--surface)" : `color-mix(in srgb, var(--surface) 86%, ${bandColor(n.band)})`}
+                    stroke={sel === n.id ? "var(--accent)" : na ? "var(--text-faint)" : "var(--border-strong)"}
+                    strokeWidth={sel === n.id ? 2.4 : 1.5} strokeDasharray={na && sel !== n.id ? "4 4" : undefined}>
                   </rect>
                   <circle cx={-NW / 2 + 13} cy={-NH / 2 + 13} r={5} fill={bandColor(n.band || "")} stroke="var(--surface)" strokeWidth={1.5}>
                     <title>{n.band || "[NOT OBSERVED]"}</title>

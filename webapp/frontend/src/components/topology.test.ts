@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { counterfactualFailure, layout, linkPath } from "./TopologyGraph";
+import { layout, linkPath } from "./TopologyGraph";
 import { switchMesh, topoNodeLabel } from "./Topology3D";
 
 // The signature feature's PURE logic, tested without a GPU: the role-tiered lane positioning and the
@@ -111,54 +111,8 @@ describe("layout — role-tiered lane positioning (device-fidelity 2D)", () => {
   });
 });
 
-describe("counterfactualFailure — resolved-topology failure impact", () => {
-  const node = (id: string, band = "Good") => ({
-    id, band, score: band ? 80 : null, role: id.startsWith("core") ? "core" : "access",
-    degree: 0, keystone: false,
-  });
-  const edge = (source: string, target: string) => ({
-    source, target, bridge_assessed: true, is_bridge: false, pairs_cut: 0,
-  });
-
-  it("uses the best-connected assessed anchor and names exactly what a failed transit node strands", () => {
-    const graph = {
-      nodes: [node("core"), node("dist"), node("acc"), node("edge-a"), node("edge-b")],
-      edges: [edge("core", "dist"), edge("dist", "acc"), edge("core", "edge-a"), edge("core", "edge-b")],
-    };
-    const out = counterfactualFailure(graph, "dist");
-    expect(out.anchor).toBe("core");
-    expect(out.baselineReachable).toBe(5);
-    expect(out.failedWasReachable).toBe(true);
-    expect(out.referenceFailed).toBe(false);
-    expect(out.stranded).toEqual(["acc"]);
-  });
-
-  it("does not turn deletion of the reference itself into a tautological catastrophe", () => {
-    const cycle = {
-      nodes: [node("a"), node("b"), node("c")],
-      edges: [edge("a", "b"), edge("b", "c"), edge("c", "a")],
-    };
-    expect(counterfactualFailure(cycle, "a")).toEqual({
-      anchor: "a", baselineReachable: 3, failedWasReachable: true,
-      referenceFailed: true, stranded: [],
-    });
-  });
-
-  it("does not invent a counterfactual for a device outside the anchor baseline or without an assessed anchor", () => {
-    const split = {
-      nodes: [node("core"), node("acc"), node("island")],
-      edges: [edge("core", "acc")],
-    };
-    expect(counterfactualFailure(split, "island")).toMatchObject({
-      anchor: "acc", failedWasReachable: false, referenceFailed: false, stranded: [],
-    });
-
-    const unknown = { nodes: [node("mystery-a", ""), node("mystery-b", "")], edges: [edge("mystery-a", "mystery-b")] };
-    expect(counterfactualFailure(unknown, "mystery-a")).toEqual({
-      anchor: null, baselineReachable: 0, failedWasReachable: false, referenceFailed: false, stranded: [],
-    });
-  });
-});
+// Failure verdicts are now exercised by TopologyGraph.test.tsx against supplied device
+// projection pages. Geometry tests below cannot serve as a network-model oracle.
 
 describe("switchMesh — three.js node geometry (headless, no WebGL)", () => {
   it("builds the chassis as exactly TWO merged meshes (lit + unlit) — the fleet-scale draw-call contract", () => {

@@ -1,18 +1,20 @@
+import type { SummaryAssessment } from "./components/SummaryFacts";
 // Typed client for the AssessHub backend. One origin in prod; Vite proxies /api -> :8000 in dev.
 
 export interface Summary {
   version: string;
-  n_switches: number;
-  avg_health: number | string;
-  bands: Record<string, number>;
-  n_critical: number;
+  n_switches: number | null;
+  avg_health: number | string | null;
+  assessment?: SummaryAssessment;
+  bands: Record<string, number | null>;
+  n_critical: number | null;
   punchlist: {
-    total: number;
-    by_severity: Record<string, number>;
-    by_category: Record<string, number>;
-    crit_high: number;
+    total: number | null;
+    by_severity: Record<string, number | null>;
+    by_category: Record<string, number | null>;
+    crit_high: number | null;
   };
-  readiness: Record<"READY" | "CAUTION" | "NOT READY", number>;
+  readiness: Record<"READY" | "CAUTION" | "NOT READY", number | null>;
   keystones: KeystoneEntry[];
   /** Which keystone ranking produced `keystones` (summary.KEYSTONE_CONTRACT_VERSION); an older cached summary
    *  is recomputed on read, so the SPA never needs to branch on it. */
@@ -126,7 +128,8 @@ export interface TopologyNode {
   score: number | null;
   role: string;
   degree: number;
-  keystone: boolean;
+  keystone: boolean | null;
+  health?: Record<"score" | "band" | "role", import("./projection").Fact>;
 }
 
 export interface TopologyEdge {
@@ -138,11 +141,13 @@ export interface TopologyEdge {
 }
 
 export interface TopologyGraphData {
+  engine?: import("./projection").ViewDocument<"topology">["engine"];
+  diagram?: import("./projection").Fact;
   nodes: TopologyNode[];
   edges: TopologyEdge[];
   /** True when at least one link-centrality record was available; inspect each edge as well. */
   link_centrality_assessed?: boolean;
-  /** Discovered CDP peers which were not present as collected switch nodes in this snapshot. */
+  /** Engine cable-map nodes explicitly marked uncollected. */
   offscan_peers?: string[];
 }
 

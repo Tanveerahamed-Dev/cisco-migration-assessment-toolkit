@@ -1,5 +1,6 @@
+import { deviceFixture, published, topologyFixture, withheld } from "../test/projectionFixtures";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import TopologyGraph from "./TopologyGraph";
 import { api } from "../api";
 
@@ -109,70 +110,86 @@ describe("TopologyGraph (render)", () => {
     expect(gap.textContent).toMatch(/hide additional paths or failure impact/i);
   });
 
-  it("re-solves the observed graph on selection and scopes the result to its named reference anchor", async () => {
-    vi.spyOn(api, "graph").mockResolvedValue({
-      nodes: [
-        { ...nodeOf("core", 3), role: "core" },
-        { ...nodeOf("dist", 2), role: "distribution" },
-        nodeOf("acc", 1), nodeOf("edge-a", 1), nodeOf("edge-b", 1),
-      ],
-      edges: [
-        ["core", "dist"], ["dist", "acc"], ["core", "edge-a"], ["core", "edge-b"],
-      ].map(([source, target]) => ({ source, target, bridge_assessed: true, is_bridge: false, pairs_cut: 0 })),
-      link_centrality_assessed: true,
-      offscan_peers: [],
+});
+
+function ownerMock(topology: any = topologyFixture(), device?: any) {
+  vi.spyOn(api, "graph").mockResolvedValue({
+    nodes: [nodeOf("synthetic-edge-a", 1), nodeOf("synthetic-peer-b", 1)],
+    edges: [{ source: "synthetic-edge-a", target: "synthetic-peer-b", bridge_assessed: true, is_bridge: false, pairs_cut: 0 }],
+    engine: topology.engine, link_centrality_assessed: true, offscan_peers: [],
+  } as never);
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/ui-projection/topology")) return new Response(JSON.stringify(topology));
+    if (url.pathname.endsWith("/ui-projection/device") && device) return new Response(JSON.stringify(device));
+    return new Response(JSON.stringify({ detail: "not supplied" }), { status: 404 });
+  });
+}
+function deviceWith(fact: any) {
+  const topology = topologyFixture();
+  const device: any = deviceFixture(1, "synthetic-edge-a");
+  device.payload.failure_impact = structuredClone(topology.payload.failure_impact);
+  device.payload.failure_impact.page.items[0].stranded = fact;
+  return device;
+}
+async function selectDevice() {
+  fireEvent.click(await screen.findByText("synthetic-edge-a", { exact: true }));
+  return screen.findByRole("heading", { name: "If synthetic-edge-a fails" });
+}
+
+describe("Tools failures use source-bound engine pages", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("uses the owner count even where browser graph connectivity suggests another", async () => {
+    const fetch = ownerMock(topologyFixture(), deviceWith(published(17)));
+    render(<TopologyGraph snapId={1} />);
+    const heading = await selectDevice();
+    expect(within(heading.closest("section")!).getByText("17")).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("ui-projection/device?") && String(url).includes("host=synthetic-edge-a"))).toBe(true);
+    expect(screen.queryByText(/reference anchor|baseline-reached/)).toBeNull();
+  });
+  it("shows a published zero for a connected device without inventing an anchor verdict", async () => {
+    ownerMock(topologyFixture(), deviceWith(published(0)));
+    render(<TopologyGraph snapId={1} />);
+    const heading = await selectDevice();
+    expect(within(heading.closest("section")!).getAllByText("0").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/REFERENCE ANCHOR SELECTED/)).toBeNull();
+  });
+  it("keeps a held value and its owner reason visible", async () => {
+    ownerMock(topologyFixture(), deviceWith({ ...withheld(), reason: "No captured failure evidence" }));
+    render(<TopologyGraph snapId={1} />); await selectDevice();
+    expect(await screen.findByText("No captured failure evidence")).toBeInTheDocument();
+  });
+  it("preserves the engine lower-bound treatment", async () => {
+    ownerMock(topologyFixture(), deviceWith({ ...published(17), refs: [{ role: "witness", pointer: "/collection_completeness/devices/0" }] }));
+    render(<TopologyGraph snapId={1} />); await selectDevice();
+    expect(await screen.findByText("≥ 17")).toBeInTheDocument();
+  });
+  it.each(["identity", "engine", "host"])("rejects a device with changed %s", async (key) => {
+    const device: any = deviceWith(published(17));
+    if (key === "identity") device.identity.sha256 = "f".repeat(64);
+    if (key === "engine") device.engine = { ...device.engine, script_version: "foreign" };
+    if (key === "host") device.payload.host = "different-device";
+    ownerMock(topologyFixture(), device); render(<TopologyGraph snapId={1} />);
+    fireEvent.click(await screen.findByText("synthetic-edge-a", { exact: true }));
+    expect(await screen.findByText(/changed|different device/)).toBeInTheDocument();
+    expect(screen.queryByText("17")).toBeNull();
+  });
+  it("refuses a diagram whose engine binding differs from the topology page", async () => {
+    ownerMock(topologyFixture(), deviceWith(published(17)));
+    vi.mocked(api.graph).mockResolvedValue({
+      nodes: [nodeOf("synthetic-edge-a", 0)], edges: [],
+      engine: { ...topologyFixture().engine, code_schema_version: "foreign" },
     } as never);
     render(<TopologyGraph snapId={1} />);
-    const distLabel = await screen.findByText("dist");
-    fireEvent.click(distLabel.closest("g")!);
-    const impact = await screen.findByTestId("topology-failure-impact");
-    expect(impact.textContent).toMatch(/1 baseline-reached device loses the resolved path/i);
-    expect(impact.textContent).toMatch(/reference anchor core/i);
-    expect(impact.textContent).toMatch(/not a fleet-wide bound/i);
-    expect(screen.getByText(/selected failure — loses path to core/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("synthetic-edge-a", { exact: true }));
+    expect(await screen.findByText(/Diagram evidence changed/)).toBeInTheDocument();
+    expect(screen.queryByText("17")).toBeNull();
   });
-
-  it("does not publish a tautological impact count when the selected device is the reference anchor", async () => {
-    vi.spyOn(api, "graph").mockResolvedValue({
-      nodes: [nodeOf("a", 2), nodeOf("b", 2), nodeOf("c", 2)],
-      edges: [
-        ["a", "b"], ["b", "c"], ["c", "a"],
-      ].map(([source, target]) => ({ source, target, bridge_assessed: true, is_bridge: false, pairs_cut: 0 })),
-      link_centrality_assessed: true,
-      offscan_peers: [],
-    } as never);
-    const { container } = render(<TopologyGraph snapId={1} />);
-    const anchorLabel = await screen.findByText("a");
-    fireEvent.click(anchorLabel.closest("g")!);
-    const impact = await screen.findByTestId("topology-failure-impact");
-    expect(impact.textContent).toMatch(/\[REFERENCE ANCHOR SELECTED\]/);
-    expect(impact.textContent).toMatch(/no failure-impact count is claimed/i);
-    expect(screen.queryByText(/selected failure — loses path/i)).toBeNull();
-    const paths = [...container.querySelectorAll("svg path")];
-    expect(paths.filter((path) => path.getAttribute("stroke-opacity") === "0.1")).toHaveLength(1);
-  });
-
-  it("clears snapshot-specific selection before rendering a different snapshot", async () => {
-    const first = {
-      nodes: [{ ...nodeOf("core", 2), role: "core" }, nodeOf("dist", 2), nodeOf("acc", 1)],
-      edges: [
-        { source: "core", target: "dist", bridge_assessed: true, is_bridge: false, pairs_cut: 0 },
-        { source: "dist", target: "acc", bridge_assessed: true, is_bridge: false, pairs_cut: 0 },
-      ],
-      link_centrality_assessed: true, offscan_peers: [],
-    };
-    const second = {
-      nodes: [nodeOf("fresh", 0)], edges: [], link_centrality_assessed: false, offscan_peers: [],
-    };
-    vi.spyOn(api, "graph").mockImplementation((id) => Promise.resolve(id === 1 ? first : second) as never);
-    const { rerender } = render(<TopologyGraph snapId={1} />);
-    const distLabel = await screen.findByText("dist");
-    fireEvent.click(distLabel.closest("g")!);
-    await screen.findByTestId("topology-failure-impact");
-
-    rerender(<TopologyGraph snapId={2} />);
-    const fresh = await screen.findByText("fresh");
-    expect(screen.queryByTestId("topology-failure-impact")).toBeNull();
-    expect(fresh.closest("g")).toHaveStyle({ opacity: "1" });
+  it("clears the old device result when the snapshot changes", async () => {
+    ownerMock(topologyFixture(), deviceWith(published(17)));
+    const { rerender } = render(<TopologyGraph snapId={1} />); await selectDevice();
+    ownerMock(topologyFixture(2)); rerender(<TopologyGraph snapId={2} />);
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "If synthetic-edge-a fails" })).toBeNull());
+    expect(screen.queryByText("17")).toBeNull();
   });
 });
