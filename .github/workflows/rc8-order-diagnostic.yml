@@ -1,0 +1,90 @@
+name: RC8 order and added-time diagnostic
+on:
+  push:
+    branches: [codex/rc8-order-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  order:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+      ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Start bounded diagnostic clock
+        shell: bash
+        run: echo "ATLAS_DIAGNOSTIC_DEADLINE=$(( $(date +%s) + 6900 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12.15"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.19.0"
+      - run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt && python -m pip install graphifyy==0.9.51
+        working-directory: subject
+      - run: npm ci
+        working-directory: subject/atlas-scope
+      - name: Exact-source default-order prefix bisection
+        run: >-
+          python control/.github/diagnostics/rc8_order_probe.py --subject subject
+          --output "$RUNNER_TEMP/order" --source 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode order
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rc8-order-${{ github.sha }}
+          path: ${{ runner.temp }}/order
+          if-no-files-found: error
+  added-time:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [8c4b87d8bc149a30fcd05f5efcd123856a2778e6, c2de3bf8005912c29c052dcedaa71b0acc3ca9f0]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Start bounded diagnostic clock
+        shell: bash
+        run: echo "ATLAS_DIAGNOSTIC_DEADLINE=$(( $(date +%s) + 6900 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.source }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12.10"
+      - run: python -m pip install --upgrade pip==26.2.1; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; python -m pip install -r requirements-dev.txt
+        working-directory: subject
+      - name: Measure changed/new test modules with full durations
+        shell: bash
+        run: >-
+          python control/.github/diagnostics/rc8_order_probe.py --subject subject
+          --output "$RUNNER_TEMP/cost" --source ${{ matrix.source }}
+          --baseline c2de3bf8005912c29c052dcedaa71b0acc3ca9f0 --mode cost
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rc8-added-time-${{ matrix.source }}-${{ github.sha }}
+          path: ${{ runner.temp }}/cost
+          if-no-files-found: error
