@@ -75,7 +75,8 @@ def test_an_exact_cover_executed_without_failure_is_accepted(tmp_path, capsys):
     assert _main(full, root) == 0
     out = capsys.readouterr().out
     assert "5 collected node ids = 2 + 3 across 2 disjoint shard(s)" in out
-    assert "every shard executed its whole selection without failure" in out
+    assert ("every shard completed its whole selection without failure "
+            "(passed, or skipped/xfailed as pytest reports them)") in out
 
 
 # -- the selection cover ----------------------------------------------------------------------------

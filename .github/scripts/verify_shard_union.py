@@ -226,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     sizes = " + ".join(str(len(shard.selected)) for shard in shards)
     print(f"shard union verified: {len(full)} collected node ids = {sizes} across {len(shards)} disjoint "
-          "shard(s); every shard executed its whole selection without failure")
+          "shard(s); every shard completed its whole selection without failure "
+          "(passed, or skipped/xfailed as pytest reports them)")
     return 0
 
 
