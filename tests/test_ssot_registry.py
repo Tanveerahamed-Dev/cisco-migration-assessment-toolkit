@@ -423,9 +423,11 @@ def test_every_ci_leg_that_runs_a_history_needing_test_fetches_the_full_history(
     assert {"tests/test_ssot_registry.py", "tests/test_atlas_r2_authority_decision_binding.py",
             "tests/test_atlas_r2_authority_candidate.py"} <= history_tests, sorted(history_tests)
     legs = _workflow_legs_collecting(history_tests)
-    # not vacuous: every known default-suite leg is found, across five workflow files
+    # not vacuous: every known default-suite leg is found, across five workflow files -- including
+    # the portable gate's Python shards and the required job's full --collect-only
     assert {"ci.yml:test", "ci.yml:coverage", "main-selfhosted.yml:suite", "portable-release.yml:gate",
-            "release.yml:release", "release-selfhosted.yml:release"} <= set(legs), sorted(legs)
+            "portable-release.yml:gate_shard", "release.yml:release",
+            "release-selfhosted.yml:release"} <= set(legs), sorted(legs)
     shallow = sorted(leg for leg, checkout in legs.items()
                      if checkout is None or str(checkout.get("fetch-depth")) != "0")
     assert not shallow, f"these legs run a history-needing test on a shallow (or no) checkout: {shallow}"
@@ -441,6 +443,16 @@ def test_the_history_leg_reader_recognises_every_way_a_step_collects_the_suite()
             ("python -m pytest --cov cisco_toolkit -n 4", True),
             ("python -m pytest tests/test_ssot_registry.py::test_x", True), ("pytest tests", True),
             ("python -m pytest \\\n  tests -q", True),
+            # the full gate's shard and evidence options take a value: neither a spec nor an evidence
+            # path is a collected path
+            ("python -m pytest -q -p no:cacheprovider --durations=40 --atlas-shard $env:ATLAS_SHARD_SPEC "
+             "--atlas-shard-manifest $env:ATLAS_SHARD_SELECTED --atlas-shard-executed $env:ATLAS_SHARD_EXECUTED",
+             True),
+            ("python -m pytest -q --atlas-shard 1/2 --atlas-shard-manifest shard-1.txt", True),
+            ("python -m pytest -q -p no:cacheprovider --collect-only -q --atlas-shard-manifest x", True),
+            ("python -m pytest --atlas-shard-executed tests/x.txt", True),
+            ("python -m pytest --atlas-shard 0/2 webapp/tests", False),
+            ("python -m pytest --atlas-shard-executed tests/x.txt webapp/tests", False),
             ("python -m pytest webapp/tests -q", False), ("python -m pytest master-reference/tests", False),
             ("python -m pytest tests/test_other.py", False), ("python -m pip install pytest-xdist", False)]:
         collected = any(_collects(paths, "tests/test_ssot_registry.py")
