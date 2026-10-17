@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ COLLECTION_CASES = {
        (_PR_SOURCE, _PR_TREE, (name,), 20137 - count)
        for name, count in zip(DIRECT_MODULES, _DIRECT_NODE_COUNTS)},
 }
+_PYSPY_WHEEL_SHA256 = "6a80ec05eb8a6883863a367c6a4d4f2d57de68466f7956b6367d4edd5c61bb29"
 _current_node = None
 _gc_started = None
 _duration_stream = None
@@ -142,7 +144,12 @@ def main() -> int:
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     parser.add_argument("--collection-case", choices=tuple(COLLECTION_CASES), default="pr-full")
+    parser.add_argument("--profile", choices=("none", "native"), default="none")
+    parser.add_argument("--profiler-binary", type=Path)
+    parser.add_argument("--profiler-receipt", type=Path)
     args = parser.parse_args()
+    if args.profile != "none" and (args.mode != "collection-cut" or args.collection_case != "pr-full"):
+        raise ValueError("external sampling is confined to the fixed no-exclusion PR collection control")
     subject, output = args.subject.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=subject, text=True).strip()
@@ -163,6 +170,7 @@ def main() -> int:
         if plain:
             env.pop("ATLAS_ORDER_CASE", None)
             env.pop("ATLAS_ORDER_SELECTION", None)
+            env.pop("PROFILE_MODE", None)  # Parent-only matrix selector, never a child input.
         if minimal:
             env = {**environment, "ATLAS_MINIMAL_REPORT": str(case / "target-result.json"),
                    "ATLAS_MINIMAL_CUT_BEFORE": args.cut_before}
@@ -186,10 +194,51 @@ def main() -> int:
         remaining = deadline - started
         if remaining <= 0:
             raise TimeoutError("diagnostic job budget exhausted before next prefix")
-        with (case / "pytest.log").open("w", encoding="utf-8") as log:
+        profiler = None
+        profile_meta = {"mode": args.profile, "acceptance_evidence": False}
+        if args.profiler_binary or args.profiler_receipt:
+            if not args.profiler_binary or not args.profiler_receipt:
+                raise ValueError("external sampler requires both pinned binary and its extraction receipt")
+            receipt = json.loads(args.profiler_receipt.read_text(encoding="utf-8"))
+            binary_hash = hashlib.sha256(args.profiler_binary.read_bytes()).hexdigest()
+            if receipt["wheel_sha256"] != _PYSPY_WHEEL_SHA256 or receipt["binary_sha256"] != binary_hash:
+                raise RuntimeError("external sampler is not bound to the pinned wheel extraction")
+            profile_meta.update({"tool": receipt, "binary_sha256": binary_hash})
+            (case / "profiler.json").write_text(json.dumps(profile_meta, indent=2), encoding="utf-8")
+            version = subprocess.check_output([str(args.profiler_binary), "--version"], text=True, timeout=10).strip()
+            if version != "py-spy 0.4.1":
+                raise RuntimeError("external sampler version differs from the reviewed tool")
+            profile_meta.update({"tool": receipt, "version": version, "binary_sha256": binary_hash})
+        elif args.profile != "none":
+            raise ValueError("native sampler requires a pinned external tool")
+        with (case / "pytest.log").open("w", encoding="utf-8") as log, (
+                case / "profiler.log").open("w", encoding="utf-8") as profiler_log:
             child = subprocess.Popen(command, cwd=subject, env=env, stdout=log, stderr=subprocess.STDOUT)
+            if args.profile == "native" and deadline - time.monotonic() >= 20:
+                # Native unwinding PAUSES the target; --nonblocking is incompatible.
+                # A root-owned timeout bounds this read-only helper and its group,
+                # including a five-second hard-kill reserve. Never change ptrace_scope.
+                duration = max(1, min(690, int(deadline - time.monotonic()) - 10))
+                profiler_command = [
+                    "sudo", "-n", "timeout", "--signal=INT", "--kill-after=5s", str(duration + 5) + "s",
+                    str(args.profiler_binary), "record", "--pid", str(child.pid),
+                    "--format", "speedscope", "--rate", "50", "--native", "--duration", str(duration),
+                    "--output", str(case / "profile.speedscope.json"),
+                ]
+                profile_meta.update({
+                    "command": profiler_command, "target_pid": child.pid, "rate_hz": 50,
+                    "duration_cap_seconds": duration, "outer_cap_seconds": duration + 10,
+                    "started_monotonic": time.monotonic(),
+                    "limits": "Native sampling pauses the target with no verified per-sample overhead ceiling. No locals/subprocess tracing. Sampling, attachment, symbol or permission errors are missing evidence, never acceptance.",
+                })
+                try:
+                    profiler = subprocess.Popen(profiler_command, stdout=profiler_log, stderr=subprocess.STDOUT)
+                except OSError as error:
+                    profile_meta["launch_error_class"] = type(error).__name__
+            elif args.profile == "native":
+                profile_meta["launch_status"] = "insufficient_remaining_diagnostic_budget"
             try:
-                code = child.wait(timeout=remaining)
+                code = child.wait(timeout=max(0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 child.terminate()
                 try:
@@ -198,6 +247,21 @@ def main() -> int:
                     child.kill()
                     child.wait()
                 code = 124
+            (case / "child-exit.json").write_text(json.dumps({"exit_code": code}), encoding="utf-8")
+            if profiler is not None:
+                # Normal PID exit ends py-spy. The separate timeout must also reap
+                # a stuck sampler; keep any failure explicit rather than retrying.
+                try:
+                    profile_meta["exit_code"] = profiler.wait(timeout=max(1, deadline - time.monotonic()))
+                    profile_meta["helper_reaped"] = True
+                except subprocess.TimeoutExpired:
+                    profile_meta["helper_reaped"] = False
+                    (case / "profiler.json").write_text(json.dumps(profile_meta, indent=2), encoding="utf-8")
+                    raise RuntimeError("bounded external sampler did not reap before the diagnostic deadline")
+            profile = case / "profile.speedscope.json"
+            profile_meta.update({"profile_present": profile.is_file(),
+                                 "profile_bytes": profile.stat().st_size if profile.is_file() else 0})
+            (case / "profiler.json").write_text(json.dumps(profile_meta, indent=2), encoding="utf-8")
         if args.mode in ("direct", "collected", "collection-cut"):
             (case / "processes-after.txt").write_text(subprocess.check_output(
                 ["ps", "-eo", "pid,ppid,etimes,comm"], text=True), encoding="utf-8")

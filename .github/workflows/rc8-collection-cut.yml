@@ -1,7 +1,5 @@
 name: RC8 collection source comparison
 on:
-  push:
-    branches: [codex/rc8-order-diagnostic]
   workflow_dispatch:
     inputs:
       cases_json:
