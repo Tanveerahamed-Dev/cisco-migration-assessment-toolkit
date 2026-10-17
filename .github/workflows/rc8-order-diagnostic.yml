@@ -13,9 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         source: [8c4b87d8bc149a30fcd05f5efcd123856a2778e6, c2de3bf8005912c29c052dcedaa71b0acc3ca9f0]
-    env:
-      ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
-      ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
     steps:
       - name: Start bounded diagnostic clock
         shell: bash
@@ -33,14 +30,43 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12.15"
+      - run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+        working-directory: subject
+      # Match the production Python-3.12 leg's preceding fresh-process commands.
+      # Their bytecode/filesystem state is part of the full-suite precondition.
+      - name: Original preflight commands before the full suite
+        working-directory: subject
+        run: |
+          python -m pytest tests/test_scope_compile_handoff.py
+          python -m pytest tests/test_client_artifact_census.py
+          python -m pytest tests/test_knowledge_export.py tests/test_knowledge_export_workflow.py
+          python -m pytest tests/test_transition_runtime_discovery.py -k debug_helper_receive
+          python -u -m pytest -vv tests/test_bound_snapshot_source.py
+      - run: python -m pip install graphifyy==0.9.51
+        working-directory: subject
+      - run: python -I -B tools/graphify_guarded.py --probe
+        working-directory: subject
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.19.0"
-      - run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt && python -m pip install graphifyy==0.9.51
-        working-directory: subject
       - run: npm ci
         working-directory: subject/atlas-scope
+      - name: Original G14 focused process before the full suite
+        working-directory: subject
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+        run: >-
+          python -m pytest tests/test_vlan_carriage.py tests/test_ui_projection_vlan_carriage.py
+          tests/test_vlan_carriage_budget.py tests/test_operator_evidence_contract.py
+          tests/test_bound_snapshot_source.py webapp/tests/test_ui_projection_api.py
+          webapp/tests/test_carriage_ingestion.py webapp/tests/test_snapshot_raw.py
+          webapp/tests/test_carriage_lifecycle.py
+          webapp/tests/test_atlas_unplug_safety.py::test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot
       - name: Uninstrumented original full default suite
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
         run: >-
           python control/.github/diagnostics/rc8_order_probe.py --subject subject
           --output "$RUNNER_TEMP/plain" --source ${{ matrix.source }}
