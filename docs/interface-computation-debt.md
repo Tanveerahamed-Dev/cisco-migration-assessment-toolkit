@@ -686,3 +686,38 @@ extensions continue to refuse. A real mini-repository compiler control checks
 both the module and declaration records end-to-end. No census-depth deferral,
 privacy bypass, gate, budget or timeout change is introduced. Downstream
 capacity walls from the failed compile remain unmeasured, not accepted.
+
+
+## Full source/frontend timeout evidence and immutable-read correction
+
+Head `f70dbc23`, portable run `38988920400`, full source/frontend job
+`117266732235`, is **cancelled at the unchanged 120-minute limit**. The complete
+Python command returned successfully; all **537 frontend tests / 38 files** then
+passed. The job entered the production build and was cancelled before that build
+and its final Git comparison could finish. This is cancellation/timeout evidence,
+not a passed whole gate or a test assertion failure. No narrower run replaces it.
+The independent full Windows matrix job `117266989522` passed **19,965 tests**;
+its active debt test took **115.82 s** and its initial role migration **25.23 s**.
+The cancelled whole-gate migration took **33.79 s**. Those are scoped hosted
+observations, not a recovered gate or a claimed runtime saving.
+
+The new guard had launched a Git process for each immutable source/role file and
+for each of the initial migration's byte comparisons. It now reads the complete
+Git name/type/object census once and fetches selected immutable blobs through a
+strict `cat-file --batch` exchange. Unrelated large data/graph blobs are not
+materialized. Object identity, type, declared size, separators and trailing bytes
+must match; selected symlinks/gitlinks refuse. No file is extracted, imported,
+evaluated, content-normalized or cached from mutable worktree state. Current
+workspace inputs remain live and uncached. Hosted controls compare batch bytes
+with independent Git reads over Unicode/space paths and shared blobs, prove a
+dirty worktree cannot alter an immutable result, and refuse malformed objects,
+framing and symlinks. The same initial role/value/source assertions remain.
+
+This is an implementation efficiency correction, not a timeout change or waiver.
+The complete original Python/frontend/build/source-comparison commands and the
+120-minute job limit remain literal. The original Node parser limit stays 90 s.
+Fresh exact-head hosted evidence must measure the effect and pass the entire
+gate; no local timing, custody controller or runtime probe is performed. The
+board-only main update `d3c79ae0` is integrated with this substantive correction,
+and main's `docs/NOW.md` restored in that same push, not as a standalone board
+push while checks run. No application source or frozen/golden/sample byte changes.

@@ -907,18 +907,19 @@ def test_initial_companion_migration_preserves_roles_and_frozen_application_byte
     foundation = "5f1e067c2cb57866b380ddc9426f7ee4e0f9f2fc"
 
     def declarations(revision):
-        names = guard.git("ls-tree", "-r", "-z", "--name-only", revision).decode("utf-8").split("\0")
-        roles = module_roles(names, lambda path: guard.git("show", revision + ":" + path).decode("utf-8"))
-        return set(names), roles
+        names, snapshot = guard.revision_sources(revision)
+        roles = module_roles(names, lambda path: snapshot[path].decode("utf-8"))
+        return set(names), roles, snapshot
 
-    _legacy_names, legacy_roles = declarations(legacy)
-    migrated_names, migrated_roles = declarations(guard.ROLE_ORIGIN)
+    _legacy_names, legacy_roles, _legacy_source = declarations(legacy)
+    migrated_names, migrated_roles, migrated_source = declarations(guard.ROLE_ORIGIN)
+    _foundation_names, foundation_source = guard.revision_sources(foundation)
     assert migrated_roles == legacy_roles
     assert all(path + ".atlas-role" in migrated_names for path in migrated_roles)
-    # This binds the immutable initial migration, not future application changes.
-    # It does not import an engine or regenerate any frozen evidence.
+    # The same exact byte assertion over immutable objects, without hundreds of
+    # process launches. It does not freeze later application changes.
     for path in migrated_roles:
-        assert guard.git("cat-file", "blob", guard.ROLE_ORIGIN + ":" + path) == guard.git("cat-file", "blob", foundation + ":" + path), path
+        assert migrated_source[path] == foundation_source[path], path
 
 
 
@@ -957,3 +958,56 @@ def test_v2_register_cannot_be_reintroduced_after_the_main_refresh_cutoff(tmp_pa
     git("commit", "-m", "Attempt to hide the reset")
     with pytest.raises(subprocess.CalledProcessError):
         guard.check()
+
+
+
+def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blobs(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Snapshot Test",
+            "-c", "user.email=snapshot@example.invalid", "-c", "commit.gpgsign=false",
+            "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True).stdout
+
+    git("init", "--initial-branch=main")
+    files = {"client/a with space.ts": b"export const count = 2;\n",
+             "client/shared.ts": b"export const count = 2;\n",
+             "cisco_toolkit/é.py": "value = 'é'\n".encode(),
+             "cisco_toolkit/é.py.atlas-role": b'{"role":"engine"}\n',
+             "large-unrelated.json": b'{"not_a_source_input":true}\n'}
+    for path, data in files.items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    git("add", ".")
+    git("commit", "-m", "Source snapshot")
+    revision = git("rev-parse", "HEAD").decode().strip()
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    names, snapshot = guard.revision_sources(revision)
+    assert set(names) == set(files)
+    assert "large-unrelated.json" not in snapshot
+    for path in snapshot:
+        assert snapshot[path] == git("cat-file", "blob", revision + ":" + path)
+    # Immutable bytes never follow a dirty worktree or mutable timestamp cache.
+    (tmp_path / "client/shared.ts").write_bytes(b"different worktree source\n")
+    assert guard.revision_sources(revision)[1] == snapshot
+
+
+@pytest.mark.parametrize("batch", [
+    b"missing\n", b"b" * 40 + b" blob 1\nx\n", b"a" * 40 + b" tree 1\nx\n",
+    b"a" * 40 + b" blob -1\nx\n", b"a" * 40 + b" blob 8\nx\n",
+    b"a" * 40 + b" blob 1\nx!", b"a" * 40 + b" blob 1\nx\nextra",
+])
+def test_immutable_source_batch_rejects_object_and_framing_tampering(batch, monkeypatch):
+    def git(*args, input=None):
+        if args[0] == "ls-tree":
+            return b"100644 blob " + b"a" * 40 + b"\tclient/main.ts\0"
+        return batch
+    monkeypatch.setattr(guard, "git", git)
+    with pytest.raises(ValueError, match="immutable source batch"):
+        guard.revision_sources("a" * 40)
+
+
+def test_immutable_source_batch_does_not_follow_a_source_symlink(monkeypatch):
+    monkeypatch.setattr(guard, "git", lambda *args, **kwargs: b"120000 blob " + b"a" * 40 + b"\tclient/main.ts\0")
+    with pytest.raises(ValueError, match="nonregular"):
+        guard.revision_sources("a" * 40)

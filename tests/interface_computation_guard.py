@@ -37,8 +37,55 @@ VERDICT_NAME = re.compile(r"^(?:can|could|should|is|has|may|must|allow|deny|perm
 VERDICT_RETURNS = {value.casefold().replace("_", "-") for value in (*VERDICTS, "yes", "no", "true", "false", "pass", "fail", "approved", "rejected", "blocked", "allowed", "valid", "invalid")}
 
 
-def git(*args):
-    return subprocess.check_output(["git", "-C", str(ROOT), *args])
+def git(*args, input=None):
+    return subprocess.check_output(["git", "-C", str(ROOT), *args], input=input)
+
+
+def revision_sources(revision):
+    """Read immutable source blobs in one strict cat-file batch, never per-path processes.
+
+    Names still come from the complete Git tree. Only executable/parser inputs
+    and module declarations are materialized; large unrelated graph/data blobs
+    are not loaded. Git object identity/type/size and batch framing must match.
+    Nothing is extracted to disk, imported, evaluated or content-normalized.
+    """
+    names, selected = [], {}
+    for row in git("ls-tree", "-r", "-z", "--full-tree", revision).split(b"\0"):
+        if not row:
+            continue
+        metadata, raw_path = row.split(b"\t", 1)
+        mode, kind, oid = metadata.split()
+        path = raw_path.decode("utf-8")
+        names.append(path)
+        wanted = (path.endswith((".py", ".atlas-role"))
+                  or path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
+                  or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path
+                                                or path.endswith(("package.json", "package-lock.json"))))
+        if wanted:
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
+                raise ValueError("Refused nonregular immutable source: " + path)
+            selected[path] = oid
+    if not selected:
+        return sorted(names), {}
+    objects = sorted(set(selected.values()))
+    batch = git("cat-file", "--batch", input=b"\n".join(objects) + b"\n")
+    payloads, cursor = {}, 0
+    for oid in objects:
+        boundary = batch.find(b"\n", cursor)
+        if boundary < 0:
+            raise ValueError("Truncated immutable source batch header")
+        header = batch[cursor:boundary].split()
+        if len(header) != 3 or header[0] != oid or header[1] != b"blob" or not header[2].isdigit():
+            raise ValueError("Unexpected immutable source batch object")
+        size = int(header[2])
+        start, end = boundary + 1, boundary + 1 + size
+        if end >= len(batch) or batch[end:end + 1] != b"\n":
+            raise ValueError("Truncated immutable source batch payload")
+        payloads[oid] = batch[start:end]
+        cursor = end + 1
+    if cursor != len(batch):
+        raise ValueError("Trailing immutable source batch bytes")
+    return sorted(names), {path: payloads[oid] for path, oid in selected.items()}
 
 
 def node_reply(payload):
@@ -69,14 +116,19 @@ class SourceMap(dict):
 
 
 def source_map(revision=None):
-    names = (git("ls-tree", "-r", "-z", "--name-only", revision) if revision else
-             git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).decode("utf-8").split("\0")
-    read = (lambda p: git("show", revision + ":" + p).decode("utf-8")) if revision else lambda p: (ROOT / p).read_text(encoding="utf-8")
+    if revision:
+        names, snapshot = revision_sources(revision)
+        read = lambda path: snapshot[path].decode("utf-8")  # noqa: E731 - a frozen snapshot accessor
+    else:
+        names = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").decode("utf-8").split("\0")
+        read = lambda path: (ROOT / path).read_text(encoding="utf-8")  # noqa: E731 - live source remains uncached
     names = sorted(set(names) - {""})
-    # The old fact ceiling predates role declarations. Its reviewed role basis is
-    # immutable Git source, never inferred from future module names or current roles.
-    role_read = (lambda p: git("show", ROLE_ORIGIN + ":" + p).decode("utf-8")) if revision and ROLE_ORIGIN else None
-    role_names = (git("ls-tree", "-r", "-z", "--name-only", ROLE_ORIGIN).decode("utf-8").split("\0")) if role_read else None
+    # The old fact ceiling predates role declarations. The independently pinned
+    # role snapshot is immutable Git source, never current workspace guesses.
+    role_names, role_read = None, None
+    if revision and ROLE_ORIGIN:
+        role_names, role_snapshot = revision_sources(ROLE_ORIGIN)
+        role_read = lambda path: role_snapshot[path].decode("utf-8")  # noqa: E731
     selected = python_closure(names, read, role_read, role_names)
     candidates = {path: read(path) for path in names if path.lower().endswith((*SCRIPT_SUFFIXES, ".html"))
                   or path.endswith(".json") and ("tsconfig" in path or "jsconfig" in path or path.endswith(("package.json", "package-lock.json")))}
