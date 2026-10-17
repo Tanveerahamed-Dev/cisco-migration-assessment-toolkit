@@ -1,4 +1,4 @@
-name: RC8 raw AST disposal counterfactual
+name: RC8 raw AST and dependency factor control
 on:
   push:
     branches: [codex/rc8-order-diagnostic]
@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         case: [original, both]
+        scala_version: ["0.26.2", "0.26.3"]
     steps:
       - name: Start bounded diagnostic clock
         shell: bash
@@ -69,6 +70,23 @@ jobs:
           source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
           bounded python -m pip install graphifyy==0.9.51
         working-directory: subject
+      - name: Select only the declared dependency version factor
+        working-directory: subject
+        env:
+          SCALA_VERSION: ${{ matrix.scala_version }}
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pip install --no-deps --only-binary=:all: --no-cache-dir --force-reinstall --report "$RUNNER_TEMP/rc8-scala-install.json" "tree-sitter-scala==$SCALA_VERSION"
+      - name: Guard all dependency versions and bind available installed bytes
+        env:
+          SCALA_VERSION: ${{ matrix.scala_version }}
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B control/.github/diagnostics/rc8_dependency_factor.py --subject subject \
+            --manifest control/.github/diagnostics/rc8_dependency_factor.json \
+            --source ${{ steps.subject.outputs.source }} --version "$SCALA_VERSION" \
+            --pip-report "$RUNNER_TEMP/rc8-scala-install.json" \
+            --output "$RUNNER_TEMP/ast-counterfactual/dependencies.json"
       - run: |
           source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
           bounded python -I -B tools/graphify_guarded.py --probe
@@ -106,6 +124,6 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: rc8-ast-raw-${{ matrix.case }}-${{ github.run_id }}-${{ github.sha }}
+          name: rc8-ast-factor-${{ matrix.case }}-scala-${{ matrix.scala_version }}-${{ github.run_id }}-${{ github.sha }}
           path: ${{ runner.temp }}/ast-counterfactual
           if-no-files-found: error
