@@ -282,3 +282,62 @@ push; all15 required contexts and every applicable whole workflow must pass on t
 The earlier B4f actual-document/SPA reviews remain source-edit DATA, not integrated-source
 readiness or a replacement for the final source-bound rebuild/receipt. No existing test, verifier,
 budget, timeout, golden/sample byte, product/schema version or external gate is relaxed.
+
+
+## Supervisor NRFU P1 correction after the blocked independent review
+
+The independent review of 4d140ea9 was BLOCKED: the saved-plan NRFU document claimed
+coverage without rendering its retained acceptance instructions, and the service summary
+counted service/category pairs while its test rows distinguished ports. That old head's
+hosted success does not close these findings.
+
+The existing engine export owner `cisco_toolkit.nrfu_export.nrfu_document_view` now owns
+the document row lists, coverage and both summaries. The interface retires its duplicate
+row/coverage/count computations and only renders the returned view. The separate four-phase
+command pack and snapshot pipeline remain unchanged. Every persisted design NRFU and EVPN
+acceptance entry is rendered without recomputing the selected design, including description,
+setup, pass criteria, devices, phase, priority and citation when retained. Missing fields are
+explicit; only complete rendered instructions with a device scope can support the historical
+`Tested` coverage label, which is explicitly disclosed as unexecuted test coverage. Execution
+results remain blank. Both summaries include the exact baseline, design and EVPN case lists.
+
+Hosted tests now assert actual saved setup/pass-criteria text and EVPN acceptance, incomplete
+field negatives, all 45 retained design cases beyond the traceability display cap, forbidden
+acceptance recomputation, input immutability, and the same-service/category two-port
+counterexample against native DOCX rows and both summaries. Existing malformed-input,
+source-custody, blocker, positive coverage and baseline-output controls remain in force.
+No runtime tests ran locally. Fresh final-head hosted validation and the same independent
+reviewer are required; this record is implementation scope, not validation or review approval.
+
+Current main was merged locally (already an ancestor at d73d33e2), and its exact docs/NOW.md
+was restored in this push under the supervisor-only board rule. Feature status is recorded
+in this PR instead. The cutover Go/No-Go duplication remains deferred to RC8-P1-H PR-2;
+cutover.py is untouched. PR667 remains parked. No gate, budget, timeout, product/schema
+version, golden/sample byte, external acceptance, release or publication authority changes.
+
+
+## Hosted carrier-ownership counterexample and owner correction
+
+Head12240195733ff0259ffdc32ada4b89505557c3a2 failed Python3.13 in CI38914837890,
+job117019536457, step `Run the complete default suite`. The unchanged
+`test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_proof`
+rejects nrfu_export's new collection-completeness `not_collected` key read because
+that module is classified as a protocol-receipt carrier. The actual field was the
+assessment collection census, not a protocol receipt row; adding its interpretation
+inside that carrier crossed the enforced module boundary. The complete143,215-byte
+log has SHA-25672b87a11aeb14a4c5473155462d98115c44951102cb0762d8bf0c5164c29ac44
+and reports1failed/19,614passed/164skipped/3xfailed/26subtests in41m08s.
+The full application workflow and frozen saved-plan receipt passed on that head,
+but those narrower positives do not close the failed full-suite gate.
+
+The correction places retained design/EVPN acceptance projection, coverage and
+assessment scope limits together in the existing design acceptance owner,
+`design_advisor.design_nrfu_document_view`. The document model in nrfu_export
+composes that owner's projection with its three existing baseline row lists and
+owns both exact-list summaries. Its command-pack and protocol-carrying functions
+remain unchanged. This follows the already permitted deliverables-to-design edge;
+no new module, receipt vocabulary, test exception, scanner change or carrier
+reclassification is introduced. The actual P1 body/count/negative controls remain
+unchanged. Local validation is static only; fresh final-head hosted gates and the
+same independent re-review remain required. Earlier failures and any superseded
+running jobs remain historical evidence, not new-head validation.

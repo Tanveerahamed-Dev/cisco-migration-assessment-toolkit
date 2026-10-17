@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type Request as PlaywrightRequest, type TestInfo } from "@playwright/test";
 import type { SavedPlanRecord, SavedPlanState } from "../src/api";
 import { REAL_ORIGIN } from "./paths";
 
@@ -110,58 +110,231 @@ async function expectSavedView(page: Page, plan: SavedPlanRecord): Promise<void>
   await expect(page.getByRole("button", { name: "Download NRFU", exact: true })).toBeEnabled();
 }
 
+type OriginalHttpCapture = {
+  requestUrl: string;
+  method: string;
+  responseUrl: string;
+  status: number;
+  headers: Record<string, string>;
+  bytes: number[];
+  matchingRequests: number;
+  originalFetchRestored: boolean;
+};
+
+type OriginalHttpCaptureState = {
+  originalFetch: typeof window.fetch;
+  wrappedFetch: typeof window.fetch;
+  pending: Promise<OriginalHttpCapture>;
+  matchingRequests: number;
+  nativePromise?: Promise<Response>;
+  nativeResponse?: Response;
+};
+
+declare global {
+  interface Window {
+    __atlasOriginalHttpCapture?: OriginalHttpCaptureState;
+  }
+}
+
+/** Observe the original browser HTTP response, without CDP's optional retained-body cache. */
+async function beginOriginalHttpCapture(page: Page, pathname: string): Promise<void> {
+  await page.evaluate((targetPath) => {
+    if (window.__atlasOriginalHttpCapture) throw new Error("An earlier HTTP capture was not consumed");
+    const originalFetch = window.fetch;
+    let complete!: (value: OriginalHttpCapture) => void;
+    let fail!: (reason: unknown) => void;
+    const pending = new Promise<OriginalHttpCapture>((resolve, reject) => { complete = resolve; fail = reject; });
+    // The unchanged download assertions always await this promise; a rejected observation is never a fallback.
+    void pending.catch(() => undefined);
+    const state: OriginalHttpCaptureState = {
+      originalFetch, wrappedFetch: originalFetch, pending, matchingRequests: 0,
+    };
+    const restore = (): void => {
+      if (window.fetch !== state.wrappedFetch && window.fetch !== originalFetch) {
+        throw new Error("The original fetch observer was replaced during capture");
+      }
+      window.fetch = originalFetch;
+      if (window.fetch !== originalFetch) throw new Error("The original fetch was not restored");
+    };
+    const refuse = (error: unknown): void => {
+      try { restore(); } catch (restoreError) {
+        fail(new AggregateError([error, restoreError], "HTTP capture and restoration failed"));
+        return;
+      }
+      fail(error);
+    };
+    const wrappedFetch = new Proxy(originalFetch, {
+      apply(target, thisArg, args) {
+        // Forward exactly once, preserving this/arguments and the SAME native promise/Response.
+        const nativePromise = Reflect.apply(target, thisArg, args) as Promise<Response>;
+        try {
+          const input = args[0] as RequestInfo | URL;
+          const options = args[1] as RequestInit | undefined;
+          const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+          const method = (options?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+          if (method === "GET" && requestUrl.origin === window.location.origin && requestUrl.pathname === targetPath) {
+            state.matchingRequests++;
+            state.nativePromise = nativePromise;
+            if (state.matchingRequests !== 1) {
+              refuse(new Error("The download issued more than one matching HTTP request"));
+              return nativePromise;
+            }
+            void nativePromise.then(async (response) => {
+              state.nativeResponse = response;
+              // This reaction is registered before returning the native promise to the UI consumer.
+              // Clone its real response; never replay the request, synthesize bytes, or replace the response.
+              const reader = response.clone().body?.getReader();
+              if (!reader) throw new Error("The original HTTP response has no readable body");
+              const chunks: Uint8Array[] = [];
+              let total = 0;
+              try {
+                for (;;) {
+                  const part = await reader.read();
+                  if (part.done) break;
+                  total += part.value.byteLength;
+                  if (total > 32 * 1024 * 1024) {
+                    void reader.cancel().catch(() => undefined);
+                    throw new Error("The original HTTP body exceeds the existing 32 MiB document limit");
+                  }
+                  chunks.push(part.value);
+                }
+              } finally { reader.releaseLock(); }
+              const bytes = new Uint8Array(total);
+              let offset = 0;
+              for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+              const headers: Record<string, string> = {};
+              response.headers.forEach((value, name) => { headers[name] = value; });
+              restore();
+              complete({ requestUrl: requestUrl.href, method, responseUrl: response.url,
+                status: response.status, headers, bytes: Array.from(bytes),
+                matchingRequests: state.matchingRequests, originalFetchRestored: window.fetch === originalFetch });
+            }, refuse).catch(refuse);
+          }
+        } catch (error) { refuse(error); }
+        return nativePromise;
+      },
+    });
+    state.wrappedFetch = wrappedFetch;
+    window.__atlasOriginalHttpCapture = state;
+    window.fetch = wrappedFetch;
+  }, pathname);
+}
+
+async function takeOriginalHttpCapture(page: Page): Promise<OriginalHttpCapture> {
+  return page.evaluate(async () => {
+    const state = window.__atlasOriginalHttpCapture;
+    if (!state) throw new Error("The original HTTP capture is missing");
+    const captured = await state.pending;
+    if (window.fetch !== state.originalFetch) throw new Error("The original fetch identity changed after capture");
+    delete window.__atlasOriginalHttpCapture;
+    return captured;
+  });
+}
+
 async function downloadDocument(page: Page, testInfo: TestInfo, snapshotId: number,
   plan: SavedPlanRecord, kind: "mop" | "nrfu"): Promise<Record<string, unknown>> {
-  const responsePromise = page.waitForResponse((response) => response.request().method() === "GET"
-    && new URL(response.url()).pathname === `/api/snapshots/${snapshotId}/plans/${plan.revision}/deliverable/${kind}`)
-    .then((response) => {
-      // Retain the original HTTP body as soon as its response arrives. Waiting until the native
-      // blob has been saved can outlive Chromium's response-body retention window.
-      const body = response.body();
-      void body.catch(() => undefined); // always awaited below; never substitute another request
-      return { response, body };
-    });
-  const downloadPromise = page.waitForEvent("download");
-  // An earlier HTTP assertion must remain the failure if no native download can follow it.
-  void responsePromise.catch(() => undefined);
-  void downloadPromise.catch(() => undefined);
-  await page.getByRole("button", { name: kind === "mop" ? "Download MOP" : "Download NRFU", exact: true }).click();
-  const { response, body } = await responsePromise;
-  expect(response.status()).toBe(200);
-  const headers = response.headers();
-  expect(headers["content-type"].split(";", 1)[0]).toBe(DOCX_MEDIA);
-  expect(headers["x-atlas-assessment-sha256"]).toBe(plan.assessment.sha256);
-  expect(headers["x-atlas-plan-revision"]).toBe(String(plan.revision));
-  expect(headers["x-atlas-plan-sha256"]).toBe(plan.sha256);
-  expect(headers["x-atlas-plan-selection"]).toBe(String(plan.selection_id));
-  expect(headers["x-atlas-plan-status"]).toBe("UNAPPROVED_DRAFT");
-  const query = new URL(response.url()).searchParams;
-  expect(query.get("plan_sha256")).toBe(plan.sha256);
-  expect(query.get("selection_id")).toBe(String(plan.selection_id));
-  const originalHttpBytes = await body;
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe(`Atlas-snapshot-${snapshotId}-plan-r${plan.revision}-${kind}.docx`);
-  const path = testInfo.outputPath(`${kind}-revision-${plan.revision}-selection-${plan.selection_id}.docx`);
-  await download.saveAs(path);
-  expect(await download.failure()).toBeNull();
-  const bytes = await readFile(path);
-  expect(hash(bytes), "The native blob download must equal the exact verified API response")
-    .toBe(hash(originalHttpBytes));
-  const xml = mainDocumentXml(bytes);
-  const visible = await page.evaluate(({ xml: content, namespace }) => {
-    const document = new DOMParser().parseFromString(content, "application/xml");
-    if (document.getElementsByTagName("parsererror").length || document.documentElement.localName !== "document"
-        || document.documentElement.namespaceURI !== namespace) throw new Error("Invalid main Word document XML");
-    return Array.from(document.getElementsByTagNameNS(namespace, "t")).map((item) => item.textContent || "").join(" ");
-  }, { xml, namespace: WORD_NAMESPACE });
-  for (const text of ["UNAPPROVED DRAFT", `Original assessment SHA-256: ${plan.assessment.sha256}`,
-    `Selected plan SHA-256: ${plan.sha256}`, `Revision ${plan.revision} · Selection ${plan.selection_id}`]) {
-    expect(visible, "The downloaded document must carry visible original-source and selected-plan identity").toContain(text);
+  const exportPath = `/api/snapshots/${snapshotId}/plans/${plan.revision}/deliverable/${kind}`;
+  const exportOrigin = new URL(page.url()).origin;
+  const exportRequests: string[] = [];
+  const observeExportRequest = (request: PlaywrightRequest) => {
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.origin === exportOrigin && url.pathname === exportPath) {
+      exportRequests.push(request.url());
+    }
+  };
+  // Keep observing after the native-fetch clone restores fetch, through save/hash/XML checks.
+  page.on("request", observeExportRequest);
+  try {
+    await beginOriginalHttpCapture(page, exportPath);
+    const responsePromise = page.waitForResponse((response) => response.request().method() === "GET"
+      && new URL(response.url()).pathname === exportPath);
+    const downloadPromise = page.waitForEvent("download");
+    // An earlier HTTP assertion must remain the failure if no native download can follow it.
+    void responsePromise.catch(() => undefined);
+    void downloadPromise.catch(() => undefined);
+    await page.getByRole("button", { name: kind === "mop" ? "Download MOP" : "Download NRFU", exact: true }).click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+    const headers = response.headers();
+    expect(headers["content-type"].split(";", 1)[0]).toBe(DOCX_MEDIA);
+    expect(headers["x-atlas-assessment-sha256"]).toBe(plan.assessment.sha256);
+    expect(headers["x-atlas-plan-revision"]).toBe(String(plan.revision));
+    expect(headers["x-atlas-plan-sha256"]).toBe(plan.sha256);
+    expect(headers["x-atlas-plan-selection"]).toBe(String(plan.selection_id));
+    expect(headers["x-atlas-plan-status"]).toBe("UNAPPROVED_DRAFT");
+    const query = new URL(response.url()).searchParams;
+    expect(query.get("plan_sha256")).toBe(plan.sha256);
+    expect(query.get("selection_id")).toBe(String(plan.selection_id));
+    const captured = await takeOriginalHttpCapture(page);
+    expect(captured.method).toBe("GET");
+    expect(captured.requestUrl).toBe(response.url());
+    expect(captured.responseUrl).toBe(response.url());
+    expect(captured.status).toBe(response.status());
+    expect(captured.matchingRequests).toBe(1);
+    expect(captured.originalFetchRestored).toBe(true);
+    for (const name of ["content-type", "x-atlas-assessment-sha256", "x-atlas-plan-revision",
+      "x-atlas-plan-sha256", "x-atlas-plan-selection", "x-atlas-plan-status"]) {
+      expect(captured.headers[name], "The original browser response must match the observed HTTP identity headers")
+        .toBe(headers[name]);
+    }
+    const originalHttpBytes = Buffer.from(captured.bytes);
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe(`Atlas-snapshot-${snapshotId}-plan-r${plan.revision}-${kind}.docx`);
+    const path = testInfo.outputPath(`${kind}-revision-${plan.revision}-selection-${plan.selection_id}.docx`);
+    await download.saveAs(path);
+    expect(await download.failure()).toBeNull();
+    const bytes = await readFile(path);
+    expect(hash(bytes), "The native blob download must equal the exact verified API response")
+      .toBe(hash(originalHttpBytes));
+    const xml = mainDocumentXml(bytes);
+    const visible = await page.evaluate(({ xml: content, namespace }) => {
+      const document = new DOMParser().parseFromString(content, "application/xml");
+      if (document.getElementsByTagName("parsererror").length || document.documentElement.localName !== "document"
+          || document.documentElement.namespaceURI !== namespace) throw new Error("Invalid main Word document XML");
+      return Array.from(document.getElementsByTagNameNS(namespace, "t")).map((item) => item.textContent || "").join(" ");
+    }, { xml, namespace: WORD_NAMESPACE });
+    for (const text of ["UNAPPROVED DRAFT", `Original assessment SHA-256: ${plan.assessment.sha256}`,
+      `Selected plan SHA-256: ${plan.sha256}`, `Revision ${plan.revision} · Selection ${plan.selection_id}`]) {
+      expect(visible, "The downloaded document must carry visible original-source and selected-plan identity").toContain(text);
+    }
+    expect(exportRequests, "The complete native download must issue one exact export GET")
+      .toEqual([response.url()]);
+    return { kind, revision: plan.revision, selection_id: plan.selection_id, plan_sha256: plan.sha256,
+      assessment_sha256: plan.assessment.sha256, bytes: bytes.length, sha256: hash(bytes),
+      browser_blob_matches_http: true, visible_provenance: true, unapproved_draft: true,
+      http_capture: "original_native_fetch_response_clone", matching_request_count: exportRequests.length };
+  } finally {
+    page.off("request", observeExportRequest);
   }
-  return { kind, revision: plan.revision, selection_id: plan.selection_id, plan_sha256: plan.sha256,
-    assessment_sha256: plan.assessment.sha256, bytes: bytes.length, sha256: hash(bytes),
-    browser_blob_matches_http: true, visible_provenance: true, unapproved_draft: true };
 }
+
+test("original HTTP capture preserves native fetch promise, response and bytes", async ({ page }) => {
+  // A real JSON navigation has no application scripts or background requests. No endpoint is mocked.
+  await page.goto("/api/meta");
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/meta") requests.push(request.url());
+  });
+  await beginOriginalHttpCapture(page, "/api/meta");
+  const consumer = await page.evaluate(async () => {
+    const pending = window.fetch("/api/meta", { cache: "no-store" });
+    const state = window.__atlasOriginalHttpCapture!;
+    const samePromise = pending === state.nativePromise;
+    const response = await pending;
+    const sameResponse = response === state.nativeResponse;
+    return { samePromise, sameResponse, status: response.status,
+      bytes: Array.from(new Uint8Array(await response.arrayBuffer())) };
+  });
+  const captured = await takeOriginalHttpCapture(page);
+  expect(consumer.samePromise).toBe(true);
+  expect(consumer.sameResponse).toBe(true);
+  expect(consumer.status).toBe(200);
+  expect(captured.status).toBe(200);
+  expect(captured.matchingRequests).toBe(1);
+  expect(captured.originalFetchRestored).toBe(true);
+  expect(requests).toHaveLength(1);
+  expect(hash(Buffer.from(consumer.bytes))).toBe(hash(Buffer.from(captured.bytes)));
+});
 
 test("real backend: ordinary upload to persisted selected plan and source-bound MOP/NRFU downloads", async ({ page, context }, testInfo) => {
   const evidence: Record<string, unknown> = { fixture: "bundled synthetic snapshot", physical_host_qualified: false };

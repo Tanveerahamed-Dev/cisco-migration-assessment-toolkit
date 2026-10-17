@@ -423,3 +423,169 @@ TypeScript bytes and all limits remain unchanged. Independent static review and 
 publication; new-source warm/cold schema/backend, complete successful SPA producer/receipt,
 all15/applicable whole workflows and native/frozen checks remain required. No local test/build/
 engine run, PR merge, version/golden/sample change, signing or release is performed.
+
+## Current-main union, actual documents and bounded SPA admission
+
+Main d73d33e28bafe91f750e25f20dee559d412ac485 (#671 knowledge diagnostics) is integrated
+through foundation4d140ea9 and local B856b3f6a, retaining normal merge parents and both full
+handoff histories. The seven incoming paths retain exact owner code and the joined census pins.
+Independent review proves all165 frontend source inputs/seven receiver policies/five old outputs
+byte-, mode-, blob- and SHA-identical before the bounded SPA import. This is input continuity,
+not a transfer of earlier-source runtime readiness. No knowledge generation or vault refresh runs.
+
+Old B4f0bdbc6 ordinary application workflow38885889939/attempt1 completes SUCCESS with all
+seven jobs on tested mergecb7cbac62d126bd965695658f5980b58feb9097c, ordered parents e695+4f
+and tree8042eb46. Full backend116923677109 succeeds at10:47:19Z and reaches100% without a
+printed numeric aggregate; its87,713-byte EOF log has SHA-256
+25c4b63bcdb2cd83e6dc5d45ac851c964cd765c1cb32693c7215a12bea810602. It includes the retained
+warm-cache/native-construction control. Frontend116923676933 passes actual api:check,41files/
+627tests,TypeScript/Vite, privacy and handoff;144,118-byte EOF SHA-256
+3f05ce1e51d1f51584b635afe31e153348245de61f13f8c0a4fda7fbf1e57fb4. Gate116935349971 succeeds
+(3,486 bytes, SHA-25610f6b9aac161797679d04828ad6d3642c13a65dad31fef45213dd4f31d34b79a).
+Scope38885889943/job116923404811 succeeds with256files/7,633passed/27existing skips and
+all downstream mutation/browser/focus/build checks;499,677-byte EOF SHA-256
+e029f3c9791aced5d5407b1e62af7a0e6b977f997a46c3f3a2e816ef0e2e3c7b. Full Python3.14
+116923769756 separately passes19,562/165skipped/3xfailed/26subtests (137,732-byte EOF, SHA-256
+4a0bc6955dede83b2b0d869a43c823439c144095283d8df4b4e332da4f8c8efd). These are old-source
+controls; all final-head matrix and whole workflows remain required.
+
+Actual real-browser artifact12039900506 (247,500 bytes, SHA-256
+848b5aadee6ff49351187d48f1eded049e6bb5a32ef580ebbfebe1e5dcbadeea) is selected before one
+inert download. Its exact six regular outer members and three actual DOCX files pass raw ZIP/CRC/
+span closure; each document has18 closed OOXML members. The native files independently match
+the source-bound hosted receipt: MOP revision1/selection1,60,454 bytes/SHA-256
+817d451a04f2ab02e460ada673be77d886fdc7287ba72fdf2ead11c008699228; NRFU revision1/selection1,
+54,040 bytes/d6413003753fb6defc4bee19fd8789e7f2cdab657a997698fc2e4b9396db5ac4; MOP
+revision1/selection3,60,459 bytes/f684810149b56ea855da0963fc1f92432b829c1faf1278fd3bf87fdd35f0fe1f.
+Visible text, headers and machine IDs match the assessment/plan/revision/selection hashes and
+UNAPPROVED DRAFT. MOP ownership_unbound remains disclosed. Original persisted-assessment
+before/after equality and HTTP/native equality are hosted assertions; the distinct uploaded Git
+fixture is not relabelled as the persisted raw bytes. No screenshot, physical-host or approval
+claim is added. Independent actual-DOCX DATA proof SHA-256
+2e32b84afb78ad16d95f58c36deeae22c782bd19b56378a09bbb43c8f1a0fe97.
+
+Three B4f gates fail on actual stale tracked dist, without a gate waiver. Distribution116923769494
+passes627tests/compilation then refuses immutable output bytes (48,384-byte EOF SHA-256
+152de0c8c32c71bb39e837d9c5234a45f7f13cf011419afe792d37e26f4afe65). Portable build116923604587
+fails step7 after successful TypeScript/Vite (2,259,054 bytes, SHA-256
+931a63e5e40e792bd7422ca407678983019ea3563717b72fd1f9e13dbcf6dc00). Full source116923605004
+reaches100%/exit0 in quiet default Python with no numeric aggregate, then627frontend tests and
+compilation pass before its dist comparison fails at11:23:56Z (2,344,866-byte EOF SHA-256
+7c10bdcf1038589a0cf13c7ed5c71e56f7c0b10f8d183161aa53fe934ccc0bfc). No frozen package,
+reverify/attach or installed-runtime pass is inferred from these failures or dependency skips.
+
+The successful ordinary producer's seven-member SPA artifact12040060149 is frozen before one
+download:583,291 bytes/SHA-256d595f23b59ee34dbeabd84a3c13478e846a86bea5e45e92ddb3a2f2d8482d4d3,
+Node24.19.0/npm11.17.0. Independent raw ZIP/CRC/deflate/closed-path admission binds all165
+source inputs, seven policies and five current outputs, actual metadata and asset links. Source-edit
+DATA proof SHA-2561a5b1963b3060d34b4b11aa53775f69e14e91b27a49ffcbf1b33568de2851b5f.
+
+One finite hosted receipt dispatch38891078410 remains bound to controller4f and subjectcb7/e695.
+Its frontend116945249991 is SUCCESS11:35:41Z;145,169-byte EOF SHA-256
+e337c36bdb14a72b2b7b3359c75df7daf347e54fe8b563725e7603ef298bc917. Artifact12043476217 is
+selected before one inert download:1,108,245 bytes/SHA-256
+5d769213d75052bb7decce665e29aa230ef68eb4eec890f031267cc3333513b2. Its nine regular members
+close raw ZIP/CRC/spans/deflate, contain the exact original subject.zip, and bind selector, all165
+Git inputs/seven policies, member observations, five admitted files, complete patch and stable
+opening/closing API identities for the successful ordinary producer. Result is
+ADMITTED_EDIT_DATA_REVIEW_REQUIRED, errors[], compatibility/dependency_validation/acceptance/
+release_authority/current_source_ready=false and final_source_rebuild_required=true. Receipt DATA
+proof SHA-256b3e7f16e83e8a43df6e0ea5ccc2591e4ca4dbdf150555e5b0d9bb895d39a8347; independent
+root proof9c0d524bdb14211812caf30c874cd7255990c183fabd6849465528716b2c9ba0.
+
+Only the five admitted compiled outputs (2,086,461 bytes) are imported by checked Git patch: CSS
+is byte-identical, index changes, and three JS outputs replace three old hashed chunks. The patch
+has five blocks, including two near-identical renames. Index and physical output bytes/hash/census
+match the receipt; applied proof SHA-256
+81b5624070e97b12c53b30d2307be278aa5c42f3a4dacdd54a5f6f15585084db. No archive code, local
+controller, Node build, engine or test executes. The unchanged raw12 publication helper passes
+the staged import/history:32commits/45parent patches/58subjects, zero violations. The separate
+raw full-asset scan's four minifier-initials tokens are governed by the already-existing exact JS
+path exception; no raw-history match, new exception, helper exit change or scanner waiver is
+inferred. Final actual post-commit scans and repository privacy remain required.
+
+## Manual real-browser negative and passive original-response observation
+
+The same manual run's real-browser116945249940 fails at11:29:12Z:1failed/2passed in48.6s.
+Original saved-plan.real.spec.ts120:29 rejects Response.body() with Network.getResponseBody:
+No data found for resource with given identifier. Complete101,598-byte EOF SHA-256
+a0768f86327640cdd62d0248b1262640e4456aeadf502f5f4303893fee2e071e. Diagnostic artifact
+12043266474 is independently selected as6,663,415 bytes/SHA-256
+b0338ff3f4b9185ea9642fdaf08331b8d3b5e553f791c17dffa106532d23d3cb. The earlier immediate
+CDP-capture correction did not close the observation failure. The precise Chromium unavailability
+cause is unconfirmed; no application root cause is invented. This failed job prevents whole-manual
+SUCCESS even though finite receipt admission and its frontend succeed. No pass or runtime
+readiness transfers from the earlier ordinary run or admitted edit data.
+
+A source-only correction observes the same original browser fetch response by a bounded native
+Response.clone before the UI consumer, rather than depending on CDP's retained-body retrieval.
+The passive Proxy forwards this/arguments once and returns the identical native promise/Response;
+no extra export request, mocked response, network-route interception, synthetic body, delay or retry is added.
+The existing32MiB limit remains. Original status/media/five identity headers/query assertions and
+native DOCX hash/OOXML-visible identity checks remain, with added original-response header/URL/
+single-request/restoration checks. The complete original operator-walk body and earlier DOCX/
+saved-view helpers remain byte-identical. An additional real /api/meta control checks original
+promise and response identity, one actual request, restoration and independently consumed body
+equality. This correction is authored/static-only here; hosted runtime closure is not verified.
+
+The observer change intentionally changes one of the165 frontend source inputs. Final receipt
+must therefore select a NEW exact-source ordinary producer whose complete workflow succeeds,
+then use its artifact/source/run/job/digest and current import_commit for the post-import profile.
+The oldcb7 receipt is bounded compiled edit DATA only. Fresh required15/15, every applicable whole
+workflow (including all original real specs and the new identity control), exact tracked-dist rebuild,
+post-import receiver and native/frozen evidence are mandatory before independent review. No
+product/schema version, golden/sample byte, existing test, gate, budget or timeout is weakened.
+Plans remain UNAPPROVED DRAFT; all14 external gates, unsigned and draft-only status remain.
+
+Old e695 required closure retains11SUCCESS/4CANCELLED with all15 EOF logs reviewed. CI and
+portable whole workflows are CANCELLED; Python3.10 reaches99%, Windows/source80%, Coverage99%
+before genuine4d-push supersession, with no final aggregate/coverage or timeout inference. The
+30-job extra appendix has26 reviewed EOF logs, two explicit skips and two unstarted cancelled
+portable downstream jobs with no runner/steps and terminal log HTTP404. Primary manifest SHA-256
+dce9125334a16c3a5dadc6fbdb28a8858e7b31616c934b3ab1d7d7f187d4c8e4; extra manifest
+dc8ed8d8c3e4fcb8437db2458bd34077212033722f70760def3cd02866e08162. The earlier0b48 unnamed
+Python3.10 F93% before97% cancellation remains unassigned and preserved in the foundation guide.
+Neither cancellation nor a later pass retrospectively identifies that old failure.
+
+
+## Supervisor-scheduled local preparation — 2026-10-17
+
+The supervisor authorizes LOCAL preparation only. Main
+`d3c79ae0973cfc59b8c6ff9c821d32b609fade51`, including saved-plan PR #666 merge
+`fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1`, is integrated with the existing local
+field-workflow parent `856b3f6a6d7d047552e1f6c65963e386109d4d89`. Normal merge ancestry is
+retained. The parked index, working patches and affected files were preserved outside the
+repository before integration and matched the earlier parked backup byte for byte.
+
+Only `docs/NOW.md` conflicted. It is restored exactly from the pinned main under the
+supervisor-only board rule; the older board draft remains in the external preservation copy.
+The shared saved-plan export tests merge without a conflict: main's persisted NRFU content
+assertions and both field-workflow catalogue/refusal tests remain exact at function-AST level.
+The incoming NRFU owner, renderer and other test files retain main's bytes. Both SSOT bases and
+both sides' saved-plan documentation remain present.
+
+The previously authored passive original-response browser observer and the previously admitted
+compiled assets are carried forward from the preserved work, without rebuilding or executing
+anything locally. The historical receipt remains bounded edit data, not current-tree runtime
+acceptance. The observer's hosted failure and all earlier cancelled/failed gates remain recorded.
+The combined tree still requires its own hosted real-browser, frontend reproduction, source,
+portable and complete required checks. No current-tree runtime or debt-register PASS is claimed.
+
+**Hold: no push or CI before P1-H PR-0 (#673) merges and the supervisor confirms it.** Then merge
+that newer main, restore its board again, check compliance with its now-enforced shrink-only
+interface-computation debt register, and rerun Rule-7 scans before the ONE authorized push.
+No new interface-side computation or register growth is permitted. Reach exact-head 15/15 and
+all applicable gates, post the completion summary identifying what #667 adds to #666, then stop
+for independent review. No PR merge, release, signing or publication is authorized. Every existing
+test, gate, budget and timeout remains unchanged; golden/sample and product/schema versions
+remain outside this preparation.
+
+
+Independent local static review identified an observation-window gap in the parked browser test:
+the fetch wrapper restores after its first response clone, before native save/hash/XML completion,
+so its counter alone cannot exclude a later matching request. A passive Playwright request listener
+now spans that full helper, asserts the single exact export URL after the unchanged byte and
+visible-document checks, supplies the published request count, and is removed in `finally`.
+The original native promise/Response capture, every prior identity/hash/XML assertion, and the
+32 MiB limit remain. This strengthens test observation only; no application computation, request,
+retry, wait or timeout is added. Hosted execution of the correction is still pending.
