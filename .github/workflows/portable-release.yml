@@ -72,6 +72,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -p no:cacheprovider tests/test_portable_maintenance.py tests/test_portable_maintenance_handoff.py tests/test_portable_source_view.py tests/test_portable_managed_pe.py tests/test_portable_desktop_proof.py tests/test_make_stick.py tests/test_readme_field.py tests/test_atlas_bundle.py tests/test_registry_freshness.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q -p no:cacheprovider --durations=40
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm install --global npm@11.16.0
@@ -211,6 +213,13 @@ jobs:
           & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.build_release --output "$env:RUNNER_TEMP\atlas-portable-release" --json-out "$env:RUNNER_TEMP\portable-controller.json"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.verify_release --release-dir "$env:RUNNER_TEMP\atlas-portable-release"
+      - name: Prove frozen smoke and desktop maintenance with every host Python hidden
+        shell: pwsh
+        run: |
+          # The absolute interpreter is the observing harness only. Atlas and every child
+          # receive System32-only PATH, no py launcher, no Python overrides, and an external cwd.
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" .github/scripts/prove_portable_no_python.py --release-dir "$env:RUNNER_TEMP\atlas-portable-release" --json-out "$env:RUNNER_TEMP\atlas-desktop-no-python-proof.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prove build did not change tracked source
         shell: pwsh
         run: |
@@ -221,6 +230,13 @@ jobs:
           name: atlas-portable-${{ steps.source.outputs.commit }}
           path: |
             ${{ runner.temp }}/atlas-portable-release/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Python-absent desktop proof separately from the closed release set
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: atlas-desktop-no-python-${{ steps.source.outputs.commit }}
+          path: ${{ runner.temp }}/atlas-desktop-no-python-proof.json
           if-no-files-found: error
           retention-days: 30
   verify_candidate:

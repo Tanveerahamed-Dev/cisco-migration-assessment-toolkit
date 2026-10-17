@@ -3082,6 +3082,22 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/frontend/e2e-real/serve_real_backend.py::main": (
         2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
+    "portable/maintenance.py::_write_result": (
+        2, DELEGATED, ("atomic-staging",), "atomic maintenance protocol metadata; each caller owns its path"),
+    "portable/maintenance.py::_copy_installed_application": (
+        1, NON_CLIENT, (), "installed application code copied to a private helper; top-level data is never traversed"),
+    "portable/maintenance.py::_worker": (
+        1, OPERATOR_PATH, ("atomic-staging",), "private maintenance outcome can name operator paths and refusal details"),
+    "portable/maintenance.py::_finish": (
+        1, DELEGATED, ("atomic-staging",), "durable private result; caller owns its operator-selected output path"),
+    "portable/maintenance.py::_pending_handoff": (
+        1, OPERATOR_PATH, ("atomic-staging",), "private refusal preserves the recorded operator request without replay"),
+    "portable/maintenance.py::_restore_owned_pointer": (
+        2, DELEGATED, ("atomic-staging",), "restore only this attempt's private pointer to its prior byte identity"),
+    "portable/maintenance.py::main": (
+        7, OPERATOR_PATH, ("atomic-staging",), "private request/pointer paths and verified application-only helper; client data excluded"),
+    "portable/maintenance.py::_recover": (
+        2, OPERATOR_PATH, ("atomic-staging",), "private recovery result retains operator paths and failure reasons"),
     "portable/database_preflight.py::_open_readonly": (
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
@@ -3129,6 +3145,24 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, ("engine-log",),
         "an owned temporary log of the synthetic frozen qualification server, bounded on failure; " + _SYNTHETIC),
     # ---- other tracked Python (CI, tooling, references, research) --------------------------------
+    ".github/scripts/prove_portable_no_python.py::database_state": (
+        1, NON_CLIENT, ("database",), "read-only inspection of the hosted HTTP-seeded synthetic database"),
+    ".github/scripts/prove_portable_no_python.py::extract_bootstrap": (
+        1, NON_CLIENT, (), "closed-set public candidate code extracted to an external hosted proof folder"),
+    ".github/scripts/prove_portable_no_python.py::copy_runtime_for_smoke": (
+        1, NON_CLIENT, (), "a byte-equal runtime copy of packaged public application code; package metadata remains intact"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers": (
+        4, NON_CLIENT, (), "hosted-only OS launcher quarantine/restore and public binary identity journal"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers.record": (
+        1, NON_CLIENT, (), "hosted OS launcher paths and restoration digests; no engagement data"),
+    ".github/scripts/prove_portable_no_python.py::copy_data_verified": (
+        1, NON_CLIENT, (), "hosted synthetic application/data inventory copies only"),
+    ".github/scripts/prove_portable_no_python.py::prove_verified_reinstall": (
+        14, NON_CLIENT, ("database",), "synthetic legacy kit, exact offline backup and candidate-copy preflight evidence"),
+    ".github/scripts/prove_portable_no_python.py::prove": (
+        22, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups, interrupted selftest recovery and both reinstall paths"),
+    ".github/scripts/prove_portable_no_python.py::main": (
+        2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (
         1, NON_CLIENT, (), "the webapp CI scope verdict written to $GITHUB_OUTPUT"),
     ".github/scripts/engine_output_handoff.py::<module>": (1, NON_CLIENT, (), _CI_EVIDENCE),
@@ -3288,6 +3322,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
 NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
     (".github/scripts/frontend_artifact_receive.py", "-payload.json"): _CI_EVIDENCE,
     (".github/scripts/frontend_artifact_receive.py", ".stdout.json"): _CI_EVIDENCE,
+    (".github/scripts/prove_portable_no_python.py", "-launcher-restoration.json"):
+        "hosted OS Python launcher paths and exact restoration identities; no engagement data",
     (".github/scripts/refresh_visual_baseline_pins.py", "-728.png"):
         "the synthetic visual-baseline image at the 728-pixel viewport",
     ("cisco_toolkit/distribution_verify.py", "-py3-none-any.whl"):
@@ -3323,7 +3359,7 @@ NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
 # --------------------------------------------------------------------------- PowerShell writers
 
 #: The PowerShell writer that copies client databases (W65 registry header names it).
-POWERSHELL_DATABASE_WRITERS = ("portable/make_stick.ps1",)
+POWERSHELL_DATABASE_WRITERS = ("portable/update_transaction.ps1",)
 
 
 def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:
