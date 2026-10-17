@@ -214,6 +214,9 @@ def main() -> int:
     if not passed(isolated):
         print("No isolated positive control; no causal polluter conclusion.", flush=True)
         return 0
+    if not all(passed(result) or over_budget(result) for result in (empty, altered)):
+        print("Collection/changed-prefix control was not a valid timed result; no causal conclusion.", flush=True)
+        return 0
     collection = over_budget(empty)
     candidates = additions if over_budget(altered) else prefix
     if collection:
