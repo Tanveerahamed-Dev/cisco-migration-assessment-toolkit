@@ -122,7 +122,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--baseline", required=True)
-    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal"), required=True)
+    parser.add_argument("--mode", choices=("order", "cost", "plain", "minimal", "builtin"), required=True)
     parser.add_argument("--cut-before", default="")
     args = parser.parse_args()
     subject, output = args.subject.resolve(), args.output.resolve()
@@ -196,9 +196,14 @@ def main() -> int:
                   "wall_seconds": round(time.monotonic() - started, 3), "target": target,
                   "measurements": measurements, "other_failures": other_failures,
                   "selected_count": len(selection) if selection is not None else None}
+        result["child_environment"] = {name: env.get(name) for name in (
+            "GITHUB_ACTIONS", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTEST_ADDOPTS",
+            "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")}
         if plain:
             result["observation_scope"] = (
-                "Uninstrumented full default suite. No injected plugin or PYTHONPATH; "
+                ("Uninstrumented pytest with disclosed built-in collection exclusions. " if paths else
+                 "Uninstrumented full default suite. ")
+                + "No injected plugin or PYTHONPATH; "
                 "no per-test reports. Read pytest.log for all failures and terminal summary."
             )
         if minimal:
@@ -247,7 +252,7 @@ def main() -> int:
         print("ORDER-DIAGNOSTIC " + json.dumps(result), flush=True)
         return result, case
 
-    if args.mode in ("plain", "minimal"):
+    if args.mode in ("plain", "minimal", "builtin"):
         provenance = {
             "source": actual,
             "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=subject, text=True).strip(),
@@ -259,7 +264,27 @@ def main() -> int:
                 "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")},
         }
         (output / "environment.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-        if args.mode == "minimal":
+        if args.mode == "builtin":
+            order = json.loads((Path(__file__).parent / "rc8_default_order.json").read_text())
+            if actual != order["source"] or provenance["tree"] != order["tree"] or order["target"] != TARGET:
+                raise RuntimeError("built-in prefix navigation is not bound to this exact subject")
+            modules = order["prefix_modules"]
+            tracked_prefix = [name for name in subprocess.check_output(
+                ["git", "ls-files", "--", "tests/test_*.py"], cwd=subject, text=True).splitlines()
+                if name < TARGET.split("::", 1)[0]]
+            if modules != tracked_prefix:
+                raise RuntimeError("tracked module prefix differs from source-bound observed order")
+            if args.cut_before and args.cut_before not in modules:
+                raise ValueError("built-in prefix cut must name an observed whole file before TARGET")
+            ignored = modules[modules.index(args.cut_before):] if args.cut_before else []
+            (output / "builtin-prefix.json").write_text(json.dumps({
+                "source": actual, "tree": provenance["tree"], "cut_before": args.cut_before,
+                "ignored_collected_modules": ignored, "target_module_retained": TARGET.split("::", 1)[0],
+                "later_modules_retained": True, "order_receipt_artifact": order["order_receipt_artifact"],
+                "limits": "Collection AND execution reduction. Ignored files may still be imported by retained tests.",
+            }, indent=2), encoding="utf-8")
+            run("builtin-default-prefix", plain=True, paths=["--ignore=" + name for name in ignored])
+        elif args.mode == "minimal":
             if args.cut_before and (not re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", args.cut_before)
                                     or not (subject / args.cut_before).is_file()):
                 raise ValueError("prefix cut must be one existing whole test file")
