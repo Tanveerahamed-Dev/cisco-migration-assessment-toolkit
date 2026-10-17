@@ -250,6 +250,8 @@ def test_scope_inventory_covers_the_real_production_closure_of_the_atlas_scope_l
         "lock",
         "workflow",
         "workflow_unpinned",
+        "workflow_first_job_without_pip",
+        "workflow_last_job_without_pip",
     ],
 )
 def test_each_portable_pip_owner_is_required_for_reconciliation(mutated_owner: str) -> None:
@@ -289,6 +291,14 @@ def test_each_portable_pip_owner_is_required_for_reconciliation(mutated_owner: s
         lock_text = lock_text.replace("pip==26.2.1", "pip==26.2.0")
     elif mutated_owner == "workflow":
         workflow_text = workflow_text.replace("pip==26.2.1", "pip==26.2.0")
+    elif mutated_owner in ("workflow_first_job_without_pip", "workflow_last_job_without_pip"):
+        # One pytest job loses its pinned upgrade while every other job keeps its own.
+        lines = workflow_text.splitlines(keepends=True)
+        pinned = [index for index, line in enumerate(lines)
+                  if line.strip() == "python -m pip install --upgrade 'pip==26.2.1'"]
+        assert len(pinned) >= 2, pinned
+        del lines[pinned[0 if mutated_owner == "workflow_first_job_without_pip" else -1]]
+        workflow_text = "".join(lines)
     else:
         workflow_text = workflow_text.replace(
             "python -m pip install --upgrade 'pip==26.2.1'",
@@ -527,6 +537,14 @@ def _assert_gate_shard_contract(document: dict) -> None:
     shard, gate = jobs["gate_shard"], jobs["gate"]
     shard_steps, gate_steps = shard["steps"], gate["steps"]
 
+    # Neither job can swallow a failure or skip one of its steps: no continue-on-error on the job or
+    # any step, and no step condition at all, so every step runs in order and any failure is final.
+    for job_id, job in (("gate_shard", shard), ("gate", gate)):
+        assert "continue-on-error" not in job, job_id
+        for step in job["steps"]:
+            assert "continue-on-error" not in step and "if" not in step, (
+                job_id, step.get("name") or step.get("uses"))
+
     # The shard count is ONE value: derived from the spec and held by the matrix, the job name and
     # the verifier's --expected-shards, so the four cannot drift apart.
     run_index = _one([i for i, step in enumerate(shard_steps) if pytest_invocations(str(step.get("run") or ""))],
@@ -646,7 +664,9 @@ def _swap(steps: list, first: int, second: int) -> None:
     "no_result_check", "result_check_after_checkout", "lenient_result_check", "not_cancelled",
     "always_unless_cancelled", "success_if", "default_if",
     "needs_nothing", "sharded_collection", "no_verifier", "no_frontend", "collect_before_download",
-    "frontend_before_collect", "verify_candidate_skips_gate",
+    "frontend_before_collect", "shard_continues_on_error", "shard_test_step_continues_on_error",
+    "gate_continues_on_error", "collect_continues_on_error", "collect_conditional", "frontend_conditional",
+    "verify_candidate_skips_gate",
 ])
 def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     document = _portable_document()
@@ -706,6 +726,19 @@ def test_full_gate_shard_contract_rejects_each_weakening(mutation: str) -> None:
     elif mutation == "frontend_before_collect":
         _swap(gate["steps"], collect_index, next(
             i for i, step in enumerate(gate["steps"]) if "npm ci --ignore-scripts" in str(step.get("run") or "")))
+    elif mutation == "shard_continues_on_error":
+        shard["continue-on-error"] = True
+    elif mutation == "shard_test_step_continues_on_error":
+        run_step["continue-on-error"] = True
+    elif mutation == "gate_continues_on_error":
+        gate["continue-on-error"] = True
+    elif mutation == "collect_continues_on_error":
+        collect["continue-on-error"] = True
+    elif mutation == "collect_conditional":
+        collect["if"] = "${{ false }}"
+    elif mutation == "frontend_conditional":
+        next(step for step in gate["steps"] if "npm ci --ignore-scripts" in str(step.get("run") or ""))["if"] = (
+            "${{ false }}")
     else:
         jobs["verify_candidate"]["needs"] = ["portable"]
     with pytest.raises(AssertionError):

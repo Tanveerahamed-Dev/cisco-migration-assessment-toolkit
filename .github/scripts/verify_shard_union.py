@@ -47,7 +47,7 @@ def read_manifest(path: str) -> list[str]:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ManifestError(f"{path} is not UTF-8 ({error.reason} at byte {error.start})") from None
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         raise ManifestError(f"{path} starts with a byte-order mark")
     if "\r" in text:
         raise ManifestError(f"{path} carries a carriage return")

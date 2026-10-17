@@ -164,7 +164,7 @@ jobs:
           pattern: atlas-gate-shard-manifest-*
           merge-multiple: true
           path: ${{ runner.temp }}/atlas-gate-shard-manifests
-      - name: Collect the complete Python suite once and prove the shards ran exactly it
+      - name: Collect the complete Python suite once and prove the shards selected exactly it
         shell: pwsh
         env:
           ATLAS_FULL_MANIFEST: ${{ runner.temp }}/atlas-gate-full-nodeids.txt
