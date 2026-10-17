@@ -882,3 +882,46 @@ The proposal was decoded only to edit the register; no local census or custody
 controller supplied validation. Final admission and all required checks must be
 executed on the next hosted head. An additional push remains subject to the
 supervisor's answer to the explicit one-push constraint.
+
+### Per-allowance refusal controls and removal categories
+
+The supervisor authorized `26b9a978` and narrow repair/admission pushes through
+15/15, with no unrelated work. Each row of `DYNAMIC_IMPORT_ALLOWANCES` now has
+its own parameterized control: its exact target set is returned, deleting its
+allowance refuses, and changing its path, symbol, call argument or occurrence
+refuses. A second per-row control follows those actual targets through a helper
+and requires the engine-to-interface error, even for a nominal third-party name
+when repository source exists. Allowances do not bypass the direction check.
+
+The admission-specific hosted control compares the fixed `84b4d807` and
+`26b9a978` registries, asserts a strict subset, and requires every removed path to
+be outside the corrected snapshot's interface closure and outside the mandatory
+role-declaration class. It pins that admission, not the size of future registers.
+No role or token/AST identity change explains any of these removals; their cause
+is replacement of the arbitrary-production dynamic-import fallback. Computation
+forms themselves, the current source ceiling and every active-ancestor ratchet
+remain unchanged.
+
+The patch's removal categories are:
+
+| Source category | Removed rows |
+|---|---:|
+| Master Reference compiler/governance/release helpers outside the reviewed app/report import closure | 4,652 |
+| `.github` CI and qualification scripts outside that closure | 1,780 |
+| `tools` maintenance/qualification helpers outside that closure | 1,720 |
+| `portable` packaging/release helpers outside that closure | 860 |
+| `research_lane` helpers | 148 |
+| Root embedding/local-model research scripts (`embed_qbank.py`, `ollama_judge.py`, `ollama_recall.py`, `ollama_retrieval_judge.py`) | 55 |
+| `webapp/dev.py` development launcher | 16 |
+| `.claude` hook | 10 |
+| `setup.py` packaging | 3 |
+| **Total** | **9,244** |
+
+These are structural census removals, not claims of no computation in those
+modules or of 9,244 repaired application facts. For example, the removed Master
+Reference rows include `master-reference/release/pdf_report.py`; the app's
+registered report writers remain fully scanned. The reviewer can check both the
+boundary and the exact negative controls rather than infer product remediation
+from the smaller count. No `cisco_toolkit/`, `webapp/backend/` or CLI-orchestrator
+row was removed by this admission. Exact sampled row identities are included in
+the completion comment; the full deletions remain in the Git diff.

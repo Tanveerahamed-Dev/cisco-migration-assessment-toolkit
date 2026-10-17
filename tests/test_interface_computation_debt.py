@@ -5,6 +5,7 @@ not certification; class/closure discovery and harmless-edit controls bind the
 specific syntactic forms this guard actually detects.
 """
 import ast
+from collections import Counter
 import json
 import os
 import shutil
@@ -596,6 +597,73 @@ def test_dynamic_allowances_are_exact_existing_calls_and_writer_targets_equal_th
     writers = {keyword.value.value for node in ast.walk(registry) if isinstance(node, ast.Call)
                for keyword in node.keywords if keyword.arg == "writer_module" and isinstance(keyword.value, ast.Constant) and keyword.value.value}
     assert set(WRITER_TARGETS) == writers
+
+
+@pytest.mark.parametrize("allowance", DYNAMIC_IMPORT_ALLOWANCES,
+                         ids=[path + "::" + symbol + "::" + expression for path, symbol, expression, _ in DYNAMIC_IMPORT_ALLOWANCES])
+def test_every_reviewed_dynamic_allowance_has_exact_targets_and_refuses_a_changed_or_moved_call(allowance):
+    path, symbol, expression, targets = allowance
+    source = "import importlib\ndef " + symbol + "():\n " + expression
+    assert dynamic_imports(path, ast.parse(source)) == set(targets)
+    with pytest.raises(ValueError, match="Unresolved dynamic import"):
+        dynamic_imports(path, ast.parse(source), ())
+    changed = ast.parse(expression, mode="eval").body
+    changed.args[0] = ast.Name(id="unreviewed_target", ctx=ast.Load())
+    for other_path, other_source in [
+        ("unreviewed/moved.py", source),
+        (path, source.replace("def " + symbol + "(", "def unreviewed_symbol(")),
+        (path, "import importlib\ndef " + symbol + "():\n " + ast.unparse(changed)),
+        (path, source + "\n " + expression),
+    ]:
+        with pytest.raises(ValueError, match="Unresolved dynamic import"):
+            dynamic_imports(other_path, ast.parse(other_source))
+
+
+@pytest.mark.parametrize("allowance", DYNAMIC_IMPORT_ALLOWANCES,
+                         ids=[path + "::" + symbol + "::" + expression for path, symbol, expression, _ in DYNAMIC_IMPORT_ALLOWANCES])
+def test_every_dynamic_allowance_target_is_traversed_and_cannot_launder_an_engine_interface_edge(allowance, monkeypatch):
+    import interface_computation_sources as discovery
+    path, symbol, expression, targets = allowance
+    original = discovery.dynamic_imports
+    # Put the actual allowed call behind an unclassified helper. Only its source
+    # path is remapped; the real allowance, resolver, target traversal and engine
+    # direction checks are used. Even a nominal third-party target is traversed
+    # when repository source exists for that name.
+    monkeypatch.setattr(discovery, "dynamic_imports", lambda owner, tree: original(path if owner == "probe.py" else owner, tree))
+    sources = {
+        "cisco_toolkit/docmeta.py": '__atlas_role__ = "interface"',
+        "cisco_toolkit/allowance_owner.py": '__atlas_role__ = "engine"\nimport probe',
+        "cisco_toolkit/forbidden_interface.py": '__atlas_role__ = "interface"',
+        "probe.py": "import importlib\ndef " + symbol + "():\n " + expression,
+    }
+    for target in targets:
+        target_path = target.replace(".", "/") + ".py"
+        sources[target_path] = ('__atlas_role__ = "interface"' if role_required(target_path)
+                                else "from cisco_toolkit.forbidden_interface import answer")
+    with pytest.raises(ValueError, match="Engine imports interface"):
+        python_closure(sources, sources.__getitem__)
+
+
+def test_hosted_admission_removed_only_whole_paths_outside_the_interface_closure(parser):
+    # This pins the specific admission, not the size of future registers. Later
+    # work can keep shrinking. No application is imported or executed.
+    before = json.loads(guard.git("show", "84b4d8070250234d76e7037b7915d33ab21d5633:" + guard.REGISTRY))
+    after = json.loads(guard.git("show", "26b9a978728f72f648dd01ef3d60bd9cd2da114d:" + guard.REGISTRY))
+    original = {guard.identity(row) for row in before["sites"]}
+    retained = {guard.identity(row) for row in after["sites"]}
+    assert retained <= original
+    removed = [row for row in before["sites"] if guard.identity(row) not in retained]
+    assert len(removed) == 9244
+    assert Counter(row["path"].split("/", 1)[0] for row in removed) == {
+        ".claude": 10, ".github": 1780, "embed_qbank.py": 7,
+        "master-reference": 4652, "ollama_judge.py": 19, "ollama_recall.py": 21,
+        "ollama_retrieval_judge.py": 8, "portable": 860, "research_lane": 148,
+        "setup.py": 3, "tools": 1720, "webapp": 16,
+    }
+    selected = guard.source_map("26b9a978728f72f648dd01ef3d60bd9cd2da114d")
+    removed_paths = {row["path"] for row in removed}
+    assert removed_paths.isdisjoint(selected), "A live scanned module lost an allowance"
+    assert not any(role_required(path) for path in removed_paths)
 
 
 def test_static_import_aliases_and_inert_edits_keep_identical_targets():
