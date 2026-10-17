@@ -6,9 +6,11 @@ an approval of the computations it records. Initial admission requires the
 hosted observation and review. The v1 proposal at `db5f5675` passed 15/15 but
 independent review blocked discovery, detection and lexical identities. The
 supervisor's ruling in #673 comment `6218966243` authorizes a wider, reindexed
-initial register in this PR. The active v2 proposal imports 45,940 exact records
-from six matching hosted captures at `34d62535`; final-head 15/15 and independent
-re-review remain required. It is not in force on main before reviewed merge.
+initial register in this PR. The v2 proposal imported 45,940 exact records from six matching hosted captures
+at `34d62535`. Main then advanced through #666. The current v3 initial source
+refresh is `observation_required`, deliberately refusing admission until matching
+hosted data from the updated main is imported. It is not in force on main before
+reviewed merge; final-head 15/15 and independent re-review remain required.
 
 ## What the gate checks
 
@@ -602,3 +604,30 @@ The correction places the unchanged exact target before `-k`, and its workflow
 control asserts the shared reader returns only that target. The full debt gate
 is identified by its exact complete command. No Scope test, browser requirement,
 command selection, oracle switch, budget or timeout is weakened or skipped.
+
+
+## Initial source refresh after main #666 (v3, 2026-10-17)
+
+Head `ffcce816`, CI `38984167554`, Linux 3.10 job `117251895072`, passes
+**222 synthetic controls / 3 deselected** and the real producer mutation, then
+fails the active v2 equality gate: newly merged saved-plan source adds and removes
+exact sites. The hosted observation reports **46,135** records, fingerprint
+`e31da8612c2631be2ffa1ba36cc817174d8badf340c78058e7cd416af25edd47`
+under the old v2/origin metadata. This is not an admitted register or a new
+semantic-defect count. The old 45,940 source snapshot cannot certify the new main.
+
+The supervisor explicitly permits initial register growth in this unmerged PR.
+Version 3 therefore binds its immutable initial application source to current
+main `fdd6a7de`, preserving all detector forms and refusal controls. The initial
+role assignment/migration stays pinned separately at `2efe2fd7`. Version 2 is
+historical **only** for commits ancestral to main-integration anchor `2920e79b`;
+a later v2 reset fails even if a subsequent commit restores v3. Version 1 keeps
+its original `3d3bca01` cutoff. Unknown policies still refuse. Every active v3
+ancestor, including all merge parents, is a strict subset ceiling; removals and
+resurrection remain enforced. No application/schema version is changed.
+
+This does not waive a gate to accept feature-branch computations. Fresh matching
+six-leg source-bound observations and real-producer/refusal controls must precede
+admission, then every protected/applicable full workflow must pass on the exact
+admission head. After this proposal merges its register may only shrink; this
+initial-development migration is not available to a future old-policy reset.

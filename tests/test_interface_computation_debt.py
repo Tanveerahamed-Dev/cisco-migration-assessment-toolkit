@@ -919,3 +919,41 @@ def test_initial_companion_migration_preserves_roles_and_frozen_application_byte
     # It does not import an engine or regenerate any frozen evidence.
     for path in migrated_roles:
         assert guard.git("cat-file", "blob", guard.ROLE_ORIGIN + ":" + path) == guard.git("cat-file", "blob", foundation + ":" + path), path
+
+
+
+def test_v2_register_cannot_be_reintroduced_after_the_main_refresh_cutoff(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
+             "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
+             "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "--initial-branch=keep")
+    (tmp_path / "basis.txt").write_text("new main source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "New source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir(parents=True)
+    legacy = {**guard.proposal([]), "schema": "interface-computation-debt/2"}
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Historical pre-main v2 proposal")
+    monkeypatch.setattr(guard, "LEGACY_V2_REGISTER_HEAD", git("rev-parse", "HEAD"))
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Current source-bound register")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [])
+    assert guard.check() == 0  # authorized old policy is historical, not an exemption forever
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Forbidden later v2 reset")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to hide the reset")
+    with pytest.raises(subprocess.CalledProcessError):
+        guard.check()

@@ -25,10 +25,11 @@ from interface_computation_sources import SCRIPT_SUFFIXES, compiled_coverage, py
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
-ORIGIN = "7d9f83639eccb12915f2686aae13a47b44d50df1"
-SCHEMA = "interface-computation-debt/2"
+ORIGIN = "fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1"
+SCHEMA = "interface-computation-debt/3"
 ROLE_ORIGIN = "2efe2fd77a1e67ea3c298408141a466e65cf3945"  # Reviewed initial roles, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
+LEGACY_V2_REGISTER_HEAD = "2920e79b2a80093e16fb0d9982cb9baf29cebda1"
 DOMAIN = re.compile(r"health|score|band|severit|readiness|verdict|gate|punch|lifecycle|endpoint|device|vlan|flow|route|causal|impact|blast|adjacen|neighbou?r|graph|topolog|coverage", re.I)
 SYMBOL = re.compile(r"^_*(?:count|compute|calculate|recount|simulate|evaluate|classify|qualify|trace|counterfactual|worst_readiness|go_no_go|gate_for)(?:_|[A-Z]|$)")
 VERDICTS = frozenset({"READY", "NOT READY", "CAUTION", "GO", "NO-GO", "CONDITIONAL GO", "Critical", "Excellent", "Good", "Fair", "Poor", "ok", "watch", "risk", "crit", "healthy", "permit", "deny", "allow", "block", "reached", "unreachable"})
@@ -360,10 +361,14 @@ def check():
     # other parent, hiding a removal that the merge resurrected.
     for commit in git("log", "--full-history", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
         record = read_registry(git("show", commit + ":" + REGISTRY))
-        if record.get("schema") == "interface-computation-debt/1":
-            # The supervisor explicitly permits widening/reindexing only the
-            # unmerged v1 proposal. No later v1 register may reset this ceiling.
-            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit, LEGACY_REGISTER_HEAD], check=True)
+        legacy_heads = {"interface-computation-debt/1": LEGACY_REGISTER_HEAD,
+                        "interface-computation-debt/2": LEGACY_V2_REGISTER_HEAD}
+        if record.get("schema") in legacy_heads:
+            # Initial widening is authorized only in this unmerged PR. The v2
+            # baseline predates approved main #666; only its fixed development
+            # ancestry is historical. A later old-policy reset still refuses.
+            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit,
+                            legacy_heads[record["schema"]]], check=True)
             continue
         previous.append(record)
     validate(registry, current, origin, previous)
