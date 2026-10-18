@@ -1995,4 +1995,286 @@ def test_manual_old_checkout_retains_boundary_against_merge_base_not_new_main(tm
 def test_boundary_base_binds_the_real_hosted_event_without_any_admission():
     base, allow_new = guard.admission_base()
     assert len(base) == 40 and type(allow_new) is bool
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    expected = False
+    if event_name in {"pull_request", "push"}:
+        event = json.loads(guard.Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        expected = (event["pull_request"]["base"]["ref"] == "main" if event_name == "pull_request"
+                    else event["ref"] == "refs/heads/main")
+    assert allow_new is expected, "The actual event must execute its binding path, not silently retain only"
     guard.git("merge-base", "--is-ancestor", base, "HEAD")
+
+
+# 6247487678 / 6247503468: policy classification, not new detector forms.
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("rule", ["returned-comparison", "aggregate", "verdict-symbol"])
+def test_forged_marker_boundary_rows_refuse_at_validate(marker, rule):
+    row = {**sample_site(), "symbol": marker, "rule": rule}
+    with pytest.raises(ValueError, match="Reserved lexical marker has a non-lexical boundary rule"):
+        guard.validate(boundary_registry_of([row]), [row], [], base=guard.proposal([]), base_sites=[])
+
+
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("container", ["object", "class"])
+def test_real_node_detector_emits_reserved_marker_for_string_literal_method(parser, marker, container):
+    before = "function same(a: Identity, b: Identity) { return a.sha256 === b.sha256; }"
+    method = json.dumps(marker) + "(a: Identity, b: Identity) { return a.sha256 === b.sha256; }"
+    after = "const helpers = {" + method + "};" if container == "object" else "class Helpers {" + method + "}"
+    rows = guard.node_reply(dict(sources=[dict(path="client/transport.ts", text=after)]))["sites"]
+    forged = [row for row in rows if row["rule"] == "returned-comparison"]
+    debt = [row for row in guard.node_reply(dict(sources=[dict(path="client/projection.ts", text=before)]))["sites"]
+            if row["rule"] == "returned-comparison"]
+    assert len(forged) == len(debt) == 1
+    assert forged[0]["symbol"] == marker
+    assert forged[0]["fingerprint"] == debt[0]["fingerprint"]
+    with pytest.raises(ValueError, match="Reserved lexical marker"):
+        guard.validate(boundary_registry_of(forged), forged, debt,
+                       base=guard.proposal(debt), base_sites=debt)
+    normal = [row for row in guard.node_reply(dict(sources=[dict(path="client/new_transport.ts", text=before)]))["sites"]
+              if row["rule"] == "returned-comparison"]
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(normal), normal, forged,
+                       base=guard.proposal(forged), base_sites=forged)
+
+
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+def test_forged_marker_debt_is_still_ast_debt(marker):
+    moved = boundary_comparison_sites()
+    debt = [{**moved[0], "path": "client/old.ts", "symbol": marker}]
+    assert not guard.lexical_identity(guard.identity(debt[0]))
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(moved), moved, debt,
+                       base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("symbol", ["value", "<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("category", ["transport-bound", "response-identity", "cancellation", "ui-state"])
+def test_dynamic_code_is_never_a_boundary_record(symbol, category):
+    rows = guard.python_sites("client/transport.py", "def value(text):\n return eval(text)\n")
+    assert len(rows) == 1 and rows[0]["rule"] == "dynamic-code"
+    rows[0]["symbol"] = symbol
+    with pytest.raises(ValueError, match="Dynamic code can never be a boundary record"):
+        guard.validate(boundary_registry_of(rows, category), rows, [], base=guard.proposal([]), base_sites=[])
+
+
+def test_closed_lexical_vocabulary_is_derived_from_both_producers(parser):
+    lexer = (guard.DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    payload = (guard.DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    # Independently parse the JS producer with the locked real parser, rather
+    # than trusting the policy's static extraction of its object-literal push.
+    script = r"""
+const {createRequire} = require('node:module');
+const {resolve} = require('node:path');
+const load = createRequire(resolve(process.cwd(), 'atlas-scope/package.json'));
+const ts = load('typescript');
+const file = ts.createSourceFile('producer.mjs', require('node:fs').readFileSync(0, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+if (file.parseDiagnostics.length) throw new Error('Producer must parse');
+const rows = [];
+function visit(node) {
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'push' && node.expression.expression.getText(file) === 'generatedOpaqueSites') {
+    if (node.arguments.length !== 1 || !ts.isObjectLiteralExpression(node.arguments[0])) throw new Error('Unclosed producer call');
+    const field = name => {
+      const property = node.arguments[0].properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(file) === name);
+      if (!property || !ts.isStringLiteral(property.initializer)) throw new Error('Rule and marker must be literal');
+      return property.initializer.text;
+    };
+    rows.push([field('symbol'), field('rule')]);
+  }
+  ts.forEachChild(node, visit);
+}
+visit(file);
+process.stdout.write(JSON.stringify(rows));
+"""
+    result = subprocess.run([shutil.which("node"), "-e", script], input=payload, cwd=guard.DETECTOR_ROOT,
+                            text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+    payload_rows = json.loads(result.stdout)
+    assert payload_rows and all(marker in guard.LEXICAL_MARKERS for marker, _rule in payload_rows)
+    tree = ast.parse(lexer)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "lexical_sites")
+    emitted = {node.args[2].value for node in ast.walk(function) if isinstance(node, ast.Call)
+               and isinstance(node.func, ast.Name) and node.func.id == "emit"}
+    assert guard.LEXICAL_PRODUCER_RULES == emitted | {rule for _marker, rule in payload_rows}
+    assert guard.LEXICAL_PRODUCER_RULES == {"raw-count", "raw-threshold", "filter-count", "graph-worklist", "dynamic-code", "opaque-generated-source"}
+
+
+@pytest.mark.parametrize("producer", ["lexer", "payload"])
+def test_unresolvable_lexical_rule_producer_fails_closed(producer):
+    lexer = (guard.DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    payload = (guard.DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    if producer == "lexer":
+        lexer = lexer.replace('emit(index, index + 2, "dynamic-code")', 'emit(index, index + 2, computed_rule)')
+    else:
+        payload = payload.replace("rule: 'opaque-generated-source'", "rule: computed_rule")
+    with pytest.raises(ValueError, match="Unresolvable .* rule producer"):
+        guard.lexical_rule_vocabulary(lexer, payload)
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("def compute_transport():\n pass\n", "analysis-symbol"),
+    ("safe = None\n", "verdict-symbol"),
+    ("def value():\n return True\n", "verdict-return"),
+    ("def value():\n return False\n", "verdict-return"),
+    ("def value():\n return 'approved'\n", "verdict-return"),
+])
+def test_name_only_and_bare_literal_python_rows_are_not_global_form_debt(source, rule):
+    debt = guard.python_sites("client/before.py", source)
+    after = guard.python_sites("client/after.py", source)
+    assert len(debt) == len(after) == 1 and debt[0]["rule"] == rule
+    guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.py": source})
+    with pytest.raises(ValueError, match="Debt-to-boundary moves/reclassification"):
+        guard.validate(boundary_registry_of(debt), debt, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("function computeTransport() {}", "analysis-symbol"),
+    ("const safe = null;", "verdict-symbol"),
+    ("function value() { return true; }", "verdict-return"),
+    ("function value() { return false; }", "verdict-return"),
+    ("function value() { return 'APPROVED'; }", "verdict-return"),
+])
+def test_name_only_and_bare_literal_node_rows_are_not_global_form_debt(parser, source, rule):
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=source)]))["sites"]
+    after = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=source)]))["sites"]
+    assert len(debt) == len(after) == 1 and debt[0]["rule"] == rule
+    guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.ts": source})
+    with pytest.raises(ValueError, match="Debt-to-boundary moves/reclassification"):
+        guard.validate(boundary_registry_of(debt), debt, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("before,after,rule", [
+    ("function computeTransport() {}", 'const api = {"computeTransport"() {}};', "analysis-symbol"),
+    ("function safe() {}", 'const api = {"safe"() {}};', "verdict-symbol"),
+    ("function value() { return true; }", "function value() { return false; }", "verdict-return"),
+])
+def test_node_name_and_literal_exceptions_do_not_remove_same_symbol_checks(parser, before, after, rule):
+    path = "client/transport.ts"
+    debt = guard.node_reply(dict(sources=[dict(path=path, text=before)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path=path, text=after)]))["sites"]
+    assert len(debt) == len(current) == 1 and debt[0]["rule"] == current[0]["rule"] == rule
+    assert debt[0]["symbol"] == current[0]["symbol"]
+    assert debt[0]["fingerprint"] != current[0]["fingerprint"]
+    with pytest.raises(ValueError, match="rewrite of a debt symbol"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                       current_sources={path: after})
+
+
+def test_python_literal_exception_does_not_remove_same_symbol_check():
+    path = "client/transport.py"
+    debt = guard.python_sites(path, "def value():\n return True\n")
+    after = guard.python_sites(path, "def value():\n return False\n")
+    with pytest.raises(ValueError, match="rewrite of a debt symbol"):
+        guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_moved_function_with_name_and_literal_rows_still_refuses_substantive_debt():
+    source = "def compute_transport(rows):\n if rows:\n  return True\n return len(rows)\n"
+    debt = guard.python_sites("client/before.py", source)
+    after = guard.python_sites("client/after.py", source)
+    assert {row["rule"] for row in after} == {"analysis-symbol", "verdict-return", "aggregate"}
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                       current_sources={"client/after.py": source})
+
+
+def test_literal_preview_cannot_forge_a_substantive_python_verdict_return():
+    source = "def value(allowed, ready):\n return allowed and ready\n"
+    debt = guard.python_sites("client/before.py", source)
+    current = guard.python_sites("client/after.py", source)
+    assert len(current) == 1 and current[0]["rule"] == "verdict-return"
+    current[0]["expression"] = "True"
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_literal_preview_cannot_forge_a_substantive_node_verdict_return(parser):
+    source = "function value(allowed, ready) { return allowed && ready; }"
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=source)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=source)]))["sites"]
+    assert len(current) == 1 and current[0]["rule"] == "verdict-return"
+    current[0]["expression"] = "true"
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_literal_proof_uses_full_python_source_not_the_truncated_preview():
+    before = "def value():\n return 'approved'\n"
+    after = "def value():\n return '" + "\\\n" * 130 + "approved'\n"
+    debt = guard.python_sites("client/before.py", before)
+    current = guard.python_sites("client/after.py", after)
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.py": after})
+
+
+def test_literal_proof_uses_full_node_source_not_the_truncated_preview(parser):
+    before = "function value() { return 'approved'; }"
+    after = "function value() { return '" + "\\\n" * 130 + "approved'; }"
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=before)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=after)]))["sites"]
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.ts": after})
+
+
+@pytest.mark.parametrize("shape", ["exact", "moved"])
+def test_check_preserves_v2_only_debt_when_it_is_readmitted_as_boundary(tmp_path, monkeypatch, shape):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    source = "def answer(rows):\n return len(rows)\n"
+    debt = guard.python_sites("client/writer.py", source)
+    assert len(debt) == 1 and debt[0]["rule"] == "aggregate"
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    legacy = {key: value for key, value in guard.proposal(debt).items() if key != "boundary"}
+    legacy["schema"] = "interface-computation-debt/2"
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Historical v2-only debt")
+    monkeypatch.setattr(guard, "LEGACY_V2_REGISTER_HEAD", git("rev-parse", "HEAD"))
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Remove debt before the active boundary policy")
+    base = git("rev-parse", "HEAD")
+    path = debt[0]["path"] if shape == "exact" else "client/transport.py"
+    after = guard.python_sites(path, source)
+    target.write_text(json.dumps(boundary_registry_of(after)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to readmit old v2 debt as boundary")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {} if revision else {path: source})
+    monkeypatch.setattr(guard, "scan", lambda sources: after if sources else [])
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    with pytest.raises(ValueError, match="Debt-to-boundary"):
+        guard.check()
+
+
+@pytest.mark.parametrize("container", ["script", "event", "srcdoc"])
+def test_literal_proof_reads_full_browser_entry_fragments(parser, container):
+    before = "function value() { return 'approved'; }"
+    expression = "'" + "\\\n" * 130 + "approved'"
+    if container == "script":
+        source = "<script>function value() { return " + expression + "; }</script>"
+    else:
+        source = '<button onclick="return ' + expression + ';">x</button>'
+        if container == "srcdoc":
+            source = '<iframe srcdoc="' + source.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;') + '"></iframe>'
+    debt = [row for row in guard.node_reply(dict(sources=[dict(path="client/before.ts", text=before)]))["sites"]
+            if row["rule"] == "verdict-return"]
+    path = "client/entry.html"
+    current = [row for row in guard.node_reply(dict(sources=[dict(path=path, text=source)]))["sites"]
+               if row["rule"] == "verdict-return"]
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={path: source})

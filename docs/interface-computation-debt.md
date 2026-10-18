@@ -59,15 +59,32 @@ reader, enforce the prohibition on unreviewed direct publication.
 Debt remains **strictly shrink-only** against its immutable source ceiling and
 every active ancestor. No debt record, including a deleted historical record
 from an earlier schema, may move into `boundary`. For each introduced
-symbol-qualified AST record, the guard rejects a `(rule, fingerprint)` match
+substantive AST record, the guard rejects a `(rule, fingerprint)` match
 against **all** current, base, active-ancestor and historic debt, independent of
-path, symbol or occurrence. It also rejects a `(path, symbol, rule)` match to a
+path, symbol or occurrence. Under the [supervisor's option (b)](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/682#issuecomment-6247503468),
+name-only `verdict-symbol` / `analysis-symbol` rows and bare-literal
+`verdict-return` rows are excluded **only from this location-independent check**.
+They carry no computation alone; exact-tuple transfers and same-symbol checks
+still apply. Literal exceptions are proved with the unchanged fingerprint
+producers. Full live source supplies literals beyond the truncated expression
+preview; an unproved preview never creates an exception. A second check rejects
+a `(path, symbol, rule)` match to a
 debt row removed by this PR, catching rewrites in the same symbol. There is no
 same-file narrowing. Exact-tuple debt transfers still refuse for every rule.
 
-The location-independent and removed-symbol checks deliberately exclude the
-context-free lexical `<forbidden-pattern>` and `<generated-payload>` rows:
-their short token spans collide across unrelated code. **Reviewer-only provenance
+The location-independent and removed-symbol checks deliberately exclude only
+**producer-qualified lexical rows**: the symbol must be `<forbidden-pattern>` or
+`<generated-payload>` **and** the rule must be in the closed vocabulary derived
+from the frozen lexer/payload emitters: `raw-count`, `raw-threshold`,
+`filter-count`, `graph-worklist`, `dynamic-code`, `opaque-generated-source`.
+The guard extracts those emission sites; an independent Node-backed producer
+control and the existing detector pins bind that vocabulary. It is not a
+hand-maintained exemption list. Short lexical token spans collide across
+unrelated code. A marker symbol with any other boundary rule **refuses**: the
+JS/TS AST producer can emit that same symbol for a string-literal method name.
+Both the debt index and removed-symbol index use this same classification.
+`dynamic-code` is **never** a boundary record in either namespace or any category;
+no purpose admits eval, exec or Function. **Reviewer-only provenance
 checks remain mandatory** for rewritten debt whose fingerprint changes,
 including a rewritten copy that retains the original debt row in the same symbol.
 Only replacements matching a debt row removed by this PR receive the same-symbol
@@ -100,9 +117,31 @@ category changes, current/base/ancestor/historical debt transfers, moves to a
 new file, symbol renames, copied occurrences, renamed historic debt and in-place
 rewrites, boundary removal/resurrection on either merge parent, register deletion
 and restoration, retained-only contexts and forbidden later v3/observation resets.
-A hosted-only control binds the real event base even when the boundary is empty.
+A temporary-repo `check()` control proves v2-only historical debt cannot return
+as either an exact tuple or a moved boundary form. The hosted-only control binds
+the real event base even when the boundary is empty, and requires `allow_new` to
+match the actual event and its main-base/ref policy. Forged-marker controls use
+both validate-level records and the real Node-backed AST producer. Name/literal
+controls keep the exact and same-symbol refusals and substantive-copy refusal.
 They also pin the unchanged detector. Runtime execution and final-head evidence
 belong to GitHub; PR-0b requires 15/15 and maximum-depth independent review.
+
+## Reuse, never clone
+
+A new site's substantive form that matches registered debt must **call the
+existing owner**, rather than clone it. A rename or reshaping made only to clear
+the check is laundering; the independent reviewer blocks it. The name/literal
+exceptions do not authorize a substantive copy or any engine-owned user fact.
+The mechanical guard is a closed form ratchet, not proof of provenance or absence.
+Changed-fingerprint rewrites/copies, engine-to-interface moves and lexical-only
+findings still need the reviewer checks above.
+
+For #667 before its admission push: retarget to `main`; `api.ts :: planKeys`
+must export/call the existing `projectionEmbed.ts :: closed` owner;
+`SavedPlan.tsx :: samePin` must reuse `projection.ts :: sameIdentity` or
+`sameProjectionIdentity` if its semantics match. Only a genuinely different
+comparison with an accepted justification may be admitted. `planResponseChunks`
+remains a `transport-bound` candidate; these instructions admit no record here.
 
 ## What the gate checks
 

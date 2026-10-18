@@ -398,6 +398,149 @@ def proposal(sites, boundary=()):
                        "disposition": disposition(row)} for row in sites if identity(row) not in boundary_keys]}
 
 
+
+LEXICAL_MARKERS = frozenset({"<forbidden-pattern>", "<generated-payload>"})
+
+
+def lexical_rule_vocabulary(lexer_text=None, payload_text=None):
+    """Derive the closed marker vocabulary from the frozen emission sites.
+
+    Unresolvable emitter shapes fail closed. The Node-backed producer control
+    independently checks the payload rule extraction; detector byte pins remain.
+    """
+    if lexer_text is None:
+        lexer_text = (DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    if payload_text is None:
+        payload_text = (DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    lexical = next(node for node in ast.parse(lexer_text).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "lexical_sites")
+    calls = [node for node in ast.walk(lexical) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "emit"]
+    if not calls or any(len(node.args) != 3 or node.keywords
+                        or not isinstance(node.args[2], ast.Constant)
+                        or type(node.args[2].value) is not str for node in calls):
+        raise ValueError("Unresolvable lexical rule producer")
+    rules = {node.args[2].value for node in calls}
+    payloads = re.findall(
+        r"generatedOpaqueSites\s*\.\s*push\s*\(\s*\{\s*path\s*,\s*symbol:\s*(['\"])([^'\"]+)\1\s*,\s*rule:\s*(['\"])([^'\"]+)\3\s*,",
+        payload_text)
+    pushes = re.findall(r"\bgeneratedOpaqueSites\s*\.\s*push\s*\(", payload_text)
+    if not payloads or len(payloads) != len(pushes) or any(row[1] not in LEXICAL_MARKERS for row in payloads):
+        raise ValueError("Unresolvable payload rule producer")
+    return frozenset(rules | {row[3] for row in payloads})
+
+
+LEXICAL_PRODUCER_RULES = lexical_rule_vocabulary()
+
+
+def lexical_identity(key):
+    """A marker alone is forgeable as a JavaScript string-literal method name."""
+    return key[1] in LEXICAL_MARKERS and key[2] in LEXICAL_PRODUCER_RULES
+
+
+def literal_verdict_fingerprints(current, candidates, current_sources=None):
+    """Prove literal-only returns with the unchanged fingerprint producers.
+
+    Full live sources avoid the census expression preview's truncation. Direct
+    validate callers can supply complete expression previews instead; missing or
+    unparseable previews provide no exception. No expression is executed.
+    """
+    paths = {key[0] for key in candidates if key[2] == "verdict-return"}
+    if not paths:
+        return set()
+    expressions, javascript = set(), []
+    sources = current_sources or {}
+    for path in paths:
+        full = path in sources
+        texts = [sources[path]] if full else [row.get("expression", "") for row in current
+                 if row["path"] == path and row["rule"] == "verdict-return"]
+        for text in texts:
+            if not text:
+                continue
+            if python_module(path):
+                try:
+                    tree = ast.parse(text if full else "def literal_probe():\n return " + text + "\n")
+                except (SyntaxError, ValueError):
+                    if full:
+                        raise
+                    continue
+                for node in ast.walk(tree):
+                    value = node.value if isinstance(node, ast.Return) else node.body if isinstance(node, ast.Lambda) else None
+                    if isinstance(value, ast.Constant) and _python_return_verdict(value):
+                        expressions.add(ast.get_source_segment(text if full else "def literal_probe():\n return " + text + "\n", value))
+            else:
+                javascript.append(dict(path=path, text=text if full else "function literal_probe() { return " + text + "; }",
+                                       required=full, document=full and path.lower().endswith(BROWSER_DOCUMENT_SUFFIXES)))
+    fingerprints = {row["fingerprint"] for expression in expressions
+                    for row in python_sites("literal_probe.py", "def literal_probe():\n return " + expression + "\n")
+                    if row["rule"] == "verdict-return"}
+    if javascript:
+        # This policy proof only identifies bare literal nodes. The existing
+        # detector remains the sole owner of every resulting fingerprint.
+        script = r"""
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const require = createRequire(resolve(process.cwd(), 'atlas-scope/package.json'));
+const ts = require('typescript');
+if (ts.version !== '5.9.3') throw new Error('Literal policy proof requires the locked parser');
+const inputs = JSON.parse(readFileSync(0, 'utf8'));
+const parseHtml = inputs.some(input => input.document) ? (await import(pathToFileURL(require.resolve('parse5')).href)).parse : null;
+function documentFragments(text, depth = 0) {
+  if (depth > 8) throw new Error('Literal policy HTML depth exceeds the source contract');
+  const fragments = [];
+  function visit(node) {
+    if (node.tagName === 'script') fragments.push((node.childNodes ?? []).filter(child => child.nodeName === '#text').map(child => child.value).join(''));
+    for (const attr of node.attrs ?? []) {
+      fragments.push(attr.value);
+      try {
+        const url = new URL(attr.value, 'https://static-census.invalid/');
+        if (url.protocol === 'javascript:') fragments.push(decodeURIComponent(url.href.slice(url.protocol.length)));
+      } catch { /* An unproved fragment creates no literal exception. */ }
+      if (attr.name === 'srcdoc') fragments.push(...documentFragments(attr.value, depth + 1));
+    }
+    for (const child of node.childNodes ?? []) visit(child);
+    if (node.content) visit(node.content);
+  }
+  visit(parseHtml(text));
+  return fragments;
+}
+const literals = new Set();
+for (const {path, text, required, document} of inputs) {
+  const lower = path.toLowerCase();
+  const kind = lower.endsWith('.tsx') ? ts.ScriptKind.TSX : lower.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(lower) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  for (const fragment of document ? documentFragments(text) : [text]) {
+  let file = ts.createSourceFile(path, fragment, ts.ScriptTarget.Latest, true, kind);
+  if (file.parseDiagnostics.length && document) file = ts.createSourceFile(path, 'function literal_probe() {\n' + fragment + '\n}', ts.ScriptTarget.Latest, true, kind);
+  if (file.parseDiagnostics.length) {
+    if (required && !document) throw new Error('Literal policy source parse failed');
+    continue;
+  }
+  function visit(node) {
+    const value = ts.isReturnStatement(node) ? node.expression : ts.isArrowFunction(node) && !ts.isBlock(node.body) ? node.body : null;
+    if (value && (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(value.kind))) literals.add(value.getText(file));
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  }
+}
+process.stdout.write(JSON.stringify([...literals]));
+"""
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node is required for the literal boundary policy proof")
+        result = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(javascript),
+                                cwd=DETECTOR_ROOT, text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+        literals = json.loads(result.stdout)
+        if literals:
+            text = "\n".join("function literal_probe_" + str(index) + "() { return " + value + "; }"
+                             for index, value in enumerate(literals))
+            fingerprints.update(row["fingerprint"] for row in node_reply(dict(sources=[dict(path="literal_probe.ts", text=text)]))["sites"]
+                                if row["rule"] == "verdict-return")
+    return fingerprints
+
+
 def boundary_records(rows):
     """Closed exact-site metadata, never a file/symbol/category-wide exemption."""
     fields = {"path", "symbol", "rule", "fingerprint", "occurrence", "category"}
@@ -411,6 +554,10 @@ def boundary_records(rows):
             raise ValueError("Boundary identities have malformed exact types")
         if type(row["category"]) is not str or row["category"] not in BOUNDARY_CATEGORIES:
             raise ValueError("Boundary category is missing or unknown")
+        if row["rule"] == "dynamic-code":
+            raise ValueError("Dynamic code can never be a boundary record")
+        if row["symbol"] in LEXICAL_MARKERS and not lexical_identity(identity(row)):
+            raise ValueError("Reserved lexical marker has a non-lexical boundary rule")
     keys = [identity(row) for row in rows]
     if len(keys) != len(set(keys)) or keys != sorted(keys):
         raise ValueError("Duplicate or unordered boundary sites")
@@ -507,7 +654,7 @@ def policy_record(commit, record, *, historical=True):
 
 
 def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=None,
-             removed_boundary=(), historic_debt=(), allow_new_boundary=True):
+             removed_boundary=(), historic_debt=(), allow_new_boundary=True, current_sources=None):
     if set(registry) != {"schema", "origin", "stage", "sites", "boundary"} or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
         raise ValueError("Debt register requires source-bound active review")
     expected_keys = {"path", "symbol", "rule", "fingerprint", "occurrence", "disposition"}
@@ -556,19 +703,20 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
         if any(key in prior and row["category"] != prior[key]["category"] for key, row in boundary.items()):
             raise ValueError("A retained boundary category changed")
         introduced = set(boundary) - set(prior)
-        # Lexical tripwires have context-free token fingerprints. Only AST rows
-        # support location-independent provenance checks; semantic rewrites and
-        # engine-to-interface moves still require independent source review.
-        ast_debt = {key for key in debt_history
-                    if key[1] not in {"<forbidden-pattern>", "<generated-payload>"}}
-        debt_forms = {(key[2], key[3]) for key in ast_debt}
+        # A reserved symbol is lexical only with a producer-emitted lexer rule.
+        # Name-only rows and proved bare literals carry no computation alone:
+        # exclude them from form matching only, never exact/same-symbol checks.
+        ast_debt = {key for key in debt_history if not lexical_identity(key)}
+        debt_forms = {(key[2], key[3]) for key in ast_debt
+                      if key[2] not in {"verdict-symbol", "analysis-symbol"}}
+        literal_forms = literal_verdict_fingerprints(current,
+            [key for key in introduced if (key[2], key[3]) in debt_forms], current_sources)
         removed_debt = {identity(row) for row in base["sites"]} - registered
-        removed_symbols = {(key[0], key[1], key[2]) for key in removed_debt
-                           if key[1] not in {"<forbidden-pattern>", "<generated-payload>"}}
+        removed_symbols = {(key[0], key[1], key[2]) for key in removed_debt if not lexical_identity(key)}
         for key in introduced:
-            if key[1] in {"<forbidden-pattern>", "<generated-payload>"}:
+            if lexical_identity(key):
                 continue
-            if (key[2], key[3]) in debt_forms:
+            if (key[2], key[3]) in debt_forms and not (key[2] == "verdict-return" and key[3] in literal_forms):
                 raise ValueError("Debt-to-boundary AST form moved/copied from current or historical debt")
             if (key[0], key[1], key[2]) in removed_symbols:
                 raise ValueError("Debt-to-boundary rewrite of a debt symbol removed by this PR")
@@ -646,7 +794,8 @@ def check():
                     base_sources[path] = source_bytes[path].decode("utf-8")
             base_sites = scan(base_sources)
     validate(registry, current, origin, previous, base=base_record, base_sites=base_sites,
-             historic_debt=historic_debt, removed_boundary=removed_boundary, allow_new_boundary=allow_new)
+             historic_debt=historic_debt, removed_boundary=removed_boundary, allow_new_boundary=allow_new,
+             current_sources=current_sources)
     return len(current)
 
 
