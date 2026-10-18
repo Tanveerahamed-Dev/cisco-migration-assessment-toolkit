@@ -1,7 +1,5 @@
 name: RC8 complete TARGET type and selected closure census
 on:
-  push:
-    branches: [codex/rc8-order-diagnostic]
   workflow_dispatch:
 permissions:
   contents: read
