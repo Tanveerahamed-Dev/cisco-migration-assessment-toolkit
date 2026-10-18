@@ -2520,6 +2520,9 @@ def test_debug_helper_parent_watchdog_contains_abrupt_parent_death() -> None:
         parent.close()
 
 
+# A real capture runs the product's own git query and debugger under fixed deadlines against the
+# live checkout, so it needs the runner to itself: CI runs it in the serial `unshared` pass (pytest.ini).
+@pytest.mark.unshared
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live discovery is intentionally Windows-only",
@@ -2631,6 +2634,9 @@ def test_real_windows_capture_runs_only_from_a_tracked_clean_committed_checkout(
     }
 
 
+# A real capture runs the product's own git query and debugger under fixed deadlines against the
+# live checkout, so it needs the runner to itself: CI runs it in the serial `unshared` pass (pytest.ini).
+@pytest.mark.unshared
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live DEBUG_PROCESS discovery is intentionally Windows-only",
@@ -2729,6 +2735,9 @@ def test_real_windows_debug_capture_runs_only_from_a_tracked_clean_committed_che
     assert sealed == (process, image, loss, environment_manifest)
 
 
+# A real capture runs the product's own git query and debugger under fixed deadlines against the
+# live checkout, so it needs the runner to itself: CI runs it in the serial `unshared` pass (pytest.ini).
+@pytest.mark.unshared
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live DEBUG_PROCESS /3 reconciliation is intentionally Windows-only",
@@ -2832,6 +2841,9 @@ def test_real_windows_debug_v3_capture_runs_only_from_a_tracked_clean_committed_
     assert sealed == (process, image, loss, environment_manifest)
 
 
+# A real capture runs the product's own git query and debugger under fixed deadlines against the
+# live checkout, so it needs the runner to itself: CI runs it in the serial `unshared` pass (pytest.ini).
+@pytest.mark.unshared
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live DEBUG_PROCESS /4 file-identity capture is intentionally Windows-only",
@@ -2950,6 +2962,9 @@ def test_real_windows_debug_v4_capture_runs_only_from_a_tracked_clean_committed_
     assert sealed == (process, image, file_identity, loss, environment_manifest)
 
 
+# A real capture runs the product's own git query and debugger under fixed deadlines against the
+# live checkout, so it needs the runner to itself: CI runs it in the serial `unshared` pass (pytest.ini).
+@pytest.mark.unshared
 @pytest.mark.skipif(
     os.name != "nt" or sys.platform != "win32",
     reason="live DEBUG_PROCESS /5 mapped-image capture is intentionally Windows-only",

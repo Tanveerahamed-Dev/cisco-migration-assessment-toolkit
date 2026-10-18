@@ -165,11 +165,23 @@ jobs:
           webapp/tests/test_carriage_ingestion.py webapp/tests/test_snapshot_raw.py
           webapp/tests/test_carriage_lifecycle.py
           webapp/tests/test_atlas_unplug_safety.py::test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot
+      # Every leg runs the default suite in two passes that together are exactly the complete suite
+      # (tests/test_ci_gates.py :: test_every_parallel_suite_pass_has_its_serial_unshared_complement).
+      # The rest runs first in pytest-xdist workers, one test file per worker (--dist=loadfile, the Stop
+      # hook's mode). The tests marked `unshared` (pytest.ini) need the runner to themselves -- the G14
+      # millisecond budgets, real Windows captures under the product's own git and debugger deadlines --
+      # and run last in one serial process. The whole suite in ONE interpreter, the cross-file
+      # contamination check, stays with the serial Coverage job and the portable gate's serial shards.
       - name: Run the complete default suite
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-        run: python -m pytest --durations=40
+        run: python -m pytest --durations=40 -n auto --dist=loadfile -m "not unshared"
+      - name: Run the unshared part of the default suite in one process
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
+        run: python -m pytest --durations=40 -m unshared
       - name: Reproduce the complete committed sample under UTC
         if: matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'
         env:
