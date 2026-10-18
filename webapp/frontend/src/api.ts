@@ -1,5 +1,6 @@
 // Typed client for the AssessHub backend. One origin in prod; Vite proxies /api -> :8000 in dev.
 import { designRequirementsContract } from "./generated/openapi";
+import { closed } from "./projectionEmbed";
 import type { DesignRequirements } from "./generated/openapi";
 export { designRequirementsContract } from "./generated/openapi";
 
@@ -1634,9 +1635,6 @@ const PLAN_BYTE_BUFFER = Object.getOwnPropertyDescriptor(PLAN_TYPED_ARRAY_PROTOT
 function planObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function planKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
-}
 function planInteger(value: unknown, zero = false): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= (zero ? 0 : 1);
 }
@@ -1661,7 +1659,7 @@ function planPin(pin: SavedPlanPin): void {
     && planInteger(pin.selection_id), "The saved-plan selection is invalid", 400);
 }
 function checkedAssessment(value: unknown, sid: number, status = 502): SavedPlanAssessment {
-  planAssert(planObject(value) && planKeys(value, SAVED_PLAN_ASSESSMENT_KEYS)
+  planAssert(planObject(value) && closed(value, SAVED_PLAN_ASSESSMENT_KEYS)
     && value.source === "persisted snapshots.snapshot_json blob" && planDigest(value.sha256)
     && planInteger(value.bytes) && planInteger(value.snapshot_id) && value.snapshot_id === sid
     && planInteger(value.campaign_id) && planNonempty(value.engagement_id)
@@ -1734,13 +1732,13 @@ function validPlanNrfu(value: unknown): boolean {
 }
 function checkedPlan(value: unknown, sid: number, pin?: SavedPlanPin): SavedPlanRecord {
   planAssert(validPlanMeta(value) && planObject(value)
-    && planKeys(value, [...SAVED_PLAN_META_KEYS, "assessment", "projection", "selection_id"])
+    && closed(value, [...SAVED_PLAN_META_KEYS, "assessment", "projection", "selection_id"])
     && planInteger(value.selection_id), "The saved-plan record could not be verified");
   checkedAssessment(value.assessment, sid);
   if (pin) planAssert(value.revision === pin.revision && value.sha256 === pin.sha256
     && value.selection_id === pin.selection_id, "The response belongs to a different saved-plan selection");
   const projection = value.projection;
-  planAssert(planObject(projection) && planKeys(projection, ["schema", "requirements", "sections", "derivation"])
+  planAssert(planObject(projection) && closed(projection, ["schema", "requirements", "sections", "derivation"])
     && projection.schema === "atlas.saved_plan_projection/2" && validPlanRequirements(projection.requirements)
     && planObject(projection.sections), "The saved-plan projection is invalid");
   const sections = projection.sections, derivation = projection.derivation;
@@ -1758,12 +1756,12 @@ function checkedPlan(value: unknown, sid: number, pin?: SavedPlanPin): SavedPlan
   return value as unknown as SavedPlanRecord;
 }
 function checkedPlanState(value: unknown, sid: number): SavedPlanState {
-  planAssert(planObject(value) && planKeys(value, ["assessment", "selection_id", "selected_revision", "revisions"])
+  planAssert(planObject(value) && closed(value, ["assessment", "selection_id", "selected_revision", "revisions"])
     && planInteger(value.selection_id, true) && Array.isArray(value.revisions) && value.revisions.length <= 64,
   "The saved-plan history could not be verified");
   checkedAssessment(value.assessment, sid);
   planAssert(value.revisions.every((row, index) => validPlanMeta(row) && planObject(row)
-    && planKeys(row, SAVED_PLAN_META_KEYS) && row.revision === index + 1), "The saved-plan revision history is invalid");
+    && closed(row, SAVED_PLAN_META_KEYS) && row.revision === index + 1), "The saved-plan revision history is invalid");
   planAssert(value.revisions.length === 0
     ? value.selection_id === 0 && value.selected_revision === null
     : value.selection_id > 0 && planInteger(value.selected_revision)
@@ -1961,7 +1959,7 @@ export const api = {
       planAssert(validPlanConvergence(body.requirements.convergence_budget_ms),
         `Convergence must be a nonnegative whole number no greater than ${SAVED_PLAN_MAX_CONVERGENCE_MS} milliseconds`, 400);
     }
-    planAssert(planObject(body) && planKeys(body, ["label", "requirements", "assessment", "expected_selection_id"])
+    planAssert(planObject(body) && closed(body, ["label", "requirements", "assessment", "expected_selection_id"])
       && planNonempty(body.label) && body.label.length <= 200 && validPlanRequirements(body.requirements, true)
       && planInteger(body.expected_selection_id, true), "The saved-plan request is invalid", 400);
     const assessment = { ...checkedAssessment(body.assessment, id, 400) };
@@ -1975,7 +1973,7 @@ export const api = {
   selectSavedPlan: async (id: number, revision: number, body: SavedPlanSelectionInput,
     signal?: AbortSignal): Promise<SavedPlanRecord> => {
     planId(id); planId(revision);
-    planAssert(revision <= 64 && planObject(body) && planKeys(body, ["plan_sha256", "expected_selection_id"])
+    planAssert(revision <= 64 && planObject(body) && closed(body, ["plan_sha256", "expected_selection_id"])
       && planDigest(body.plan_sha256) && planInteger(body.expected_selection_id, true), "The saved-plan selection is invalid", 400);
     const digest = body.plan_sha256, expectedSelection = body.expected_selection_id;
     const record = checkedPlan(await savedPlanJson(`/api/snapshots/${id}/plans/${revision}/select`, signal, body), id);

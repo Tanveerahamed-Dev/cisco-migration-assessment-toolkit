@@ -624,3 +624,42 @@ footprint is not a semantic admission for this new feature. The exact-source hos
 complete current-tree runtime validation and 15/15 remain unverified. No completion or
 independent-review readiness is claimed. The earlier draft-only/unsigned/external-pending and
 historical failure records remain unchanged.
+
+
+## PR-0b advance owner-reuse preparation — 2026-10-18
+
+The supervisor's #682 decision, comment `6247503468`, supersedes the earlier three-candidate
+admission intent. PR #667 is retargeted to `main`; the published source head remains
+`4f0bdbc66a7cb877751a6d3e8284fabbe5331651`. No local source commit is pushed. #682 is still
+open, so boundary admissions and the ONE source push remain held.
+
+The duplicate `api.ts :: planKeys` is removed. All seven callers now call the existing owner
+`projectionEmbed.ts :: closed` directly. Its declaration is exported without changing its body.
+Besides exact keys, that owner requires a plain/null-prototype object with enumerable own string
+data properties. Ordinary JSON and the current literal request bodies fit that contract; this is
+not a compatibility claim for arbitrary class, accessor or cross-realm objects. Some callers read
+metadata before this check, so reuse is not a blanket no-accessor-evaluation guarantee. No boundary
+record is needed for copied key-validation code because that copy no longer exists.
+
+The named snapshot identity helpers are not equivalent to a saved-plan pin: they compare
+`snapshot_id`, assessment `sha256`, `bytes` and `digest_form`, whereas a plan pin compares
+`revision`, plan `sha256` and `selection_id`. A reselection can change the latter while assessment
+identity stays fixed. No field is remapped to a fictitious snapshot field and no cast is added.
+Instead, the existing registered generic equality owner `projection.ts :: equalJson` compares
+both real, freshly constructed three-field pin objects at the existing download callback.
+The duplicate `samePin` predicate is removed. `pin()` keeps exactly the same runtime fields;
+its literal shape is inferred and checked with `satisfies SavedPlanPin` for the owner's JSON-data
+contract. The generic owner body is unchanged. This checks the true revision/digest/selection
+keys, including a new selection event for the same revision; it is owner reuse, not a renamed or
+re-expressed comparison to evade discovery. No new comparison boundary record is proposed.
+
+`api.ts :: planResponseChunks` remains the transport-bound candidate for per-site admission
+under the MERGED PR-0b mechanism. There is no debt growth, detector/role change, test weakening,
+local inspector, test, build or engine execution. Helper reuse is not an admission or runtime PASS.
+The production frontend inputs changed, so the older compiled edit receipt cannot establish
+reproduction of this source. Tracked compiled assets are preserved without local regeneration;
+fresh source-bound GitHub-hosted rebuild/import evidence remains required. Current-tree hosted
+type checking and every existing safety assertion must still pass. After #682's reviewed merge,
+integrate that main and its exact board, follow its actual site schema/review rules, run Rule-7,
+and use the ONE authorized source push only when the prepared source meets those requirements.
+No PR merge or release publishing is authorized.

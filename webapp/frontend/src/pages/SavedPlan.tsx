@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { api, ApiError, SAVED_PLAN_MAX_CONVERGENCE_MS, designRequirementsContract } from "../api";
+import { equalJson } from "../projection";
 import type {
   Deliverable, Meta, SavedPlanPin, SavedPlanRecord, SavedPlanRequirements, SavedPlanState,
 } from "../api";
@@ -82,12 +83,8 @@ function formRequirements(draft: Draft): SavedPlanRequirements {
   return requirements;
 }
 
-function pin(plan: SavedPlanRecord): SavedPlanPin {
-  return { revision: plan.revision, sha256: plan.sha256, selection_id: plan.selection_id };
-}
-
-function samePin(a: SavedPlanPin, b: SavedPlanPin): boolean {
-  return a.revision === b.revision && a.sha256 === b.sha256 && a.selection_id === b.selection_id;
+function pin(plan: SavedPlanRecord) {
+  return { revision: plan.revision, sha256: plan.sha256, selection_id: plan.selection_id } satisfies SavedPlanPin;
 }
 
 function checkRecord(plan: SavedPlanRecord, state: SavedPlanState, requestedRevision?: number, requestedHash?: string) {
@@ -324,7 +321,7 @@ function SavedPlanWorkspace({ snapshotId, activeSource }: {
     requests.current.add(controller);
     try {
       const document = await api.savedPlanDocument(snapshotId, requested, item.key, item.ext, controller.signal);
-      if (!current(version, controller) || !selectedRef.current || !samePin(pin(selectedRef.current), pin(requested))) return;
+      if (!current(version, controller) || !selectedRef.current || !equalJson(pin(selectedRef.current), pin(requested))) return;
       saveVerifiedDocument(document.blob, document.extension, snapshotId, requested.revision, item.key);
       setMessage(`${item.label} download prepared for revision ${requested.revision}.`);
     } catch (reason) {

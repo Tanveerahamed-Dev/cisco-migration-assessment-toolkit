@@ -50,7 +50,7 @@ function record(value: unknown): value is Record<string, unknown> {
     Object.getOwnPropertyDescriptor(value, key)?.set === undefined);
 }
 
-function closed(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+export function closed(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return record(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
