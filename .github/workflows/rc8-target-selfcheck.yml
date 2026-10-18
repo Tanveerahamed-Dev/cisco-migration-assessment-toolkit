@@ -47,6 +47,7 @@ jobs:
           source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
           bounded python -m pip install --upgrade pip
           bounded python -m pip install -r requirements-dev.txt
+          bounded python -m pip install --no-deps --only-binary=:all: --no-cache-dir --force-reinstall "paramiko==5.0.0"
         working-directory: subject
       - name: Hosted census self-check in a separate process
         run: |
