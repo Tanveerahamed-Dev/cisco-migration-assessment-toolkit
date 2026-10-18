@@ -834,3 +834,88 @@ detector, roles and tests remain unchanged. The single source push is unused. Fr
 Rule-7 scans precede any eventual push; all 14 exact-head hosted required contexts, full
 binding observation and source-bound frontend reproduction remain pending. No PR merge,
 signing, qualification or release publication is authorized.
+
+## Main eedaba40 integration and reviewed collision-policy admission (2026-10-19)
+
+The supervisor explicitly resumed #667 after #691 merged as
+`eedaba403a40b9e90ac0bde0e1af14de0dc39543`. Normal merge
+`eea41e8ea3251cb2bafad7475658891ee7343aaf` retains both parents. Main's board,
+Snapshot source and interim compiled distribution are exact; no dist was hand-merged.
+The SSOT preserves both owner changes; census logic is unchanged and its two changed
+source-chain hashes were refreshed. The separate auxiliary #691 P3 fixture refinement
+is outside #667.
+
+Fresh canonical AST-only observation on nine whole interface files completed in
+3.344 seconds: 634 scoped sites, 216 new identities and no stale scoped debt. Its
+output SHA-256 is `5623f5851a6a7db5ba6c85c53bc6b81fe0256d4ab72739784fa9a2e125b49737`.
+The four canonical observer/parser source hashes and helper hash are listed below.
+
+| Source | SHA-256 |
+|---|---|
+| `tests/interface_computation_guard.py` | `f83e267362079992d7da07c3e82025da88cc9df3d0f07bcd2f59524f2dcd58e9` |
+| `tests/interface_computation_lex.py` | `9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c` |
+| `tests/interface_computation_sources.py` | `6b29467c0b11ea6e64282e3701031b250f3b332c130fe28aac0e646b28992741` |
+| `.github/scripts/interface_computation_ast.mjs` | `f230971bba5c3d6802760164e642d345adbb1c2d57dc8422b40cb0290a2fb6a3` |
+| `external scoped-observer.py` | `cfd6ca618197406e7224d461b12c9dcaa6cb5bcbffa6c6150e58c1a652c0eb00` |
+
+Exact invocation was `py -3.12 -B scoped-observer.py` in external scratch, with
+`ATLAS_SOURCE_ROOT` and scratch-only `NODE_PATH`. The unchanged canonical
+`scan(SourceMap(...))` supplied all identities. The only installed packages were
+the owner-approved TypeScript 5.9.3, parse5 8.0.1 and entities 8.1.0, whose downloaded
+and resolved integrity hashes matched the repository lock. Installation used
+`npm.cmd ci --ignore-scripts --no-audit --no-fund --bin-links=false --include=dev`
+with external prefix/cache; both were removed. No repository dependency file or
+node_modules changed. No local test, application, build, engine, browser, Graphify
+or receipt-controller execution occurred.
+
+The proposal adds 200 ordinary boundary rows and the 16 explicit collision rows
+below. The entire 36,784-row debt block is byte-identical to main: zero additions,
+removals or modifications. The PR description lists all 216 exact proposals and
+one-line justifications; C01-C16 and every unchanged debt witness are also below.
+These are proposals, not independent approval. One rejected record blocks merge.
+The registered `equalJson` compares revision/digest/selection pins; assessment-only
+`sameIdentity` would miss selection changes. Registered `closed` is reused unchanged.
+
+The source push, successful hosted frontend build/receiver, dist-and-receipt-only
+import and exact-import post-verification remain separate stages. Hosted full
+observation is binding and must match the proposed register. Final-head 14/14,
+applicable whole workflows, native browser downloads and frozen portable evidence
+are required before the completion comment and STOP for independent review. Prior
+source successes and failures stay scoped to their exact subjects. The main
+distribution is an interim retained artifact, not rebuilt evidence for this source.
+No gate/budget/timeout, golden/sample output, product/schema version, release,
+signing or external-acceptance boundary changes.
+
+| Name | Path | Symbol | Rule | Fingerprint | Occurrence | Category | Admission class | One-line justification | All debt witnesses |
+|---|---|---|---|---|---:|---|---|---|---|
+| C01 | `webapp/frontend/src/api.ts` | `planInteger` | returned-comparison | `769874aa5db9480902186ad363ac8debe4e8131f7f4967c8079ed52519b601e2` | 1 | response-identity | response-shape-validation | Require a numeric JSON field before checking saved-plan transport identity. | D01 (3 unchanged rows) |
+| C02 | `webapp/frontend/src/api.ts` | `planNonempty` | count | `d59d95b6279ab3f715f413e213fd1d50fdefc3905cd0954a0c3a424f30b4a0ac` | 1 | response-identity | response-shape-validation | Reject blank transported text; the length is a string-shape check. | D02 (2 unchanged rows) |
+| C03 | `webapp/frontend/src/api.ts` | `planObject` | returned-comparison | `0c826da5d39395e0f298503c4c39c85fa0d1a367359de453fd0c12bbeffac601` | 1 | response-identity | response-shape-validation | Reject null saved-plan JSON containers before reading their fields. | D03 (11 unchanged rows) |
+| C04 | `webapp/frontend/src/api.ts` | `planObject` | returned-comparison | `6a92bed2ade8168bed69bf6645dbb1685ee7dd7fd87ab06d4d7f90740f61b4fc` | 1 | response-identity | response-shape-validation | Require an object-shaped saved-plan JSON container before reading its fields. | D04 (11 unchanged rows) |
+| C05 | `webapp/frontend/src/api.ts` | `planString` | returned-comparison | `5ff5d5487ac5420a2bcd54b5b02ec773d16f8a3aa44664fd8b897b53434e2047` | 1 | response-identity | response-shape-validation | Require a transported saved-plan field to be text before rendering it. | D05 (16 unchanged rows) |
+| C06 | `webapp/frontend/src/api.ts` | `savedPlanDocument` | count | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | 1 | transport-bound | transport-serialization | Stop collecting the received Office ZIP signature after four response bytes. | D06 (10 unchanged rows) |
+| C07 | `webapp/frontend/src/api.ts` | `savedPlanDocument` | count | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | 2 | transport-bound | transport-serialization | Stop traversing response chunks once the four-byte Office ZIP signature is collected. | D06 (10 unchanged rows) |
+| C08 | `webapp/frontend/src/api.ts` | `savedPlanDocument` | count | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | 3 | transport-bound | transport-serialization | Require a complete four-byte Office ZIP signature before offering the received document. | D06 (10 unchanged rows) |
+| C09 | `webapp/frontend/src/api.ts` | `validPlanConvergence` | count | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | 1 | response-identity | response-shape-validation | Reject a transported convergence field exceeding the lossless decimal digit bound. | D07 (4 unchanged rows) |
+| C10 | `webapp/frontend/src/api.ts` | `validPlanConvergence` | count | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | 2 | response-identity | response-shape-validation | Compare equal-width transported decimal text against its supported transport bound. | D07 (4 unchanged rows) |
+| C11 | `webapp/frontend/src/pages/SavedPlan.tsx` | `SavedPlanWorkspace` | count | `33dcbe05f48c894f1d9c5f2d7c3a53e276dfddaba60167945f370b0ad55d27c4` | 1 | ui-state | empty-state-presentation | Select empty-catalogue presentation from the supplied download list. | D08 (26 unchanged rows) |
+| C12 | `webapp/frontend/src/pages/SavedPlan.tsx` | `SavedPlanWorkspace` | returned-comparison | `0cc66f17a5cd1f086984db045486e6f76bd644be6c88935cd9fdaa1436719639` | 1 | ui-state | empty-state-presentation | Show the empty-catalogue message when the supplied download list has no entries. | D09 (1 unchanged rows) |
+| C13 | `webapp/frontend/src/pages/SavedPlan.tsx` | `formRequirements` | collection-update | `90b33a0c54e9726ededfcffd48426b4773abaabaae29804fd9b995705d2fc8d3` | 1 | ui-state | user-input-validation | Remember submitted VLAN IDs solely to reject duplicate form assignments. | D10 (1 unchanged rows) |
+| C14 | `webapp/frontend/src/pages/SavedPlan.tsx` | `formRequirements` | count | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | 1 | ui-state | user-input-validation | Reject form convergence text exceeding the lossless decimal digit bound. | D07 (4 unchanged rows) |
+| C15 | `webapp/frontend/src/pages/SavedPlan.tsx` | `formRequirements` | count | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | 2 | ui-state | user-input-validation | Compare equal-width form decimal text against the supported input bound. | D07 (4 unchanged rows) |
+| C16 | `webapp/frontend/src/pages/SavedPlan.tsx` | `listText` | returned-comparison | `5ff5d5487ac5420a2bcd54b5b02ec773d16f8a3aa44664fd8b897b53434e2047` | 1 | ui-state | transport-serialization | Choose string or list serialization for already-persisted requirement form text. | D05 (16 unchanged rows) |
+
+The witness groups below name every debt identity sharing the fingerprint, across all rules. Each debt tuple is `path / symbol / rule / occurrence`; its fingerprint is the group fingerprint. All dispositions and complete debt-row bytes remain identical to main `eedaba403a40b9e90ac0bde0e1af14de0dc39543`.
+
+| Group | Shared fingerprint | Every unchanged debt identity |
+|---|---|---|
+| D01 | `769874aa5db9480902186ad363ac8debe4e8131f7f4967c8079ed52519b601e2` | `atlas-scope/src/contract-mode/load.ts / count / returned-comparison / 1`<br>`atlas-scope/tools/lib/compile-model.mjs / ownedImpact.count / returned-comparison / 1`<br>`webapp/frontend/src/components/ImpactValue.tsx / isCount / returned-comparison / 1` |
+| D02 | `d59d95b6279ab3f715f413e213fd1d50fdefc3905cd0954a0c3a424f30b4a0ac` | `master-reference/app/atlas/capabilityLineage.ts / nonemptyString / count / 1`<br>`master-reference/app/atlas/horizonLineage.ts / nonemptyString / count / 1` |
+| D03 | `0c826da5d39395e0f298503c4c39c85fa0d1a367359de453fd0c12bbeffac601` | `atlas-scope/src/contract-mode/load.ts / object / returned-comparison / 1`<br>`atlas-scope/src/contract-mode/scene.ts / createContractScene.selectionNodes.<callback> / returned-comparison / 1`<br>`atlas-scope/src/panels/DevicePane.tsx / impactCount / returned-comparison / 1`<br>`atlas-scope/tools/lib/compile-model.mjs / ownedImpact.measure / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _padObj / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / decodeSourceChunk.record / returned-comparison / 1`<br>`webapp/frontend/src/components/ComparisonDecision.tsx / asRecord / returned-comparison / 1`<br>`webapp/frontend/src/pages/Snapshot.tsx / SubjectEvidenceDetail.<callback> / returned-comparison / 1`<br>`webapp/frontend/src/pages/core/TopologyPaths.tsx / RowEvidence.<callback> / returned-comparison / 1`<br>`webapp/frontend/src/pages/core/TopologyPaths.tsx / RowFacts.<callback> / returned-comparison / 1`<br>`webapp/frontend/src/receiptExport.ts / isRecord / returned-comparison / 1` |
+| D04 | `6a92bed2ade8168bed69bf6645dbb1685ee7dd7fd87ab06d4d7f90740f61b4fc` | `atlas-scope/src/contract-mode/load.ts / object / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _fhrpExactKeys / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _padObj / returned-comparison / 1`<br>`master-reference/build/deployment-manifest.mjs / hasExactKeys / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / decodeSourceChunk.record / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / hasExactObjectKeys / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / isObject / returned-comparison / 1`<br>`webapp/frontend/src/components/ComparisonDecision.tsx / asRecord / returned-comparison / 1`<br>`webapp/frontend/src/pages/core/TopologyPaths.tsx / RowEvidence.<callback> / returned-comparison / 1`<br>`webapp/frontend/src/pages/core/TopologyPaths.tsx / RowFacts.<callback> / returned-comparison / 1`<br>`webapp/frontend/src/receiptExport.ts / isRecord / returned-comparison / 1` |
+| D05 | `5ff5d5487ac5420a2bcd54b5b02ec773d16f8a3aa44664fd8b897b53434e2047` | `atlas-scope/src/core/query.ts / iv / returned-comparison / 1`<br>`atlas-scope/src/core/types.ts / member / returned-comparison / 1`<br>`atlas-scope/tools/lib/compile-model.mjs / ownedImpact.text / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _fhrpDomainHex / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _fhrpDomainText / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _ipv6RoutingAsciiString / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _padText / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _routeOwnText / returned-comparison / 1`<br>`cisco_toolkit/blast_radius_explorer.html / fhrpConfiguredGroupBaselineFrom.<callback> / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / graphSourceLocationIsValid / returned-comparison / 1`<br>`master-reference/build/projection/build.mjs / isNonblankString / returned-comparison / 1`<br>`webapp/frontend/src/components/ImpactValue.tsx / text / returned-comparison / 1`<br>`webapp/frontend/src/components/Topology3D.tsx / Topology3D.<callback>.endpoint / returned-comparison / 1`<br>`webapp/frontend/src/projectionEmbed.ts / isContextDigest / returned-comparison / 1`<br>`webapp/frontend/src/projectionEmbed.ts / isEmbedNonce / returned-comparison / 1`<br>`webapp/frontend/src/projectionEmbed.ts / requestId / returned-comparison / 1` |
+| D06 | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | `atlas-scope/src/app/keyboard.ts / dispatch / count / 1`<br>`atlas-scope/src/panels/HopList.tsx / AclFact / count / 1`<br>`atlas-scope/src/panels/HopList.tsx / fallbackLists / count / 1`<br>`cisco_toolkit/blast_radius_explorer.html / _routePrefix / count / 1`<br>`master-reference/build/projection/build.mjs / dossierPrefixFor / count / 1`<br>`master-reference/build/projection/build.mjs / dossierPrefixFor / count / 2`<br>`master-reference/build/projection/build.mjs / splitDossierBucket / count / 1`<br>`master-reference/build/projection/build.mjs / splitDossierBucket.<callback> / count / 1`<br>`master-reference/build/projection/build.mjs / splitSearchBucket / count / 1`<br>`master-reference/build/projection/build.mjs / splitSearchBucket.<callback> / count / 1` |
+| D07 | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | `master-reference/build/projection/build.mjs / pythonFloatToken / count / 1`<br>`master-reference/build/projection/build.mjs / pythonFloatToken / count / 2`<br>`master-reference/build/projection/build.mjs / pythonFloatToken / count / 3`<br>`master-reference/build/projection/build.mjs / pythonFloatToken / count / 4` |
+| D08 | `33dcbe05f48c894f1d9c5f2d7c3a53e276dfddaba60167945f370b0ad55d27c4` | `atlas-scope/review/capture.mjs / readCoverageVisibility / count / 1`<br>`atlas-scope/src/core/data.ts / tallySeverities / count / 1`<br>`atlas-scope/src/core/query.ts / applyClauses / count / 1`<br>`atlas-scope/src/core/query.ts / applyClauses / count / 2`<br>`atlas-scope/src/core/query.ts / applyClauses.<callback> / count / 1`<br>`atlas-scope/src/panels/Inspector.tsx / GapSection / count / 1`<br>`atlas-scope/src/ui/primitives.tsx / Dialog.<callback>.onKey / count / 1`<br>`atlas-scope/src/ui/primitives.tsx / Dialog.<callback>.onKey / count / 2`<br>`cisco_toolkit/blast_radius_explorer.html / abqProg / count / 1`<br>`cisco_toolkit/blast_radius_explorer.html / computeCurrentBaselineGate / count / 1`<br>`cisco_toolkit/blast_radius_explorer.html / computeCurrentBaselineGate / count / 2`<br>`cisco_toolkit/blast_radius_explorer.html / computeCurrentBaselineGate / count / 3`<br>`cisco_toolkit/blast_radius_explorer.html / computeCurrentBaselineGate / count / 4`<br>`cisco_toolkit/blast_radius_explorer.html / drawDesignNrfu / count / 1`<br>`cisco_toolkit/blast_radius_explorer.html / drawDesignNrfu / count / 2`<br>`cisco_toolkit/blast_radius_explorer.html / wavesValidationBlock / count / 1`<br>`cisco_toolkit/blast_radius_explorer.html / wavesValidationBlock / count / 2`<br>`cisco_toolkit/blast_radius_explorer.html / wavesValidationBlock / count / 3`<br>`master-reference/app/atlas/horizonLineage.ts / stringArray / count / 1`<br>`webapp/frontend/src/pages/Snapshot.tsx / DeliverablesPanel / count / 1`<br>`webapp/frontend/src/test/projectionFixtures.ts / carriagePageFixture / count / 1`<br>`webapp/frontend/src/test/projectionFixtures.ts / carriagePageFixture / count / 2`<br>`webapp/frontend/src/test/projectionFixtures.ts / ownerList / count / 1`<br>`webapp/frontend/src/test/projectionFixtures.ts / ownerPage / count / 1`<br>`webapp/frontend/src/test/projectionFixtures.ts / ownerPage / count / 2`<br>`webapp/frontend/src/test/projectionFixtures.ts / requireContractVocab / count / 1` |
+| D09 | `0cc66f17a5cd1f086984db045486e6f76bd644be6c88935cd9fdaa1436719639` | `atlas-scope/src/panels/Inspector.tsx / GapSection / returned-comparison / 1` |
+| D10 | `90b33a0c54e9726ededfcffd48426b4773abaabaae29804fd9b995705d2fc8d3` | `cisco_toolkit/blast_radius_explorer.html / stpRootElection / collection-update / 1` |
