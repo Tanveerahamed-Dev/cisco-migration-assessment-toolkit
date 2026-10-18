@@ -2840,6 +2840,76 @@ def project_overview(snap: Any) -> Dict[str, Any]:
     return _overview(_Ctx(snap))
 
 
+def project_summary(snap: Any) -> Dict[str, Any]:
+    """Compact dashboard cache of the same admitted facts as Overview and Findings.
+
+    This is not a persisted assessment section. In particular, a withheld facet is
+    never a measured zero and readiness is counted only after the owner's exact
+    group/checklist join. No dashboard-specific verdict or health threshold exists.
+    """
+    ctx = _Ctx(snap)
+    overview = _overview(ctx)
+    findings = _findings(ctx)
+
+    def counts(facts: Sequence[Dict[str, Any]], basis: str) -> Dict[str, Any]:
+        refs = _merged_refs(*(fact["refs"] for fact in facts))
+        held = next((fact for fact in facts if fact["state"] != _PUB), None)
+        if held is not None:
+            return _envelope(held["state"], None, None, refs, basis, held["reason"])
+        caveats = tuple(dict.fromkeys(c for fact in facts for c in fact.get("caveats", ())))
+        return _envelope(_PUB, sum(fact["value"] for fact in facts), None, refs, basis, "", caveats=caveats)
+
+    severities = findings["facets"]["severity"]
+    groups = overview["readiness"]["groups"]
+    readiness = []
+    for label in VLAN_READINESS:
+        cells = [row["readiness"] for row in groups["items"]]
+        held = next((fact for fact in cells if fact["state"] != _PUB), None)
+        state = held["state"] if held else groups["state"]
+        reason = held["reason"] if held else groups.get("reason")
+        fact = _envelope(state, sum(cell["value"] == label for cell in cells), None,
+                         _merged_refs(groups["refs"], *(cell["refs"] for cell in cells)),
+                         "analyze.compute_migration_readiness:validated group labels", reason or "",
+                         caveats=groups.get("caveats", ()) if state == _PUB else ())
+        readiness.append({"k": label, "n": fact})
+    for fact in [findings["total"], *(r["n"] for r in findings["facets"]["severity"]),
+                 *(r["n"] for r in findings["facets"]["category"])]:
+        fact["minimum"] = fact["state"] == _PUB and bool(set(fact.get("caveats", ())) & {
+            "fleet_lists_exclude_blind_devices", "findings_without_running_config", "finding_facet_source_incomplete"})
+    critical_high = counts([row["n"] for row in severities if row["k"] in ("Critical", "High")],
+                           "analyze.compute_punchlist_facets:Critical + High")
+    critical_high["minimum"] = critical_high["state"] == _PUB and any(
+        row["n"].get("minimum", False) for row in severities if row["k"] in ("Critical", "High"))
+    def value(fact: Dict[str, Any]) -> Any:
+        return fact["value"] if fact["state"] == _PUB else None
+
+    def buckets(rows: Sequence[Dict[str, Any]], key: str = "k") -> Dict[str, Any]:
+        return {row[key]: value(row["n"]) for row in rows}
+
+    facts = overview["facts"]
+    # Transitional scalar fields are computed here too. The web adapter copies
+    # this exact cache; it cannot turn a withheld envelope into a fallback zero.
+    legacy = {"n_switches": value(facts["n_devices"]["fact"]),
+              "avg_health": value(facts["avg_health"]["fact"]),
+              "n_critical": value(facts["n_critical"]["fact"]),
+              # Keep the legacy API's best-to-worst presentation order without
+              # re-counting or changing any admitted band value/state.
+              "bands": {band: value(next(row["n"] for row in overview["fleet_health"]["bands"]
+                                         if row["band"] == band))
+                        for band in (*reversed(HEALTH_BANDS), HEALTH_BAND_NOT_SCORED)},
+              "readiness": buckets(readiness),
+              "punchlist": {"total": value(findings["total"]),
+                            "by_severity": buckets(severities),
+                            "by_category": buckets(findings["facets"]["category"]),
+                            "crit_high": value(critical_high)}}
+    return {"schema": "assesshub_summary/1", "facts": facts, "legacy": legacy,
+            "bands": overview["fleet_health"]["bands"], "readiness": readiness,
+            "readiness_source": {k: v for k, v in groups.items() if k != "items"},
+            "punchlist": {"total": findings["total"],
+                          "by_severity": severities, "by_category": findings["facets"]["category"],
+                          "crit_high": critical_high}}
+
+
 # ---------------------------------------------------------------------------------------------------
 # trust
 # ---------------------------------------------------------------------------------------------------
@@ -9190,6 +9260,74 @@ def _topology(ctx: _Ctx) -> Dict[str, Any]:
 def project_topology(snap: Any) -> Dict[str, Any]:
     """Stored topology, exact evidence joins and engine-owned presentation; no legacy recomputation."""
     return _topology(_Ctx(snap))
+
+
+def project_tools_topology(snap: Any) -> Dict[str, Any]:
+    """Geometry input for the existing Tools renderer, derived only from the topology owner.
+
+    Membership is the stored cable-map projection, never raw CDP. Health cells use
+    the inventory/device owner. Unknown or ambiguous membership refuses the whole
+    diagram rather than manufacturing zero degrees. Structural facts retain the
+    owner's assessment state; pairs_cut's zero fallback affects stroke width only.
+    The full owner document accompanies this compatibility shape for disclosures.
+    Failure impact is deliberately not simulated here or in the browser.
+    """
+    ctx = _Ctx(snap)
+    topology = _topology(ctx)
+    nodes, edges = [], []
+    result = {"nodes": nodes, "edges": edges, "topology": topology, "engine": _engine(ctx),
+              "link_centrality_assessed": topology["structural_links"]["state"] == _PUB,
+              "offscan_peers": []}
+    refs = _merged_refs(topology["nodes"]["refs"], topology["cables"]["refs"])
+    result["diagram"] = _envelope(_PUB, "Stored cable-map topology", None, refs,
+                                   "ui_projection:Tools geometry input", "",
+                                   caveats=("topology_scanned_model",))
+
+    def refuse(state: str, reason: str) -> Dict[str, Any]:
+        return {**result, "nodes": [], "edges": [],
+                "diagram": _envelope(state, None, None, refs, "ui_projection:Tools geometry input", reason)}
+
+    if topology["nodes"]["state"] != _PUB or topology["cables"]["state"] not in (_PUB, _CBE):
+        held = topology["nodes"] if topology["nodes"]["state"] != _PUB else topology["cables"]
+        return refuse(held["state"], held.get("reason", "The topology owner withholds membership"))
+    raw_nodes = topology["nodes"]["items"]
+    hosts = [row["host"]["value"] for row in raw_nodes]
+    if any(row["host"]["state"] != _PUB for row in raw_nodes) or len(set(hosts)) != len(hosts):
+        return refuse(_UV, "unverified: diagram nodes have an unreadable or duplicate host identity")
+    degree = dict.fromkeys(hosts, 0)
+    structural = {}
+    for row in topology["structural_links"]["items"]:
+        ends = row["ends"]["value"]
+        if row["ends"]["state"] == _PUB:
+            structural[frozenset((ends["a_host"], ends["b_host"]))] = row
+    seen = set()
+    for row in topology["cables"]["items"]:
+        ends = row["ends"]["value"]
+        if row["ends"]["state"] != _PUB or row["a_nodes"]["state"] != _PUB or row["b_nodes"]["state"] != _PUB:
+            return refuse(_UV, "unverified: a cable has no unique engine-published endpoint join")
+        a, b = ends["a"], ends["b"]
+        if a not in degree or b not in degree:
+            return refuse(_UV, "unverified: a cable endpoint is absent from the engine-published nodes")
+        pair = frozenset((a, b))
+        if a == b or pair in seen:
+            continue
+        seen.add(pair)
+        source, target = sorted((a, b))
+        degree[a] += 1
+        degree[b] += 1
+        fact = structural.get(pair)
+        assessed = fact is not None and fact["is_bridge"]["state"] == _PUB
+        edges.append({"source": source, "target": target, "bridge_assessed": assessed,
+                      "is_bridge": fact["is_bridge"]["value"] if assessed else False,
+                      "pairs_cut": fact["pairs_cut"]["value"] if fact and fact["pairs_cut"]["state"] == _PUB else 0})
+    for row in raw_nodes:
+        host = row["host"]["value"]
+        health = _health_cells(ctx, host, _joins(ctx, host))
+        nodes.append({"id": host, "band": health["band"]["value"] or "", "score": health["score"]["value"],
+                      "role": row["role"]["value"] or "", "degree": degree[host], "keystone": None,
+                      "health": health})
+    result["offscan_peers"] = [row["host"]["value"] for row in raw_nodes if row["collected"]["value"] is False]
+    return result
 
 
 def fleet_blind_spot_rows(snap: Any) -> List[int]:

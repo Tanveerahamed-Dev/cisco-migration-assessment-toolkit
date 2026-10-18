@@ -47,7 +47,10 @@ def test_build_graph_tolerates_wrongtyped_cdp_neighbor_and_infinite_pairs_cut():
     }
     g = graph.build_graph(snap, [])
     assert isinstance(g, dict) and "nodes" in g
-    assert g["edges"], "fixture must form an edge so the pairs_cut (graph.py:65) fix is actually exercised"
+    assert g["topology"]["structural_links"]["items"], "fixture must exercise the hostile structural count"
+    count = g["topology"]["structural_links"]["items"][0]["pairs_cut"]
+    assert count["state"] == "unverified" and count["value"] is None
+    assert g["topology"]["nodes"]["state"] == "not_collected", "raw CDP cannot manufacture an observed cable map"
 
 
 def test_summarize_tolerates_infinite_stranded_on_upload():

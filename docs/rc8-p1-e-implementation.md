@@ -198,3 +198,16 @@ or native proof. No manual rerun/cancellation was issued. Keep the cancelled
 run/guard failures; neither replacement success nor future heads erase them.
 Update PR descriptions before future source pushes to avoid duplicating the
 final head's synchronize workflow. No hosted result transfers to new source.
+
+## Current-main integration
+
+This preserved-parent merge imports current main
+`bc54fa80721adf00f0e4c9f309b7264739ffc6fb` (#681), after the authorized initial
+rebase to `ee5ee274210d84083b99ae1c407b2c1ca9182e86`. Its feature parent is
+`1427e4938365e14ac9af45883b0f7bc44913f306`. Incoming owner code, frontend receipt
+and debt reductions remain main-owned; this feature adds only its native owner
+pointer to the SSOT registry. The board is restored byte-identically to main.
+CI/portable workflows, shard jobs/pins, dependency/toolchain locks and original
+assertions/budgets/timeouts receive no authored change. Fresh committed-head
+privacy/every-parent/imported-history scans and hosted checks remain required;
+earlier-head source/CI evidence does not qualify this merge or native rendering.

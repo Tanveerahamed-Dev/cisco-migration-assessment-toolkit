@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { bandColor, type TopologyGraphData } from "../api";
 import { Loading } from "./ui";
+import { keystoneLabel } from "./topologyLabels";
 
 // This whole module is lazy-imported by TopologyGraph, so neither three.js nor the graph engine
 // (~750KB gzip combined) touch the initial bundle — they load only when a user opens the 3D fabric.
@@ -87,7 +88,7 @@ export function switchMesh(color: string, degree: number, big: boolean): THREE.O
  *  text. The id itself is left untouched (it is the force-graph edge-linking key; escaping it would break
  *  link resolution). The 2D view is already safe — it renders the id as an escaped JSX <text> node. */
 export function topoNodeLabel(n: any): string {
-  const raw = `${n.id} · ${n.band || "—"} ${n.score ?? ""}${n.keystone ? " · keystone" : ""}`;
+  const raw = `${n.id} · ${n.band || "—"} ${n.score ?? ""} · ${keystoneLabel(n.keystone)}`;
   return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 

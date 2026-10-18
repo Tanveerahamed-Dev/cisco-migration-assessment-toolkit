@@ -56,57 +56,72 @@ def _upper_hostnames(s):
 
 
 def test_hostname_case_does_not_erase_the_fabric(snap):
-    """`node_ids` held RAW snapshot keys while the neighbour was resolved through `canon()`, which
-    lower-cases. So on any fleet whose hostnames are not already lower-case — MERIDIAN-CORE-01 /
-    MERIDIAN-ACC-14, i.e. the Cisco norm — every neighbour failed the membership test and the graph came
-    back with ZERO edges. That does not surface as an error: it draws every switch unlinked with an
-    EMPTY single-point-of-failure overlay, while the cable map directly below draws the real
-    topology (it resolves through a canon map, which is the idiom now copied here)."""
+    from cisco_toolkit import ui_projection
     base = graph.build_graph(snap)
-    assert base["edges"], "precondition: the shipped sample must resolve a fabric"
-
-    upper = graph.build_graph(_upper_hostnames(snap))
-    assert len(upper["edges"]) == len(base["edges"]), (
-        f"a pure hostname CASE change moved the edge count "
-        f"{len(base['edges'])} -> {len(upper['edges'])}; the topology view and the cable map now "
-        f"disagree about the same fleet")
-    assert (sum(1 for e in upper["edges"] if e["is_bridge"])
-            == sum(1 for e in base["edges"] if e["is_bridge"])), \
-        "the single-point-of-failure overlay changed with hostname case"
+    upper_snap = _upper_hostnames(snap)
+    upper = graph.build_graph(upper_snap)
+    assert base["topology"]["cables"]["items"]
+    assert upper == ui_projection.project_tools_topology(upper_snap)
+    assert upper["topology"] == ui_projection.project_topology(upper_snap)
+    # Stored cable-map membership, including its case, is never rebuilt from CDP.
+    assert upper["topology"]["cables"] == base["topology"]["cables"]
+    assert upper["topology"]["nodes"] == base["topology"]["nodes"]
+    assert len(upper["edges"]) == len(base["edges"])
+    assert {n["id"] for n in upper["nodes"]} == {n["id"] for n in base["nodes"]}
 
 
 def test_an_unmeasured_link_is_not_reported_as_redundant(snap):
-    """`is_bridge` was `False` both for 'measured, this link is redundant' and for 'link_centrality
-    was never computed'. With the section absent, every edge of the sample fleet came back False
-    while 17 of them are genuine bridges — a fully grey fabric under a legend still advertising the
-    red SPOF key. `bridge_assessed` is the third state the payload could not express."""
     measured = graph.build_graph(snap)
-    assert measured["link_centrality_assessed"] is True
-    assert any(e["is_bridge"] for e in measured["edges"]), \
-        "precondition: the sample fleet must contain at least one measured bridge"
-    assert all(e["bridge_assessed"] for e in measured["edges"])
-
+    assert measured["topology"]["structural_links"]["state"] == "published"
+    assert any(row["is_bridge"]["value"] is True for row in measured["topology"]["structural_links"]["items"])
     stripped = json.loads(json.dumps(snap))
-    stripped.pop("link_centrality", None)
+    stripped.pop("link_centrality")
     unmeasured = graph.build_graph(stripped)
-    assert unmeasured["edges"], "precondition: edges still resolve without link_centrality"
-    assert unmeasured["link_centrality_assessed"] is False, \
-        "a snapshot with no link_centrality must SAY so, not imply every link was checked"
-    assert not any(e["bridge_assessed"] for e in unmeasured["edges"]), \
-        "edges claim to have been assessed for bridge-ness when the section was never computed"
+    assert unmeasured["topology"]["cables"] == measured["topology"]["cables"]
+    assert unmeasured["edges"]
+    assert all(not e["bridge_assessed"] for e in unmeasured["edges"])
+    assert unmeasured["topology"]["structural_links"]["state"] == "not_collected"
+    assert unmeasured["topology"]["structural_links"]["items"] == []
+    assert unmeasured["topology"]["structural_links"]["reason"]
 
 
 def test_offscan_neighbours_are_disclosed_not_silently_dropped(snap):
-    """Dropping non-switch CDP peers keeps this an INTER-SWITCH fabric, which is the intent. But it
-    also dropped genuine infrastructure without saying so: on the shipped sample that includes
-    `wan-edge-rtr1.lab`, so the topology showed an estate with no WAN egress while the cable map
-    listed it as an `uncollected` peer. The two views disagreed and neither said why."""
-    g = graph.build_graph(snap)
-    assert "offscan_peers" in g, "the projection must report what it dropped"
-    assert any("wan-edge" in p for p in g["offscan_peers"]), (
-        f"the WAN edge router is dropped from the fabric with no disclosure: "
-        f"{g['offscan_peers']}")
-    # ...and a peer that IS collected must never be reported as off-scan.
-    node_ids = {n["id"] for n in g["nodes"]}
-    assert not (set(g["offscan_peers"]) & node_ids), \
-        "a collected device was reported as an off-scan peer"
+    projected = graph.build_graph(snap)
+    peers = [row for row in projected["topology"]["nodes"]["items"] if row["collected"]["value"] is False]
+    assert peers
+    assert any("wan-edge" in row["host"]["value"] for row in peers)
+    assert all(row["style"]["value"]["token"] == "uncollected" for row in peers)
+    assert not any(row["collected"]["value"] is True for row in peers)
+
+    assert {row["host"]["value"] for row in peers} == set(projected["offscan_peers"])
+    assert set(projected["offscan_peers"]) <= {node["id"] for node in projected["nodes"]}
+
+
+@pytest.mark.parametrize("mutation", ["duplicate_node", "unreadable_node", "missing_cables", "unjoinable_cable"])
+def test_unknown_membership_refuses_the_diagram_instead_of_zero_degrees(snap, mutation):
+    candidate = json.loads(json.dumps(snap))
+    if mutation == "duplicate_node":
+        candidate["cable_map"]["nodes"].append(dict(candidate["cable_map"]["nodes"][0]))
+    elif mutation == "unreadable_node":
+        candidate["cable_map"]["nodes"][0]["host"] = None
+    elif mutation == "missing_cables":
+        candidate["cable_map"].pop("cables")
+    else:
+        candidate["cable_map"]["cables"][0]["a"] = "synthetic-never-observed"
+    result = graph.build_graph(candidate)
+    assert result["nodes"] == [] and result["edges"] == []
+    assert result["diagram"]["state"] != "published"
+    assert result["diagram"]["value"] is None and result["diagram"]["reason"]
+
+
+def test_diagram_degrees_and_bridge_cells_are_owned_by_the_projected_topology(snap):
+    result = graph.build_graph(snap)
+    assert result["nodes"] and result["edges"]
+    owner = result["topology"]
+    cables = {frozenset((r["ends"]["value"]["a"], r["ends"]["value"]["b"]))
+              for r in owner["cables"]["items"]}
+    edges = {frozenset((r["source"], r["target"])) for r in result["edges"]}
+    assert edges == cables
+    for node in result["nodes"]:
+        assert node["degree"] == sum(node["id"] in pair for pair in cables)
+        assert node["keystone"] is None, "An obsolete summary badge cannot become a measured false"

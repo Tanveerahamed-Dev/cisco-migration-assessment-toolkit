@@ -1,7 +1,8 @@
+import { SummaryBands, SummaryValue } from "../components/SummaryFacts";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, bandColor, Campaign } from "../api";
-import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
+import { api, Campaign } from "../api";
+import { ErrorBox, Loading, useAsync, useToast } from "../components/ui";
 import { VerificationBadge } from "../components/VerificationStatus";
 
 function PostureStrip({ c }: { c: Campaign }) {
@@ -15,10 +16,10 @@ function PostureStrip({ c }: { c: Campaign }) {
           <VerificationBadge value={s.verification} compact />
         </span>
         <span className="dim" style={{ fontSize: 12 }}>
-          {s.n_switches} switches · avg {typeof s.avg_health === "number" ? s.avg_health : (s.avg_health || "—")}/100 · {s.punchlist.crit_high} crit/high
+          <SummaryValue fact={s.assessment?.facts.n_devices.fact} /> switches · avg <SummaryValue fact={s.assessment?.facts.avg_health.fact} />/100 · <SummaryValue fact={s.assessment?.punchlist.crit_high} /> crit/high
         </span>
       </div>
-      <SegBar data={s.bands} colorFor={bandColor} />
+      <SummaryBands summary={s} />
     </div>
   );
 }

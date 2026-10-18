@@ -623,3 +623,7 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
     animation: skel-shimmer 1.6s linear infinite;
   }
 }
+
+/* The Tools SVG, campaign snapshot link and Explorer iframe retain their former
+   inline block display. This dedicated class has no other consumers. */
+svg.atlas-ssot-block, a.atlas-ssot-block, iframe.atlas-ssot-block { display: block; }
