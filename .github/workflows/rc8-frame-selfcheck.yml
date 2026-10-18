@@ -1,0 +1,68 @@
+name: RC8 frame observation standalone self-check
+on:
+  push:
+    branches: [codex/rc8-order-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Start unchanged absolute diagnostic clock
+        shell: bash
+        run: echo "ATLAS_DIAGNOSTIC_DEADLINE=$(( $(date +%s) + 6900 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 5
+        with:
+          path: control
+          persist-credentials: false
+      - name: Budget the source checkout
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          ref: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Budget Python setup
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          python-version: "3.12.15"
+      - name: Prepare only the fixed original source before dependency installation
+        id: subject
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          mkdir "$RUNNER_TEMP/target-frames"
+          bounded python -I -B control/.github/diagnostics/rc8_ast_prepare.py --subject subject --changes control/.github/diagnostics/rc8_ast_lifetime_changes.json --recipe control/.github/diagnostics/rc8_ast_counterfactual.json --case original --output "$RUNNER_TEMP/target-frames/preparation.json"
+      - name: Compile the public position sidecar outside the test child
+        id: frame_manifest
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B control/.github/diagnostics/rc8_frame_manifest.py --subject subject --output "$RUNNER_TEMP/target-frames/frame-manifest.json"
+      - run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pip install --upgrade pip
+          bounded python -m pip install -r requirements-dev.txt
+          bounded python -m pip install --no-deps --only-binary=:all: --no-cache-dir --force-reinstall "paramiko==5.0.0"
+        working-directory: subject
+      - name: Hosted frame observation self-check in a separate process
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B control/.github/diagnostics/rc8_frame_selfcheck.py --plugin control/.github/diagnostics/rc8_frame_positions.py \
+            --subject subject --sidecar "$RUNNER_TEMP/target-frames/frame-manifest.json" \
+            --sidecar-sha256 ${{ steps.frame_manifest.outputs.frame_sidecar_sha256 }} --output "$RUNNER_TEMP/target-frames/selfcheck.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rc8-frame-selfcheck-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/target-frames
+          if-no-files-found: error

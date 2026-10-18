@@ -145,14 +145,29 @@ def main() -> int:
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     parser.add_argument("--collection-case", choices=tuple(COLLECTION_CASES), default="pr-full")
-    parser.add_argument("--heap-plugin", choices=("rc8_heap_roots", "rc8_target_roots"), default="rc8_heap_roots")
+    parser.add_argument("--heap-plugin", choices=("rc8_heap_roots", "rc8_target_roots", "rc8_frame_positions"), default="rc8_heap_roots")
+    parser.add_argument("--frame-sidecar", type=Path)
+    parser.add_argument("--frame-sidecar-sha256")
     parser.add_argument("--profile", choices=("none", "native"), default="none")
     parser.add_argument("--profiler-binary", type=Path)
     parser.add_argument("--profiler-receipt", type=Path)
     args = parser.parse_args()
-    if args.heap_plugin == "rc8_target_roots" and (
+    if args.heap_plugin in ("rc8_target_roots", "rc8_frame_positions") and (
             args.mode != "heap" or args.collection_case != "pr-full" or args.expected_tree != _PR_TREE):
         raise ValueError("target-root observation requires the fixed original full suite and exact tree")
+    if args.heap_plugin != "rc8_frame_positions" and (args.frame_sidecar is not None or args.frame_sidecar_sha256 is not None):
+        raise ValueError("frame sidecar is confined to its declared plugin")
+    if args.heap_plugin == "rc8_frame_positions":
+        if (sys.flags.optimize or args.frame_sidecar is None or args.frame_sidecar_sha256 is None
+                or re.fullmatch(r"[0-9a-f]{64}", args.frame_sidecar_sha256) is None):
+            raise ValueError("frame sidecar arguments refused")
+        temporary = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+        sidecar = args.frame_sidecar
+        if (sidecar.absolute() != sidecar.resolve(strict=True) or sidecar.is_symlink()
+                or not sidecar.is_file() or not sidecar.is_relative_to(temporary)
+                or sidecar.stat().st_size > 33554432
+                or hashlib.sha256(sidecar.read_bytes()).hexdigest() != args.frame_sidecar_sha256):
+            raise ValueError("frame sidecar bytes refused")
     if args.profile != "none" and (args.mode != "collection-cut" or args.collection_case != "pr-full"):
         raise ValueError("external sampling is confined to the fixed no-exclusion PR collection control")
     subject, output = args.subject.resolve(), args.output.resolve()
@@ -187,7 +202,10 @@ def main() -> int:
             env.pop("HEAP_CASE", None)
             for name in ("ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE",
                          "ATLAS_TARGET_ROOTS_REPORT", "ATLAS_TARGET_ROOTS_SOURCE_ROOT",
-                         "ATLAS_TARGET_ROOTS_SOURCE", "ATLAS_TARGET_ROOTS_TREE"):
+                         "ATLAS_TARGET_ROOTS_SOURCE", "ATLAS_TARGET_ROOTS_TREE",
+                         "ATLAS_FRAME_POSITIONS_REPORT", "ATLAS_FRAME_POSITIONS_SOURCE_ROOT",
+                         "ATLAS_FRAME_POSITIONS_SOURCE", "ATLAS_FRAME_POSITIONS_TREE",
+                         "ATLAS_FRAME_POSITIONS_SIDECAR", "ATLAS_FRAME_POSITIONS_SIDECAR_SHA256"):
                 env.pop(name, None)
         if minimal:
             env = {**environment, "ATLAS_MINIMAL_REPORT": str(case / "target-result.json"),
@@ -205,6 +223,11 @@ def main() -> int:
             # enters the child; the historical order/GC observer stays inactive.
             prefix = "ATLAS_TARGET_ROOTS" if args.heap_plugin == "rc8_target_roots" else "ATLAS_HEAP"
             report_name = "target-roots.json" if args.heap_plugin == "rc8_target_roots" else "heap.json"
+            if args.heap_plugin == "rc8_frame_positions":
+                prefix, report_name = "ATLAS_FRAME_POSITIONS", "frame-positions.json"
+                env.pop("PYTHONOPTIMIZE", None)
+                env.update(ATLAS_FRAME_POSITIONS_SIDECAR=str(args.frame_sidecar),
+                           ATLAS_FRAME_POSITIONS_SIDECAR_SHA256=args.frame_sidecar_sha256)
             env.update({"PYTHONPATH": str(Path(__file__).resolve().parent),
                         prefix + "_REPORT": str(case / report_name), prefix + "_SOURCE_ROOT": str(subject),
                         prefix + "_SOURCE": actual, prefix + "_TREE": provenance["tree"]})
@@ -316,6 +339,7 @@ def main() -> int:
         result["child_environment"] = {name: env.get(name) for name in (
             "GITHUB_ACTIONS", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTEST_ADDOPTS",
             "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN", "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE")}
+        result["child_pythonoptimize"] = env.get("PYTHONOPTIMIZE")
         if plain:
             result["observation_scope"] = (
                 ("Default collection minus declared collection exclusions, with built-in execution deselections. " if args.mode == "collection-cut" else
@@ -333,6 +357,8 @@ def main() -> int:
             result["heap_report_present"] = heap_path.is_file()
             result["heap_child_environment"] = {prefix + suffix: env[prefix + suffix] for suffix in (
                 "_REPORT", "_SOURCE_ROOT", "_SOURCE", "_TREE")}
+            if args.heap_plugin == "rc8_frame_positions":
+                result["frame_sidecar_sha256"] = args.frame_sidecar_sha256
             result["observation_scope"] = (
                 "Full default collection and execution with one post-fixture heap snapshot before TARGET. "
                 "Injected plugin/PYTHONPATH and snapshot allocations can change automatic GC and timing. "

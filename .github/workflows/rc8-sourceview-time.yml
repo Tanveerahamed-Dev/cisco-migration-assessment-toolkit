@@ -1,7 +1,5 @@
 name: RC8 source-view fixture cost counterfactual
 on:
-  push:
-    branches: [codex/rc8-order-diagnostic]
   workflow_dispatch:
 permissions:
   contents: read
