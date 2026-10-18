@@ -75,7 +75,7 @@ def test_graph_read_route_survives_malformed_section(client, snap, why):
     r = client.get(f"/api/snapshots/{sid}/graph")
     assert r.status_code == 200, f"{why}\n{r.text}"
     body = r.json()
-    assert isinstance(body, dict) and "nodes" in body and "edges" in body
+    assert isinstance(body, dict) and "nodes" in body and "topology" in body
 
 
 # ── GET /cutover ───────────────────────────────────────────────────────────────

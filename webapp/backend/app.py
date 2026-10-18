@@ -3291,6 +3291,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             and verification.get("contract_version") == summary.VERIFICATION_CONTRACT_VERSION
             # a summary ranked from the raw failure_impact rows (no keystone contract) is recomputed too
             and summ.get("keystone_contract") == summary.KEYSTONE_CONTRACT_VERSION
+            and summ.get("summary_contract") == summary.SUMMARY_CONTRACT_VERSION
         ):
             return meta
         snap = store.get_snapshot(snapshot_id)
@@ -3475,10 +3476,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
-        # From the snapshot, not the cached summary: a summary cached before the keystone contract ranked raw
-        # failure_impact rows, and this badge must not mark a device whose blast radius the engine withholds.
-        keystones = [k.get("host") for k in summary._keystones(snap) if k.get("host")]
-        return graph.build_graph(snap, keystones)
+        return graph.build_graph(snap)
 
     @app.get("/api/snapshots/{snapshot_id}/cable_map")
     def snapshot_cable_map(snapshot_id: RowId) -> Dict[str, Any]:

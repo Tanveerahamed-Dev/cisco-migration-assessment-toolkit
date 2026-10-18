@@ -17,13 +17,35 @@ def test_summarize_tolerates_truthy_nonlist_failure_impact():
 
 
 def test_summarize_n_critical_reconciles_with_bands_on_corrupt_exec_brief():
-    """[audit-5 cross-artifact #4] When executive_brief is a truthy non-dict, trend_point raises and the
-    try/except yields head={}, so the n_critical card silently defaulted to 0 while the bands chart (from
-    health_scores) correctly showed Critical -- the same screen contradicted itself. n_critical now falls back
-    to the band count."""
+    """The engine withholds posture-backed critical facts under corrupt posture.
+
+    Preserve both the genuine two-row partition and the stronger display rule:
+    neither summary surface may turn the owner's withheld fact into a fake zero.
+    """
     from backend.summary import summarize
-    s = summarize({"devices": {"sw1": {}, "sw2": {}},
-                   "health_scores": [{"switch": "sw1", "band": "Critical", "score": 10},
-                                     {"switch": "sw2", "band": "Critical", "score": 5}],
-                   "executive_brief": "CORRUPT"})
+    from cisco_toolkit import ssot, ui_projection
+    snap = {"devices": {"sw1": {}, "sw2": {}},
+            "health_scores": [{"switch": "sw1", "band": "Critical", "score": 10},
+                              {"switch": "sw2", "band": "Critical", "score": 5}],
+            "executive_brief": "CORRUPT"}
+    partition = ssot.health_band_partition(snap)
+    assert next(row["n"] for row in partition["bands"] if row["band"] == "Critical") == 2
+    s = summarize(snap)
+    owner = ui_projection.project_overview(snap)
+    critical = next(row["n"] for row in owner["fleet_health"]["bands"] if row["band"] == "Critical")
+    assert critical["state"] != "published" and critical["value"] is None and critical["reason"]
+    assert s["n_critical"] is None and s["bands"]["Critical"] is None
+    assert s["assessment"]["facts"] == owner["facts"]
+    assert s["assessment"]["bands"] == owner["fleet_health"]["bands"]
+
+
+def test_summarize_preserves_a_published_positive_critical_count():
+    from backend.summary import summarize
+    snap = {"devices": {"sw1": {}, "sw2": {}},
+            "health_scores": [{"switch": "sw1", "band": "Critical", "score": 10},
+                              {"switch": "sw2", "band": "Critical", "score": 5}],
+            "executive_brief": {"posture": {"avg_health": 7.5, "n_critical": 2,
+                                            "n_poor": 0, "worst_band": "Critical"}}}
+    s = summarize(snap)
     assert s["n_critical"] == s["bands"]["Critical"] == 2
+    assert s["assessment"]["facts"]["n_critical"]["fact"]["state"] == "published"

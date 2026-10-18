@@ -1,19 +1,16 @@
+import { SummaryBands, SummaryRows, SummaryValue } from "../components/SummaryFacts";
 import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   api,
-  bandColor,
-  readyColor,
-  sevColor,
   LifecycleSummary,
   PROTOCOL_SUBJECT_DETAIL_FIELDS,
   ProtocolAssuranceSection,
   ProtocolSingleSnapshotFamily,
   ProtocolSingleSnapshotSubject,
   SnapshotMeta,
-  Summary,
 } from "../api";
-import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
+import { ErrorBox, Gauge, Loading, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
 import {
   IMPACT_FIELDS,
   ImpactValue,
@@ -35,7 +32,7 @@ import {
   VerificationWarning,
 } from "../components/VerificationStatus";
 
-const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
+
 
 /** A summary count that may legitimately be `""` (the engine published no figure). `Number("")` is 0,
  *  which would turn "not measured" into "measured zero" — return NaN so callers must decide. */
@@ -171,7 +168,7 @@ function LifecycleNote({ lc }: { lc?: LifecycleSummary }) {
     </>
   );
 }
-const GAUGE_COLOR = (n: number) => (!Number.isFinite(n) ? "var(--border)" : n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
+
 
 /* ---------- generic, shape-robust section renderer ---------- */
 function cell(v: any): string {
@@ -989,29 +986,10 @@ export default function SnapshotPage() {
   if (loading) return <div className="container"><Loading /></div>;
   if (error) return <div className="container"><ErrorBox msg={error} /></div>;
   const s = meta!.summary;
-  // WEBAP-02: when the engine could not compute a fleet average, summarize() emits avg_health as "". Coercing
-  // it with `Number("") || 0` produced a finite 0, so the hero Gauge showed a measured-looking red '0' instead
-  // of its own '—' unknown state. Pass NaN through so the Gauge (Number.isFinite check) renders '—', and
-  // GAUGE_COLOR (now guarded) uses a neutral ring -- mirroring the Dashboard PostureStrip treatment.
-  const avg = typeof s.avg_health === "number" ? s.avg_health : NaN;
-  // audit-5 FH#22: when the engine computed no fleet health at all (avg_health ""), the fleet is effectively
-  // un-assessed -- the sibling KPI cards must NOT show the green 'ok' tone (0 critical / 0 punch-list / 0 not-ready
-  // reads identically to a verified-clean fleet). Neutralize their tone, mirroring the Gauge's own '—' state.
-  const unknownFleet = !Number.isFinite(avg);
-  const lc = s.lifecycle;   // rendered by <LifecycleNote> — see its header for the false-health it fixes
-  // audit FE-12: summarize() (webapp/backend/summary.py) SEEDS readiness as {READY:0, CAUTION:0,
-  // "NOT READY":0} and only ever increments it from snap["migration_readiness"] — so a snapshot with
-  // no migration_readiness section emits the same all-zero object a fully-classified fleet with zero
-  // problems would. The tile keyed its tone on `NOT READY > 0 ? crit : CAUTION > 0 ? watch : ok`,
-  // which lands on the green `ok` for BOTH, and printed "0✓ 0! 0✕" as if the groups had been counted.
-  // The CutoverPlanner further down the SAME page says "No migration waves were derived from this
-  // snapshot" for that input — two surfaces, one fact, opposite verdicts. A real classification always
-  // assigns EVERY move group one of the three labels, so a zero total can only mean nothing was
-  // assessed: say that, and drop the tone (`unknownFleet` can't cover it — avg_health comes from
-  // health_scores, an independent section that is routinely present when this one is not).
-  const rdy = s.readiness || ({} as Summary["readiness"]);
-  const nReady = Number(rdy.READY) || 0, nCaution = Number(rdy.CAUTION) || 0, nNotReady = Number(rdy["NOT READY"]) || 0;
-  const noGroupsAssessed = nReady + nCaution + nNotReady === 0;
+  const assessment = s.assessment;
+  const health = assessment?.facts.avg_health.fact;
+  const avg = health?.state === "published" && typeof health.value === "number" ? health.value : NaN;
+  const lc = s.lifecycle;
 
   const tabs = s.sections;
   const activeTab = tab || (tabs[0]?.key ?? "");
@@ -1037,45 +1015,32 @@ export default function SnapshotPage() {
 
       <VerificationWarning value={s.verification} />
 
-      {/* KPI hero */}
-      <div className="grid" style={{ gridTemplateColumns: "auto 1fr 1fr 1fr", gap: 16, alignItems: "stretch" }}>
-        <div className="panel" style={{ display: "grid", placeItems: "center" }}>
-          <Gauge value={avg} color={GAUGE_COLOR(avg)} label="avg health" />
+      {/* Engine-owned values; colour carries no browser-computed verdict. */}
+      <div className="grid cols-3">
+        <div className="panel kpi">
+          <Gauge value={avg} color="var(--border)" label="avg health" />
+          <SummaryValue fact={health} />
         </div>
-        <div className={`panel kpi ${unknownFleet ? "" : s.n_critical > 0 ? "crit" : "ok"}`}>
+        <div className="panel kpi">
           <div className="l">Critical-band switches</div>
-          <div className="v"><CountUp value={s.n_critical} /></div>
-          <div className="hint">of {s.n_switches} switches</div>
+          <div className="v"><SummaryValue fact={assessment?.facts.n_critical.fact} /></div>
+          <div className="hint">Fleet inventory: <SummaryValue fact={assessment?.facts.n_devices.fact} /></div>
         </div>
-        <div className={`panel kpi ${unknownFleet ? "" : HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
+        <div className="panel kpi">
           <div className="l">Punch-list (crit/high)</div>
-          <div className="v"><CountUp value={s.punchlist.crit_high} /><span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / <CountUp value={s.punchlist.total} /></span></div>
-          <div className="hint">prioritised actions</div>
+          <SummaryValue fact={assessment?.punchlist.crit_high} />
+          <div className="hint">Total findings: <SummaryValue fact={assessment?.punchlist.total} /></div>
         </div>
-        <div className={`panel kpi ${unknownFleet || noGroupsAssessed ? "" : nNotReady > 0 ? "crit" : nCaution > 0 ? "watch" : "ok"}`}>
+        <div className="panel kpi">
           <div className="l">Move-group readiness</div>
-          {noGroupsAssessed ? (
-            <div className="v" style={{ fontSize: 20, color: "var(--text-faint)" }}>—</div>
-          ) : (
-            <div className="v" style={{ fontSize: 20, display: "flex", gap: 12 }}>
-              <span style={{ color: readyColor("READY") }}>{nReady}✓</span>
-              <span style={{ color: readyColor("CAUTION") }}>{nCaution}!</span>
-              <span style={{ color: readyColor("NOT READY") }}>{nNotReady}✕</span>
-            </div>
-          )}
-          <div className="hint">
-            {noGroupsAssessed
-              ? <>not assessed — no move group was classified<LifecycleNote lc={lc} /></>
-              : <>ready · caution · not ready<LifecycleNote lc={lc} /></>}
-          </div>
+          <SummaryRows rows={assessment?.readiness} />
+          <div className="hint">Engine-classified move groups<LifecycleNote lc={lc} /></div>
         </div>
       </div>
-
-      {/* distributions */}
       <div className="grid cols-3" style={{ marginTop: 16 }}>
-        <div className="panel"><h3>Health bands</h3><SegBar data={s.bands} colorFor={bandColor} /></div>
-        <div className="panel"><h3>Punch-list by severity</h3><Bars data={s.punchlist.by_severity} colorFor={sevColor} /></div>
-        <div className="panel"><h3>Punch-list by category</h3><Bars data={s.punchlist.by_category} /></div>
+        <div className="panel"><h3>Health bands</h3><SummaryBands summary={s} /></div>
+        <div className="panel"><h3>Punch-list by severity</h3><SummaryRows rows={assessment?.punchlist.by_severity} /></div>
+        <div className="panel"><h3>Punch-list by category</h3><SummaryRows rows={assessment?.punchlist.by_category} /></div>
       </div>
 
       <div className="grid" style={{ marginTop: 16, gap: 16 }}>
@@ -1108,9 +1073,9 @@ export default function SnapshotPage() {
             {/* sandbox WITHOUT allow-same-origin: the explorer is fully self-contained (embedded
                 snapshot; storage is feature-detected for opaque origins), so it needs no origin —
                 and must never inherit ours (script there would otherwise reach this app's API). */}
-            <iframe title="Network Migration Explorer" src={api.explorerUrl(sid)}
+            <iframe className="atlas-ssot-block" title="Network Migration Explorer" src={api.explorerUrl(sid)}
               sandbox="allow-scripts allow-downloads allow-modals"
-              style={{ width: "100%", height: "78vh", border: 0, display: "block", background: "var(--bg)" }} />
+              style={{ width: "100%", height: "78vh", border: 0, background: "var(--bg)" }} />
           </div>
         )}
 

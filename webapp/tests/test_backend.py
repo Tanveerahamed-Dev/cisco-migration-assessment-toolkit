@@ -53,7 +53,7 @@ def test_demo_seed_then_summary(client):
     s = meta["summary"]
     assert s["n_switches"] >= 1
     assert s["punchlist"]["total"] >= 1
-    assert set(s["bands"]).issubset(set(["Excellent", "Good", "Fair", "Poor", "Critical"]))
+    assert list(s["bands"]) == ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
     assert isinstance(s["keystones"], list) and s["keystones"]
     # at least the punch-list section is reported present
     assert any(sec["key"] == "punchlist" for sec in s["sections"])
@@ -460,14 +460,15 @@ def test_graph_endpoint(client):
     r = client.get(f"/api/snapshots/{snap_id}/graph")
     assert r.status_code == 200
     g = r.json()
-    assert g["nodes"] and g["edges"], "graph should have nodes and edges"
-    ids = {n["id"] for n in g["nodes"]}
-    # every edge connects two known nodes (no dangling APs/phones)
-    for e in g["edges"]:
-        assert e["source"] in ids and e["target"] in ids
-        assert "is_bridge" in e
-    # nodes carry the health band used to colour them
-    assert any(n.get("band") for n in g["nodes"])
+    from cisco_toolkit import ui_projection
+    assert g == ui_projection.project_tools_topology(client.app.state.store.get_snapshot(snap_id))
+    g = g["topology"]
+    assert g["nodes"]["items"] and g["cables"]["items"]
+    ids = {n["host"]["value"] for n in g["nodes"]["items"]}
+    for cable in g["cables"]["items"]:
+        assert cable["ends"]["value"]["a"] in ids and cable["ends"]["value"]["b"] in ids
+    assert g["structural_links"]["items"]
+    assert any(row["is_bridge"]["value"] for row in g["structural_links"]["items"])
     # 404 for a missing snapshot
     assert client.get("/api/snapshots/999999/graph").status_code == 404
 
@@ -1884,10 +1885,15 @@ def test_trend_point_honors_canonical_scale_posture_over_recompute():
 
 
 def test_summarize_projects_the_canonical_headline():
-    """SSOT: the API-facing summary projection inherits the canonical headline (it re-uses trend_point)."""
+    """Contradictory canonical facts retain the projection's hold, never a fallback recount."""
     from backend.summary import summarize
-    s = summarize(_divergent_snap())
-    assert s["n_switches"] == 42 and s["avg_health"] == 63.4 and s["n_critical"] == 5
+    from cisco_toolkit import ui_projection
+    snap = _divergent_snap()
+    s = summarize(snap)
+    facts = ui_projection.project_overview(snap)["facts"]
+    for field, name in (("n_switches", "n_devices"), ("avg_health", "avg_health"), ("n_critical", "n_critical")):
+        assert facts[name]["fact"]["state"] == "unverified"
+        assert s[field] is None and facts[name]["fact"]["value"] is None
 
 
 def test_summarize_near_eos_reads_canonical_n_near():
@@ -1979,7 +1985,8 @@ def test_build_graph_robust_to_non_dict_interfaces_devices():
     unhandled 500 on GET /graph. It must degrade instead."""
     from webapp.backend.graph import build_graph
     g = build_graph({"interfaces": "oops", "devices": [1, 2, 3], "health_scores": "nope"})   # must not raise
-    assert isinstance(g, dict) and "nodes" in g and "edges" in g
+    assert isinstance(g, dict) and "nodes" in g and "topology" in g
+    assert g["topology"]["nodes"]["state"] != "published"
 
 
 def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
@@ -2038,7 +2045,8 @@ def test_build_graph_tolerates_health_row_without_switch_key():
     sorted(node_ids) raise TypeError (str vs None) -> an unhandled 500 on /graph."""
     from webapp.backend.graph import build_graph
     g = build_graph({"devices": {"sw1": {}}, "interfaces": {}, "health_scores": [{"band": "Good", "score": 90}]})
-    assert "nodes" in g and all(n["id"] is not None for n in g["nodes"])
+    assert "nodes" in g and all(n["host"]["value"] is not None for n in g["topology"]["nodes"]["items"])
+    assert g["topology"]["nodes"]["state"] == "not_collected"
 
 
 def test_summarize_survives_nondict_lifecycle_summary():
@@ -2648,9 +2656,11 @@ def test_snapshot_page_does_not_gate_the_lifecycle_line_on_a_truthy_count():
     # the replacement must actually render the coverage gap, not merely drop the ternary
     assert "LifecycleNote" in src, "the lifecycle line was removed rather than made coverage-honest"
     assert "EoL NOT ASSESSED" in src, "Snapshot.tsx never discloses the un-assessed lifecycle count"
-    # ... and it must be wired into BOTH branches of the readiness hint (enumerate every exit).
-    assert src.count("<LifecycleNote lc={lc} />") == 2, (
-        "only some of the sites that used to render the lifecycle text were converted")
+    # Readiness now renders owner envelopes in one unconditional hint. Both held
+    # and published cases exercise this same line in Snapshot.test.tsx.
+    assert "noGroupsAssessed" not in code, "The browser must not decide a readiness verdict"
+    assert src.count("<LifecycleNote lc={lc} />") == 1, (
+        "The unconditional readiness hint must retain its lifecycle disclosure")
 
 
 # --------------------------------------------------------------------------------------------------- #
