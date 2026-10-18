@@ -44,7 +44,8 @@ baseline and source-owned schemas are unchanged. No engine-output regeneration i
 requested. The changed SPA must be rebuilt through the existing hosted frontend
 build handoff and imported as source-edit data; no local build or receipt/custody
 controller can supply validation. Any failing or superseded run remains negative
-evidence. Completion requires 15/15 on the final head and a completion comment,
+evidence. Completion requires every protected context (currently 14 by the
+owner's 2026-10-18 ruling) on the final head and a completion comment,
 then STOP for independent review. No merge or release.
 
 ## First hosted candidate: negative evidence
@@ -74,3 +75,31 @@ with window/document scroll y=1554. The test is unchanged. A CSS scroll margin
 on the interactive canvas supplies room when the browser rounds scrolling over
 fractional layout coordinates; its effect remains unverified until the original
 hosted re-entry gate passes. No timeout, pixel tolerance or baseline is changed.
+
+## Post-PR-0b preparation (local, unpublished)
+
+The supervisor integrated main into #682 as `6d5747b2`; this work does not rewrite
+or re-merge that branch. PR-1 waits for #682 to merge before integrating main and
+using its schema-4 register and unchanged detectors. Keep main's exact board and
+the Portable Atlas installation row when resolving the SSOT table.
+
+Recovered hosted evidence: CI `39079414845`, job `117533311971`, observed merge
+checkout `ed8349b6` (parents `92490340` and `b4ecd442`). Its tree is exactly
+`b4ecd442`'s tree, `52c9cb080067792b1e61a0d526ad9791924c7d35`. The recorded
+proposal contains 36,787 sites: 107 registered identities are stale, and three
+identities are new. Stale rows group as TopologyGraph 48, Snapshot 36, backend
+graph 6, backend summary 15, Campaign 1 and Dashboard 1. These are review input;
+the new hosted census must still prove the final post-#682 register.
+
+All three new identities are `fact-decision` footprints on the complete JSX
+returns in TopologyGraph, Campaign and Snapshot. Source inspection identifies
+the only exact verdict-vocabulary string in each return as the CSS display
+value `"block"`. The requested shared-stylesheet cleanup is awaiting the
+supervisor's ruling; no detector exception, boundary admission or register
+growth is proposed. Existing engine facts and rendering states stay required.
+
+After integration, re-run the stale-entry, shrink-only, resurrection, canonical
+reconcile and complete hosted gates. Rebuild the changed SPA through webapp-ci's
+source-bound build handoff and hosted artifact receipt. The held viewport change
+must pass the original re-entry assertion. No local runtime or receipt controller,
+golden/sample regeneration, gate relaxation, PR merge or release is authorized.
