@@ -47,6 +47,8 @@ RELEVANT_PATH_FILTERS = (
     "tests/test_vlan_carriage_budget.py",
     "tests/test_ui_projection_vlan_carriage.py",
     "tests/pytest_invocation_reader.py",
+    # Imported by the root conftest.py, the backend leg's registered plugin, for its shard options.
+    "tests/atlas_shard_partition.py",
     ".github/workflows/webapp-ci.yml",
     ".github/scripts/classify_webapp_ci_scope.py",
     ".github/scripts/frontend_build_handoff.py",

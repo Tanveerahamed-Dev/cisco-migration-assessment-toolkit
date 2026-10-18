@@ -105,6 +105,11 @@ jobs:
         run: python -m pytest tests/test_client_artifact_census.py
       - name: Knowledge export admission and workflow contracts
         run: python -m pytest tests/test_knowledge_export.py tests/test_knowledge_export_workflow.py
+      - name: Archive confidentiality ordering and source-binding contracts
+        run: >-
+          python -m pytest
+          tests/test_ci_gates.py::test_distribution_confidentiality_audit_stays_in_every_archive_workflow
+          tests/test_ci_gates.py::test_distribution_source_binding_is_fail_closed_in_every_archive_workflow
       # Fail promptly on receive liveness regressions; the unchanged complete
       # suite below still collects these transport contracts on every platform.
       - name: Debug helper receive deadline contracts
@@ -130,6 +135,20 @@ jobs:
       - name: Install Atlas Scope's locked toolchain
         working-directory: atlas-scope
         run: npm ci
+      - name: Synthetic detected-form refusal and stability controls
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+        run: >-
+          python -m pytest tests/test_interface_computation_debt.py -k
+          "not test_current_interface_has_only_registered_exact_sites and not test_registry_paths_and_symbols_are_closed_not_whole_file_exemptions and not test_source_discovery_includes_new_interface_modules_and_registry_writers"
+      - name: Observe exact interface computation sites for review
+        run: python tests/interface_computation_guard.py --observe "${{ runner.temp }}/interface-debt-observed.json"
+      - name: Every canonical fact has an executed real-producer reconcile check
+        run: python -m pytest tests/test_pipeline_inprocess.py::test_pipeline_inprocess_builds_all_three_deliverables
+      - name: Closed interface computation ratchet and mutation controls
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+        run: python -m pytest tests/test_interface_computation_debt.py
       # The /scope markup oracle (webapp/tests/test_scope_mount.py, "the browser is the oracle") needs a
       # real Chromium this matrix does not install. It is required on the legs that install one: webapp-ci's
       # backend leg (webapp/** changes) and atlas-scope-ci (atlas-scope/** changes). Here it is declined

@@ -15,6 +15,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
+# Module-owned role declarations use strict JSON content under this explicit
+# source-metadata extension. Register its deterministic logical media type.
+mimetypes.add_type("application/json", ".atlas-role")
+
+
 ALLOWED_TOP_LEVEL_DIRECTORIES = frozenset(
     {
         ".claude",
@@ -97,6 +102,7 @@ SPECIAL_CONFIG_PATHS = frozenset({"master-reference/public/_headers"})
 
 TEXT_EXTENSIONS = frozenset(
     {
+        ".atlas-role",
         ".css",
         ".csv",
         ".html",
@@ -148,6 +154,7 @@ BINARY_EXTENSIONS = frozenset(
 )
 
 LANGUAGE_BY_EXTENSION = {
+    ".atlas-role": "json",
     ".css": "css",
     ".csv": "csv",
     ".html": "html",

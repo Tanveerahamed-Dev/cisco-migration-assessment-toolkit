@@ -2140,7 +2140,15 @@ def test_the_ci_leg_reader_recognises_every_way_a_step_collects_these_pins():
             # reader (tests/pytest_invocation_reader.py) knows the --cov* options the CI legs pass
             ("python -m pytest --cov webapp master-reference/tests", ".", False),
             ("python -m pytest --cov-config webapp/.coveragerc master-reference/tests", ".", False),
-            ("python -m pytest --cov-report term --cov webapp webapp/tests", ".", True)]:
+            ("python -m pytest --cov-report term --cov webapp webapp/tests", ".", True),
+            # the full gate's shard and evidence options (root conftest.py) take a value, which is not
+            # a path: a shard of the default suite still collects these pins
+            ("python -m pytest -q --atlas-shard $env:ATLAS_SHARD_SPEC --atlas-shard-manifest $env:M", ".", True),
+            ("python -m pytest -q --atlas-shard-executed $env:E", ".", True),
+            ("python -m pytest -q --collect-only --atlas-shard-manifest webapp/x.txt", ".", True),
+            ("python -m pytest -q --atlas-shard-executed webapp/y.txt", ".", True),
+            ("python -m pytest --atlas-shard 0/2 master-reference/tests", ".", False),
+            ("python -m pytest --atlas-shard-executed webapp/y.txt master-reference/tests", ".", False)]:
         found = any(_collects_the_scope_pins(p) for p in _pytest_invocations(run, wd))
         assert found is expected, (run, wd)
 

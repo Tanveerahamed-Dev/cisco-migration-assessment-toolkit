@@ -100,6 +100,7 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "tests/golden/snapshot.json",
         "tests/synthetic_fixtures.py",
         "tests/pytest_invocation_reader.py",
+        "tests/atlas_shard_partition.py",
         "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
@@ -358,6 +359,29 @@ def test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci():
                     helpers.add(candidate.relative_to(ROOT).as_posix())
     assert "tests/pytest_invocation_reader.py" in helpers, sorted(helpers)  # the scan is live
     assert sorted(path for path in helpers if not SCOPE.path_is_relevant(path)) == []
+
+
+def test_every_module_the_root_conftest_imports_engages_webapp_ci():
+    """The root conftest.py is a registered plugin for the backend leg's `pytest webapp/tests`
+    (tests/test_r5_automation.py), so every repository module it imports -- at module level or lazily
+    inside a hook, e.g. tests/atlas_shard_partition.py for the shard options -- is part of that plugin
+    and must engage webapp CI too. Derived from conftest.py's own imports, resolved the way its
+    sys.path bootstrap resolves them (the repository root, then tests/), not from a list."""
+    import ast
+
+    modules = set()
+    for node in ast.walk(ast.parse((ROOT / "conftest.py").read_text(encoding="utf-8"))):
+        names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                 else [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+                 else [])
+        for name in names:
+            for base in (ROOT, ROOT / "tests"):
+                candidate = base / (name.split(".", 1)[0] + ".py")
+                if candidate.is_file():
+                    modules.add(candidate.relative_to(ROOT).as_posix())
+    # the scan is live: a lazy hook-local import and a fixture-local import are both found
+    assert {"tests/atlas_shard_partition.py", "tests/synthetic_fixtures.py"} <= modules, sorted(modules)
+    assert sorted(path for path in modules if not SCOPE.path_is_relevant(path)) == []
 
 
 MANUAL_FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines", "observe_jsonschema_rs")

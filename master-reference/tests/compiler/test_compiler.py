@@ -3246,6 +3246,34 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(ledger["census"]["classified_files"], 0)
             self.assertTrue(any("extension" in error or "unclassified" in error for error in ledger["fatal_errors"]))
 
+    def test_module_role_companions_are_explicit_json_metadata_not_executable_source(self) -> None:
+        for path in ("COLLECT_PARSE_V3_23_0.py.atlas-role", "cisco_toolkit/analyze.py.atlas-role",
+                     "webapp/backend/summary.py.atlas-role"):
+            classification = classify_file(path, "100644")
+            self.assertEqual(classification["classification_errors"], [])
+            self.assertEqual(classification["language"], "json")
+            self.assertEqual(classification["media_type"], "application/json")
+            self.assertEqual(classification["privacy_exposure"], "full")
+            self.assertIn("structured_data", classification["roles"])
+            self.assertNotIn("source", classification["roles"])
+        unexpected = classify_file("cisco_toolkit/owner.unregistered-role", "100644")
+        self.assertEqual(unexpected["classification_errors"], ["extension_not_allowlisted:.unregistered-role"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(repository, {
+                "cisco_toolkit/analyze.py": "value = 1\n",
+                "cisco_toolkit/analyze.py.atlas-role": '{"role":"engine"}\n',
+            })
+            output = base / "output"
+            compile_repository(repository, output)
+            metadata = next(row for row in group_records(output, "files") if row["path"].endswith(".atlas-role"))
+            self.assertEqual(metadata["language"], "json")
+            self.assertEqual(metadata["media_type"], "application/json")
+            self.assertIn("structured_data", metadata["roles"])
+            self.assertNotIn("source", metadata["roles"])
+
     def test_cloudflare_headers_contract_has_an_explicit_safe_text_classification(self) -> None:
         classification = classify_file("master-reference/public/_headers", "100644")
         self.assertEqual(classification["classification_errors"], [])
