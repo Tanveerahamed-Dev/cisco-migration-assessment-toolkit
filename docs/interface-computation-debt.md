@@ -1,22 +1,90 @@
 # ADR 0008 interface computation ratchet
 
-RC8-P1-H PR-0 implements the owner's binding foundation direction in #672.
-The machine-readable register is `interface-computation-debt.json`; it is not
-an approval of the computations it records. Initial admission requires the
-hosted observation and review. The v1 proposal at `db5f5675` passed 15/15 but
-independent review blocked discovery, detection and lexical identities. The
-supervisor's ruling in #673 comment `6218966243` authorizes a wider, reindexed
-initial register in this PR. The v2 proposal imported 45,940 exact records from six matching hosted captures
-at `34d62535`. Main then advanced through #666. The current active v3 proposal imports 46,135 records from six matching
-hosted observations on updated main; final exact-head validation remains pending. It is not in force on main before
-reviewed merge; final-head 15/15 and independent re-review remain required.
+PR-0 (#673) merged as `92490340` after independent MERGE-READY on `cfa0b72d`.
+The machine-readable register is `interface-computation-debt.json`. PR-0b adds
+schema **`interface-computation-debt/4`** under the
+[supervisor's boundary ruling](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/667#issuecomment-6243152958).
+Its `sites` debt records are unchanged from merged main, as are the immutable
+source ceiling, roles and detector forms. The separate `boundary` list starts
+**empty**: PR-0b admits no boundary site and reclassifies no debt.
+
+The dated proposal/capture sections below preserve their original failures,
+counts and then-pending decisions. They are history, not the current admission
+policy or an instruction to regenerate a register. The current policy is below;
+the executing owner is `tests/interface_computation_guard.py :: check / validate`.
+
+## Exact boundary admissions (PR-0b)
+
+ADR 0008 forbids interface computation of engine-owned facts. Transport safety
+and UI state that derive no network fact have a separate exact-site admission
+class. A boundary record has exactly `path`, `symbol`, `rule`, `fingerprint`,
+`occurrence` and one `category`. The identity is the same detector-normalized
+file/qualified-symbol/rule/SHA-256/occurrence tuple as a debt record. There are
+no file, symbol, category or glob exemptions; every finding is still scanned.
+
+| Closed category | Eligible purpose |
+|---|---|
+| `transport-bound` | Caps on response bytes, stream chunks or element counts |
+| `response-identity` | Binding a response to the request that produced it |
+| `cancellation` | Cancellation state and control |
+| `ui-state` | Selection, pin or collapse state that derives no network fact |
+
+**Admission is per PR and independently reviewed.** The PR description lists
+each proposed exact tuple, its category and a one-line justification. The
+independent reviewer must sign off on each record by that exact name. A blanket
+approval of a category, module or function does not admit another site. A record
+that reads snapshot/projection facts to produce a user-facing count, verdict,
+threshold or ratio is **never** a boundary site; the reviewer blocks it. Moving
+or rewriting an engine calculation does not make it eligible. A category string
+and green CI are not review approval, proof of fact-free code or merge authority.
+
+The guard checks the immutable GitHub PR event's base SHA and binds the checkout
+to that PR head or its exact GitHub merge parents, for this repository's `main`
+base. It compares new boundary identities with detections in the base's source.
+Even a base file outside the old import closure is read and parsed for this
+comparison: adding an import or editing another symbol cannot launder an
+unchanged helper. A new record must identify a site introduced or moved by this
+PR under the detector's normalized identity; comments, whitespace and line moves
+alone are not new sites. Retained base records need no repeat admission, but
+their categories cannot change. Main-push validation rechecks the merged delta
+against its `before` SHA. Manual jobs may retain main's records and cannot admit
+new ones; missing, malformed or mismatched PR/base context refuses.
+
+Debt remains **strictly shrink-only** against its immutable source ceiling and
+every active ancestor. No debt record, including a deleted historical record
+from an earlier schema, may move into `boundary`. Boundary records must also
+match current detections exactly, so removal of code requires removal of its
+record. Full Git history and every merge parent expose boundary removals;
+restoring a removed identity, even with another category, refuses. An admission
+proposal preserves existing boundary metadata only for still-observed sites and
+retains **every** raw detection; it does not authorize a new record or debt growth.
+
+V3 registry-change history is bounded at merged
+`92490340e3c55c34c7a8d26e878ee5de7c729601`. A later commit may carry unchanged
+v3 bytes from a parent, but cannot downgrade a v4/unknown parent through another
+parent. Every register-change event in the full HEAD and PR-base histories is
+checked, even when it reuses an already-read blob. This is a schema migration,
+not a new debt ceiling. The older v1/v2 and initial-observation cutoffs stay fixed;
+later schema reintroductions and inactive v4 records refuse. The frozen detector
+functions/constants are compared with that merged source, while the lexer,
+source discovery and TypeScript/HTML detector files remain byte-identical.
+
+Synthetic controls in `tests/test_interface_computation_debt.py` cover each
+category, malformed/missing categories and identities, duplicates, additional
+findings in the same symbol, unchanged base code, outside-closure helpers,
+unrelated-symbol edits, legitimate new/moved sites, missing/base context,
+category changes, current/base/ancestor/historical debt transfers, boundary
+removal/resurrection on either merge parent, and forbidden later v3 resets.
+They also pin the unchanged detector. Runtime execution and final-head evidence
+belong to GitHub; PR-0b requires 15/15 and maximum-depth independent review.
 
 ## What the gate checks
 
 The guard ratchets a **closed, named set of detected computation forms**. It is
 **not proof of absence of computation**. Undetected forms require review and are
 not certified absent. ADR 0008 point 4's mechanical claim is: every detected form
-is registered and shrink-only after this proposal merges.
+appears exactly once in strict shrink-only debt or the separately reviewed
+boundary class. This does not turn a boundary label into semantic verification.
 
 Discovery is class-derived rather than a prefix/special-file selector:
 
@@ -60,11 +128,15 @@ application code is never imported or evaluated. Parse failures refuse.
 Every allowance is one file, qualified symbol, operation rule, normalized
 expression digest and occurrence. Within the interface closure there are no module-wide or symbol-wide
 allowances. Explicit engine roles are traversal terminals, not legacy debt allowances. Comments/formatting do not change AST identities; altered thresholds,
-new counts and a second identical call require admission and fail this ratchet.
+new counts and a second identical call remain refused until removed, moved to
+their engine owner, or (only for eligible new transport/UI state) independently
+admitted as exact boundary records.
 The detector conservatively includes existing presentation/infrastructure
 calculations: an entry is an exact legacy footprint, not an assertion that every
 length check is a network fact. This does not prove arbitrary program semantics
 or eliminate the independent review requirement.
+
+### Historical v2 ceiling rationale
 
 Version 2's source ceiling is initial boundary `7d9f83639eccb12915f2686aae13a47b44d50df1` (foundation main `5f1e067c` plus this PR's guard, role metadata and existing build-proof binding). This explicitly widens
 the proposed v1 footprint and changes lexical identities; its before/after counts
