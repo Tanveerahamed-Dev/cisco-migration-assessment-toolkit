@@ -4,21 +4,29 @@
 `ee5ee274210d84083b99ae1c407b2c1ca9182e86` (#682 boundary guard and #690 two-pass CI).
 
 The owner approved the design on 2026-10-19. The exact approved design is retained
-in [rc8-p1-e-native-window-design.md](rc8-p1-e-native-window-design.md), SHA-256
+in [rc8-p1-e-native-window-design-approved.md](rc8-p1-e-native-window-design-approved.md), SHA-256
 `4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7`.
 Its historical “re-review required” footer records the submitted revision; the
 subsequent owner approval authorizes implementation, not dependency production.
+The [current design](rc8-p1-e-native-window-design.md) preserves that approved
+text and appends the owner's named licence BLOCK and evidence-only route request.
 The supervisor owns `docs/NOW.md`; this feature does not update the board.
 
 ## Dependency authority and current field behavior
 
 Dependency production, signing, promotion, asset publication and a lock pointing
-to a produced wheel are **HELD for separate owner authority**. No such operation
+to a produced wheel are **HELD for separate owner authority**, with explicit
+`PROXY_TOOLS_010_LICENSE_CONFLICT` **BLOCKED and unresolved**. No such operation
 has run. Existing binary-only/hash-required installation remains unchanged.
 `require_native_release_admission` refuses unconditionally in this first slice;
 an ambient pywebview installation or environment variable cannot enable it.
-The shipped entry, browser behavior, lock, PyInstaller specification, smoke and
-selftest are unchanged. This slice cannot claim native rendering or P1-E completion.
+The dependency lock, PyInstaller specification, smoke and selftest are unchanged.
+The packaging entry now takes a narrow presentation-preparation callback after
+normal startup fences. While native admission is held it schedules the existing
+browser and retains the exact original app/server/lifespan/Store owner.
+`--browser` explicitly bypasses the callback; `--no-browser` stays headless. No
+native dependency imports, profiles or GUI creation occur. These source slices
+cannot claim native rendering or P1-E completion.
 
 ## First coherent slice
 
@@ -53,7 +61,7 @@ must carry `@pytest.mark.unshared`, without skipping or relaxing them.
 
 | Approved item | Source/proof status |
 |---|---|
-| 1. Isolated proxy_tools producer, complete-wheel/license/provenance checks, immutable admission | Read-only complete-wheel inspector and HELD source-input record authored; actual producer/isolation/attestation/release admission NOT IMPLEMENTED. Execution/publication/produced-wheel lock HELD. Licence declaration conflict below unresolved. |
+| 1. Isolated proxy_tools producer, complete-wheel/license/provenance checks, immutable admission | Read-only inspector/input record authored; PROXY_TOOLS_010_LICENSE_CONFLICT BLOCKED, unresolved. Actual producer/isolation/attestation/release admission NOT IMPLEMENTED. Execution/publication/produced-wheel lock HELD. |
 | 2. Custom collection hook, pinned x64 SDK/NetFX overlay, notices and SBOM | NOT IMPLEMENTED; no dependency or collection exception. |
 | 3. Pre-navigation handler/settings order and immutable-origin policy | URI/CSP source controls authored; actual event adapter and frozen integration NOT VERIFIED. |
 | 4. Sole profile owner, real browser exit, empty-only identity-bound cleanup | NOT IMPLEMENTED; no cleanup path introduced. |
@@ -134,3 +142,59 @@ text to an attributable source record and resolve the conflict. Missing text
 cannot be fabricated or replaced by a metadata classifier. Even a future build
 or publication authorization does not establish legal acceptance. The native
 dependency path remains closed; the browser and existing locked build continue.
+
+The supervisor explicitly retained this as `PROXY_TOOLS_010_LICENSE_CONFLICT`,
+not a resolved/accepted licence. Exact archive references are PKG-INFO line 8,
+setup.py line 14 and proxy_tools/__init__.py line 8 (under proxy_tools-0.1.0/).
+`portable/native_release_gate.py` unconditionally refuses native dependency
+promotion under that code, and native admission consumes the same gate. JSON,
+environment and selected wheel/text hashes cannot clear it. No licence text is
+selected, inferred, synthesized or written. The design addendum records the
+owner's decision; the original approved design stays byte-identical separately.
+
+The owner-requested [static route inspection](rc8-p1-e-proxy-tools-static-inspection.md)
+finds an unconditional install dependency and root import in unchanged pywebview
+6.2.1, including the Windows backend path. A further source/metadata adaptation
+is only an evidence-based candidate, not adopted or runtime-verified. No pins
+changed and no dependency build/installation was run.
+
+## Shared entry seam
+
+`serve.main`/`_main_scoped` accept an optional `presentation_prepare` callback,
+with default call signatures preserved when it is absent. Shared parsing adds
+mutually exclusive `--browser`/`--no-browser`. Maintenance/engine/selftest
+dispatch, freeze_support, live-network normalization/restoration and write fences
+remain before presentation. The adapter is lazy and bypassed for explicit
+browser/headless paths. Preparation is not actual bind readiness: the future
+native launcher still must prove its own socket/public instance before GUI use.
+
+The callback may configure additive ASGI middleware on the original app; its
+return value cannot replace that app. Existing uvicorn.run, signal/lifespan
+behavior and the original app's single Store close remain shared.
+`portable/native_launch.py` currently always uses browser fallback behind the
+unconditional dependency guard; it implements no native/OS operation. New fake
+server/store tests exercise ordering, bypasses, opaque engine argv, mutual
+exclusion, legacy callback compatibility and exactly-once Store closure without
+a clock or live UI. Actual hosted/frozen behavior and ADR guard admission remain
+unverified until their exact-head jobs run.
+Import spies observe the call phase after module collection; they do not prove a
+clean-process first-import or frozen dependency boundary.
+
+## Preserved hosted scheduling evidence
+
+On head `8a6199df697e9a3ca416694795d9a7ea081d2d24`, webapp run
+`39169900188` ended CANCELLED. Scope job `117800592964` executed no steps;
+its annotation reports a higher-priority waiting request for the same PR's
+webapp concurrency group. The dependent jobs deliberately failed their existing
+scope-success guard; backend job `117800596004` logged only that guard's exit 1,
+not a product test run. The draft description edit triggered the configured
+pull_request edited event immediately after the synchronize event.
+
+The already-created replacement run `39169901056` on the same head completed
+SUCCESS: scope and webapp gate succeeded; backend/frontend/E2E/visual jobs were
+SKIPPED by the unchanged successful classifier because that head changed only
+packaging/tests/docs. This is scope-gate evidence, not executed backend/frontend
+or native proof. No manual rerun/cancellation was issued. Keep the cancelled
+run/guard failures; neither replacement success nor future heads erase them.
+Update PR descriptions before future source pushes to avoid duplicating the
+final head's synchronize workflow. No hosted result transfers to new source.

@@ -102,9 +102,17 @@ def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
                               write_admission=_maintenance_write_refused)
 
 
+def _prepare_presentation(app, url):
+    """Reached only after normal server fences; no imports for headless/CLI paths."""
+    from portable.native_launch import prepare_presentation
+
+    return prepare_presentation(app, url, browser_schedule=serve._schedule_browser_open)
+
+
 def main(argv=None) -> int:
     """Retain shared freeze-support, argument normalization and live-network scoping."""
-    return serve.main(argv, command_handler=_command_handler, write_admission=_maintenance_write_refused)
+    return serve.main(argv, command_handler=_command_handler, write_admission=_maintenance_write_refused,
+                      presentation_prepare=_prepare_presentation)
 
 
 if __name__ == "__main__":

@@ -821,13 +821,14 @@ def run_database_preflight(path: str) -> int:
 
 
 # ── entry point ─────────────────────────────────────────────────────────────────
-def main(argv=None, *, command_handler=None, write_admission=None) -> int:
+def main(argv=None, *, command_handler=None, write_admission=None, presentation_prepare=None) -> int:
     """Start the shared application, with optional executable-owned adapters.
 
     A command handler returns an exit status or None to continue normal dispatch.
     A write-admission callback returns true to refuse a writable operation; selftest
-    supplies its explicitly selected database. Without callbacks, the shared CLI
-    follows its existing dispatch and write checks.
+    supplies its explicitly selected database. Presentation preparation may
+    configure additive middleware after server admission, never server lifetime.
+    Without callbacks, the shared CLI follows its existing dispatch and write checks.
     """
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
     multiprocessing.freeze_support()
@@ -846,9 +847,11 @@ def main(argv=None, *, command_handler=None, write_admission=None) -> int:
     else:
         os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
     try:
-        if command_handler is None and write_admission is None:
+        if command_handler is None and write_admission is None and presentation_prepare is None:
             return _main_scoped(argv)
-        return _main_scoped(argv, command_handler=command_handler, write_admission=write_admission)
+        presentation_options = {} if presentation_prepare is None else {"presentation_prepare": presentation_prepare}
+        return _main_scoped(argv, command_handler=command_handler, write_admission=write_admission,
+                            **presentation_options)
     finally:
         if prior_live is None:
             os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
@@ -856,7 +859,7 @@ def main(argv=None, *, command_handler=None, write_admission=None) -> int:
             os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = prior_live
 
 
-def _main_scoped(argv: list[str], *, command_handler=None, write_admission=None) -> int:
+def _main_scoped(argv: list[str], *, command_handler=None, write_admission=None, presentation_prepare=None) -> int:
     if command_handler is not None:
         status = command_handler(argv)
         if status is not None:
@@ -925,8 +928,11 @@ def _main_scoped(argv: list[str], *, command_handler=None, write_admission=None)
                         help="TLS certificate PEM (or $ASSESSHUB_TLS_CERT)")
     parser.add_argument("--ssl-keyfile", default=os.environ.get("ASSESSHUB_TLS_KEY"),
                         help="TLS private-key PEM (or $ASSESSHUB_TLS_KEY)")
-    parser.add_argument("--no-browser", action="store_true",
-                        help="do not auto-open the UI in a browser")
+    presentation_flags = parser.add_mutually_exclusive_group()
+    presentation_flags.add_argument("--no-browser", action="store_true",
+                                   help="do not auto-open the UI in a browser")
+    presentation_flags.add_argument("--browser", action="store_true",
+                                   help="use the default browser without native window imports")
     # Parsed early and removed before engine dispatch; this hidden declaration keeps the shipped
     # app-flag inventory mechanically complete for the field guide.
     parser.add_argument("--allow-live-network", action="store_true", help=argparse.SUPPRESS)
@@ -1137,7 +1143,13 @@ def _main_scoped(argv: list[str], *, command_handler=None, write_admission=None)
         url = f"{scheme}://{url_host}:{args.port}/"
         print(f"{_version_line()}\n  {url}")
         if not args.no_browser:
-            _schedule_browser_open(url)
+            if presentation_prepare is None or args.browser:
+                _schedule_browser_open(url)
+            else:
+                # Preparation is not server readiness. The packaging owner may
+                # configure additive ASGI middleware, but may not assume a bound
+                # socket, own server signals, close the Store or replay work.
+                presentation_prepare(app, url)
 
         uvicorn_kwargs = {"host": args.host, "port": args.port, "log_level": "info"}
         if args.ssl_certfile:

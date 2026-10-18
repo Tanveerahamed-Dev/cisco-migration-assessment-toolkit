@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from portable.native_origin import NativeRefusal
+from portable.native_release_gate import require_native_dependency_promotion
 
 
 class State(str, Enum):
@@ -161,4 +162,4 @@ def require_native_release_admission() -> None:
     happens to be installed. Replace this refusal only with accepted immutable
     wheel/lock/payload admission and the approved frozen native proof.
     """
-    raise NativeRefusal("native_dependency_publication_pending")
+    require_native_dependency_promotion()

@@ -39,6 +39,10 @@ FIRST RUN / EVERY ENGAGEMENT START
 2. Run:  Atlas.exe --selftest        -> expect "SELFTEST: PASS".
 3. Double-click Atlas.exe. It starts AssessHub (the app) and opens
    your browser. Keep the console window open; closing it stops Atlas.
+For explicit browser-only startup, run: Atlas.exe --browser
+This bypasses native-window imports. --no-browser keeps the existing
+headless server path; do not combine the two options. Native dependencies
+are not enabled in this preparation build; the normal browser path remains.
 Everything the app stores lives in  Atlas\data\  beside the exe. That is
 the ONLY writable folder - updates replace everything else wholesale.
 Atlas is also the engine itself. With --run-engine in front of the

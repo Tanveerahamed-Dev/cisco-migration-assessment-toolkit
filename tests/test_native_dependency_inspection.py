@@ -13,6 +13,7 @@ import pytest
 
 from portable import native_dependency as dependency
 from portable.native_origin import NativeRefusal
+from portable.native_release_gate import PROXY_LICENSE_REFERENCES, require_native_dependency_promotion
 
 
 DIST = "proxy_tools-0.1.0.dist-info/"
@@ -55,7 +56,8 @@ def inspect(raw, monkeypatch):
 def test_structural_result_explicitly_grants_no_producer_legal_release_or_publication_authority(monkeypatch):
     result = inspect(wheel(), monkeypatch)
     assert result["producer_identity"] == "NOT_VERIFIED"
-    assert result["license_acceptance"] == "NOT_VERIFIED"
+    assert result["license_acceptance"] == "BLOCKED"
+    assert result["block_code"] == "PROXY_TOOLS_010_LICENSE_CONFLICT"
     assert result["immutable_release"] == "NOT_VERIFIED"
     assert result["production_authority"] == "NOT_GRANTED"
     assert len(result["members"]) == 6
@@ -164,10 +166,11 @@ def test_unindexed_or_duplicate_carriers_are_not_hidden_by_a_matching_selected_d
         inspect(raw, monkeypatch)
 
 
-def test_current_dependency_record_is_held_and_preserves_the_source_license_conflict():
+def test_current_dependency_record_is_blocked_and_preserves_the_source_license_conflict():
     root = Path(__file__).resolve().parents[1]
     record = json.loads((root / "portable/native_dependency_inputs.json").read_text(encoding="utf-8"))
-    assert record["status"] == "HELD"
+    assert record["status"] == record["legal_acceptance"] == "BLOCKED"
+    assert record["block_code"] == "PROXY_TOOLS_010_LICENSE_CONFLICT"
     assert record["proxy_tools"]["source_sha256"] == dependency.PROXY_SDIST_SHA256
     assert record["proxy_tools"]["package_source"]["sha256"] == dependency.PROXY_SOURCE_SHA256
     assert record["proxy_tools"]["metadata_license_declaration"] == "MIT"
@@ -175,3 +178,14 @@ def test_current_dependency_record_is_held_and_preserves_the_source_license_conf
     assert record["proxy_tools"]["standalone_license_present"] is False
     assert record["proxy_tools"]["accepted_wheel"] is None
     assert record["producer_authority"] == record["publication_authority"] == "NOT_GRANTED"
+    approved = root / record["approved_design_path"]
+    assert hashlib.sha256(approved.read_bytes()).hexdigest() == record["approved_design_sha256"]
+    assert [(row["member"], row["line"]) for row in record["proxy_tools"]["license_references"]] == [
+        (member, line) for member, line, _description in PROXY_LICENSE_REFERENCES
+    ]
+
+
+def test_named_promotion_block_cannot_be_bypassed_by_an_environment_claim(monkeypatch):
+    monkeypatch.setenv("ATLAS_NATIVE_DEPENDENCY_APPROVED", "1")
+    with pytest.raises(NativeRefusal, match="PROXY_TOOLS_010_LICENSE_CONFLICT"):
+        require_native_dependency_promotion()

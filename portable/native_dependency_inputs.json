@@ -1,6 +1,8 @@
 {
   "schema": "atlas.native-dependency-inputs/1",
-  "status": "HELD",
+  "status": "BLOCKED",
+  "block_code": "PROXY_TOOLS_010_LICENSE_CONFLICT",
+  "approved_design_path": "docs/rc8-p1-e-native-window-design-approved.md",
   "approved_design_sha256": "4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7",
   "proxy_tools": {
     "version": "0.1.0",
@@ -15,6 +17,11 @@
     },
     "metadata_license_declaration": "MIT",
     "standalone_license_present": false,
+    "license_references": [
+      {"member": "proxy_tools-0.1.0/PKG-INFO", "line": 8, "declaration": "MIT"},
+      {"member": "proxy_tools-0.1.0/setup.py", "line": 14, "declaration": "MIT"},
+      {"member": "proxy_tools-0.1.0/proxy_tools/__init__.py", "line": 8, "declaration": "BSD; referenced LICENSE absent"}
+    ],
     "license_resolution": "ATTRIBUTABLE_APPLICABLE_TEXT_REQUIRED",
     "accepted_wheel": null
   },
@@ -30,5 +37,5 @@
   "producer_isolation": "NOT_VERIFIED",
   "producer_authority": "NOT_GRANTED",
   "publication_authority": "NOT_GRANTED",
-  "legal_acceptance": "NOT_VERIFIED"
+  "legal_acceptance": "BLOCKED"
 }

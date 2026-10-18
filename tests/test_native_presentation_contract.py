@@ -148,7 +148,7 @@ def test_closed_window_can_open_browser_without_restarting_native():
 def test_dependency_hold_is_not_bypassed_by_an_ambient_webview_package(monkeypatch):
     monkeypatch.setitem(sys.modules, "webview", object())
     monkeypatch.setenv("ATLAS_NATIVE_WINDOW", "1")
-    with pytest.raises(NativeRefusal, match="native_dependency_publication_pending"):
+    with pytest.raises(NativeRefusal, match="PROXY_TOOLS_010_LICENSE_CONFLICT"):
         require_native_release_admission()
 
 

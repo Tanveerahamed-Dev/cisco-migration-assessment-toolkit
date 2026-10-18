@@ -165,3 +165,21 @@ The console prints the canonical local URL and: **“Closing the window leaves A
 Explain that eight retained profiles, the profile quota or uncertain profile inventory selects browser without deleting client data. One retained incomplete download disables further native downloads until the operator resolves it; unsupported/cross-volume destinations use the browser, with outputs kept outside Atlas/profile/custody roots. Retain console=True for live SSH prompts. No runtime download, update, privilege elevation, tray process, second server or generic RPC is added. Administrator-owned offline Evergreen/.NET prerequisites are documented separately; Atlas does not install them. Report measured base/candidate ZIP and extracted delta, component contributions, and **aggregate GUI plus browser/renderer process count, private bytes and working-set peaks**. The 525,463-byte pywebview wheel is not that cost. Existing 512 MiB ZIP / 128 MiB member / 1 GiB expanded limits remain; no budget, assertion, gate, signing or inventory exception is broadened.
 
 **Re-review requested; then stop.** These are design contracts, not verified implementation. Option A is accepted in principle with §1's future gates; dependency publication still requires separate owner authority. Before any future implementation publication, integrate and satisfy current main owners, including the schema-/4 boundary guard noted by the reviewer; this old-base note certifies no future source. This revision changes only the two remaining P2 contracts and records the wheel admission conditions. No source/hook/lock code, wheel, SDK adaptation, test, build, GUI, workflow dispatch, commit, push, signing or external publication was performed. The source branch remains clean at the reviewed base; field/runtime/licensing qualification and approval remain open.
+
+## Owner-directed release BLOCK — 2026-10-19
+
+**PROXY_TOOLS_010_LICENSE_CONFLICT — BLOCKED, unresolved.** For proxy_tools 0.1.0, metadata says MIT, the source header says BSD, and the referenced LICENSE file is absent. The supervisor explicitly keeps dependency execution/build, wheel promotion and publication held for the owner's decision. No licence is selected, inferred, synthesized or written; no pin is changed.
+
+Exact public source archive: `proxy_tools-0.1.0.tar.gz`, 2,978 bytes, SHA-256 `ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010`. Archive member references (one-based lines):
+
+| Member | Line | Observed declaration |
+|---|---:|---|
+| `proxy_tools-0.1.0/PKG-INFO` | 8 | MIT metadata |
+| `proxy_tools-0.1.0/setup.py` | 14 | MIT metadata input |
+| `proxy_tools-0.1.0/proxy_tools/__init__.py` | 8 | BSD source header and reference to LICENSE |
+
+The complete pinned archive has no standalone LICENSE file. The package source member is 6,409 bytes, SHA-256 `d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be`. Static archive inspection only; no archived code was executed or built. Cause and applicable licence/copyright resolution remain unconfirmed. Reproducibility, a chosen text hash, green structural tests or a publication authorization cannot resolve this BLOCK.
+
+`portable/native_release_gate.py` owns the named unconditional native dependency promotion refusal. It is also consumed by native release admission; changing JSON status, environment or a supplied wheel/text digest cannot clear it. The ordinary browser/installer path remains available. The original APPROVED-DESIGN revision remains byte-exact in `docs/rc8-p1-e-native-window-design-approved.md`, SHA-256 `4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7`; this appended evidence record is owner-directed and does not alter those nine architecture contracts.
+
+The owner additionally requested an evidence-only static inspection of whether pinned pywebview 6.2.1 needs proxy_tools on the Windows WebView2 path. Findings and limits are recorded in `docs/rc8-p1-e-proxy-tools-static-inspection.md`. No alternative dependency route, source overlay, metadata rewrite, pin change or dependency build is adopted by that inspection.

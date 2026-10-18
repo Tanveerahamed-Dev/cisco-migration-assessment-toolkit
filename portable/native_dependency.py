@@ -20,9 +20,9 @@ import zipfile
 import zlib
 
 from portable.native_origin import NativeRefusal
+from portable.native_release_gate import PROXY_SDIST_SHA256, PROXY_TOOLS_010_LICENSE_CONFLICT
 
 
-PROXY_SDIST_SHA256 = "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010"
 PROXY_SOURCE_SHA256 = "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be"
 _DIST = "proxy_tools-0.1.0.dist-info/"
 _PACKAGE = "proxy_tools/__init__.py"
@@ -71,6 +71,7 @@ def inspect_proxy_sdist(raw: bytes) -> dict:
     return {"source_sha256": PROXY_SDIST_SHA256, "package_sha256": PROXY_SOURCE_SHA256,
             "metadata_license": "MIT", "source_header_license": "BSD",
             "standalone_license_present": False, "license_resolution": "OWNER_EVIDENCE_REQUIRED",
+            "block_code": PROXY_TOOLS_010_LICENSE_CONFLICT, "license_acceptance": "BLOCKED",
             "production_authority": "NOT_GRANTED"}
 
 
@@ -199,5 +200,6 @@ def inspect_proxy_wheel(raw: bytes, *, expected_sha256: str, applicable_license_
         raise NativeRefusal("dependency_record") from error
     return {"wheel_sha256": expected_sha256, "package_sha256": PROXY_SOURCE_SHA256,
             "applicable_license_sha256": applicable_license_sha256, "members": sorted(files),
-            "producer_identity": "NOT_VERIFIED", "license_acceptance": "NOT_VERIFIED",
+            "producer_identity": "NOT_VERIFIED", "license_acceptance": "BLOCKED",
+            "block_code": PROXY_TOOLS_010_LICENSE_CONFLICT,
             "immutable_release": "NOT_VERIFIED", "production_authority": "NOT_GRANTED"}
