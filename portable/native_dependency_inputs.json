@@ -1,0 +1,34 @@
+{
+  "schema": "atlas.native-dependency-inputs/1",
+  "status": "HELD",
+  "approved_design_sha256": "4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7",
+  "proxy_tools": {
+    "version": "0.1.0",
+    "source_url": "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz",
+    "source_bytes": 2978,
+    "source_sha256": "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010",
+    "package_source": {
+      "path": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "bytes": 6409,
+      "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be",
+      "header_license_declaration": "BSD"
+    },
+    "metadata_license_declaration": "MIT",
+    "standalone_license_present": false,
+    "license_resolution": "ATTRIBUTABLE_APPLICABLE_TEXT_REQUIRED",
+    "accepted_wheel": null
+  },
+  "producer_tools_to_hash_lock": {
+    "python": "3.12.10",
+    "pip": "26.2.1",
+    "setuptools": "84.0.0",
+    "wheel": "0.45.1",
+    "build": "1.2.2.post1",
+    "pyproject-hooks": "1.2.0"
+  },
+  "producer_workflow": "NOT_IMPLEMENTED",
+  "producer_isolation": "NOT_VERIFIED",
+  "producer_authority": "NOT_GRANTED",
+  "publication_authority": "NOT_GRANTED",
+  "legal_acceptance": "NOT_VERIFIED"
+}
