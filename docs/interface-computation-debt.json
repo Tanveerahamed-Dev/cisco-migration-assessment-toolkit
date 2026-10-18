@@ -1,5 +1,6 @@
 {
-  "schema": "interface-computation-debt/3",
+  "schema": "interface-computation-debt/4",
+  "boundary": [],
   "origin": "fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1",
   "stage": "active",
   "sites": [

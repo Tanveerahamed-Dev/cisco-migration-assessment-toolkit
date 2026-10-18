@@ -7,6 +7,58 @@ installed on the host**. That physical Python-absent-host run remains an externa
 it boots the server, opens the browser, and re-invokes itself as the engine CLI for ingest runs
 (the `--run-engine` sentinel; see `webapp/backend/serve.py`).
 
+First installation needs only a published ZIP, its independently obtained SHA-256,
+Windows PowerShell's `Expand-Archive`, and the bundled executable. Any writable folder
+works; USB is optional. See `README-FIELD.txt`. `Atlas.exe --install DEST --package ZIP --expected-sha256 SHA`
+and the installed `Atlas.exe --update ZIP --expected-sha256 SHA`
+use the frozen verifier and bundled journaled transaction. The optional `make_stick.ps1`
+is a thin executable wrapper with no checkout/interpreter fallback. Updates hand off
+to a same-drive installed-code recovery helper before exiting; dispatch is pending
+until the separate terminal receipt confirms completion. The helper remains reachable
+even when an interrupted directory switch leaves no active `Atlas.exe`.
+
+The updater's SHA-bound compatibility door permits additive runtime distributions
+with full member/SBOM/schema/notices checks, while preserving installed dependency
+versions and all existing schema/toolchain/frontend/native pins. It neither authenticates
+the publisher nor replaces strict current-source release qualification. The existing
+Windows build-and-qualify job exercises frozen installation, three interrupted phases,
+recovery, rollback, database restore and verified fresh reinstallation. Python-prefixed
+environment overrides are removed; Python launchers are absent from the full Windows
+CreateProcess search locations, including application/cwd, System32, System and Windows
+directories. Hosted-only system launcher renames are journaled and restored in `finally`.
+Its observer still has Python; the actual Python-uninstalled/disconnected-host gate remains external.
+
+**Supported successor path:** RC7-and-earlier kits have no frozen update door. A successor
+which changes a dependency, security, toolchain, frontend, schema or native-provider pin can
+also be refused by an installed verifier. Use **VERIFIED REINSTALL** in `README-FIELD.txt`:
+independently obtain the published ZIP SHA-256; extract a fresh bootstrap; have its own
+frozen verifier install the same ZIP/hash into a new destination; stop every process; retain
+the old kit and a completely inventoried/hash-verified offline copy of `data`; preflight
+another database copy with the new candidate before adopting any data. The guide supplies
+the canonical request/nonce, receipt checks and same-volume directory moves. Retain all
+originals, rollback data and receipts. This path preserves old pins rather than relaxing
+their checks. The hosted synthetic copy/preflight/adoption proof does not establish arbitrary
+historical-database migration or a distinct security/toolchain successor's acceptance.
+
+Recovery is explicit: `Atlas.exe --recover ROOT` or the optional wrapper's `-Recover`.
+A pending journal refuses a new update/rollback; recovery uses the recorded installed-version
+helper and reports its terminal result and failure reason before a new operation is requested.
+It never silently converts a requested new operation into replay of an older request.
+Recovery launched from the active executable detaches the recorded helper and exits
+so Windows can release the caller's image. Its scheduled result still requires the
+fresh terminal receipt; the wrapper's `-Recover` waits for that actual completion.
+An interrupted first journaled `--install` has no installed helper/pointer: retain the
+destination and rerun the same separately extracted, hash-checked bootstrap with the
+same ZIP, published SHA-256 and destination. Only a matching first-install journal
+(`had_active` false) permits that retry; wrapper `-Recover` is for installed operations.
+
+The installed verifier also recognizes bounded, architecture-neutral managed IL-only
+DLLs for the planned Windows window adapter. These are labelled separately from native
+AMD64 PE images and remain in all member, SBOM and signing denominators. PE32
+Authenticode offsets are handled explicitly; native x86, mixed mode, required/preferred
+32-bit execution, native CLR tables and malformed metadata remain refused. Strong naming
+is separate from Authenticode. This change ships no window dependency in the installer PR.
+
 ## Build
 
 Release candidates use the exact Windows x64 toolchain in `portable/toolchain.json` and the
@@ -98,10 +150,10 @@ exactly as the AssessHub ingest channel already does (`webapp/backend/ingest.py`
 - `--redact-collection` is opt-in and separate: it rewrites the **raw captures in place** (still
   `--compare`/`--trend`-able).
 
-## Lay out a stick
+## Install to any folder or a stick
 
 ```powershell
-powershell -File portable/make_stick.ps1 -Dest E:\ -Package C:\release\Atlas-<version>-windows-x64.zip
+powershell -File portable/make_stick.ps1 -Dest C:\AtlasField -AtlasExe C:\extracted\Atlas\Atlas.exe -Package C:\release\Atlas-<version>-windows-x64.zip -ExpectedSha256 <published-sha256>
 ```
 
 The package copy is hash-checked and verified before extraction, then the extracted tree and
@@ -120,6 +172,14 @@ Explicit rollback is `powershell -File portable/make_stick.ps1 -Dest E:\ -Rollba
 must first prove it can open a same-volume copy of the retained database. If it cannot, use
 `-Rollback -RestorePreUpdateDatabase`: only the backup named and hashed by the exact rollback-slot
 receipt is eligible, and the newer database is preserved with its own receipt before replacement.
+
+Windows PowerShell Group Policy (`AllSigned`/`RemoteSigned`), AppLocker or application control
+can refuse the bundled unsigned transaction. `-ExecutionPolicy Bypass` does not override those
+controls. Managed-policy acceptance is an external gate. Where executable launch and ordinary
+copying are permitted, hash-check/`Expand-Archive` the new ZIP into a fresh destination and use
+its frozen verifier and the field guide's offline backup, copy preflight and adoption procedure;
+this avoids the transaction script. Otherwise stop for the managed-device owner; do not change
+policy merely to complete an update.
 
 Post-package Authenticode evidence is written outside the verified bundle so the receipt itself
 cannot change the package member set:
@@ -179,8 +239,9 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
   restarts the frozen server and verifies matching MOP/NRFU identities. This is hosted synthetic evidence,
   not a Python-absent physical-host or operator acceptance receipt. A package carrying a `/1` document of
   any of these, or a `/2` or `/3` qualification
-  receipt, is refused as superseded, with the stated reason, never migrated: verify it with the
-  checkout that built it, or rebuild it. Python/npm package license
+  receipt, is refused as superseded, with the stated reason, never silently migrated. A field
+  successor uses VERIFIED REINSTALL through the new release's frozen verifier; it requires no
+  old checkout or old update command. Python/npm package license
   texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
   OUI and Cisco-fact public redistribution authority remains an explicit legal-review gate; a draft
   candidate does not close it.

@@ -54,6 +54,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "cffi": "2.1.1",
     "click": "8.5.0",
     "cryptography": "50.0.1",
+    "cyclonedx-python-lib": "11.12.0",
     "defusedxml": "0.7.1",
     "et-xmlfile": "2.0.0",
     "fastapi": "0.141.1",
@@ -481,6 +482,8 @@ def _installed_verification_root(
 
 def _installed_tree_entries(
     root: Path,
+    *,
+    _skip_root_data: bool = False,
 ) -> tuple[list[tuple[str, Path, os.stat_result]], dict[Path, tuple[int, ...]]]:
     """Enumerate a bounded tree deterministically without descending through links/reparses."""
 
@@ -510,6 +513,10 @@ def _installed_tree_entries(
             scanned: list[tuple[str, Path, os.stat_result]] = []
             with os.scandir(directory) as iterator:
                 for entry in iterator:
+                    if _skip_root_data and directory == root and entry.name.casefold() == "data":
+                        # The installed maintenance source is the only such view.
+                        # Never stat, open or traverse client data while copying code.
+                        continue
                     path = directory / entry.name
                     relative = safe_relative(path.relative_to(root).as_posix())
                     metadata = path.lstat()
@@ -590,10 +597,12 @@ def _recheck_installed_tree(
     entries: list[tuple[str, Path, os.stat_result]],
     directories: Mapping[Path, tuple[int, ...]],
     root_path_directories: Mapping[Path, tuple[int, ...]],
+    *,
+    _skip_root_data: bool = False,
 ) -> None:
     _recheck_installed_root_path(root_path_directories)
     _recheck_installed_directories(directories)
-    observed_entries, observed_directories = _installed_tree_entries(root)
+    observed_entries, observed_directories = _installed_tree_entries(root, _skip_root_data=_skip_root_data)
     expected_snapshot = [
         (relative, _installed_stat_identity(metadata))
         for relative, _path, metadata in entries
@@ -734,9 +743,150 @@ def pe_machine(value: bytes) -> int | None:
     return struct.unpack_from("<H", value, offset + 4)[0]
 
 
+def _managed_ilonly_pe32(value: bytes) -> None:
+    """Accept only bounded I386/PE32 AnyCPU IL libraries, without loading any code.
+
+    A raw I386 machine field is insufficient: native x86, mixed mode, ReadyToRun,
+    32-bit-required/preferred, native entry points and native CLR tables refuse.
+    The native AMD64 rule is unchanged; this narrowly admits architecture-neutral
+    CLR DLLs needed by Windows desktop adapters into the existing x64 process.
+    """
+    def valid(condition: bool, what: str) -> None:
+        if not condition:
+            raise PortableReleaseError("unsupported managed PE32: " + what)
+
+    pe = struct.unpack_from("<I", value, 0x3C)[0]
+    valid(pe + 24 <= len(value), "truncated COFF header")
+    sections = struct.unpack_from("<H", value, pe + 6)[0]
+    optional_size, characteristics = struct.unpack_from("<HH", value, pe + 20)
+    optional = pe + 24
+    valid(1 <= sections <= 96 and optional_size == 224
+          and optional + optional_size + 40 * sections <= len(value), "header/section bounds")
+    valid(characteristics & 0x2000 != 0 and characteristics & 2 != 0, "not an executable-image DLL")
+    valid(struct.unpack_from("<H", value, optional)[0] == 0x10B, "not PE32")
+    valid(struct.unpack_from("<I", value, optional + 92)[0] == 16, "unsupported directory denominator")
+    section_alignment, file_alignment = struct.unpack_from("<II", value, optional + 32)
+    image_size, header_size = struct.unpack_from("<II", value, optional + 56)
+    valid(512 <= file_alignment <= 65536 and file_alignment & (file_alignment - 1) == 0
+          and section_alignment >= file_alignment and section_alignment & (section_alignment - 1) == 0,
+          "unsupported alignment")
+    valid(optional + optional_size + 40 * sections <= header_size <= len(value)
+          and header_size % file_alignment == 0 and image_size % section_alignment == 0,
+          "invalid image/header size")
+    mappings = []
+    raw_intervals = []
+    virtual_intervals = []
+    table = optional + optional_size
+    for index in range(sections):
+        virtual_size, rva, raw_size, raw = struct.unpack_from("<IIII", value, table + 40 * index + 8)
+        extent = max(virtual_size, raw_size)
+        valid(extent > 0 and rva >= header_size and rva % section_alignment == 0
+              and rva + extent <= min(image_size, 0xFFFFFFFF), "invalid section virtual range")
+        valid(raw_size == 0 or (raw >= header_size and raw % file_alignment == 0
+                              and raw_size % file_alignment == 0 and raw + raw_size <= len(value)),
+              "invalid section raw range")
+        virtual_intervals.append((rva, rva + extent))
+        if raw_size:
+            raw_intervals.append((raw, raw + raw_size))
+        mappings.append((rva, extent, raw, raw_size))
+    for intervals in (raw_intervals, virtual_intervals):
+        ordered = sorted(intervals)
+        valid(all(left[1] <= right[0] for left, right in zip(ordered, ordered[1:])), "overlapping sections")
+
+    def translated(rva: int, size: int) -> int:
+        valid(rva > 0 and size > 0 and rva + size <= 0xFFFFFFFF, "invalid RVA extent")
+        matches = [(raw + rva - base) for base, extent, raw, raw_size in mappings
+                   if base <= rva and rva + size <= base + extent and rva + size <= base + raw_size]
+        valid(len(matches) == 1 and matches[0] + size <= len(value), "unmapped/ambiguous RVA")
+        return matches[0]
+
+    directories = [struct.unpack_from("<II", value, optional + 96 + 8 * index) for index in range(16)]
+    for index, (rva, size) in enumerate(directories):
+        valid(bool(rva) == bool(size), "partially populated data directory")
+        if index in {0, 3, 7, 8, 9, 10, 11, 13, 15}:
+            valid((rva, size) == (0, 0), "native/unsupported data directory")
+        elif rva and index != 4:
+            translated(rva, size)
+    certificate, certificate_size = directories[4]
+    if certificate:
+        valid(certificate % 8 == 0 and certificate_size >= 8
+              and certificate >= max((end for _start, end in raw_intervals), default=header_size)
+              and certificate + certificate_size == len(value), "nonterminal certificate table")
+    clr_rva, clr_size = directories[14]
+    valid(clr_size == 72, "missing/nonstandard CLR header")
+    clr = translated(clr_rva, clr_size)
+    cb, major, minor, metadata_rva, metadata_size, flags, entrypoint = struct.unpack_from("<IHHIIII", value, clr)
+    valid(cb == 72 and major == 2 and minor <= 5, "unsupported CLR header version/size")
+    valid(flags & 1 != 0 and flags & ~0x9 == 0 and entrypoint == 0,
+          "not architecture-neutral ILONLY library flags/entry point")
+    # Resources and strong-name signatures are managed data. Strong naming is
+    # separate from Authenticode and never removes this member from signing gates.
+    for offset in (24, 32):
+        rva, size = struct.unpack_from("<II", value, clr + offset)
+        valid(bool(rva) == bool(size), "partial CLR managed-data directory")
+        if rva:
+            translated(rva, size)
+        if offset == 32 and flags & 8:
+            valid(rva != 0, "strong-name flag without signature directory")
+    valid(not any(value[clr + 40:clr + 72]), "native CLR code/vtable/export/ReadyToRun header")
+    metadata = translated(metadata_rva, metadata_size)
+    valid(metadata_size >= 24 and value[metadata:metadata + 4] == b"BSJB", "missing managed metadata signature")
+    valid(struct.unpack_from("<HHI", value, metadata + 4) == (1, 1, 0), "unsupported metadata header")
+    version_size = struct.unpack_from("<I", value, metadata + 12)[0]
+    valid(0 < version_size <= 256 and version_size % 4 == 0 and 20 + version_size <= metadata_size
+          and b"\0" in value[metadata + 16:metadata + 16 + version_size], "metadata version bounds")
+    position = metadata + 16 + version_size
+    metadata_flags, stream_count = struct.unpack_from("<HH", value, position)
+    valid(metadata_flags == 0 and 1 <= stream_count <= 64, "metadata stream denominator")
+    position += 4
+    streams = []
+    names = set()
+    for _index in range(stream_count):
+        valid(position + 9 <= metadata + metadata_size, "truncated metadata stream header")
+        start, size = struct.unpack_from("<II", value, position)
+        name_start = position + 8
+        name_end = value.find(b"\0", name_start, min(name_start + 32, metadata + metadata_size))
+        valid(name_end > name_start, "metadata stream name bounds")
+        name = value[name_start:name_end]
+        valid(name in {b"#~", b"#-", b"#Strings", b"#US", b"#GUID", b"#Blob"}
+              and name not in names and start + size <= metadata_size, "unsupported/duplicate metadata stream")
+        names.add(name)
+        streams.append((metadata + start, metadata + start + size))
+        position = (name_end + 4 - metadata) // 4 * 4 + metadata
+    valid((b"#~" in names) != (b"#-" in names), "metadata table stream absent/ambiguous")
+    valid(position <= metadata + metadata_size and all(start >= position for start, _end in streams),
+          "metadata streams overlap their headers")
+    ordered = sorted(streams)
+    valid(all(left[1] <= right[0] for left, right in zip(ordered, ordered[1:])), "overlapping metadata streams")
+
+
+def pe_architecture(value: bytes) -> str | None:
+    """Member label; the bundle target stays AMD64 when AnyCPU IL DLLs coexist."""
+    machine = pe_machine(value)
+    if machine is None:
+        return None
+    if machine == PE_AMD64:
+        return "AMD64"
+    if machine == 0x14C:
+        _managed_ilonly_pe32(value)
+        return "I386_MANAGED_ILONLY"
+    raise PortableReleaseError("PE member is not AMD64 or a supported AnyCPU ILONLY DLL")
+
+
+def _member_pe_architecture(value: bytes, relative: str) -> str | None:
+    architecture = pe_architecture(value)
+    suffix = PurePosixPath(relative).suffix.casefold()
+    if suffix in PE_SUFFIXES and architecture is None:
+        raise PortableReleaseError(f"PE-named member has no valid PE header: {relative}")
+    if architecture == "I386_MANAGED_ILONLY" and suffix != ".dll":
+        raise PortableReleaseError(f"AnyCPU ILONLY PE member is permitted only as a DLL: {relative}")
+    return architecture
+
+
 def authenticode_content_sha256_variants(value: bytes) -> list[str] | None:
     """Hash PE content modulo the 0-7 zero bytes SignTool may add for table alignment."""
-    if pe_machine(value) is None:
+    architecture = pe_architecture(value)
+    if architecture is None:
         return None
     pe_offset = struct.unpack_from("<I", value, 0x3C)[0]
     optional_size = struct.unpack_from("<H", value, pe_offset + 20)[0]
@@ -745,10 +895,10 @@ def authenticode_content_sha256_variants(value: bytes) -> list[str] | None:
         # Synthetic/minimal PE fixtures have no real optional header. They remain exact-byte bound.
         return [hashlib.sha256(value).hexdigest()]
     magic = struct.unpack_from("<H", value, optional)[0]
-    if magic != 0x20B:
+    if magic != (0x10B if architecture == "I386_MANAGED_ILONLY" else 0x20B):
         raise PortableReleaseError("AMD64 PE has an unsupported optional-header format")
     checksum_offset = optional + 64
-    security_directory = optional + 112 + (8 * 4)
+    security_directory = optional + (96 if architecture == "I386_MANAGED_ILONLY" else 112) + (8 * 4)
     if security_directory + 8 > optional + optional_size:
         raise PortableReleaseError("PE optional header lacks the Authenticode directory")
     certificate_offset, certificate_size = struct.unpack_from("<II", value, security_directory)
@@ -780,14 +930,15 @@ def authenticode_content_sha256_variants(value: bytes) -> list[str] | None:
 
 
 def has_terminal_authenticode_table(value: bytes) -> bool:
-    if pe_machine(value) is None:
+    architecture = pe_architecture(value)
+    if architecture is None:
         return False
     pe_offset = struct.unpack_from("<I", value, 0x3C)[0]
     optional_size = struct.unpack_from("<H", value, pe_offset + 20)[0]
     optional = pe_offset + 24
     if optional + optional_size > len(value) or optional_size < 152:
         return False
-    security_directory = optional + 112 + (8 * 4)
+    security_directory = optional + (96 if architecture == "I386_MANAGED_ILONLY" else 112) + (8 * 4)
     certificate_offset, certificate_size = struct.unpack_from("<II", value, security_directory)
     return bool(
         certificate_offset
@@ -866,20 +1017,15 @@ def collect_members(bundle_root: str | Path) -> list[dict[str, Any]]:
             raise PortableReleaseError(f"possible client evidence artifact in runtime bundle: {relative}")
         value, observed = _same_read(path)
         _reject_secret_patterns(value, f"bundle member: {relative}")
-        suffix = path.suffix.casefold()
-        machine = pe_machine(value)
-        if suffix in PE_SUFFIXES and machine is None:
-            raise PortableReleaseError(f"PE-named member has no valid PE header: {relative}")
-        if machine is not None and machine != PE_AMD64:
-            raise PortableReleaseError(f"PE member is not AMD64: {relative}")
+        architecture = _member_pe_architecture(value, relative)
         rows.append(
             {
                 "path": relative,
                 "bytes": len(value),
                 "sha256": hashlib.sha256(value).hexdigest(),
                 "role": _runtime_role(relative),
-                "pe_machine": "AMD64" if machine == PE_AMD64 else None,
-                "executable": machine is not None,
+                "pe_machine": architecture,
+                "executable": architecture is not None,
                 "authenticode_content_sha256_variants": (
                     authenticode_content_sha256_variants(value)
                 ),
@@ -1798,7 +1944,15 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
             item["name"]: item["version"] for item in bundled_python["distributions"]
         }
         if observed_bundled != EXPECTED_BUNDLED_PYTHON:
-            raise PortableReleaseError("PyInstaller bundled dependency set differs from reviewed contract")
+            differences = {
+                name: {"expected": EXPECTED_BUNDLED_PYTHON.get(name), "observed": observed_bundled.get(name)}
+                for name in sorted(set(observed_bundled) | set(EXPECTED_BUNDLED_PYTHON))
+                if observed_bundled.get(name) != EXPECTED_BUNDLED_PYTHON.get(name)
+            }
+            raise PortableReleaseError(
+                "PyInstaller bundled dependency set differs from reviewed contract: "
+                + json.dumps(differences, sort_keys=True, separators=(",", ":"))
+            )
         for field, rows in npm_inventories.items():
             count, digest = _reviewed_npm_inventory(field)
             if len(rows) != count or digest_object(rows) != digest:
@@ -2345,7 +2499,22 @@ def _check_attribution_members(
             )
 
 
-def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapping[str, Any]:
+def _runtime_inventory_matches(versions: Mapping[str, str], *, allow_extensions: bool) -> bool:
+    # Build receipts normalize names before inventory selection. A candidate must
+    # not escape forbidden-package checks with a case/separator alias.
+    if any(not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+           or _distribution_name(name) != name for name in versions):
+        return False
+    if set(versions) & _FORBIDDEN_PACKAGE_PARTS:
+        return False
+    if allow_extensions:
+        return all(versions.get(name) == version for name, version in EXPECTED_BUNDLED_PYTHON.items())
+    return versions == EXPECTED_BUNDLED_PYTHON
+
+
+def _validate_toolchain_receipt(
+    value: object, runtime_names: list[str], *, allow_runtime_extensions: bool = False,
+) -> Mapping[str, Any]:
     _require_current_schema(value, TOOLCHAIN_SCHEMA, "portable toolchain receipt")
     if not isinstance(value, Mapping) or set(value) != _TOOLCHAIN_KEYS:
         raise PortableReleaseError("portable toolchain receipt shape is invalid")
@@ -2476,10 +2645,14 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         for item in bundled_distributions
         if isinstance(item, Mapping) and "name" in item and "version" in item
     }
-    if (
-        len(bundled_versions) != len(bundled_distributions)
-        or bundled_versions != EXPECTED_BUNDLED_PYTHON
-    ):
+    # The source/build gate always requires its exact reviewed inventory. The separate
+    # SHA-bound field updater admits additive dependencies for a successor (e.g. its
+    # desktop window), while retaining every existing version and toolchain/native pin.
+    # A candidate may never remove/replace an installed runtime dependency or add a
+    # forbidden package. This is consistency of operator-selected bytes, not approval
+    # of a new dependency; that remains the successor's independent source review.
+    if (len(bundled_versions) != len(bundled_distributions)
+            or not _runtime_inventory_matches(bundled_versions, allow_extensions=allow_runtime_extensions)):
         raise PortableReleaseError("bundled Python dependency denominator differs from reviewed set")
     materials = value.get("materials")
     if not isinstance(materials, list) or any(
@@ -2836,6 +3009,8 @@ def _notice_summary(entries: list[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def _manifest_summary(members: list[Mapping[str, Any]]) -> dict[str, Any]:
+    # This is the application target, not a claim that every raw COFF machine is
+    # AMD64: narrowly validated AnyCPU ILONLY DLL member labels may coexist.
     return _shaped({
         "member_count": len(members),
         "total_bytes": sum(item["bytes"] for item in members),
@@ -2897,7 +3072,12 @@ def validate_member_manifest(value: object) -> tuple[dict[str, Any], list[Mappin
             or not _HEX64.fullmatch(str(item.get("sha256")))
             or item.get("role") != _runtime_role(path)
             or not isinstance(executable, bool)
-            or item.get("pe_machine") != ("AMD64" if executable else None)
+            or (
+                item.get("pe_machine") not in ("AMD64", "I386_MANAGED_ILONLY")
+                if executable else item.get("pe_machine") is not None
+            )
+            or (item.get("pe_machine") == "I386_MANAGED_ILONLY"
+                and PurePosixPath(path).suffix.casefold() != ".dll")
             or (
                 not executable
                 and item.get("authenticode_content_sha256_variants") is not None
@@ -3932,7 +4112,14 @@ def verify_portable_release(
     expected_zip_sha256: str | None = None,
     validate_sbom_schema: bool = True,
     expected_material_root: str | Path | None = None,
+    _allow_runtime_extensions: bool = False,
 ) -> dict[str, Any]:
+    if _allow_runtime_extensions and (
+        not isinstance(expected_zip_sha256, str)
+        or not _HEX64.fullmatch(expected_zip_sha256)
+        or expected_material_root is not None
+    ):
+        raise PortableReleaseError("runtime-extension update verification needs an operator-selected ZIP digest")
     path = Path(zip_path).resolve(strict=True)
     zip_bytes = _read_zip_path(path)
     zip_sha256 = hashlib.sha256(zip_bytes).hexdigest()
@@ -4005,15 +4192,9 @@ def verify_portable_release(
             raise PortableReleaseError(f"possible client evidence artifact in ZIP: {item['path']}")
         if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
             raise PortableReleaseError(f"secret/key pattern detected in ZIP member: {item['path']}")
-        suffix = PurePosixPath(item["path"]).suffix.casefold()
-        observed_machine = pe_machine(value)
-        if suffix in PE_SUFFIXES and observed_machine is None:
-            raise PortableReleaseError(f"PE-named ZIP member has no valid PE header: {item['path']}")
-        expected_machine = "AMD64" if observed_machine is not None else None
-        if item["pe_machine"] != expected_machine or item["executable"] != (
-            observed_machine is not None
-        ) or (
-            observed_machine is not None and observed_machine != PE_AMD64
+        architecture = _member_pe_architecture(value, item["path"])
+        if item["pe_machine"] != architecture or item["executable"] != (
+            architecture is not None
         ) or item["authenticode_content_sha256_variants"] != (
             authenticode_content_sha256_variants(value)
         ):
@@ -4212,7 +4393,9 @@ def verify_portable_release(
     if provenance.get("subject") != expected_subject:
         raise PortableReleaseError("portable provenance subject digest differs")
     toolchain = objects[TOOLCHAIN_NAME]
-    toolchain = _validate_toolchain_receipt(toolchain, runtime_names)
+    toolchain = _validate_toolchain_receipt(
+        toolchain, runtime_names, allow_runtime_extensions=_allow_runtime_extensions,
+    )
     _check_attribution_members(toolchain, claimed)
     if expected_material_root is not None:
         material_root = Path(expected_material_root).resolve(strict=True)
@@ -4542,10 +4725,14 @@ def verify_release_set(
     }, RELEASE_SET_VERIFICATION_SCHEMA, "document")
 
 
-def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
+def verify_installed_bundle(
+    bundle_root: str | Path,
+    *,
+    _maintenance_entries: list[tuple[str, Path, os.stat_result, str | None]] | None = None,
+) -> dict[str, Any]:
     """Rehash an extracted/staged Atlas tree before updater activation."""
     root, root_path_directories = _installed_verification_root(bundle_root)
-    entries, directories = _installed_tree_entries(root)
+    entries, directories = _installed_tree_entries(root, _skip_root_data=_maintenance_entries is not None)
     entry_map = {
         relative: (path, metadata)
         for relative, path, metadata in entries
@@ -4560,11 +4747,12 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         return _read_installed_regular(path, metadata, maximum, what)
 
     try:
-        checksum_text = read_entry(
+        checksum_bytes = read_entry(
             f"{METADATA_DIR}/{CHECKSUMS_NAME}",
             MAX_METADATA_BYTES,
             "installed checksum list",
-        ).decode("utf-8", errors="strict")
+        )
+        checksum_text = checksum_bytes.decode("utf-8", errors="strict")
     except (OSError, UnicodeDecodeError) as exc:
         raise PortableReleaseError("installed bundle lacks valid embedded checksums") from exc
     expected: dict[str, str] = {}
@@ -4618,11 +4806,7 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
                 )
             if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
                 raise PortableReleaseError(f"secret/key pattern detected in installed member: {relative}")
-            machine = pe_machine(value)
-            if path.suffix.casefold() in PE_SUFFIXES and machine is None:
-                raise PortableReleaseError(f"PE-named installed member has no valid PE header: {relative}")
-            if machine is not None and machine != PE_AMD64:
-                raise PortableReleaseError(f"installed PE member is not AMD64: {relative}")
+            _member_pe_architecture(value, relative)
         actual[safe_relative(relative)] = hashlib.sha256(value).hexdigest()
     _recheck_installed_root_path(root_path_directories)
     _recheck_installed_directories(directories)
@@ -4654,9 +4838,9 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
             MAX_ZIP_MEMBER_BYTES,
             f"installed runtime member: {item['path']}",
         )
-        machine = pe_machine(value)
-        if item.get("executable") != (machine is not None) or item.get("pe_machine") != (
-            "AMD64" if machine is not None else None
+        architecture = _member_pe_architecture(value, item["path"])
+        if item.get("executable") != (architecture is not None) or item.get("pe_machine") != (
+            architecture
         ) or item.get("authenticode_content_sha256_variants") != (
             authenticode_content_sha256_variants(value)
         ):
@@ -4687,7 +4871,25 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         if item["executable"]
     ):
         raise PortableReleaseError("installed signed PE lacks a terminal certificate table")
-    _recheck_installed_tree(root, entries, directories, root_path_directories)
+    _recheck_installed_tree(
+        root, entries, directories, root_path_directories,
+        _skip_root_data=_maintenance_entries is not None,
+    )
+    if _maintenance_entries is not None:
+        # Capture only after every default file/manifest/PE/signing check succeeds.
+        # Empty directories have no manifest ownership and must not enter a helper.
+        hashes = {**actual, f"{METADATA_DIR}/{CHECKSUMS_NAME}": hashlib.sha256(checksum_bytes).hexdigest()}
+        owned_directories = {
+            str(parent) for name in hashes for parent in PurePosixPath(name).parents
+            if str(parent) != "."
+        }
+        observed_directories = {name for name, _path, metadata in entries if stat.S_ISDIR(metadata.st_mode)}
+        if observed_directories != owned_directories:
+            raise PortableReleaseError("installed maintenance source contains unowned directories")
+        _maintenance_entries.extend(
+            (name, path, metadata, None if stat.S_ISDIR(metadata.st_mode) else hashes[name])
+            for name, path, metadata in entries
+        )
     return _shaped({
         "schema": INSTALLED_VERIFICATION_SCHEMA,
         "status": "SELF_CONSISTENCY_PASS",
@@ -4699,3 +4901,17 @@ def verify_installed_bundle(bundle_root: str | Path) -> dict[str, Any]:
         "signature_reverification_performed": False,
         "signature_claim_source": "embedded_windows_receipt_not_reperformed",
     }, INSTALLED_VERIFICATION_SCHEMA, "document")
+
+
+def verified_application_entries(
+    bundle_root: str | Path,
+) -> list[tuple[str, Path, os.stat_result, str | None]]:
+    """Return a fully verified code allowlist; root client data is never traversed.
+
+    Candidate/staged verification retains its strict default. Only maintenance's
+    installed source uses this view; unmanifested files and directories refuse
+    before a destination can be populated. Digests bind each subsequent copy read.
+    """
+    entries: list[tuple[str, Path, os.stat_result, str | None]] = []
+    verify_installed_bundle(bundle_root, _maintenance_entries=entries)
+    return entries

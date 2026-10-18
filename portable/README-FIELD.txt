@@ -4,9 +4,38 @@ Atlas, by Tanveer Ahamed - offline network-assessment kit on a stick.
 This page is the field discipline. Build/developer docs live in the
 repository, not on the stick.
 
+FIRST INSTALL (A FOLDER OR A USB STICK; NO PYTHON OR CHECKOUT)
+------------------------------------------------------------
+Download the release ZIP and obtain its published SHA-256 from the
+release's checksum record through your trusted delivery channel. A hash
+only compares selected bytes; it is not a publisher signature.
+In Windows PowerShell, set these values to your download and published hash:
+  $zip = 'C:\Downloads\Atlas-release.zip'
+  $expected = 'PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE'
+  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'ZIP SHA-256 mismatch' }
+Choose a NEW writable destination. A USB drive is optional:
+  Expand-Archive -LiteralPath $zip -DestinationPath C:\AtlasField
+  C:\AtlasField\Atlas\Atlas.exe --selftest
+Expect "SELFTEST: PASS", then double-click C:\AtlasField\Atlas\Atlas.exe.
+For a USB drive use a new folder such as E:\AtlasField instead.
+Never expand a new ZIP over an existing installation. Use compatible UPDATE
+or VERIFIED REINSTALL below; RC7 and earlier require VERIFIED REINSTALL.
+An optional verified, journaled first copy from the extracted app is:
+  C:\AtlasField\Atlas\Atlas.exe --install D:\AtlasField --package $zip --expected-sha256 $expected
+This creates D:\AtlasField\Atlas. The source must be a separately
+extracted hash-checked bundle. No Python installation or repository is needed.
+If this journaled FIRST copy is interrupted, no installed helper or recovery
+pointer exists yet. Preserve every destination path and re-run the original
+separately extracted bootstrap's --install with the SAME destination, ZIP and
+published SHA-256. This retry is permitted only for a matching first-install
+journal (had_active false and the same ZIP SHA-256). The wrapper's -Recover
+and the UPDATE helper instructions apply to installed operations, not this
+bootstrap case. Direct hash-check plus Expand-Archive remains the simplest
+first installation.
+
 FIRST RUN / EVERY ENGAGEMENT START
 ----------------------------------
-1. Plug in, open the  Atlas\  folder on the stick.
+1. Open the Atlas\ folder in your chosen folder or on the stick.
 2. Run:  Atlas.exe --selftest        -> expect "SELFTEST: PASS".
 3. Double-click Atlas.exe. It starts AssessHub (the app) and opens
    your browser. Keep the console window open; closing it stops Atlas.
@@ -385,8 +414,39 @@ Anything that asks you to save a password on the stick is a bug: don't.
 
 UPDATE (new Atlas version)
 --------------------------
-On the build machine:
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Package <Atlas-version-windows-x64.zip>
+Close the running Atlas application first. On THIS computer, use the
+INSTALLED executable and the new ZIP's independently obtained published hash:
+  C:\AtlasField\Atlas\Atlas.exe --update C:\Downloads\Atlas-update.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
+Run from a folder OUTSIDE Atlas\ so the terminal does not hold its directory.
+Atlas copies its installed maintenance code (never data\) into a private
+same-drive helper, then exits so Windows can release its executable and DLLs.
+"scheduled" means dispatched, NOT complete. The command prints a result
+file outside Atlas\; wait until that file says "status":"complete" and
+"exit_code":0 before starting Atlas again. A "refused" result needs inspection;
+preserve all Atlas* paths. The optional make_stick.ps1 wrapper waits for this
+result and returns the transaction's actual exit code; it needs only Atlas.exe.
+Maintenance request, recovery and result records can contain local installation
+paths and failure reasons. Keep them private with the kit; do not include them
+in shared deliverables.
+If interruption leaves Atlas\Atlas.exe absent, open Atlas.maintenance.json
+beside Atlas\: it names the retained installed-version recovery helper.
+Run that exact helper executable with --recover and the installation parent
+folder. Supply a fresh result file outside all application/helper directories:
+  C:\AtlasField\Atlas.maintenance-<recorded-nonce>\Atlas\Atlas.exe --recover C:\AtlasField --maintenance-result C:\AtlasField\Atlas.maintenance-result.0123456789abcdef0123456789abcdef.json
+Use the actual recorded helper name, and replace the example result nonce
+with a fresh 32-character lowercase hex value. Inspect the printed failure
+reason and terminal result, including its actual exit_code. The optional
+wrapper supports explicit -Recover; it must not reinterpret a new update
+as a request to replay an older recorded operation. Recovery completes only
+the recorded interrupted transaction. Inspect its outcome before separately
+requesting any new update or rollback.
+When --recover is launched through the active Atlas.exe, it schedules the
+recorded helper and closes to release its own Windows image handles. As with
+an update, wait for the printed receipt's terminal status and exit_code;
+dispatch exit zero is not completion. The wrapper's -Recover waits for that
+same terminal receipt and returns its actual result.
+If the active executable still exists, Atlas reports "portable maintenance is
+incomplete" and refuses to open a new empty store until recovery is finished.
 Never copy new files over the active Atlas\ tree. The updater verifies and
 preflights Atlas.incoming on the destination drive, preserves a hash-bound
 pre-update database backup, moves data\ to Atlas.data-handoff, switches and
@@ -394,24 +454,177 @@ verifies the application with no client data inside its tree, and only then atta
 data\ with one exact directory rename. It holds .Atlas.update.lock so a second
 updater cannot touch a live transaction. The old complete application remains
 at Atlas.previous, and Atlas.rollback-slot.json binds that exact pair. If
-interrupted, re-run the same command: Atlas.update-state.json drives recovery
-before new work.
+interrupted, preserve the journal and recorded helper and use explicit
+recovery above. Do not launch whichever version happens to occupy Atlas\
+to restart the recorded operation.
 Software fault-injection tests cover each recorded phase; only the physical
 field packet can prove real USB power-loss behavior.
 
 Explicit application rollback (newer database retained separately):
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback
+  C:\AtlasField\Atlas\Atlas.exe --rollback
 The older application must open a same-drive copy of the retained database
 before Atlas switches it in. If that compatibility check fails, use:
-  powershell -File portable\make_stick.ps1 -Dest E:\ -Rollback -RestorePreUpdateDatabase
+  C:\AtlasField\Atlas\Atlas.exe --rollback --restore-pre-update-database
 Only the database backup named and hashed by Atlas.rollback-slot.json is
 eligible. Atlas first preserves the newer database and a hash receipt in
 data\release-backups\. Those hashes are local consistency evidence, not a
 signature or independent custody record.
 
+Verification runs inside the installed frozen Atlas, including full SBOM
+schema validation. Its SHA-bound compatibility policy permits additional
+runtime dependencies with complete bound notices/SBOM, while preserving every
+installed dependency version, schema, toolchain, native-package and frontend
+pin. A changed pin or unsupported schema is refused; do not bypass it.
+That includes security fixes which change a dependency or build tool.
+Use VERIFIED REINSTALL for such successors and for RC7-and-earlier kits,
+whose executable has no frozen update door. Compatibility refusal is not
+evidence that the new ZIP is invalid.
+Strict current-source release/build gates remain separate and unchanged.
+After a compatible update, the next update uses the newly installed verifier.
+Maintenance helpers contain application code only. Later invocations retire
+only completed helpers with an exact verified application and request.json;
+unknown content, interrupted helpers and original refusals remain preserved.
+
 If the update reports "IN USE": Atlas or the browser it opened is
 still running and holding files on the stick. Close both (see EJECT
 DISCIPLINE above) and run it again.
+
+VERIFIED REINSTALL (EARLIER KITS OR CHANGED SECURITY/TOOLCHAIN PINS)
+-----------------------------------------------------------------
+The supported successor path is a NEW installation beside the old kit.
+Retain the old kit unchanged; never overwrite it or copy a new database back
+into it. No host Python, checkout or USB drive is required. A published hash
+selects exact bytes; it does not authenticate their publisher.
+
+1. Stop EVERY Atlas server, engine, redaction and maintenance process. Keep
+   both kits closed throughout copying and preflight. If the old kit has a
+   journal or pending worker, finish its recorded recovery first. If
+   assesshub.db-journal, assesshub.db-wal or assesshub.db-shm remains, STOP;
+   preserve it with the old kit and resolve database recovery before copying.
+2. Obtain the new ZIP and published SHA-256 through the trusted delivery
+   channel. Repeat the FIRST INSTALL hash check and Expand-Archive into a
+   fresh bootstrap folder. Use THAT new executable and the SAME hash:
+  C:\AtlasDownload\Atlas\Atlas.exe --install C:\AtlasNext --package C:\Downloads\Atlas-new.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
+   This new frozen verifier checks its own release, independently of old pins.
+3. Make an offline backup of the complete old data\, including all hidden
+   files, backups, release-backups, logs and empty directories. Keep it outside
+   both kits, preferably on separately custodied media. Verify EVERY path,
+   directory, file length and SHA-256 before using the copy. The following
+   PowerShell recipe uses fresh example paths; stop on any error or mismatch.
+   It refuses links/junctions and never removes or overwrites the old kit.
+
+  $ErrorActionPreference = 'Stop'
+  $oldData = 'C:\AtlasField\Atlas\data'
+  $backup = 'C:\AtlasOfflineBackup'
+  $stage = 'C:\AtlasReinstallStage'
+  $nextData = 'C:\AtlasNext\Atlas\data'
+  $candidate = 'C:\AtlasNext\Atlas\Atlas.exe'
+  function Data-Inventory([string]$root) {
+    $item = Get-Item -LiteralPath $root -Force
+    if (-not $item.PSIsContainer) { throw 'Data root is not a directory' }
+    $ancestor = $item
+    while ($ancestor) { if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected data ancestor' }; $ancestor = $ancestor.Parent }
+    $prefix = $item.FullName.TrimEnd('\') + '\'
+    $stack = New-Object System.Collections.Stack
+    $rows = New-Object 'System.Collections.Generic.List[string]'
+    $stack.Push($item)
+    while ($stack.Count -gt 0) {
+      $directory = Get-Item -LiteralPath ($stack.Pop().FullName) -Force
+      if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected data directory' }
+      foreach ($entry in @(Get-ChildItem -LiteralPath $directory.FullName -Force)) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected data member' }
+        $relative = $entry.FullName.Substring($prefix.Length)
+        if ($entry.PSIsContainer) { $rows.Add('D  ' + $relative); $stack.Push($entry) } else { $rows.Add('F  ' + $relative + '  ' + $entry.Length + '  ' + (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()) }
+      }
+    }
+    @($rows.ToArray() | Sort-Object)
+  }
+  function Same-Inventory($expected, [string]$root) { if (Compare-Object @($expected) @(Data-Inventory $root)) { throw 'Data inventory mismatch' } }
+  foreach ($suffix in @('-journal', '-wal', '-shm')) { if (Test-Path -LiteralPath ($oldData + '\assesshub.db' + $suffix)) { throw 'Database is not quiescent' } }
+  foreach ($fresh in @($backup, $stage, ($backup + '.inventory.txt'))) { if (Test-Path -LiteralPath $fresh) { throw 'Choose fresh backup/staging/inventory paths' } }
+  $original = @(Data-Inventory $oldData)
+  Copy-Item -LiteralPath $oldData -Destination $backup -Recurse -Force
+  Same-Inventory $original $backup
+  Same-Inventory $original $oldData
+  $original | Out-File -LiteralPath ($backup + '.inventory.txt') -Encoding UTF8 -NoClobber
+  New-Item -ItemType Directory -Path $stage | Out-Null
+  Copy-Item -LiteralPath $backup -Destination ($stage + '\data') -Recurse -Force
+  Same-Inventory $original ($stage + '\data')
+
+4. Preflight a separate database COPY with the new candidate before adopting
+   any data. This migrates only a disposable copy and proves every prior
+   table, column and row remains. Keep the request and receipt outside Atlas\.
+
+  New-Item -ItemType Directory -Path ($stage + '\preflight') | Out-Null
+  $copy = $stage + '\preflight\assesshub.db'
+  Copy-Item -LiteralPath ($backup + '\assesshub.db') -Destination $copy
+  $sha = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant()
+  $nonce = [guid]::NewGuid().ToString('N')
+  $request = [ordered]@{database_name='assesshub.db';input_copy_bytes=[int64](Get-Item -LiteralPath $copy).Length;input_copy_sha256=$sha;nonce=$nonce;requested_action='open_migrate_copy_and_report';schema='atlas.database-preflight-request/1'}
+  $marker = $stage + '\preflight\atlas-db-preflight.json'
+  [IO.File]::WriteAllText($marker, ($request | ConvertTo-Json -Compress) + "`n", [Text.UTF8Encoding]::new($false))
+  $env:ATLAS_PORTABLE_DATABASE_PREFLIGHT = $nonce
+  try { $raw = & $candidate --database-preflight $copy; if ($LASTEXITCODE -ne 0) { throw 'Candidate database preflight refused' } } finally { Remove-Item Env:\ATLAS_PORTABLE_DATABASE_PREFLIGHT -ErrorAction SilentlyContinue }
+  $receipt = ($raw | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json
+  if ($receipt.schema -ne 'atlas.database-preflight/1' -or $receipt.status -ne 'pass' -or $receipt.quick_check -ne 'ok' -or $receipt.logical_migration.schema -ne 'atlas.database-logical-migration/1' -or $receipt.logical_migration.status -ne 'pass' -or $receipt.request_nonce -ne $nonce -or $receipt.input_copy_binding.database_name -ne 'assesshub.db' -or $receipt.input_copy_binding.bytes -ne $request.input_copy_bytes -or $receipt.input_copy_binding.sha256 -ne $sha -or $receipt.request_sha256 -ne (Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash.ToLowerInvariant() -or $receipt.migrated_copy_sha256 -ne (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant() -or $receipt.migrated_copy_bytes -ne (Get-Item -LiteralPath $copy).Length) { throw 'Preflight receipt binding differs' }
+  if (@($receipt.logical_migration.prior_table_preservation | Where-Object { $_.status -ne 'preserved' }).Count) { throw 'Prior data was not preserved' }
+  $raw | Set-Content -LiteralPath ($stage + '\preflight-receipt.json') -Encoding UTF8
+  Same-Inventory $original $oldData
+  Same-Inventory $original $backup
+
+5. Adopt only the successfully preflighted copy. Retain the unmodified staged
+   database and new empty data directory as additional rollback evidence.
+   Staging and AtlasNext must be on the SAME volume for these directory moves.
+
+  if (@(Get-ChildItem -LiteralPath $nextData -Force).Count) { throw 'New kit data is not empty' }
+  Move-Item -LiteralPath ($stage + '\data\assesshub.db') -Destination ($stage + '\unmigrated-staging.db')
+  Copy-Item -LiteralPath $copy -Destination ($stage + '\data\assesshub.db')
+  Move-Item -LiteralPath $nextData -Destination ($stage + '\empty-new-data')
+  Move-Item -LiteralPath ($stage + '\data') -Destination $nextData
+  Same-Inventory $original $oldData
+  Same-Inventory $original $backup
+
+6. Run the new kit's --selftest, start it, and check the existing campaigns,
+   snapshots, execution receipts and expected documents before new work.
+   Retain the unchanged old kit, offline backup, staging and receipt. If the
+   new kit refuses, close it and use the retained old kit with its ORIGINAL
+   data; do not put the migrated/newer database into the older application.
+   Preserve any new work separately before choosing rollback. The hosted
+   synthetic reinstall proof does not certify an arbitrary historical database
+   or a distinct security/toolchain successor; each candidate preflight is required.
+
+MANAGED WINDOWS POWERSHELL POLICY
+---------------------------------
+The bundled transaction uses Windows PowerShell. Group Policy AllSigned,
+RemoteSigned, AppLocker or application control can refuse its unsigned script;
+the command's -ExecutionPolicy Bypass does NOT override those controls. Keep the
+refusal and ask the managed-device owner for an approved execution path. Do not
+change policy to get a green result. Where the new EXE and normal file copying
+are permitted, FIRST INSTALL by hash-check plus Expand-Archive, followed by the
+same VERIFIED REINSTALL backup/copy/preflight/adoption discipline, avoids the
+transaction script. If that is also blocked, stop for the managed-device owner.
+Managed-policy acceptance remains an external field gate.
+For this fallback, Expand-Archive the hash-checked ZIP into the fresh
+AtlasNext folder, then run its verifier before copying any data:
+  C:\AtlasNext\Atlas\Atlas.exe --verify-release --zip C:\Downloads\Atlas-new.zip --expected-sha256 PASTE_THE_PUBLISHED_LOWERCASE_SHA256_HERE
+Require SELF_CONSISTENCY_PASS and exit 0. Selftest MUST use a fresh database in
+a separate disposable directory, outside BOTH kits and the reserved offline
+backup/staging paths. Use ordinary local-drive paths: the v1 selftest fence
+refuses UNC, extended-length and device namespace spellings rather than guessing
+whether they alias application or custody data. Do not run default --selftest here: it creates data\backups
+in the new kit, which step 5 correctly refuses as nonempty. For the example paths:
+  $ErrorActionPreference = 'Stop'
+  $selftestRoot = 'C:\AtlasSelftest'
+  if (Test-Path -LiteralPath $selftestRoot) { throw 'Choose a fresh external selftest directory' }
+  New-Item -ItemType Directory -Path $selftestRoot | Out-Null
+  & C:\AtlasNext\Atlas\Atlas.exe --selftest --db ($selftestRoot + '\selftest.db')
+  if ($LASTEXITCODE -ne 0) { throw 'Candidate selftest refused' }
+  if (Test-Path -LiteralPath C:\AtlasNext\Atlas\data) { throw 'Extracted kit unexpectedly contains data' }
+  New-Item -ItemType Directory -Path C:\AtlasNext\Atlas\data | Out-Null
+Continue with VERIFIED REINSTALL step 3, then its preflight and adoption steps.
+Keep the disposable selftest directory separate; never reuse it as the backup,
+staging or new data directory, or adopt any data from it. The new data directory
+must remain empty until step 5; never use a populated directory as the destination.
 
 OFFLINE / LIVE NETWORK BOUNDARY
 -------------------------------

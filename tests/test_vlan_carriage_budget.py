@@ -350,6 +350,29 @@ def test_copy_diagnostic_does_not_probe_a_custom_collision_key(monkeypatch):
     assert stages["first_page"]["owned_copy"]["count"] == 1
 
 
+def test_a_timed_call_starts_after_a_collection_outside_its_timer_with_the_collector_enabled(monkeypatch):
+    events = []
+    ticks = [10.0, 10.25]
+    monkeypatch.setitem(globals(), "_timed_leg", lambda: True)
+    monkeypatch.setattr(gc, "collect", lambda *_args, **_kwargs: events.append("collect") or 0)
+    monkeypatch.setattr(time, "perf_counter", lambda: events.append("clock") or (ticks.pop(0) if ticks else 10.25))
+
+    def call():
+        events.append(("call", gc.isenabled()))
+        return "result"
+
+    assert _timed(call) == ("result", 250.0)
+    assert events == ["collect", "clock", ("call", True), "clock"]
+
+
+def test_a_call_on_a_leg_without_millisecond_ceilings_is_timed_without_a_collection(monkeypatch):
+    ticks = [1.0, 1.5]
+    monkeypatch.setitem(globals(), "_timed_leg", lambda: False)
+    monkeypatch.setattr(gc, "collect", lambda *_args, **_kwargs: pytest.fail("collected on an untimed leg"))
+    monkeypatch.setattr(time, "perf_counter", lambda: ticks.pop(0) if ticks else 1.5)
+    assert _timed(lambda: 7) == (7, 500.0)
+
+
 def _host(i):
     return f"sw{i % N_DEVICES:03d}"
 
@@ -440,6 +463,14 @@ def _bytes(value):
 
 
 def _timed(call):
+    """Time one call against its budget. On a timed leg the cyclic collector first runs to completion OUTSIDE the
+    timer and stays enabled during the call, so the window pays for every collection the call's own allocations
+    trigger but not for collection debt left by earlier, unrelated tests in the same process. Without this, one
+    generation-2 collection of the whole default-suite process (a 2.7-3.0 GB heap on hosted Linux) can land
+    inside the window: every recorded full-suite first-page failure (744.7 to 997.5 ms) had exactly one inside it,
+    and every passing run had none. Budgets, assertions and timed legs are unchanged."""
+    if _timed_leg():
+        gc.collect()
     start = time.perf_counter()
     result = call()
     return result, round(1000 * (time.perf_counter() - start), 1)

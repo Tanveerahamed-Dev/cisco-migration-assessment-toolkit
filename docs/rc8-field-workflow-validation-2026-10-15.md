@@ -663,3 +663,39 @@ type checking and every existing safety assertion must still pass. After #682's 
 integrate that main and its exact board, follow its actual site schema/review rules, run Rule-7,
 and use the ONE authorized source push only when the prepared source meets those requirements.
 No PR merge or release publishing is authorized.
+
+
+## Merged PR-0b integration and remaining exact-site scope — 2026-10-18
+
+PR #682 is verified MERGED as main `0491291c38f0d50f6d86ee7950666767e1edb6f7`.
+That main is integrated locally with prepared owner-reuse parent
+`6bab7d891b97825f28b7bc2206240a80b72d493b`. Main's board remains byte-identical.
+The SSOT conflict preserves the new installation and schema-/4 admission owner rows together
+with this feature's saved-plan workflow owner pointers. The field guide and artifact census
+merge both sides; the census functions retain both parents' ASTs. Incoming detector, guard,
+workflow, role and test changes remain main-owned, without weakening. Live strict branch
+protection now requires 14 named contexts; Master Reference is not one of them.
+
+The prepared comparison is registered `projection.ts :: equalJson` over the genuine fresh
+revision/digest/selection pin objects. Snapshot `sameIdentity` remains a different four-field
+assessment predicate. The latest naming instruction has been raised for clarification rather
+than forcing plan fields into a fabricated snapshot identity.
+
+**The single source push remains unused pending exact-site scope clarification.** V4 requires
+all detections to equal debt union exact boundary records (`validate`, lines 696–698); the merged
+boundary class starts empty. Admitting the authorized `planResponseChunks` sites cannot cover
+other independently identified sites: `SavedPlan.tsx :: planDraft` appends zone lines, and
+`api.ts :: ownedPlanChunk` writes the bounded byte copy. Neither has a registered matching
+path/symbol/rule. Independent review also identifies the safe-integer and nonempty-string
+predicates as additional examples. These are source-based counterexamples, not a full executed
+census. Under a literal zero-other-additions instruction, no bounded closure preserving all
+current safeguards has been established. No new boundary or debt rows are guessed or added.
+
+Canonical normalized fingerprints and occurrence numbers still require an approved source
+observation. The stream function's source is unchanged from the earlier public head, but text
+equality alone is not a detector identity or a complete capture for the current tree. No local
+inspector, test, build, engine or controller is executed, and no new CI is started. A hosted
+observation/acquisition sequence or explicit static-observer direction is still outstanding.
+The existing frontend-input/reproduction and independent per-record review requirements remain.
+There is no 14/14, runtime, admission or completion claim for this local integration. No PR
+merge or release publishing is authorized.
