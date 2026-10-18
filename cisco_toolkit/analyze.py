@@ -13353,6 +13353,10 @@ def join_wave_group_records(gnames, wave_switches, readiness_by_group, seq_by_gr
 
 # Ephemeral pre-change decision owner. No snapshot field, device I/O or report dependency.
 WAVE_CUTOVER_VERDICTS = ("GO", "CONDITIONAL GO", "NO-GO", "NOT ASSESSED")
+READINESS_UNOBSERVED_MARKERS = (
+    "NOT ASSESSABLE", "NOT ASSESSED", "NOT COLLECTED", "NOT OBSERVED", "NOT VERIFIED",
+    "UNOBSERVED", "INSUFFICIENT DATA", "ANALYSIS UNAVAILABLE", "ABSENCE OF EVIDENCE",
+)
 
 
 def _wave_list(value):
@@ -13441,15 +13445,15 @@ def _wave_cutover_record(snap, group_names, switches, baseline):
                 if not isinstance(check, dict) or not all(
                         isinstance(check.get(key), str) and check[key].strip() for key in ("check", "note")):
                     gaps.append(f"Group {group} contains a check without identity or evidence.")
+                note = check.get("note") if isinstance(check, dict) else None
+                normalized_note = re.sub(r"[_\s-]+", " ", note.upper()) if isinstance(note, str) else ""
+                if any(marker in normalized_note for marker in READINESS_UNOBSERVED_MARKERS):
+                    gaps.append(f"Group {group} has an unobserved readiness check.")
                 status = check.get("status") if isinstance(check, dict) else None
                 status = status.lower() if isinstance(status, str) else None
                 if status in ("fail", "warn"):
                     observed[status] += 1
-                elif status == "info":
-                    note = check.get("note")
-                    if not isinstance(note, str) or not note.strip() or "NOT ASSESSABLE" in note.upper():
-                        gaps.append(f"Group {group} has an unobserved readiness check.")
-                elif status != "pass":
+                elif status not in ("pass", "info"):
                     gaps.append(f"Group {group} contains an unknown readiness check.")
             if not any(isinstance(check, dict) and check.get("status") == "pass" for check in _wave_list(checks)):
                 gaps.append(f"Group {group} has no positive readiness observation.")

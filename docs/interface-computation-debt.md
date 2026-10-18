@@ -1167,7 +1167,9 @@ existing hosted handoff, never locally.
 
 `docs/rc8-p1-h-pr2-wave-gate.md` records the engine owner, closed vocabulary, consumer scopes,
 stronger restriction policy, byte expectations and pending hosted tests. The current deletion-only
-edit removes 26 retired-symbol rows, with zero additions. This is not a current detected census:
+edit removed 26 retired-symbol rows; local review of `8b0d10dd` removes four further stale verdict-symbol
+occurrences (`fleet_gate` and `combined_gate`, occurrences 2 and 3). The cumulative edit is 30 deletions,
+zero additions, with 36,861 rows provisionally retained. This is not a current detected census:
 retained functions also lose expressions and lexical occurrences, whose stale register rows must
 be removed from the authorized hosted observation after the #682 schema rebase. No detector,
 role, boundary, assertion, budget or timeout is changed to manufacture a subset. No local

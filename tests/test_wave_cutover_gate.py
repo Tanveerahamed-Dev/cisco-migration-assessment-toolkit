@@ -48,6 +48,28 @@ def test_positive_control_is_bounded_go_and_does_not_mutate_source():
     assert _decision(snap)["scope"]["switches"] == ["sw1"]
 
 
+def test_contradictory_pass_with_explicit_unobserved_note_withholds_go():
+    snap = _snapshot()
+    assert _decision(snap)["verdict"] == "GO"
+    snap["migration_readiness"][0]["checks"][0]["note"] = "NOT ASSESSABLE — not collected"
+    result = _decision(snap)
+    assert result["verdict"] == "CONDITIONAL GO"
+    assert result["coverage"]["complete"] is False
+    assert "Group G1 has an unobserved readiness check." in result["coverage"]["gaps"]
+
+
+@pytest.mark.parametrize("status", ["pass", "info", "warn", "fail"])
+@pytest.mark.parametrize("note", ["NOT ASSESSABLE — no evidence", "not observed", "NOT_VERIFIED",
+                                 "not-collected", "Insufficient Data", "ABSENCE OF EVIDENCE", "NOT   ASSESSABLE"])
+def test_explicit_unobserved_evidence_withholds_go_for_every_check_status(status, note):
+    snap = _snapshot()
+    snap["migration_readiness"][0]["checks"][0].update(status=status, note=note)
+    result = _decision(snap)
+    assert result["verdict"] == ("NO-GO" if status == "fail" else "CONDITIONAL GO")
+    assert result["coverage"]["complete"] is False
+    assert "Group G1 has an unobserved readiness check." in result["coverage"]["gaps"]
+
+
 @pytest.mark.parametrize("counterexample", ["ready_critical", "not_ready_zero", "ready_failing_check"])
 def test_previously_divergent_rule_sets_keep_every_negative_witness(counterexample):
     snap = _snapshot()

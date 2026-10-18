@@ -45,7 +45,8 @@ health evidence, readable findings inputs and a clear, bound baseline can yield 
 dispositioned through the human change process. Existing MOP baseline HOLD wording and human
 preconditions remain. Every non-GO wave receives at least the former MOP high-risk controls.
 
-Neutral producer `info` checks remain neutral; a `NOT ASSESSABLE` info row remains a coverage gap.
+Neutral producer `info` checks remain neutral; explicit unobserved markers such as `NOT ASSESSABLE`
+remain coverage gaps regardless of check status, including a contradictory `pass`.
 Remediation `items` and `by_device` are mirrored views, so matched occurrences count once; genuine
 duplicates and unmatched negative rows survive. Punch-list scope reads the producer's `devices`.
 Malformed finding scope cannot masquerade as a clean disjoint row. Failure custody reads the existing
@@ -64,8 +65,9 @@ policy. This change does not claim that those two scheduling models are identica
 
 ## Debt, output custody and validation
 
-The Divergent pre-change gate domain shrinks. The JSON edit removes 26 exact retired-symbol rows
-and adds zero, taking the current v3 file from 36,891 to 36,865. This is a **provisional partial
+The Divergent pre-change gate domain shrinks. The original JSON edit removed 26 exact retired-symbol
+rows. The local review correction removes four more stale verdict-symbol occurrences, for 30
+deletions and zero additions, taking the current v3 file from 36,891 to 36,861. This is a **provisional partial
 deletion**, not an admitted current census: removal of calculations in retained functions also leaves
 stale expression/lexical rows that require the authorized hosted observation. No local inspector was
 run. The final register must equal current detections and remain a strict subset with no additions;
@@ -114,3 +116,20 @@ budgets/timeouts, exact debt subset/equality, golden/sample reproducibility and 
 6. If output regeneration becomes necessary, review and import only through the engine-output handoff.
 
 No unrelated defect is represented as resolved by this local implementation.
+
+## BLOCKED-LOCAL review correction of 8b0d10dd
+
+The independent local review identified three findings. This correction remains local; the same
+reviewer owns the next acceptance decision. No hosted observation, test, build, engine or detector
+run was performed, and no push, PR or CI was started.
+
+| Finding | Local source correction | Verification and remaining status |
+|---|---|---|
+| P1: unobserved evidence could produce GO when status was `pass` | `_wave_cutover_record` checks the engine-owned unobserved-note markers before interpreting status. Case, whitespace and underscore/hyphen separators are normalized. Existing fail/warn restrictions remain. | Added the exact positive-control-to-contradictory-pass regression, plus status/marker combinations. Ruff and syntax only; runtime not verified. |
+| P2: stale register entries violate exact equality | Removed `fleet_gate` verdict-symbol occurrences 2 and 3 in `cutover.build_plan`, and `combined_gate` occurrences 2 and 3 in `mop._write_bluf`; each has exactly one remaining source assignment. | Four further deletions, zero additions. **Still blocked:** obtaining the requested exact-head hosted observation conflicts with the unchanged no-CI instruction. Remaining expression/lexical staleness and current-schema census equality are not verified. No local inspector substitutes for that evidence. |
+| P2: the app discarded gate explanations | `CutoverWave` now types the engine's `gate_evidence`. `WaveCard` displays every supplied reason and coverage gap without counts, filtering, caps or gate derivation. The explanation is visible with run-of-show collapsed. | Added rendered regressions for CONDITIONAL GO beside READY/CLEAR and for all engine reasons/gaps. TS/TSX syntax parsing passed; rendered behavior, type checking and generated frontend distribution remain unverified until authorized hosted execution. |
+
+The tracked golden snapshot, sheet schema and sample bytes remain unchanged. This correction does
+not modify detector, boundary, workflow, budget, timeout or assertion policy. PR #682 remains OPEN;
+its schema rebase remains pending. The new frontend source intentionally needs the ordinary reviewed
+hosted frontend build; no generated distribution or visual baseline is replaced locally.
