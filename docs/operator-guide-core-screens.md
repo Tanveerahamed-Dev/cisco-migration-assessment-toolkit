@@ -435,7 +435,7 @@ correct the prose above when an owner changes.
   trendReceiptsExportDocument and their allowlists), used by ComparisonDecision.tsx
   downloadCompleteJson and Campaign.tsx downloadTrendJson; engine.py attaches impacts_view beside
   each trend pair; src/receiptExport.test.tsx reads both written files.
-- Disposal locations: storage.py _BACKUP_DIR; portable/make_stick.ps1 release-backups,
+- Disposal locations: storage.py _BACKUP_DIR; portable/update_transaction.ps1 release-backups,
   Atlas.data-handoff, Atlas.incoming/Atlas.previous data moves (Recover-Update), the
   Atlas.failed-* quarantine names, and .Atlas.database-preflight (Invoke-DatabasePreflight; the
   final cleanup swallows a removal error); app.py's request-body tempfile.SpooledTemporaryFile

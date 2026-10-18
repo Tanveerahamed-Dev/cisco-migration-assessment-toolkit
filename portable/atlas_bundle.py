@@ -78,6 +78,8 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
         # serve._release_version prefers this over installed-dist metadata (which on a dev box can
         # be STALE — observed: pip metadata 3.26.0 vs checkout 3.31.0).
         (str(root / "pyproject.toml"), "."),
+        # The transaction belongs to the installed version, never a repository checkout.
+        (str(root / "portable" / "update_transaction.ps1"), "portable"),
     ]
 
 
@@ -135,6 +137,9 @@ def hidden_imports() -> List[str]:
         # command whose module PyInstaller only sees inside a function body. README-FIELD teaches
         # that command; a ModuleNotFoundError at a client site is the failure this line prevents.
         "cisco_toolkit.manifest",
+        "portable.maintenance",
+        "portable.verify_release",
+        "cyclonedx.validation.json",
         # D2: derive lazy renderer imports from the registry that owns the artifact lifecycle.
         *artifact_dependency_modules(),
         *artifact_writer_modules(),
@@ -167,7 +172,7 @@ def package_data_modules() -> tuple[str, ...]:
     format validation. Its module reads syntax_rfc3987.lark during import; Python modules alone
     therefore cannot start the frozen API. The spec collects package data through this owner.
     """
-    return ("rfc3987_syntax",)
+    return ("rfc3987_syntax", "cyclonedx")
 
 
 def package_metadata_distributions() -> tuple[str, ...]:

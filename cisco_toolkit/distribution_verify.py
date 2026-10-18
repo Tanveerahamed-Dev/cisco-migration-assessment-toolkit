@@ -145,7 +145,7 @@ _FORBIDDEN_PARTS = {
 # rows of their own (``operator-path``), because their name set is the owner's open class.
 #
 # Exits outside the Python write census, named here so they are not mistaken for gaps:
-# ``portable/make_stick.ps1`` writes the database backups ``release-backups/pre-update-<run>.db``
+# ``portable/update_transaction.ps1`` writes the database backups ``release-backups/pre-update-<run>.db``
 # and ``rollback-preserved-<run>.db`` through ``.<leaf>.partial`` (the ``database`` and
 # ``database-backup-partial`` classes; a literal tie in the census test keeps them there);
 # ``atlas-scope/tools/compile-all.mjs`` writes ``fabric.json`` and its siblings from a real snapshot,
@@ -222,14 +222,14 @@ CLIENT_ARTIFACT_NAME_CLASSES: tuple[tuple[str, str, str, str], ...] = (
     ("engine-log", "suffix", ".log",
      "COLLECT_PARSE_V3_23_0 setup_logging (engine_log_path); collected logs such as show_tech-support.log"),
     ("database", "suffix", ".db",
-     "webapp.backend.storage.Store (assesshub.db and its backups); portable/make_stick.ps1 backups"),
+     "webapp.backend.storage.Store (assesshub.db and its backups); portable/update_transaction.ps1 backups"),
     ("database-sqlite", "suffix", ".sqlite", "AssessHub database (alternative extension)"),
     ("database-sqlite3", "suffix", ".sqlite3", "AssessHub database (alternative extension)"),
     ("database-wal", "suffix", "-wal", "SQLite write-ahead companion of ANY opened database name (including backup staging)"),
     ("database-shm", "suffix", "-shm", "SQLite shared-memory companion of ANY opened database name"),
     ("database-journal", "suffix", "-journal", "SQLite rollback journal of ANY opened database name; Store uses DELETE journaling"),
     ("database-backup-partial", "suffix", ".db.partial",
-     "webapp.backend.storage.Store._boot_hardening and portable/make_stick.ps1 backup staging"),
+     "webapp.backend.storage.Store._boot_hardening and portable/update_transaction.ps1 backup staging"),
     ("engagement-gate-state", "leaf", "engagement-state.json",
      "gate_state.save_store: engagement identity, approvers and reasons"),
     ("query-log", "leaf", "query_log.jsonl", "recall.log_query: real queries can name client tokens"),
