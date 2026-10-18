@@ -215,6 +215,7 @@ def test_assesshub_and_mop_display_identical_owner_verdict_for_identical_scope(t
 
     snap = _snapshot()
     snap["cross_layer"] = [{"severity": "Critical", "hosts": ["sw1"]}]
+    before = deepcopy(snap)
     expected = _decision(snap)
     plan = cutover.build_plan(snap)
     assert engine.wave_cutover(snap, ["G1"], ["sw1"]) == expected
@@ -229,3 +230,18 @@ def test_assesshub_and_mop_display_identical_owner_verdict_for_identical_scope(t
                          [c.text for t in document.tables for r in t.rows for c in r.cells])
         assert label in text and "NO-GO" in text
         assert expected["reasons"][0] in text
+        if filename == "mop.docx":
+            overview, = [table for table in document.tables if [cell.text for cell in table.rows[0].cells] ==
+                         ["Wave", "Devices", "Endpoint MACs", "Engine gate", "Strategy", "Max blast", "Blockers"]]
+            assert overview.rows[1].cells[3].text == expected["verdict"]
+            paragraphs = [paragraph.text for paragraph in document.paragraphs]
+            heading = paragraphs.index("Engine cutover gate — G1")
+            assert paragraphs[heading + 1] == expected["verdict"]
+            assert "Groups: G1" in paragraphs and "Devices: sw1" in paragraphs
+            assert "mandatory precondition for its window" in text
+            assert "cannot clear an engine hold" in text
+            assert "Non-GO window: pre-open a Cisco TAC case" in text
+            legacy_readiness = [row.cells[1].text for table in document.tables for row in table.rows
+                                if row.cells[0].text == "Readiness verdict"]
+            assert legacy_readiness == ["READY"]  # a legacy READY does not clear the critical engine hold
+        assert snap == before

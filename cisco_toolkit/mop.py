@@ -563,8 +563,11 @@ def write_mop_docx(
                                                  scen_by_group, val_by_wave)
         blast = _blast_for(switches, fi_rows, fi_blind)
         rem, pl = _blockers_for(switches)
+        # The legacy readiness key is only a render cell here; copy the engine gate into it.
+        # Keep the joined assessment record and the source snapshot untouched.
+        r = {**r, "readiness": record["verdict"]}
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
-                        record["verdict"], _strategy_cell(seq, _scen),
+                        r.get("readiness", "—"), _strategy_cell(seq, _scen),
                         _blast_cell(blast, short=True) if blast is not None else "[NOT OBSERVED]",
                         len(rem) + len(pl)))
     table(["Wave", "Devices", "Endpoint MACs", "Engine gate", "Strategy", "Max blast", "Blockers"],
@@ -737,13 +740,35 @@ def write_mop_docx(
               widths=[1.0, 1.5, 1.6, 0.7, 1.4])
 
     # ===== per-wave sections =====
-    for wi, ((name, switches, _kind, _gnames), record) in enumerate(zip(waves, wave_records["waves"]), start=3):
+    # Engine decisions govern each named window; legacy readiness below is assessment context only.
+    doc.add_heading("Engine pre-change window decisions (mandatory)", level=2)
+    doc.add_paragraph(
+        "Each named engine cutover gate below is a mandatory precondition for its window. "
+        "A legacy READY/CAUTION/readiness row or proceed sentence in the following scope sections "
+        "cannot clear an engine hold. Their readiness verdict is the assessment signal only. "
+        "Resolve or explicitly disposition the engine reasons and coverage gaps before opening "
+        "the window, in addition to CAB approval, a tested rollback and human sign-off.")
+    for (name, _switches, _kind, _groups), record in zip(waves, wave_records["waves"]):
+        doc.add_heading(f"Engine cutover gate — {name}", level=3)
+        doc.add_paragraph(record["verdict"])
+        doc.add_paragraph(f"Groups: {', '.join(record['scope']['groups'])}")
+        doc.add_paragraph(f"Devices: {', '.join(record['scope']['switches'])}")
+        for reason in record["reasons"]:
+            doc.add_paragraph(reason)
+        for reason in record["coverage"]["gaps"]:
+            doc.add_paragraph(reason)
+        if analyze.wave_requires_high_risk_controls(record["verdict"]):
+            doc.add_paragraph(
+                "Non-GO window: pre-open a Cisco TAC case and retain its SR number in the war room. "
+                "The engine hold remains until its reasons and coverage gaps are resolved or dispositioned.")
+
+    for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
         r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                        scen_by_group, val_by_wave)
         playbook = _as_dict(scen.get("playbook"))
         rem, pl = _blockers_for(switches)
         blast = _blast_for(switches, fi_rows, fi_blind)
-        verdict = record["verdict"]
+        verdict = r.get("readiness", "—")
 
         # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an
         # independent-batch may bundle MANY). Each keeps its own strategy/rationale/rollback -- surface
@@ -761,18 +786,12 @@ def write_mop_docx(
 
         doc.add_heading(f"{wi}. MOP — {name}", level=1)
 
-        for reason in record["reasons"]:
-            doc.add_paragraph(reason)
-        for reason in record["coverage"]["gaps"]:
-            doc.add_paragraph(reason)
-
         # 2.x.1 scope
         doc.add_heading(f"{wi}.1 Scope & risk", level=2)
         table(["Field", "Value"], [
             ("Devices in scope", ", ".join(switches) or "—"),
             ("Endpoint MACs (apportioned)", r.get("endpoints", "—")),
-            ("Engine cutover gate", verdict),
-            ("Assessment readiness", r.get("readiness", "—")),
+            ("Readiness verdict", verdict),
             ("Fleet current baseline verdict", current_baseline_verdict),
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
             ("Cutover strategy", strat_cell),
@@ -806,7 +825,7 @@ def write_mop_docx(
         # evidence; the wave's own readiness/blocker gate); human-attested where it cannot (backup taken,
         # CAB approval, rollback tested). Coverage-honesty: an OOB precondition with no mgmt-port evidence
         # is [NOT OBSERVED], never assumed reachable. Unnumbered H2 so the existing .1-.8 chain is intact.
-        high_risk = analyze.wave_requires_high_risk_controls(verdict) or bool(pl) or bool(rem)
+        high_risk = (str(verdict).upper() == "NOT READY") or bool(pl) or bool(rem)
         oob_ev = _oob_evidence_for(switches, _as_dict(snap.get("interfaces")))
         doc.add_heading("Pre-implementation checklist (precondition gate)", level=2)
         doc.add_paragraph(

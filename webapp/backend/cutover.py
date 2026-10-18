@@ -595,7 +595,6 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
             "group": group,
             "readiness": (readiness or {}).get("readiness", ""),
             "gate": gate,
-            "gate_evidence": record,
             "strategy": strategy,
             "n_switches": len(switches),
             "switches": sorted(switches),
@@ -626,6 +625,9 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
                                         window=window, n_val=len(validation), n_rem=len(remediation),
                                         blockers=blockers, baseline_blockers=baseline_blockers),
         })
+
+        # Attach the engine receipt independently of the unchanged legacy aggregation expression.
+        waves[-1]["gate_evidence"] = record
 
     # Pilot-first sequencing: prove the method on the safest (GO) zero-outage waves first, leave the
     # NO-GO hard-cutover waves for last (after remediation). Tie-break on smaller blast radius first.

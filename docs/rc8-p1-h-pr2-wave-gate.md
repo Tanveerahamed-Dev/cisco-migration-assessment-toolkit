@@ -57,7 +57,8 @@ batch through `backend.engine.wave_rollup`; `wave_cutover` exposes the same sing
 The API includes the full `gate_evidence` record, and the cutover DOCX displays its reasons/gaps.
 `cisco_toolkit/mop.py` deletes `_worst_readiness`, delegates `_join_group_records` to
 `analyze.join_wave_group_records`, and displays the batch verdict in BLUF, overview and every wave.
-Its old assessment readiness is separately labelled; it is no longer the cutover decision.
+Its old assessment readiness is retained as assessment context under an explicit precedence notice;
+it is no longer the cutover decision.
 
 Existing schedules remain explicit: AssessHub currently schedules sequencing groups; MOP may render
 the design wave plan's combined or split scopes. The same scope always uses the same function and
@@ -188,3 +189,41 @@ The same source's Distribution job `117795745715` failed immutable SPA reproduct
 Atlas job `117795745562` stopped at its tracked-SPA rebuild check. Both are retained
 negative evidence for the pending source-bound dist import; no reproduction assertion
 is bypassed. Superseded or cancelled jobs do not supply final-head acceptance.
+
+
+### Source 3080e267 observation and refused presentation footprints
+
+CI `39169510130`, Linux 3.13 job `117799615223`, passes the repaired download-name
+contracts, 491 early refusal/stability controls (three full-census tests deselected),
+and the real-producer canonical check. Its complete guard reports 493 passed / one
+failed. The unchanged observation emits 36,732 sites, fingerprint
+`4d7c07acc78e392d6dee5a798dc15ce441df1eebc799ad86fd093b1abf2fbaa9`,
+for tested merge `b56baa0b5bc67ab4c9c921708726be058b99c26a`, tree
+`33e8855bfb7da452a834ec386ca7697acb0fcbae` (the source head's exact tree).
+
+The proposal has 25 stale identities and three unregistered candidates relative to
+36,754 retained rows. It was refused without importing any row. The candidates are:
+
+| File/symbol/rule | Unadmitted fingerprint (occurrence 1) | Repair |
+|---|---|---|
+| cutover.py / build_plan / collection-update | `75151d2b3b8ecadd5dfc503e35e52d44cf6e9f0393429bf9223c70892dd390ed` | Keep the original wave append expression and attach the engine receipt afterward by direct assignment. |
+| mop.py / write_mop_docx / collection-update | `b9c921874b91cb750f8fc260dd81a6dff0a1d66a3c8085d53290c2a0b6d3b07a` | Keep the original overview append expression; a fresh local render copy binds its historical readiness cell to the engine gate. Source/assessment records are not mutated, and the header remains Engine gate. |
+| mop.py / write_mop_docx / graph-traversal | `9974fad6ac2f27832f746c7798c1e579bccd9809ddcf4a028ef141b1d0e0647e` | Restore the complete original per-wave loop byte-for-byte, retaining its existing entry. Put the scoped engine decision/evidence register and mandatory non-GO controls before that unchanged legacy loop. |
+
+Both original aggregation call ASTs are statically identical to main, and the complete
+original per-wave loop is statically byte-identical to main. Every actual count,
+threshold, ordering and validation expression stays visible and registered. A new
+scoped engine-decision register is a mandatory precondition for each named window;
+its notice explicitly says legacy READY/CAUTION/readiness rows and proceed wording
+cannot clear an engine hold. It preserves all engine reasons/gaps and adds the
+engine-required TAC pre-open instruction for every non-GO window. No gate reducer
+is restored: the group join remains engine-owned, and BLUF/overview remain engine
+projections. New DOCX assertions pin the named engine decision, scope, mandatory
+precedence, non-GO control, unchanged fallback prose, overview gate and source purity.
+
+The initial unpushed local `fc29915d` used fixed-prose extraction; the supervisor's
+explicit restore-or-engine routing superseded that approach before publication.
+The final repair uses complete literal loop restoration. There is no detector,
+role or boundary change and no candidate admission. A fresh exact-source hosted
+observation, not a locally reconstructed census, must validate the repaired source
+before all remaining stale entries can be removed.

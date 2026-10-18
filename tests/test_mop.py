@@ -571,6 +571,19 @@ def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
 
 
 # ---- DE-01 P1: Executive-Summary BLUF (answer-first, front matter) ----------------------------
+def test_mop_fallback_capture_and_validation_prose_is_preserved(tmp_path):
+    snap = _snap()
+    snap["validation_plan"] = {}
+    out = tmp_path / "fallback-prose.docx"
+    write_mop_docx(str(out), snap, "Synthetic fallback prose")
+    text = _all_text(Document(out))
+    assert ("On each of distA, distB: also capture 'show ip interface brief', 'show cdp neighbors', "
+            "'show spanning-tree summary', and (if L3) 'show ip route' / 'show standby brief'.") in text
+    assert ("No machine-generated validation checks for this wave. As a minimum, verify "
+            "gateway reachability (ping the SVI/HSRP vIP), FHRP roles, routing "
+            "adjacencies, STP root, and port-channel membership are unchanged from the §3.3 baseline.") in text
+
+
 def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
     """DE-01 / Cisco-AS: a Bottom-Line-Up-Front executive summary sits at the TOP of the MOP (before the
     numbered sections), and it carries the load-bearing decision facts pulled from the snapshot — the wave
