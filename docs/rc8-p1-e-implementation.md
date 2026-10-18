@@ -37,6 +37,9 @@ not yet an OS process supervisor and does not attest that a GUI has exited.
 frames and peer-identity comparison. The Windows transport must establish actual
 pipe peer, held process/creation identity, logon SID, medium integrity and GUI-job
 membership; codec acceptance alone proves none of those OS observations.
+The codec does not enforce the endpoint HELLO/ACK or message-state handshake;
+that endpoint must reject wrong-state messages and require HELLO_ACK before any
+native imports/profile creation. It remains a pre-wiring implementation gate.
 
 `tests/test_native_presentation_contract.py` supplies synthetic URI, transition,
 IPC attack and additive-header controls. Time is injected for protocol rate tests;
@@ -63,3 +66,15 @@ Rule-7 scans only. Runtime, tests, builds, measurements and native proof are
 GitHub-only. Exact-head hosted results must be recorded before any completion
 comment or independent implementation verdict. Every negative or unavailable
 capability remains explicit; the approved design is not implementation evidence.
+
+## Preserved source-review finding
+
+Independent static review of first commit `b7a78ef4` found that an asynchronous
+browser attempt left SERVER_READY and could also admit START_NATIVE. The
+correction commits the browser choice in the existing RETIRING phase before
+emitting OPEN_BROWSER, rejects late native/manual choices until its result, and
+coalesces stale GUI/fault/close events without changing intent. New synthetic
+sequences cover both opener results and server exit during the pending attempt.
+This finding was source-traced; its new tests still require hosted execution.
+The full Rule-7 scan of b7a78ef4 completed PASS, but cannot cover the correction;
+the new committed head receives its own full scan before publication.

@@ -109,6 +109,34 @@ def test_ineligible_startup_can_continue_in_browser_or_manual_without_creating_g
     assert machine.gui_absent
 
 
+@pytest.mark.parametrize("late_choice", ["START_NATIVE", "MANUAL"])
+@pytest.mark.parametrize("opener_result", ["OPENER_ACCEPTED", "OPENER_FAILED"])
+def test_pending_browser_choice_cannot_also_launch_native_or_be_overwritten(late_choice, opener_result):
+    machine = NativePresentationSupervisor()
+    machine.notify("SERVER_READY")
+    assert machine.notify("USE_BROWSER").effects == (Effect.OPEN_BROWSER,)
+    assert machine.state == State.RETIRING
+    assert machine.gui_absent
+    with pytest.raises(NativeRefusal, match="presentation_event_order"):
+        machine.notify(late_choice)
+    for stale in ("FAULT", "CLOSE", "GUI_RETIRED", "TEARDOWN_UNPROVED", "BROWSER_REQUEST"):
+        result = machine.notify(stale)
+        assert result.state == State.RETIRING and result.effects == ()
+    assert machine.notify(opener_result).state == (
+        State.BROWSER if opener_result == "OPENER_ACCEPTED" else State.MANUAL_REQUIRED
+    )
+    assert machine.gui_absent
+
+
+def test_server_exit_wins_over_pending_browser_result_without_a_gui_retirement():
+    machine = NativePresentationSupervisor()
+    machine.notify("SERVER_READY")
+    machine.notify("USE_BROWSER")
+    result = machine.notify("SERVER_EXIT")
+    assert result.state == State.PRESENTATION_STOPPED and result.effects == ()
+    assert machine.notify("OPENER_ACCEPTED").state == State.PRESENTATION_STOPPED
+
+
 def test_closed_window_can_open_browser_without_restarting_native():
     machine = native()
     machine.notify("CLOSE")

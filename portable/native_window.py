@@ -65,7 +65,11 @@ class NativePresentationSupervisor:
         if self.opener_pending:
             return self._result(self.state)
         self.opener_pending = True
-        return self._result(self.state, Effect.OPEN_BROWSER)
+        self.intent = "browser"
+        # Commit the choice before issuing the asynchronous effect. SERVER_READY
+        # must not also admit START_NATIVE while the browser result is pending.
+        state = State.BROWSER if self.state == State.BROWSER else State.RETIRING
+        return self._result(state, Effect.OPEN_BROWSER)
 
     def _retire(self, intent):
         self.intent = intent
@@ -80,6 +84,12 @@ class NativePresentationSupervisor:
             self.opener_pending = False
             return self._result(State.PRESENTATION_STOPPED,
                                 *((Effect.RETIRE_GUI,) if not self.gui_absent else ()))
+        if self.opener_pending and event not in {"OPENER_ACCEPTED", "OPENER_FAILED"}:
+            if event in {"CLOSE", "FAULT", "GUI_RETIRED", "TEARDOWN_UNPROVED", "BROWSER_REQUEST"}:
+                return self._result(self.state)
+            # An already-issued OS launch cannot be undone by a late native or
+            # manual eligibility result. Keep the printed URL as manual escape.
+            raise NativeRefusal("presentation_event_order")
         if event == "SERVER_READY" and self.state == State.WAIT_SERVER:
             return self._result(State.SERVER_READY)
         if event == "START_NATIVE" and self.state == State.SERVER_READY:
