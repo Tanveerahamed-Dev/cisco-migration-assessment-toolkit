@@ -1,7 +1,7 @@
 """Derive a dashboard summary from a raw engine snapshot.
 
 This is a *read-only projection* of the snapshot the engine already computed — it never re-runs
-analysis. It rolls the headline numbers (re-using the engine's own `_trend_point`) plus the
+analysis. It caches the admitted ui_projection summary envelopes plus the
 breakdowns the cockpit needs: health bands, punch-list by severity/category, keystone devices by
 blast radius, readiness, and which detail sections actually carry data (so the UI hides empty tabs).
 Failure impact is read from the engine-owned projection (``impact_view``), never from the raw stored rows.
@@ -14,11 +14,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import engine  # noqa: F401  (also bootstraps sys.path for the cisco_toolkit import below)
 from . import protocol_portfolio
-from cisco_toolkit import registry_integrity
+from cisco_toolkit import registry_integrity, ui_projection
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
 BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"]
+SUMMARY_CONTRACT_VERSION = 1
 
 
 def _as_list(v: Any) -> List[Any]:
@@ -100,19 +101,6 @@ SECTION_LABELS: List[tuple] = [
     # convention) -- telemetry about the PARSER, never a device verdict.
     ("parse_yield", "Parse yield"),
 ]
-
-
-def _count_by(items: List[dict], key: str, order: List[str] | None = None) -> Dict[str, int]:
-    out: Dict[str, int] = {}
-    for it in items:
-        v = str(it.get(key, "") or "—")
-        out[v] = out.get(v, 0) + 1
-    if order:
-        ordered = {k: out.get(k, 0) for k in order if k in out}
-        for k, v in out.items():  # any value not in the canonical order, appended
-            ordered.setdefault(k, v)
-        return ordered
-    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
 # ---- failure impact: read from the engine-owned projection, never from the raw stored rows (W27) ----------
@@ -829,26 +817,7 @@ def _lifecycle(lr: Dict[str, Any]) -> Dict[str, Any]:
 
 def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Headline + breakdowns used by the dashboard cards. Every field degrades gracefully."""
-    hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
-    pl = [r for r in _as_list(snap.get("punchlist")) if isinstance(r, dict)]
-    mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
-    # isinstance-guard, not `or {}`: a TRUTHY non-dict 'devices' (an int in a malformed/hostile upload) survives
-    # `or {}` and 500s the eagerly-evaluated `len(...)` default below -- and summarize() runs on EVERY upload
-    # (POST /snapshots) and on the /snapshots/{id} read (freshen), so that TypeError escapes as an HTTP 500.
-    _dev = snap.get("devices")
-    n_devices = len(_dev) if isinstance(_dev, dict) else 0
-
-    try:
-        head = engine.trend_point(snap)  # re-use the engine's headline extractor
-    except Exception:
-        head = {}                        # a malformed upload must degrade, not 500 the dashboard summary
-
-    readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
-    for r in mr:
-        rd = _hkey(r.get("readiness"))     # an unhashable dict/list readiness label must not 500 the `in`
-        if rd in readiness:
-            readiness[rd] += 1
-
+    admitted = ui_projection.project_summary(snap)
     _lr = snap.get("lifecycle_risk")
     _lrs = (_lr if isinstance(_lr, dict) else {}).get("summary")    # a truthy NON-dict summary (e.g. an older
     lr = _lrs if isinstance(_lrs, dict) else {}                     # engine's "not computed" string) must not 500
@@ -860,21 +829,9 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         # running engine is recomputed on read so the headline cards never disagree with a live
         # section tab (app._summary_freshened).
         "engine_schema": engine.ENGINE_SCHEMA_VERSION,
-        "n_switches": head.get("n_switches", n_devices),
-        "avg_health": head.get("avg_health", ""),
-        "bands": _count_by(hs, "band", BANDS),
-        # n_critical must reconcile with the bands chart (both from health_scores): trend_point can silently
-        # yield 0 when executive_brief is a corrupt non-dict (the try/except above swallows the AttributeError),
-        # contradicting the bands chart on the SAME screen -- fall back to the band count (audit-5 cross-artifact #4).
-        "n_critical": head.get("n_critical") if isinstance(head.get("n_critical"), int)
-        else _count_by(hs, "band", BANDS).get("Critical", 0),
-        "punchlist": {
-            "total": len(pl),
-            "by_severity": _count_by(pl, "severity", SEVERITY_ORDER),
-            "by_category": _count_by(pl, "category"),
-            "crit_high": head.get("n_crit_high", 0),
-        },
-        "readiness": readiness,
+        "summary_contract": SUMMARY_CONTRACT_VERSION,
+        "assessment": admitted,
+        **admitted["legacy"],
         "keystones": _keystones(snap),
         # Which keystone ranking produced the list above; a cached summary from an older one is recomputed on
         # read (app._summary_freshened), so a stored raw-row ranking cannot outlive the fix.

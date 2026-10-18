@@ -1,3 +1,4 @@
+import { published, withheld } from "../test/projectionFixtures";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +10,17 @@ import SnapshotPage from "./Snapshot";
 // fleet (engine emitted avg_health "") must read as UNKNOWN ("—", neutral tone), never a fake green 0.
 // Only meta + graph are mocked with real shapes; the other panels 404 → their own ErrorBox, so the
 // page renders. jsdom-safe: the 3D fabric is lazy and never toggled here.
+const assessment = (avg: number | string) => ({
+  schema: "assesshub_summary/1",
+  facts: { n_devices: { fact: published(40) }, n_critical: { fact: published(3) },
+    avg_health: { fact: typeof avg === "number" ? published(avg) : withheld() } },
+  bands: [{ band: "Good", n: published(25) }, { band: "Critical", n: published(3) }],
+  readiness: [{ k: "READY", n: published(30) }, { k: "CAUTION", n: published(8) }, { k: "NOT READY", n: published(2) }],
+  punchlist: { crit_high: published(5), total: published(20), by_severity: [{ k: "High", n: published(3) }],
+    by_category: [{ k: "Security", n: published(4) }] },
+});
 const summary = (avg: number | string) => ({
+  assessment: assessment(avg),
   avg_health: avg, n_critical: 3, n_switches: 40, version: "V3.23.0",
   punchlist: { crit_high: 5, total: 20, by_severity: { High: 3 }, by_category: { Security: 4 } },
   readiness: { READY: 30, CAUTION: 8, "NOT READY": 2 },
@@ -258,6 +269,7 @@ describe("Snapshot cockpit · coverage honesty", () => {
   afterEach(() => vi.restoreAllMocks());
 
   const richSummary = {
+    assessment: assessment(72),
     avg_health: 72, n_critical: 3, n_switches: 40, version: "V3.23.0",
     punchlist: { crit_high: 5, total: 20, by_severity: { High: 3 }, by_category: { Security: 4 } },
     readiness: { READY: 30, CAUTION: 8, "NOT READY": 2 },
@@ -370,7 +382,8 @@ describe("Snapshot cockpit · coverage honesty", () => {
   it("FE-12: an unclassified move-group set reads as NOT ASSESSED, not as a green all-ready", async () => {
     vi.spyOn(api, "getSnapshot").mockResolvedValue({
       ...richMeta,
-      summary: { ...richSummary, readiness: { READY: 0, CAUTION: 0, "NOT READY": 0 } },
+      summary: { ...richSummary, readiness: { READY: 0, CAUTION: 0, "NOT READY": 0 },
+        assessment: { ...assessment(72), readiness: ["READY", "CAUTION", "NOT READY"].map((k) => ({ k, n: withheld() })) } },
     } as any);
     vi.spyOn(api, "meta").mockRejectedValue(new Error("x"));
     vi.spyOn(api, "section").mockRejectedValue(new Error("x"));
@@ -381,7 +394,7 @@ describe("Snapshot cockpit · coverage honesty", () => {
     // the fleet IS health-assessed (avg 72), so the page-wide `unknownFleet` neutraliser is OFF —
     // this tile has to make the distinction on its own evidence
     expect(card.className).not.toMatch(/\b(ok|crit|watch)\b/);
-    expect(card.textContent).toMatch(/not assessed|NOT OBSERVED/i);
+    expect(card.textContent).toMatch(/not collected|not assessed|NOT OBSERVED/i);
     // and it must not display a counted-looking zero triple
     expect(card.textContent).not.toMatch(/0✓/);
   });
@@ -394,8 +407,9 @@ describe("Snapshot cockpit · coverage honesty", () => {
     await screen.findByRole("heading", { name: "Demo Fleet" });
 
     const card = screen.getByText("Move-group readiness").closest(".kpi")!;
-    expect(card.className).toMatch(/\bcrit\b/);        // 2 NOT READY dominates
-    expect(card.textContent).toContain("30✓");
+    expect(card.className).not.toMatch(/\b(ok|crit|watch)\b/); // no browser readiness verdict
+    expect(within(card).getByText("READY").nextElementSibling?.textContent).toContain("30");
+    expect(within(card).getByText("NOT READY").nextElementSibling?.textContent).toContain("2");
     expect(card.textContent).not.toMatch(/not assessed/i);
   });
 
