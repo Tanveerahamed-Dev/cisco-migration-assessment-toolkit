@@ -173,6 +173,10 @@ def _checks(plugin):
     # CPython may refuse or normalize subclasses during CodeType.replace.
     # Only a preserved subclass exercises the observer's refusal branch.
     metadata_checks = {}
+    original_freevars = code.co_freevars
+    original_closure = function.__closure__
+    original_cells = tuple(cell for cell in original_closure)
+    original_contents = tuple(cell.cell_contents for cell in original_closure)
     for field in ("co_filename", "co_name", "co_qualname", "co_freevars"):
         _at("metadata_constructor", field)
         requested = (tuple(PoisonStr(name) for name in code.co_freevars) if field == "co_freevars"
@@ -181,6 +185,31 @@ def _checks(plugin):
             changed = code.replace(**{field: requested})
         except (TypeError, ValueError):
             metadata_checks[field] = "constructor_refused"
+            continue
+        except SystemError as error:
+            # CPython 3.12.15 code_replace_impl forwards this supplied tuple
+            # to intern_strings via localsplusnames. That helper rejects
+            # non-exact Unicode with SystemError. No other SystemError is admitted.
+            # https://github.com/python/cpython/blob/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Objects/codeobject.c
+            if (_TYPE(error) is not SystemError or field != "co_freevars"
+                    or _TYPE(requested) is not tuple or len(requested) != len(original_freevars)
+                    or any(_TYPE(name) is not PoisonStr for name in requested)):
+                raise
+            _at("metadata_refusal_invariants", "original_code")
+            assert function.__code__ is code
+            _at("metadata_refusal_invariants", "original_freevars_types")
+            assert _TYPE(code.co_freevars) is tuple and all(_TYPE(name) is str for name in code.co_freevars)
+            _at("metadata_refusal_invariants", "original_freevars_values")
+            assert code.co_freevars == original_freevars
+            _at("metadata_refusal_invariants", "original_freevar_identities")
+            assert all(current is original for current, original in zip(code.co_freevars, original_freevars))
+            _at("metadata_refusal_invariants", "original_closure_tuple")
+            assert function.__closure__ is original_closure
+            _at("metadata_refusal_invariants", "original_cell_identities")
+            assert all(current is original for current, original in zip(function.__closure__, original_cells))
+            _at("metadata_refusal_invariants", "original_content_identities")
+            assert all(cell.cell_contents is content for cell, content in zip(original_closure, original_contents))
+            metadata_checks[field] = "constructor_refused_exact_systemerror"
             continue
         _at("metadata_classification", field)
         actual = getattr(changed, field)  # fixed whitelist on an exact builtin CodeType
@@ -208,6 +237,21 @@ def _checks(plugin):
             _at("metadata_normalized_observe", field)
             assert plugin._site(clone, binding) != "unsafe_code_metadata"
             metadata_checks[field] = "constructor_normalized"
+    _at("healthy_exact_string_constructor")
+    healthy_code = code.replace(co_freevars=original_freevars)
+    healthy_function = types.FunctionType(healthy_code, globals(), closure=original_closure)
+    _at("healthy_constructor_assertion", "code_type")
+    assert _TYPE(healthy_code) is types.CodeType
+    _at("healthy_constructor_assertion", "exact_freevars")
+    assert _TYPE(healthy_code.co_freevars) is tuple and all(_TYPE(name) is str for name in healthy_code.co_freevars)
+    _at("healthy_constructor_assertion", "unchanged_freevars")
+    assert healthy_code.co_freevars == original_freevars
+    _at("healthy_constructor_assertion", "unchanged_bytecode")
+    assert healthy_code.co_code == code.co_code
+    _at("healthy_constructor_assertion", "copied_target_site")
+    assert plugin._site(healthy_function, binding) == "operator_enclosing_visit"
+    _at("healthy_constructor_assertion", "original_target_site")
+    assert plugin._site(function, binding) == "operator_enclosing_visit"
     _at("cycle_assertion")
     assert plugin._walk([cycle], {})["unique_visits"] == 1
     _at("alias_assertion")
