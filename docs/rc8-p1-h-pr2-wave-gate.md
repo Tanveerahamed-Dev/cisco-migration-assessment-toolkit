@@ -163,3 +163,28 @@ the second P2's custody chain. The source/dist reproduction checks remain requir
 acceptance requires 14/14 exact-head protected contexts and applicable app workflows, then
 one completion comment with every source/import head and per-finding evidence. Independent
 review follows; CI success grants no merge or release authority.
+
+
+### First hosted source and download-name binding correction
+
+Source `ec7d66b89109481c0207b6cf0c1090a3ede5be43` opened PR #692. CI run
+`39168276107`, Windows job `117795745785`, failed two unchanged client-artifact
+census assertions before reaching the interface census. The complete endpoint-chain
+source proof was stale: the new `WaveCutoverEvidence` type and `WaveCard` panel changed
+`api.ts` and `CutoverPlanner.tsx`. Consequently all three retained implicit-download
+obligations correctly became unclassified, including unchanged Execution/Snapshot callers.
+This failed head supplies no interface census and no admitted frontend artifact.
+
+Source review retains the exact original imports, useAsync/catalogue flow, three href
+expressions, URL factories, GET routes, success headers, sanitized filename stem, SPECS
+and docmeta suffix owners. Six of the eight pinned files are byte-identical to main.
+The only two pin updates are api.ts `108849be` -> `db43befd` and CutoverPlanner.tsx
+`b16306b6` -> `9f4d3f8a`; their complete diffs contain only the evidence type/panel.
+The helper, bindings, classifier and every source-mutation/unknown-name assertion remain
+unchanged. This refreshes inspected source identity, not a pass-through allowance or
+weaker test. Hosted execution must close both failures before the existing census runs.
+
+The same source's Distribution job `117795745715` failed immutable SPA reproduction;
+Atlas job `117795745562` stopped at its tracked-SPA rebuild check. Both are retained
+negative evidence for the pending source-bound dist import; no reproduction assertion
+is bypassed. Superseded or cancelled jobs do not supply final-head acceptance.
