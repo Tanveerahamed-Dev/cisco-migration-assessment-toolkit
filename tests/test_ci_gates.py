@@ -445,6 +445,90 @@ def test_pyproject_declares_xdist_so_a_fresh_dev_install_gets_the_gate_it_needs(
     assert "pytest-xdist" in pyproject, "pytest-xdist is not declared in [dev]"
 
 
+# The default suite's two CI passes: pytest.ini's `unshared` marker and .github/workflows/ci.yml.
+_PARALLEL_OPTIONS = ("-n auto", "--dist=loadfile")
+_PARALLEL_SELECTION, _SERIAL_SELECTION = '-m "not unshared"', "-m unshared"
+
+
+def _uses_xdist(run):
+    """Whether any pytest invocation in a step's script distributes it (-n in any spelling)."""
+    for line in run.splitlines():
+        words = line.split()
+        if "pytest" in words:
+            after = words[words.index("pytest") + 1:]
+            if any(word.startswith("--numprocesses") or (word.startswith("-n") and not word.startswith("--"))
+                   for word in after):
+                return True
+    return False
+
+
+def _unshared_complement_problems(steps):
+    """For one job's steps: every pytest-xdist run must leave out exactly the `unshared` tests, and
+    exactly one later step must run exactly those tests serially -- the same command without the
+    parallel options, under the same condition and environment."""
+    problems = []
+    for index, step in enumerate(steps):
+        run = str(step.get("run") or "")
+        if not _uses_xdist(run):
+            continue
+        name = step.get("name") or run
+        if _PARALLEL_SELECTION not in run or not all(option in run for option in _PARALLEL_OPTIONS):
+            problems.append((name, 'a pytest-xdist pass must run -n auto --dist=loadfile -m "not unshared"'))
+            continue
+        serial = run
+        for option in _PARALLEL_OPTIONS:
+            serial = serial.replace(" " + option, "")
+        serial = serial.replace(_PARALLEL_SELECTION, _SERIAL_SELECTION)
+        complements = [later for later in steps[index + 1:] if later.get("run") == serial
+                       and later.get("if") == step.get("if") and later.get("env") == step.get("env")]
+        if len(complements) != 1:
+            problems.append((name, f"needs exactly one later serial complement {serial!r} under the same "
+                                   f"condition and environment; found {len(complements)}"))
+    return problems
+
+
+def test_every_parallel_suite_pass_has_its_serial_unshared_complement():
+    """`-m "not unshared"` and `-m unshared` partition any collection, so a job's two passes together
+    run the complete default suite. A pytest-xdist pass without its serial complement would silently
+    drop every unshared test from its job; one that kept them would run a millisecond budget or a live
+    Windows capture beside three busy workers (the first hosted parallel run failed all five captures)."""
+    import yaml
+
+    ini = configparser.ConfigParser()
+    ini.read(os.path.join(ROOT, "pytest.ini"), encoding="utf-8")
+    assert any(line.strip().startswith("unshared:")
+               for line in ini.get("pytest", "markers", fallback="").splitlines()), \
+        "pytest.ini does not register the unshared marker"
+    passes, problems = [], []
+    for path in sorted(Path(ROOT, ".github", "workflows").glob("*.yml")):
+        jobs = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("jobs") or {}
+        for job_id, job in jobs.items():
+            steps = job.get("steps") or []
+            passes += [f"{path.name}:{job_id}" for step in steps if _uses_xdist(str(step.get("run") or ""))]
+            problems += [(f"{path.name}:{job_id}", *problem) for problem in _unshared_complement_problems(steps)]
+    assert not problems, problems
+    # Not vacuous: the required test job's pass is found, and the marker sits on its known members.
+    assert "ci.yml:test" in passes, passes
+    for name in ("test_vlan_carriage_budget.py", "test_transition_runtime_discovery.py"):
+        assert "@pytest.mark.unshared" in _read("tests", name) or \
+            "pytestmark = pytest.mark.unshared" in _read("tests", name), name
+
+
+def test_the_unshared_complement_guard_refuses_each_way_a_pass_can_lose_its_complement():
+    parallel = {"name": "p", "env": {"A": "1"},
+                "run": 'python -m pytest --durations=40 -n auto --dist=loadfile -m "not unshared"'}
+    serial = {"name": "s", "env": {"A": "1"}, "run": "python -m pytest --durations=40 -m unshared"}
+    assert _unshared_complement_problems([parallel, serial]) == []
+    for steps in ([parallel],                                                 # no complement
+                  [serial, parallel],                                         # complement runs first
+                  [parallel, {**serial, "env": {"A": "0"}}],                  # another environment
+                  [parallel, {**serial, "if": "runner.os == 'Linux'"}],       # another condition
+                  [parallel, serial, serial],                                 # two complements
+                  [{**parallel, "run": "python -m pytest -n auto --dist=loadfile"}, serial],  # keeps them
+                  [{**parallel, "run": 'python -m pytest -n4 -m "not unshared"'}, serial]):   # -n spelling
+        assert _unshared_complement_problems(steps), steps
+
+
 def _requirement_name(requirement):
     name = re.split(r"[<>=!~;\[\s]", requirement, maxsplit=1)[0]
     return re.sub(r"[-_.]+", "-", name).lower()

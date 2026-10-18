@@ -1018,7 +1018,12 @@ def test_required_matrix_executes_the_guard_before_its_unchanged_complete_suite(
     assert "if" not in step and not step.get("continue-on-error", False)
     assert step["env"]["ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN"] == "1"
     assert any(s.get("run") == "npm ci" and s.get("working-directory") == "atlas-scope" for s in steps[:index])
-    assert any("python -m pytest --durations=40" == s.get("run") for s in steps[index + 1:])
+    # The complete default suite after the guard is its two passes (tests/test_ci_gates.py ::
+    # test_every_parallel_suite_pass_has_its_serial_unshared_complement), both unconditional.
+    later = {s.get("run"): s for s in steps[index + 1:]}
+    for run in ('python -m pytest --durations=40 -n auto --dist=loadfile -m "not unshared"',
+                "python -m pytest --durations=40 -m unshared"):
+        assert run in later and "if" not in later[run], run
     assert any("test_pipeline_inprocess.py::test_pipeline_inprocess_builds_all_three_deliverables" in s.get("run", "") for s in steps[:index])
     synthetic = [(i, s) for i, s in enumerate(steps) if s.get("name") == "Synthetic detected-form refusal and stability controls"]
     assert len(synthetic) == 1
