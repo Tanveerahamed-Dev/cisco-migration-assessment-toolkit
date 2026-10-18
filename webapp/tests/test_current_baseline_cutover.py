@@ -50,10 +50,12 @@ def _snapshot(rows: list[dict]) -> dict:
         }],
         "migration_readiness": [{
             "group": "G1", "switches": ["sw1"], "readiness": "READY",
-            "n_fail": 0, "n_warn": 0, "checks": [],
+            "n_fail": 0, "n_warn": 0, "checks": [{"check": "Collected baseline", "status": "pass", "note": "Observed evidence"}],
         }],
         "move_groups": [{"group": "G1", "switches": ["sw1"], "endpoints": 1}],
         "validation_plan": _validation_plan(rows),
+        "health_scores": [{"switch": "sw1", "band": "Good", "data_quality": 1.0}],
+        "cross_layer": [], "punchlist": [], "remediation_plan": {"items": [], "by_device": {}},
     }
 
 
@@ -116,7 +118,7 @@ def test_vtp_review_row_generically_forces_no_go_and_preserves_authority():
     assert blocker["source_key"] == "show vtp status#mode/domain/revision/version"
 
 
-def test_baseline_blocker_only_stops_its_affected_wave():
+def test_baseline_blocker_retains_fleet_hold_even_for_a_locally_clear_wave():
     from backend import cutover
 
     blocked = _degraded_row()
@@ -141,7 +143,7 @@ def test_baseline_blocker_only_stops_its_affected_wave():
     plan = cutover.build_plan(snap)
     by_group = {wave["group"]: wave for wave in plan["waves"]}
     assert by_group["G1"]["gate"] == cutover.GATE_NOGO
-    assert by_group["G2"]["gate"] == cutover.GATE_GO
+    assert by_group["G2"]["gate"] == cutover.GATE_NOGO
     assert by_group["G2"]["current_baseline"]["verdict"] == cutover.BASELINE_CLEAR
     assert plan["summary"]["verdict"] == cutover.GATE_NOGO
 
@@ -176,7 +178,7 @@ def test_uncertain_blocker_does_not_make_an_unrelated_clear_wave_indeterminate(s
     assert by_group["G1"]["current_baseline"]["verdict"] == cutover.BASELINE_INDETERMINATE
     assert by_group["G1"]["gate"] == cutover.GATE_NOGO
     assert by_group["G2"]["current_baseline"]["verdict"] == cutover.BASELINE_CLEAR
-    assert by_group["G2"]["gate"] == cutover.GATE_GO
+    assert by_group["G2"]["gate"] == cutover.GATE_NOGO
 
 
 @pytest.mark.parametrize("validation_plan, verdict", [

@@ -13248,3 +13248,378 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             "note": ("Risk index = topology impact (1-10) x stacked exposure (0-10) per asset, "
                      "mirroring asset-risk practice (likelihood x impact). Synthesis of already-"
                      "computed axes only; an axis without evidence is 'not assessed', never red.")}
+
+
+def join_wave_group_records(gnames, wave_switches, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
+    """Union the per-group records across the groups a wave's switches belong to (a coupled-subwave maps to
+    one group; an independent-batch maps to many): worst readiness verdict, fail/warn checks, first
+    non-empty sequencing/scenario, deduped validation checks. Endpoints are APPORTIONED to this wave's
+    switch-share of each group -- a sub-wave is a SLICE, so it must not inherit the parent group's full
+    endpoint total. Single source of truth -- reads the engine's records, never recomputes them."""
+    # Rank the engine's ACTUAL readiness vocabulary -- analyze.compute_migration_readiness emits exactly
+    # {"NOT READY","CAUTION","READY"}. Lower = worse, so the reduce below keeps the worst verdict; an
+    # unknown value defaults high (least-worst) and never masks a real NOT READY.
+    rank = {"not ready": 0, "caution": 1, "ready": 2}
+
+    def _i(x):
+        # Delegate to the shared fail-soft coercer: it rejects the JSON Infinity/NaN that a plain
+        # int() would let through (inf -> OverflowError, missed by (TypeError, ValueError)).
+        return int(_as_num(x))
+
+    r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
+    seq, scen, val_items, worst, seen = {}, {}, [], None, set()
+    mbb_all, hard_all = [], []   # cutover host split UNIONED across every group in the wave (not just the first)
+    members_all = set()          # full membership of the joined groups — detects a sub-wave SLICE below
+    wsw = set(wave_switches or [])
+    for g in gnames:
+        rr = readiness_by_group.get(g) or {}
+        # element-coerced: a scalar member would otherwise break `s in note` (TypeError: 'in <string>'
+        # requires string) and `sorted(gsw)` (int vs str) in the check-attribution below, and every
+        # downstream render of `switches` (the §x.1 join, the port map, the OOB evidence lookup).
+        gsw = _wave_strings(rr.get("switches"))
+        members_all.update(gsw)
+        share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
+        r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
+        # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
+        # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
+        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N (Meridian Group 1's true 3/4
+        # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
+        checks = [c for c in _wave_list(rr.get("checks"))
+                  if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
+        if checks:
+            gsw_set = set(gsw)
+            for chk in checks:
+                note = str(chk.get("note", ""))
+                members = sorted(s for s in gsw_set if s and s in note)   # group switches named in this check's note
+                owner = members[0] if members else (sorted(gsw)[0] if gsw else None)   # canonical single owner
+                if owner is not None and owner in wsw:                    # this sub-wave owns the check
+                    r["n_fail" if str(chk.get("status")).lower() == "fail" else "n_warn"] += 1
+        else:
+            # older snapshot with no per-check attribution -> apportion by switch-share, never rounding a lone
+            # blocker DOWN to 0 (that would mask a NOT-READY wave's gate). Single-slice correctness preserved.
+            _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
+            r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
+            r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
+        rd = rr.get("readiness")
+        if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
+            worst = rd
+        gseq = seq_by_group.get(g) or {}
+        if not seq:
+            seq = gseq
+        for _h in _wave_strings(gseq.get("make_before_break")):
+            if _h not in mbb_all:
+                mbb_all.append(_h)
+        for _h in _wave_strings(gseq.get("hard_cutover")):
+            if _h not in hard_all:
+                hard_all.append(_h)
+        if not scen:
+            scen = scen_by_group.get(g) or {}
+        # keep only RECORDS: every consumer of val_items dereferences it (`it.get("device")` for the
+        # §x.3 capture table, `it.get("severity")` for the §x.6 go/no-go sort), so a scalar element --
+        # a truthy int OR a plain string, both of which the old `isinstance` branch let through into
+        # the list -- crashed the render two sections later.
+        for v in _wave_dicts(val_by_wave.get(g)):
+            # A command is a capture action, not a validation-check identity.  FHRP deliberately emits
+            # one semantic check per VLAN while reusing a single `show standby brief` capture; collapsing
+            # on (device, command) silently removed every VLAN after the first from the §x.6 gate.  Keep
+            # exact semantic duplicates out when groups are joined, but retain distinct VLAN/subtype/check
+            # and acceptance rows.  repr() keeps malformed JSON-like leaves hashable so this join remains
+            # total; all downstream rendering still applies the existing defensive coercion.
+            key = tuple(repr(v.get(field)) for field in (
+                "device", "category", "subtype", "vlan", "check", "command", "expect", "severity",
+            ))
+            if key not in seen:
+                seen.add(key)
+                val_items.append(v)
+    r["readiness"] = worst or "—"
+    # A wave that covers only a SLICE of its groups' membership (an oversized group split into coupled
+    # sub-waves) must not inherit the parent's full host split — same doctrine as the endpoint
+    # apportioning above (QA row-13: every ≤40-switch sub-wave row repeated the parent's full
+    # '107 hard cutover + 144 make-before-break', and §wi.5 sequenced parent-scale counts). A wave
+    # covering its WHOLE group keeps the raw union, so hosts the sequencing lists name beyond the
+    # membership record are preserved rather than silently dropped (fail-soft on inconsistent uploads).
+    if wsw and members_all and not members_all.issubset(wsw):
+        mbb_all = [h for h in mbb_all if h in wsw]
+        hard_all = [h for h in hard_all if h in wsw]
+    # Overlay the SLICED cutover host split so the procedure branches on THIS wave's members, not just the
+    # representative group (the free-text 'sequence' stays the representative's — descriptive only). Copy
+    # so the engine's record is never mutated (this joiner reads the engine's records, never recomputes).
+    if seq:
+        seq = {**seq, "make_before_break": mbb_all, "hard_cutover": hard_all}
+    return r, seq, scen, val_items
+
+
+
+
+# Ephemeral pre-change decision owner. No snapshot field, device I/O or report dependency.
+WAVE_CUTOVER_VERDICTS = ("GO", "CONDITIONAL GO", "NO-GO", "NOT ASSESSED")
+
+
+def _wave_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _wave_dicts(value):
+    return [row for row in _wave_list(value) if isinstance(row, dict)]
+
+
+def _wave_strings(value):
+    return [str(item or "") for item in _wave_list(value)]
+
+
+def _wave_hosts(value):
+    if isinstance(value, str):
+        return {value} if value else set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(item) for item in value if item}
+    return set()
+
+
+def _wave_scope_valid(value):
+    members = [value] if isinstance(value, str) else value
+    return isinstance(members, (list, tuple, set)) and bool(members) and all(
+        isinstance(member, str) and bool(member.strip()) for member in members)
+
+
+def compute_wave_cutover_gate(snapshot, group_names, switches):
+    """Compute one wave decision; batch callers use rollup_wave_cutover_gates."""
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    return _wave_cutover_record(snap, group_names, switches, compute_current_baseline_gate(snap.get("validation_plan")))
+
+
+def _wave_cutover_record(snap, group_names, switches, baseline):
+    """One pre-change decision for an explicit group/sub-wave scope.
+
+    Counts and readiness labels are independent negative witnesses: neither may erase the
+    other. Group blockers conservatively apply to every slice, even when display counts are
+    apportioned to one slice. The fleet baseline hold from the MOP applies to every window.
+    This is bounded assessment evidence, never CAB approval or observed cutover success.
+    """
+    groups, hosts = _wave_hosts(group_names), _wave_hosts(switches)
+    blocked, conditional, gaps = [], [], []
+    counts = {"n_fail": 0, "n_warn": 0, "n_critical_crosslayer": 0,
+              "n_high_remediation": 0, "n_high_punchlist": 0, "n_blind": 0}
+    if not hosts or not groups:
+        gaps.append("The wave has no complete group and device scope.")
+    if not isinstance(group_names, (list, tuple, set)) or any(
+            not isinstance(item, str) or not item.strip() for item in group_names):
+        gaps.append("Group scope contains an unreadable identity.")
+    if not isinstance(switches, (list, tuple, set)) or any(
+            not isinstance(item, str) or not item.strip() for item in switches):
+        gaps.append("Device scope contains an unreadable identity.")
+
+    inventory = snap.get("devices")
+    if not isinstance(inventory, dict) or not hosts.issubset(inventory):
+        gaps.append("The wave devices are not all bound to the snapshot inventory.")
+    readiness = snap.get("migration_readiness")
+    if not isinstance(readiness, list) or any(not isinstance(row, dict) for row in readiness):
+        gaps.append("Migration readiness is absent or malformed.")
+    for group in sorted(groups):
+        rows = [row for row in _wave_dicts(readiness) if row.get("group") == group]
+        if len(rows) != 1:
+            gaps.append(f"Readiness group {group} is missing or duplicated.")
+        for row in rows:
+            rd = row.get("readiness")
+            label = rd.upper() if isinstance(rd, str) else None
+            if label == "NOT READY":
+                blocked.append(f"Group {group} is NOT READY.")
+            elif label == "CAUTION":
+                conditional.append(f"Group {group} is CAUTION.")
+            elif rd != "READY":
+                gaps.append(f"Group {group} has no recognized readiness verdict.")
+            members = row.get("switches")
+            if not isinstance(members, list) or any(
+                    not isinstance(member, str) or not member.strip() for member in members):
+                gaps.append(f"Group {group} has unreadable membership.")
+            if not hosts.intersection(_wave_hosts(members)):
+                gaps.append(f"Group {group} does not bind to this wave's devices.")
+            checks = row.get("checks")
+            if not isinstance(checks, list) or not checks:
+                gaps.append(f"Group {group} has no observed readiness checks.")
+            observed = {"fail": 0, "warn": 0}
+            for check in _wave_list(checks):
+                if not isinstance(check, dict) or not all(
+                        isinstance(check.get(key), str) and check[key].strip() for key in ("check", "note")):
+                    gaps.append(f"Group {group} contains a check without identity or evidence.")
+                status = check.get("status") if isinstance(check, dict) else None
+                status = status.lower() if isinstance(status, str) else None
+                if status in ("fail", "warn"):
+                    observed[status] += 1
+                elif status == "info":
+                    note = check.get("note")
+                    if not isinstance(note, str) or not note.strip() or "NOT ASSESSABLE" in note.upper():
+                        gaps.append(f"Group {group} has an unobserved readiness check.")
+                elif status != "pass":
+                    gaps.append(f"Group {group} contains an unknown readiness check.")
+            if not any(isinstance(check, dict) and check.get("status") == "pass" for check in _wave_list(checks)):
+                gaps.append(f"Group {group} has no positive readiness observation.")
+            for field, status in (("n_fail", "fail"), ("n_warn", "warn")):
+                value = row.get(field)
+                if type(value) is not int or value < 0:
+                    gaps.append(f"Group {group} has no valid {field} count.")
+                    # Legacy consumers accepted coercible positive counts. Keep their negative
+                    # witness while refusing to treat that malformed count as positive evidence.
+                    try:
+                        value = max(0, int(value))
+                    except (TypeError, ValueError, OverflowError):
+                        value = 0
+                elif isinstance(checks, list) and value != observed[status]:
+                    gaps.append(f"Group {group} {field} disagrees with its checks.")
+                counts[field] += max(value, observed[status])
+    covered = set().union(*(_wave_hosts(row.get("switches")) for row in _wave_dicts(readiness)
+                            if isinstance(row.get("group"), str) and row["group"] in groups)) if groups else set()
+    if not hosts.issubset(covered):
+        gaps.append("Some wave devices have no joined readiness group.")
+    if counts["n_fail"]:
+        blocked.append("Failing migration-readiness checks remain.")
+    if counts["n_warn"]:
+        conditional.append("Migration-readiness warnings remain.")
+
+    health = snap.get("health_scores")
+    if not isinstance(health, list) or any(not isinstance(row, dict) for row in health):
+        gaps.append("Health evidence is absent or malformed.")
+    for host in sorted(hosts):
+        rows = [row for row in _wave_dicts(health) if (row.get("switch") or row.get("host")) == host]
+        if len(rows) != 1:
+            gaps.append(f"Device {host} has missing or duplicate health evidence.")
+        for row in rows:
+            band, dq = row.get("band"), row.get("data_quality")
+            if (isinstance(band, str) and band.strip().lower().startswith("insufficient")) or (
+                    is_finite_num(dq) and not isinstance(dq, bool) and dq <= 0):
+                counts["n_blind"] += 1
+                conditional.append(f"Device {host} has insufficient collection evidence.")
+                gaps.append(f"Device {host} collection coverage is incomplete.")
+            elif not isinstance(band, str) or band not in _HEALTH_BAND_LABELS or not is_finite_num(dq) or isinstance(dq, bool):
+                gaps.append(f"Device {host} health evidence is unverified.")
+            elif dq < 1:
+                conditional.append(f"Device {host} has partial collection evidence.")
+                gaps.append(f"Device {host} collection coverage is incomplete.")
+            elif dq > 1:
+                gaps.append(f"Device {host} collection ratio is outside its producer range.")
+
+    correlations = snap.get("cross_layer")
+    if not isinstance(correlations, list) or any(not isinstance(row, dict) for row in correlations):
+        gaps.append("Cross-layer evidence is absent or malformed.")
+    for row in _wave_dicts(correlations):
+        if row.get("severity") not in ("Critical", "High", "Medium", "Low", "Info") or not _wave_scope_valid(row.get("hosts")):
+            gaps.append("Cross-layer evidence has unreadable severity or scope.")
+        affected = _wave_hosts(row.get("hosts"))
+        if row.get("severity") == "Critical" and (hosts.intersection(affected) or not _wave_scope_valid(row.get("hosts"))):
+            counts["n_critical_crosslayer"] += 1
+    if counts["n_critical_crosslayer"]:
+        blocked.append("Critical cross-layer findings affect this wave or have unbound scope.")
+
+    remediation = snap.get("remediation_plan")
+    remediation = remediation if isinstance(remediation, dict) else {}
+    by_device, items = remediation.get("by_device"), remediation.get("items")
+    if not isinstance(by_device, dict) or not isinstance(items, list):
+        gaps.append("Remediation evidence is absent or malformed.")
+    candidates = list(_wave_list(items))
+    unmatched = list(candidates)
+    for host in sorted(hosts):
+        bucket = by_device.get(host, []) if isinstance(by_device, dict) else []
+        if not isinstance(bucket, list):
+            gaps.append(f"Device {host} remediation is malformed.")
+        for row in _wave_list(bucket):
+            if isinstance(row, dict):
+                projected = {**row, "device": host}
+                if projected in unmatched:
+                    unmatched.remove(projected)  # consume one mirrored occurrence, preserving true duplicates
+                else:
+                    candidates.append(projected)
+            else:
+                gaps.append(f"Device {host} remediation contains a malformed row.")
+    for row in candidates:
+        if not isinstance(row, dict):
+            gaps.append("Remediation contains an unreadable row.")
+        elif row.get("severity") not in ("Critical", "High", "Medium", "Low", "Info"):
+            gaps.append("Finding evidence has unreadable severity.")
+        elif not _wave_scope_valid(row.get("device") or row.get("switch") or row.get("devices") or row.get("hosts")):
+            gaps.append("Finding evidence has unreadable device scope.")
+            if row.get("severity") in ("Critical", "High"):
+                counts["n_high_remediation"] += 1
+        elif row.get("severity") in ("Critical", "High"):
+            affected = _wave_hosts(row.get("device") or row.get("switch") or row.get("devices") or row.get("hosts"))
+            if not affected or hosts.intersection(affected):
+                counts["n_high_remediation"] += 1
+    if counts["n_high_remediation"]:
+        conditional.append("Critical/High remediation remains.")
+    punchlist = snap.get("punchlist")
+    if not isinstance(punchlist, list):
+        gaps.append("Punch-list evidence is absent or malformed.")
+    for row in _wave_list(punchlist):
+        if not isinstance(row, dict):
+            gaps.append("Punch-list contains an unreadable row.")
+        elif row.get("severity") not in ("Critical", "High", "Medium", "Low", "Info"):
+            gaps.append("Finding evidence has unreadable severity.")
+        elif not _wave_scope_valid(row.get("device") or row.get("switch") or row.get("devices") or row.get("hosts")):
+            gaps.append("Punch-list evidence has unreadable device scope.")
+            if row.get("severity") in ("Critical", "High"):
+                counts["n_high_punchlist"] += 1
+        elif row.get("severity") in ("Critical", "High"):
+            affected = _wave_hosts(row.get("device") or row.get("switch") or row.get("devices") or row.get("hosts"))
+            if not affected or hosts.intersection(affected):
+                counts["n_high_punchlist"] += 1
+    if counts["n_high_punchlist"]:
+        conditional.append("Critical/High punch-list blockers require disposition.")
+
+    if baseline["verdict"] == "BLOCKED" or baseline["summary"]["n_blockers"] > 0:
+        blocked.append("The fleet current baseline holds every scheduled window, including unbound blockers.")
+    elif baseline["verdict"] != "CLEAR":
+        gaps.append("The current baseline is not CLEAR.")
+    valid_plan = baseline["integrity"]["valid"] is True
+    bound_rows = []
+    if valid_plan:
+        plan = snap.get("validation_plan")
+        for row in _wave_dicts(plan.get("items") if isinstance(plan, dict) else None):
+            if row.get("wave") in groups or row.get("device") in hosts:
+                bound_rows.append(row)
+    if not bound_rows:
+        gaps.append("No gate-validated baseline row is bound to this wave.")
+    from cisco_toolkit.ssot import failed_sections
+    failed, unattributed = failed_sections(snap)
+    integrity = snap.get("assessment_integrity")
+    malformed_integrity = ("assessment_integrity" in snap and not isinstance(integrity, dict)) or (
+        isinstance(integrity, dict) and "failed_phases" in integrity and not isinstance(integrity["failed_phases"], list))
+    if failed or unattributed or malformed_integrity:
+        gaps.append("The snapshot reports failed or unreadable analysis custody; cutover completeness is unverified.")
+    verdict = ("NO-GO" if blocked else "NOT ASSESSED" if not hosts or not groups else
+               "CONDITIONAL GO" if conditional or gaps else "GO")
+    return {"schema": "wave_cutover_gate/1", "verdict": verdict,
+            "scope": {"groups": sorted(groups), "switches": sorted(hosts)},
+            "counts": counts, "reasons": blocked + conditional,
+            "coverage": {"complete": not gaps, "gaps": list(dict.fromkeys(gaps))},
+            "current_baseline": {"schema": baseline["schema"], "verdict": baseline["verdict"],
+                                 "assessed": baseline["assessed"],
+                                 "integrity": {"valid": baseline["integrity"]["valid"],
+                                               "failures": list(baseline["integrity"]["failures"])},
+                                 "n_items": baseline["summary"]["n_items"],
+                                 "n_blockers": baseline["summary"]["n_blockers"]},
+            "limitations": ["Assessment gate only: CAB approval, rollback rehearsal and human sign-off remain required.",
+                            "Group blockers conservatively apply to every sub-wave slice.",
+                            "Baseline blockers hold every window, including blockers outside the schedule."]}
+
+
+def rollup_wave_cutover_gates(snapshot, waves):
+    """One worst-wave fold; no waves cannot produce GO. Scope tuples follow MOP wave sections."""
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    baseline = compute_current_baseline_gate(snap.get("validation_plan"))
+    records = [_wave_cutover_record(snap, groups, hosts, baseline)
+               for _name, hosts, _kind, groups in waves]
+    values = [row["verdict"] for row in records]
+    if not records:
+        verdict = "NOT ASSESSED"
+    elif all(value == "NOT ASSESSED" for value in values):
+        verdict = "NOT ASSESSED"
+    elif "NO-GO" in values:
+        verdict = "NO-GO"
+    elif any(value != "GO" for value in values):
+        verdict = "CONDITIONAL GO"
+    else:
+        verdict = "GO"
+    return {"schema": "wave_cutover_rollup/1", "verdict": verdict, "waves": records}
+
+
+def wave_requires_high_risk_controls(verdict):
+    """Retain MOP high-risk handling for every non-GO window, including missing evidence."""
+    return verdict != "GO"

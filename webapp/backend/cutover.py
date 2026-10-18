@@ -9,8 +9,7 @@ tagged by PPDIOO phase, ``validation_plan.by_wave``, ``remediation_plan.by_devic
 ``failure_impact``, ``cross_layer``). AssessHub otherwise renders that model as flat tables; this
 module adds the judgment layer a migration engineer applies by hand:
 
-* a per-wave **Go / Conditional-Go / No-Go gate**, derived from the engine's own readiness checks plus
-  any Critical cross-layer correlation touching the wave;
+* a per-wave **Go / Conditional-Go / No-Go gate**, consumed from the single engine wave owner;
 * **pilot-first sequencing** — the safe make-before-break waves are scheduled before the risky
   NOT-READY ones, so the cutover method is proven on a zero-outage wave first;
 * a first-order **maintenance-window estimate** for the hard-cutover (single-homed) switches; and
@@ -103,10 +102,9 @@ def _as_hosts(v: Any) -> Set[str]:
 GATE_GO = "GO"
 GATE_COND = "CONDITIONAL GO"
 GATE_NOGO = "NO-GO"
-_GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2}
+_GATE_RANK = {GATE_GO: 0, GATE_COND: 1, GATE_NOGO: 2, "NOT ASSESSED": 1}
 
-#: FLEET-level only, never a wave gate (so it is deliberately absent from _GATE_RANK, which ranks
-#: waves): there were no waves to gate, so no posture was measured. Coverage honesty — "not observed"
+#: An empty fleet or a wave with no usable scope publishes no assessed posture. Coverage honesty — "not observed"
 #: must not read as "healthy" (CLAUDE.md guardrail 3), the same distinction archreview draws with
 #: `not-assessable` and device_dossiers with the `Unassessed` band. Consumers that colour a gate token
 #: degrade to NEUTRAL on an unknown one by construction (`cutover_docx._GATE_INK.get(v, _NAVY)`, and
@@ -280,21 +278,6 @@ def _window_minutes(n_hard_switches: int, hard_endpoints: int) -> int:
     per_endpoint_settle = hard_endpoints              # ~1 min to re-home/verify each stranded endpoint
     validation_rollback_buffer = 20
     return mobilisation + per_switch_cut_verify + per_endpoint_settle + validation_rollback_buffer
-
-
-def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int, n_blind: int = 0,
-          baseline_verdict: str = BASELINE_NOT_ASSESSED, n_baseline_blockers: int = 0) -> str:
-    if (n_fail > 0 or n_crit_cl > 0 or n_baseline_blockers > 0
-            or baseline_verdict == BASELINE_BLOCKED):
-        return GATE_NOGO
-    # audit-5 #15: a device the collection never reached (band 'Insufficient Data') cannot be certified ready, so
-    # a wave containing one is never a confident GO -- it is CONDITIONAL pending collection (coverage-honest).
-    # CLEAR is the only current-baseline state that permits GO. Missing or malformed assessment
-    # evidence is not equivalent to a clean baseline.
-    if (n_warn > 0 or n_high_remediation > 0 or n_blind > 0
-            or baseline_verdict != BASELINE_CLEAR):
-        return GATE_COND
-    return GATE_GO
 
 
 def _blind_hosts(snap: Dict[str, Any]) -> set:
@@ -572,8 +555,11 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     keystones = _keystone_hosts(snap, view=impact)
     blind_hosts = _blind_hosts(snap)
 
+    wave_records = engine.wave_rollup(snap, [
+        (str(seq.get("group") or ""), _wave_switches(seq, readiness_by_group.get(str(seq.get("group") or ""))),
+         "move-group", [str(seq.get("group") or "")]) for seq in seq_rows])
     waves: List[Dict[str, Any]] = []
-    for seq in seq_rows:
+    for seq, record in zip(seq_rows, wave_records["waves"]):
         # str(...) the group: an unhashable group (a list in a malformed upload) would 500 the readiness /
         # validation dict lookups keyed on it. sorted(_as_hosts(...)) the buckets, not list(...): a
         # non-iterable 500s list(), and a list of ints 500s the run-of-show ', '.join -- _as_hosts str-coerces.
@@ -598,19 +584,18 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         blockers = _blockers(readiness)
         crit_cl = _critical_crosslayer(switches, cross_layer)
         remediation = _wave_remediation(switches, rem_by_device)
-        n_high_rem = sum(1 for r in remediation if r.get("severity") in ("Critical", "High"))
         validation = _wave_validation(group, val_by_wave)
         baseline_blockers = _baseline_blockers_for_wave(group, switches, all_baseline_blockers)
         wave_baseline = _wave_baseline_view(current_baseline, baseline_blockers, validation)
         window = _window_minutes(len(hard), hard_ep)
-        gate = _gate(n_fail, n_warn, len(crit_cl), n_high_rem, len(wblind),
-                     str(wave_baseline["verdict"]), len(baseline_blockers))
+        gate = record["verdict"]
         strategy = "mixed" if (mbb and hard) else ("hard-cutover" if hard else "make-before-break")
 
         waves.append({
             "group": group,
             "readiness": (readiness or {}).get("readiness", ""),
             "gate": gate,
+            "gate_evidence": record,
             "strategy": strategy,
             "n_switches": len(switches),
             "switches": sorted(switches),
@@ -648,26 +633,9 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     for i, w in enumerate(waves, start=1):
         w["order"] = i
 
-    # Fleet roll-up = the worst wave gate. VACUOUS-TRUTH GUARD (the exact twin of
-    # execution._derive_outcome's `not decisions` branch): over an EMPTY wave list the loop below
-    # never executes, so the GATE_GO seed survived untouched and the plan published
-    # `"verdict": "GO"` for a snapshot from which NOTHING was derived — cutover_docx then printed
-    # "Cutover posture: GO" in green (_GATE_INK) on the title page, directly above its own body line
-    # "No migration waves were derived from this snapshot", and the SPA drew the same GO badge. Every
-    # other branch here requires positive evidence (a wave that was actually gated); this one
-    # required none. Reproduced end to end through GET /api/snapshots/{id}/cutover on an uploaded
-    # {"devices": {}}. The seed is now the honest token when there is nothing to roll up; with waves
-    # present it is GATE_GO exactly as before, so no assessed fleet's verdict moves.
-    fleet_gate = GATE_GO if waves else GATE_NOT_ASSESSED
-    for w in waves:
-        if _GATE_RANK[w["gate"]] > _GATE_RANK[fleet_gate]:
-            fleet_gate = w["gate"]
-    # A valid blocker that cannot be bound to a scheduled wave is still a fleet acceptance blocker;
-    # it must not disappear merely because the schedule omitted/mislabelled its device.
+    # The analysis owner folds the exact displayed wave scopes, including unbound baseline holds.
+    fleet_gate = wave_records["verdict"]
     fleet_baseline_counts = _as_dict(current_baseline.get("summary"))
-    if (waves and _int(fleet_baseline_counts.get("n_blockers")) > 0
-            and current_baseline.get("verdict") in {BASELINE_BLOCKED, BASELINE_INDETERMINATE}):
-        fleet_gate = GATE_NOGO
 
     total_hard_ep = sum(w["hard_cutover_endpoints"] for w in waves)
     total_window = sum(w["est_window_minutes"] for w in waves)
