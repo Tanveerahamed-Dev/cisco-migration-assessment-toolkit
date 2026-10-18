@@ -1357,8 +1357,12 @@ def test_a_different_historical_source_origin_cannot_reset_the_ceiling():
         guard.validate(guard.proposal([]), [], [], [prior])
 
 
-@pytest.mark.parametrize("stage", ["observation_required", "disabled"])
-def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_path, monkeypatch, stage):
+@pytest.mark.parametrize("schema,stage,error,match", [
+    ("interface-computation-debt/3", "observation_required", subprocess.CalledProcessError, None),
+    ("interface-computation-debt/4", "observation_required", ValueError, "unauthorized"),
+    ("interface-computation-debt/4", "disabled", ValueError, "unauthorized"),
+])
+def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_path, monkeypatch, schema, stage, error, match):
     def git(*args):
         return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
             "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
@@ -1379,21 +1383,21 @@ def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_
         git("add", ".")
         git("commit", "-m", message)
 
-    record({**guard.proposal([]), "stage": "observation_required"}, "Initial empty capture")
+    legacy = {key: value for key, value in guard.proposal([]).items() if key != "boundary"}
+    record({**legacy, "schema": "interface-computation-debt/3", "stage": "observation_required"}, "Initial empty capture")
     monkeypatch.setattr(guard, "LEGACY_V3_OBSERVATION_HEAD", git("rev-parse", "HEAD"))
     site = sample_site()
     record(guard.proposal([site]), "Admitted exact site")
     monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
     monkeypatch.setattr(guard, "scan", lambda sources: [site])
     assert guard.check() == 1  # The genuine pinned bootstrap remains admissible.
-    record({**guard.proposal([]), "stage": stage}, "Remove while attempting to disable")
+    inactive = {**guard.proposal([]), "schema": schema, "stage": stage}
+    if schema == "interface-computation-debt/3":
+        inactive.pop("boundary")
+    record(inactive, "Remove while attempting to disable")
     record(guard.proposal([site]), "Restore the removed allowance and active stage")
-    if stage == "observation_required":
-        with pytest.raises(subprocess.CalledProcessError):
-            guard.check()
-    else:
-        with pytest.raises(ValueError, match="unauthorized"):
-            guard.check()
+    with pytest.raises(error, match=match):
+        guard.check()
 
 
 def test_immutable_batch_source_reader_preserves_git_bytes_names_and_shared_blobs(tmp_path, monkeypatch):
@@ -1458,3 +1462,819 @@ def test_immutable_source_batch_does_not_follow_a_source_symlink(monkeypatch):
     monkeypatch.setattr(guard, "git", lambda *args, **kwargs: b"120000 blob " + b"a" * 40 + b"\tclient/main.ts\0")
     with pytest.raises(ValueError, match="nonregular"):
         guard.revision_sources("a" * 40)
+
+
+# PR-0b: the detector is unchanged. These are admission-policy controls.
+def boundary_record_of(site, category="response-identity"):
+    return {**{key: site[key] for key in ("path", "symbol", "rule", "fingerprint", "occurrence")},
+            "category": category}
+
+
+def boundary_registry_of(sites, category="response-identity"):
+    record = guard.proposal([])
+    record["boundary"] = sorted([boundary_record_of(site, category) for site in sites], key=guard.identity)
+    return record
+
+
+def boundary_comparison_sites(path="shared/transport.py"):
+    return guard.python_sites(path, "def same_pin(actual, expected):\n return actual.request_id == expected.request_id\n")
+
+
+@pytest.mark.parametrize("category", ["transport-bound", "response-identity", "cancellation", "ui-state"])
+def test_boundary_admits_only_a_new_exact_site_in_one_closed_category(category):
+    assert guard.BOUNDARY_CATEGORIES == {"transport-bound", "response-identity", "cancellation", "ui-state"}
+    sites = boundary_comparison_sites()
+    assert len(sites) == 1 and sites[0]["rule"] == "returned-comparison"
+    guard.validate(boundary_registry_of(sites, category), sites, [],
+                   base=guard.proposal([]), base_sites=[])
+
+
+@pytest.mark.parametrize("category", [None, "", "engine-fact", "UI-state", ["ui-state"], True])
+def test_boundary_missing_unknown_or_multiple_categories_refuse(category):
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    if category is None:
+        record["boundary"][0].pop("category")
+    else:
+        record["boundary"][0]["category"] = category
+    with pytest.raises(ValueError, match="category"):
+        guard.validate(record, sites, [], base=guard.proposal([]), base_sites=[])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("path", "*"), ("symbol", "*"), ("rule", "*"), ("fingerprint", "not-a-digest"),
+    ("occurrence", True), ("occurrence", 1.0), ("occurrence", 0), ("extra", "not-closed"),
+])
+def test_boundary_exact_identity_shape_is_not_a_wildcard_or_loose_type(field, value):
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    record["boundary"][0][field] = value
+    with pytest.raises(ValueError, match="closed exact sites" if field == "extra" else "malformed exact types"):
+        guard.validate(record, sites, [], base=guard.proposal([]), base_sites=[])
+
+
+def test_boundary_duplicates_and_other_sites_in_the_same_symbol_are_not_admitted():
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    record["boundary"].append(dict(record["boundary"][0]))
+    with pytest.raises(ValueError, match="Duplicate"):
+        guard.validate(record, sites, [], base=guard.proposal([]), base_sites=[])
+    other = {**sites[0], "fingerprint": "b" * 64}
+    with pytest.raises(ValueError, match="Unregistered"):
+        guard.validate(boundary_registry_of(sites), [*sites, other], [],
+                       base=guard.proposal([]), base_sites=[])
+
+
+def test_boundary_cannot_admit_unchanged_base_code_or_relabel_a_retained_site():
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    with pytest.raises(ValueError, match="unchanged"):
+        guard.validate(record, sites, [], base=guard.proposal([]), base_sites=sites)
+    guard.validate(record, sites, [], base=record)  # already admitted, not a new exemption
+    changed = boundary_registry_of(sites, "ui-state")
+    with pytest.raises(ValueError, match="category changed"):
+        guard.validate(changed, sites, [], base=record)
+
+
+def test_boundary_requires_a_base_and_manual_jobs_cannot_admit_new_sites():
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    with pytest.raises(ValueError, match="exact PR base"):
+        guard.validate(record, sites, [])
+    with pytest.raises(ValueError, match="base's source"):
+        guard.validate(record, sites, [], base=guard.proposal([]))
+    with pytest.raises(ValueError, match="not a manual run"):
+        guard.validate(record, sites, [], base=guard.proposal([]), base_sites=[], allow_new_boundary=False)
+    guard.validate(record, sites, [], base=record, allow_new_boundary=False)
+
+
+@pytest.mark.parametrize("location", ["current", "base", "ancestor", "historic"])
+def test_no_debt_record_can_move_to_boundary_even_after_its_deletion(location):
+    sites = boundary_comparison_sites()
+    record = boundary_registry_of(sites)
+    old = guard.proposal(sites)
+    kwargs = {"base": guard.proposal([]), "base_sites": []}
+    ancestors = []
+    if location == "current":
+        record["sites"] = old["sites"]
+    elif location == "base":
+        kwargs["base"] = old
+    elif location == "ancestor":
+        ancestors = [old]
+    else:
+        kwargs["historic_debt"] = {guard.identity(site) for site in sites}
+    with pytest.raises(ValueError, match="Debt-to-boundary"):
+        guard.validate(record, sites, sites, ancestors, **kwargs)
+
+
+def test_boundary_removed_identity_cannot_resurrect_or_change_its_category():
+    sites = boundary_comparison_sites()
+    with pytest.raises(ValueError, match="resurrected"):
+        guard.validate(boundary_registry_of(sites), sites, [],
+                       base=guard.proposal([]), base_sites=[],
+                       removed_boundary={guard.identity(sites[0])})
+    before = boundary_registry_of(sites)
+    with pytest.raises(ValueError, match="category changed"):
+        guard.validate(boundary_registry_of(sites, "ui-state"), sites, [], [before],
+                       base=guard.proposal([]), base_sites=[])
+
+
+def test_boundary_proposal_retains_all_findings_and_only_existing_boundary_metadata():
+    sites = boundary_comparison_sites()
+    other = {**sites[0], "fingerprint": "b" * 64}
+    admitted = boundary_registry_of(sites)["boundary"]
+    result = guard.proposal([*sites, other], admitted)
+    assert {guard.identity(row) for row in result["sites"]} == {guard.identity(other)}
+    assert result["boundary"] == admitted
+    assert {guard.identity(row) for row in [*result["sites"], *result["boundary"]]} == {
+        guard.identity(row) for row in [*sites, other]}
+    result["boundary"][0]["category"] = "ui-state"
+    assert admitted[0]["category"] == "response-identity"
+    assert guard.proposal([], admitted)["boundary"] == []
+
+
+def boundary_git(tmp_path):
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
+            "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
+            "-c", f"core.hooksPath={tmp_path / 'no-hooks'}", *args],
+            check=True, capture_output=True, text=True).stdout.strip()
+    return git
+
+
+@pytest.mark.parametrize("change", ["unchanged", "other_symbol", "introduced"])
+def test_boundary_base_comparison_reads_an_outside_closure_helper(tmp_path, monkeypatch, change):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    path = "shared/transport.py"
+    target = tmp_path / path
+    target.parent.mkdir()
+    source = "def same_pin(actual, expected):\n return actual.request_id == expected.request_id\n"
+    baseline = source if change != "introduced" else "def same_pin(actual, expected):\n return actual.request_id\n"
+    target.write_text(baseline + "\ndef other():\n return None\n", encoding="utf-8")
+    registry = tmp_path / guard.REGISTRY
+    registry.parent.mkdir()
+    registry.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Base helper outside the interface closure")
+    base = git("rev-parse", "HEAD")
+    target.write_text(source + ("\ndef other():\n return 'edited'\n" if change == "other_symbol"
+                                else "\ndef other():\n return None\n"), encoding="utf-8")
+    sites = guard.python_sites(path, source)
+    registry.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Proposed boundary")
+    # The real base file must be overlaid for comparison even though discovery
+    # found no interface import for it in that revision. No application executes.
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {} if revision else {path: source})
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    if change == "introduced":
+        assert guard.check() == len(sites)
+    else:
+        with pytest.raises(ValueError, match="unchanged"):
+            guard.check()
+
+
+def test_moved_boundary_site_is_new_but_the_old_identity_remains_a_tombstone():
+    source = "def same_pin(actual, expected):\n return actual.request_id == expected.request_id\n"
+    before = guard.python_sites("shared/before.py", source)
+    after = guard.python_sites("shared/after.py", source)
+    guard.validate(boundary_registry_of(after), after, [],
+                   base=boundary_registry_of(before), base_sites=before,
+                   removed_boundary={guard.identity(before[0])})
+
+
+def test_boundary_merge_cannot_hide_a_removal_on_the_other_parent(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=keep")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    registry = tmp_path / guard.REGISTRY
+    registry.parent.mkdir()
+    registry.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Empty boundary base")
+    base = git("rev-parse", "HEAD")
+    sites = boundary_comparison_sites()
+    retained = json.dumps(boundary_registry_of(sites))
+    registry.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Admit an exact boundary")
+    git("checkout", "-b", "remove")
+    registry.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Remove the boundary")
+    removed = git("rev-parse", "HEAD")
+    git("checkout", "keep")
+    (tmp_path / "basis.txt").write_text("Other-parent edit\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Advance other parent")
+    git("merge", "--no-ff", "--no-commit", "remove")
+    registry.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt boundary resurrection in merge")
+    assert removed in git("rev-list", "HEAD").splitlines()
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: sites)
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    with pytest.raises(ValueError, match="resurrected"):
+        guard.check()
+
+
+def test_boundary_policy_does_not_change_the_merged_detector_or_source_discovery():
+    baseline = "92490340e3c55c34c7a8d26e878ee5de7c729601"
+    assert guard.LEGACY_V3_REGISTER_HEAD == baseline
+    assert guard.SCHEMA == "interface-computation-debt/4"
+    old = ast.parse(guard.git("show", baseline + ":tests/interface_computation_guard.py"))
+    current = ast.parse((guard.ROOT / "tests/interface_computation_guard.py").read_text(encoding="utf-8"))
+    policy_functions = {"proposal", "validate", "check"}
+    prior = {node.name: ast.dump(node) for node in old.body
+             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name not in policy_functions}
+    present = {node.name: ast.dump(node) for node in current.body
+               if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in prior}
+    assert present == prior
+    names = {target.id for node in old.body if isinstance(node, ast.Assign)
+             for target in node.targets if isinstance(target, ast.Name)} - {"SCHEMA"}
+    def assignments(tree):
+        return [ast.dump(node) for node in tree.body if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)]
+    assert assignments(current) == assignments(old)
+    def imports(tree):
+        return [ast.dump(node) for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+                and not (isinstance(node, ast.Import) and len(node.names) == 1
+                         and node.names[0].name == "os" and node.names[0].asname is None)]
+    assert imports(current) == imports(old)
+    for path in ("tests/interface_computation_lex.py", "tests/interface_computation_sources.py",
+                 ".github/scripts/interface_computation_ast.mjs"):
+        assert (guard.ROOT / path).read_bytes() == guard.git("show", baseline + ":" + path)
+
+
+@pytest.mark.parametrize("source_kind", ["pr-head", "pr-merge", "wrong-checkout", "malformed-base", "missing-base", "wrong-repository", "stacked-pr", "push-main", "push-branch", "manual"])
+def test_boundary_admission_binds_the_actual_hosted_base_and_checkout(tmp_path, monkeypatch, source_kind):
+    base, head, merge = "1" * 40, "2" * 40, "3" * 40
+    event = {"pull_request": {"base": {"sha": base, "ref": "main", "repo": {"full_name": "owner/repo"}},
+                              "head": {"sha": head}}}
+    event_name = "pull_request"
+    if source_kind == "malformed-base":
+        event["pull_request"]["base"]["sha"] = "not-a-commit"
+    if source_kind == "missing-base":
+        event["pull_request"].pop("base")
+    if source_kind == "wrong-repository":
+        event["pull_request"]["base"]["repo"]["full_name"] = "other/repo"
+    if source_kind == "stacked-pr":
+        event["pull_request"]["base"]["ref"] = "feature-base"
+    if source_kind in ("push-main", "push-branch"):
+        event_name, event = "push", {"ref": "refs/heads/main" if source_kind == "push-main" else "refs/heads/feature", "before": base, "after": head}
+    if source_kind == "manual":
+        event_name = "workflow_dispatch"
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_SHA", merge)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    calls = []
+    def git(*args, **_kwargs):
+        calls.append(args)
+        if args == ("merge-base", "HEAD", "origin/main"):
+            return (base + "\n").encode()
+        if args == ("rev-parse", "HEAD"):
+            return ((merge if source_kind in ("pr-merge", "wrong-checkout") else head) + "\n").encode()
+        if args[:2] == ("rev-list", "--parents"):
+            parents = [merge, base, head] if source_kind == "pr-merge" else [merge, head]
+            return (" ".join(parents) + "\n").encode()
+        return b""
+    monkeypatch.setattr(guard, "git", git)
+    if source_kind in ("wrong-checkout", "malformed-base", "missing-base", "wrong-repository"):
+        with pytest.raises(ValueError, match="Boundary"):
+            guard.admission_base()
+    else:
+        retained_only = source_kind in ("manual", "stacked-pr", "push-branch")
+        assert guard.admission_base() == (base, not retained_only)
+        if retained_only:
+            assert ("merge-base", "HEAD", "origin/main") in calls
+            sites = boundary_comparison_sites()
+            guard.validate(boundary_registry_of(sites), sites, [], base=boundary_registry_of(sites), allow_new_boundary=False)
+            with pytest.raises(ValueError, match="not a manual run"):
+                guard.validate(boundary_registry_of(sites), sites, [], base=guard.proposal([]), base_sites=[], allow_new_boundary=False)
+        else:
+            assert ("cat-file", "-e", base + "^{commit}") in calls
+
+
+def test_boundary_missing_hosted_event_context_retains_only_at_merge_base(monkeypatch):
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    calls = []
+    def git(*args):
+        calls.append(args)
+        return b"1111111111111111111111111111111111111111\n"
+    monkeypatch.setattr(guard, "git", git)
+    assert guard.admission_base() == ("1" * 40, False)
+    assert calls == [("merge-base", "HEAD", "origin/main")]
+    sites = boundary_comparison_sites()
+    guard.validate(boundary_registry_of(sites), sites, [], base=boundary_registry_of(sites), allow_new_boundary=False)
+    with pytest.raises(ValueError, match="not a manual run"):
+        guard.validate(boundary_registry_of(sites), sites, [], base=guard.proposal([]), base_sites=[], allow_new_boundary=False)
+
+
+@pytest.mark.parametrize("replay", ["linear", "merge"])
+def test_v3_register_cannot_be_reintroduced_after_the_reviewed_main_cutoff(tmp_path, monkeypatch, replay):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    legacy = {key: value for key, value in guard.proposal([]).items() if key != "boundary"}
+    legacy["schema"] = "interface-computation-debt/3"
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Reviewed last v3")
+    monkeypatch.setattr(guard, "LEGACY_V3_REGISTER_HEAD", git("rev-parse", "HEAD"))
+    git("branch", "old-policy")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Boundary policy")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [])
+    assert guard.check() == 0
+    if replay == "merge":
+        git("checkout", "old-policy")
+        (tmp_path / "basis.txt").write_text("Old branch continuation\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "Unchanged v3 on the other parent")
+        git("checkout", "main")
+        git("merge", "--no-ff", "--no-commit", "old-policy")
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Forbidden v3 reset")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to hide reset")
+    with pytest.raises(subprocess.CalledProcessError):
+        guard.check()
+
+
+def test_unchanged_v3_survives_docs_continuation_merge_and_base_reads(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    legacy = {key: value for key, value in guard.proposal([]).items() if key != "boundary"}
+    legacy["schema"] = "interface-computation-debt/3"
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Last reviewed v3")
+    cutoff = git("rev-parse", "HEAD")
+    monkeypatch.setattr(guard, "LEGACY_V3_REGISTER_HEAD", cutoff)
+    (tmp_path / "basis.txt").write_text("Docs continuation\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Carry unchanged v3")
+    base = git("rev-parse", "HEAD")
+    assert guard.policy_record(base, legacy)["schema"] == guard.SCHEMA
+    git("checkout", "-b", "other-docs", cutoff)
+    (tmp_path / "other.txt").write_text("Independent docs\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Other unchanged v3 parent")
+    git("checkout", "main")
+    git("merge", "--no-ff", "-m", "Merge docs while carrying unchanged v3", "other-docs")
+    assert guard.policy_record(git("rev-parse", "HEAD"), legacy)["schema"] == guard.SCHEMA
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Adopt boundary policy")
+    path = "shared/transport.py"
+    source = "def same_pin(actual, expected):\n return actual.request_id == expected.request_id\n"
+    helper = tmp_path / path
+    helper.parent.mkdir()
+    helper.write_text(source, encoding="utf-8")
+    sites = guard.python_sites(path, source)
+    target.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "New boundary after migration")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {} if revision else {path: source})
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    assert guard.check() == len(sites)
+
+
+@pytest.mark.parametrize("shape", ["new-file", "renamed-symbol", "copied-occurrence", "historic-renamed", "rewrite-in-place"])
+def test_boundary_refuses_each_debt_laundering_shape(shape):
+    path = "cisco_toolkit/writer.py"
+    source = "def answer(rows):\n return len(rows)\n"
+    debt = guard.python_sites(path, source)
+    assert len(debt) == 1 and debt[0]["rule"] == "aggregate"
+    base = guard.proposal(debt)
+    kwargs = {"base": base, "base_sites": debt}
+    remaining = []
+    if shape == "new-file":
+        moved = guard.python_sites("cisco_toolkit/report_metrics.py", source)
+    elif shape in ("renamed-symbol", "historic-renamed"):
+        moved = guard.python_sites(path, source.replace("answer", "answer_again"))
+        if shape == "historic-renamed":
+            kwargs.update(base=guard.proposal([]), base_sites=[],
+                          historic_debt={guard.identity(row) for row in debt})
+    elif shape == "copied-occurrence":
+        copied = guard.python_sites(path, "def answer(rows):\n return len(rows), len(rows)\n")
+        remaining, moved = [copied[0]], [copied[1]]
+        assert moved[0]["occurrence"] == 2
+    else:
+        moved = guard.python_sites(path, source.replace("len(rows)", "len(tuple(rows))"))
+        assert moved[0]["fingerprint"] != debt[0]["fingerprint"]
+    assert {guard.identity(row) for row in moved}.isdisjoint(map(guard.identity, debt))
+    record = guard.proposal(remaining)
+    record["boundary"] = boundary_registry_of(moved, "transport-bound")["boundary"]
+    match = "rewrite of a debt symbol" if shape == "rewrite-in-place" else "AST form moved/copied"
+    with pytest.raises(ValueError, match=match):
+        guard.validate(record, [*remaining, *moved], debt, **kwargs)
+
+
+@pytest.mark.parametrize("location", ["current", "base", "ancestor", "historic"])
+def test_boundary_ast_provenance_checks_all_debt_sources(location):
+    debt = guard.python_sites("cisco_toolkit/writer.py", "def answer(rows):\n return len(rows)\n")
+    moved = guard.python_sites("shared/transport.py", "def answer_again(rows):\n return len(rows)\n")
+    record = boundary_registry_of(moved)
+    kwargs = {"base": guard.proposal([]), "base_sites": []}
+    ancestors, current = [], moved
+    if location == "current":
+        record["sites"] = guard.proposal(debt)["sites"]
+        current = debt + moved
+    elif location == "base":
+        kwargs["base"] = guard.proposal(debt)
+    elif location == "ancestor":
+        ancestors = [guard.proposal(debt)]
+    else:
+        kwargs["historic_debt"] = {guard.identity(row) for row in debt}
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(record, current, debt, ancestors, **kwargs)
+
+
+@pytest.mark.parametrize("symbol", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("change", ["moved", "rewritten"])
+def test_context_free_lexical_rows_require_review_not_ast_provenance(symbol, change):
+    debt = {**sample_site(), "symbol": symbol, "rule": "raw-count"}
+    after = {**debt, **({"path": "shared/transport.py"} if change == "moved" else {"fingerprint": "b" * 64})}
+    guard.validate(boundary_registry_of([after]), [after], [debt],
+                   base=guard.proposal([debt]), base_sites=[debt],
+                   historic_debt={guard.identity(debt)})
+
+
+def test_removed_register_cannot_be_hidden_by_restoration(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Closed register")
+    git("rm", guard.REGISTRY)
+    git("commit", "-m", "Remove closed register")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to hide removal")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [])
+    with pytest.raises(ValueError, match="closed register was removed in history"):
+        guard.check()
+
+
+def test_manual_old_checkout_retains_boundary_against_merge_base_not_new_main(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    sites = boundary_comparison_sites()
+    target.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Reviewed retained boundary")
+    retained = git("rev-parse", "HEAD")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Main subsequently removes boundary")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    git("checkout", "--detach", retained)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: sites)
+    assert guard.admission_base() == (retained, False)
+    assert guard.check() == len(sites)
+    sites.extend(boundary_comparison_sites("shared/new_transport.py"))
+    target.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt a new admission outside a main event")
+    assert guard.admission_base() == (retained, False)
+    with pytest.raises(ValueError, match="not a manual run"):
+        guard.check()
+
+
+@pytest.mark.skipif(os.environ.get("GITHUB_ACTIONS") != "true", reason="Real hosted event binding executes on GitHub")
+def test_boundary_base_binds_the_real_hosted_event_without_any_admission():
+    base, allow_new = guard.admission_base()
+    assert len(base) == 40 and type(allow_new) is bool
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    expected = False
+    if event_name in {"pull_request", "push"}:
+        event = json.loads(guard.Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        expected = (event["pull_request"]["base"]["ref"] == "main" if event_name == "pull_request"
+                    else event["ref"] == "refs/heads/main")
+    assert allow_new is expected, "The actual event must execute its binding path, not silently retain only"
+    guard.git("merge-base", "--is-ancestor", base, "HEAD")
+
+
+# 6247487678 / 6247503468: policy classification, not new detector forms.
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("rule", ["returned-comparison", "aggregate", "verdict-symbol"])
+def test_forged_marker_boundary_rows_refuse_at_validate(marker, rule):
+    row = {**sample_site(), "symbol": marker, "rule": rule}
+    with pytest.raises(ValueError, match="Reserved lexical marker has a non-lexical boundary rule"):
+        guard.validate(boundary_registry_of([row]), [row], [], base=guard.proposal([]), base_sites=[])
+
+
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("container", ["object", "class"])
+def test_real_node_detector_emits_reserved_marker_for_string_literal_method(parser, marker, container):
+    before = "function same(a: Identity, b: Identity) { return a.sha256 === b.sha256; }"
+    method = json.dumps(marker) + "(a: Identity, b: Identity) { return a.sha256 === b.sha256; }"
+    after = "const helpers = {" + method + "};" if container == "object" else "class Helpers {" + method + "}"
+    rows = guard.node_reply(dict(sources=[dict(path="client/transport.ts", text=after)]))["sites"]
+    forged = [row for row in rows if row["rule"] == "returned-comparison"]
+    debt = [row for row in guard.node_reply(dict(sources=[dict(path="client/projection.ts", text=before)]))["sites"]
+            if row["rule"] == "returned-comparison"]
+    assert len(forged) == len(debt) == 1
+    assert forged[0]["symbol"] == marker
+    assert forged[0]["fingerprint"] == debt[0]["fingerprint"]
+    with pytest.raises(ValueError, match="Reserved lexical marker"):
+        guard.validate(boundary_registry_of(forged), forged, debt,
+                       base=guard.proposal(debt), base_sites=debt)
+    normal = [row for row in guard.node_reply(dict(sources=[dict(path="client/new_transport.ts", text=before)]))["sites"]
+              if row["rule"] == "returned-comparison"]
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(normal), normal, forged,
+                       base=guard.proposal(forged), base_sites=forged)
+
+
+@pytest.mark.parametrize("marker", ["<forbidden-pattern>", "<generated-payload>"])
+def test_forged_marker_debt_is_still_ast_debt(marker):
+    moved = boundary_comparison_sites()
+    debt = [{**moved[0], "path": "client/old.ts", "symbol": marker}]
+    assert not guard.lexical_identity(guard.identity(debt[0]))
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(moved), moved, debt,
+                       base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("symbol", ["value", "<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("category", ["transport-bound", "response-identity", "cancellation", "ui-state"])
+def test_dynamic_code_is_never_a_boundary_record(symbol, category):
+    rows = guard.python_sites("client/transport.py", "def value(text):\n return eval(text)\n")
+    assert len(rows) == 1 and rows[0]["rule"] == "dynamic-code"
+    rows[0]["symbol"] = symbol
+    with pytest.raises(ValueError, match="Dynamic code can never be a boundary record"):
+        guard.validate(boundary_registry_of(rows, category), rows, [], base=guard.proposal([]), base_sites=[])
+
+
+def test_closed_lexical_vocabulary_is_derived_from_both_producers(parser):
+    lexer = (guard.DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    payload = (guard.DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    # Independently parse the JS producer with the locked real parser, rather
+    # than trusting the policy's static extraction of its object-literal push.
+    script = r"""
+const {createRequire} = require('node:module');
+const {resolve} = require('node:path');
+const load = createRequire(resolve(process.cwd(), 'atlas-scope/package.json'));
+const ts = load('typescript');
+const file = ts.createSourceFile('producer.mjs', require('node:fs').readFileSync(0, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+if (file.parseDiagnostics.length) throw new Error('Producer must parse');
+const rows = [];
+function visit(node) {
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'push' && node.expression.expression.getText(file) === 'generatedOpaqueSites') {
+    if (node.arguments.length !== 1 || !ts.isObjectLiteralExpression(node.arguments[0])) throw new Error('Unclosed producer call');
+    const field = name => {
+      const property = node.arguments[0].properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(file) === name);
+      if (!property || !ts.isStringLiteral(property.initializer)) throw new Error('Rule and marker must be literal');
+      return property.initializer.text;
+    };
+    rows.push([field('symbol'), field('rule')]);
+  }
+  ts.forEachChild(node, visit);
+}
+visit(file);
+process.stdout.write(JSON.stringify(rows));
+"""
+    result = subprocess.run([shutil.which("node"), "-e", script], input=payload, cwd=guard.DETECTOR_ROOT,
+                            text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+    payload_rows = json.loads(result.stdout)
+    assert payload_rows and all(marker in guard.LEXICAL_MARKERS for marker, _rule in payload_rows)
+    tree = ast.parse(lexer)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "lexical_sites")
+    emitted = {node.args[2].value for node in ast.walk(function) if isinstance(node, ast.Call)
+               and isinstance(node.func, ast.Name) and node.func.id == "emit"}
+    assert guard.LEXICAL_PRODUCER_RULES == emitted | {rule for _marker, rule in payload_rows}
+    assert guard.LEXICAL_PRODUCER_RULES == {"raw-count", "raw-threshold", "filter-count", "graph-worklist", "dynamic-code", "opaque-generated-source"}
+
+
+@pytest.mark.parametrize("producer", ["lexer", "payload"])
+def test_unresolvable_lexical_rule_producer_fails_closed(producer):
+    lexer = (guard.DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    payload = (guard.DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    if producer == "lexer":
+        lexer = lexer.replace('emit(index, index + 2, "dynamic-code")', 'emit(index, index + 2, computed_rule)')
+    else:
+        payload = payload.replace("rule: 'opaque-generated-source'", "rule: computed_rule")
+    with pytest.raises(ValueError, match="Unresolvable .* rule producer"):
+        guard.lexical_rule_vocabulary(lexer, payload)
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("def compute_transport():\n pass\n", "analysis-symbol"),
+    ("safe = None\n", "verdict-symbol"),
+    ("def value():\n return True\n", "verdict-return"),
+    ("def value():\n return False\n", "verdict-return"),
+    ("def value():\n return 'approved'\n", "verdict-return"),
+])
+def test_name_only_and_bare_literal_python_rows_are_not_global_form_debt(source, rule):
+    debt = guard.python_sites("client/before.py", source)
+    after = guard.python_sites("client/after.py", source)
+    assert len(debt) == len(after) == 1 and debt[0]["rule"] == rule
+    guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.py": source})
+    with pytest.raises(ValueError, match="Debt-to-boundary moves/reclassification"):
+        guard.validate(boundary_registry_of(debt), debt, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("source,rule", [
+    ("function computeTransport() {}", "analysis-symbol"),
+    ("const safe = null;", "verdict-symbol"),
+    ("function value() { return true; }", "verdict-return"),
+    ("function value() { return false; }", "verdict-return"),
+    ("function value() { return 'APPROVED'; }", "verdict-return"),
+])
+def test_name_only_and_bare_literal_node_rows_are_not_global_form_debt(parser, source, rule):
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=source)]))["sites"]
+    after = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=source)]))["sites"]
+    assert len(debt) == len(after) == 1 and debt[0]["rule"] == rule
+    guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.ts": source})
+    with pytest.raises(ValueError, match="Debt-to-boundary moves/reclassification"):
+        guard.validate(boundary_registry_of(debt), debt, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+@pytest.mark.parametrize("before,after,rule", [
+    ("function computeTransport() {}", 'const api = {"computeTransport"() {}};', "analysis-symbol"),
+    ("function safe() {}", 'const api = {"safe"() {}};', "verdict-symbol"),
+    ("function value() { return true; }", "function value() { return false; }", "verdict-return"),
+])
+def test_node_name_and_literal_exceptions_do_not_remove_same_symbol_checks(parser, before, after, rule):
+    path = "client/transport.ts"
+    debt = guard.node_reply(dict(sources=[dict(path=path, text=before)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path=path, text=after)]))["sites"]
+    assert len(debt) == len(current) == 1 and debt[0]["rule"] == current[0]["rule"] == rule
+    assert debt[0]["symbol"] == current[0]["symbol"]
+    assert debt[0]["fingerprint"] != current[0]["fingerprint"]
+    with pytest.raises(ValueError, match="rewrite of a debt symbol"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                       current_sources={path: after})
+
+
+def test_python_literal_exception_does_not_remove_same_symbol_check():
+    path = "client/transport.py"
+    debt = guard.python_sites(path, "def value():\n return True\n")
+    after = guard.python_sites(path, "def value():\n return False\n")
+    with pytest.raises(ValueError, match="rewrite of a debt symbol"):
+        guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_moved_function_with_name_and_literal_rows_still_refuses_substantive_debt():
+    source = "def compute_transport(rows):\n if rows:\n  return True\n return len(rows)\n"
+    debt = guard.python_sites("client/before.py", source)
+    after = guard.python_sites("client/after.py", source)
+    assert {row["rule"] for row in after} == {"analysis-symbol", "verdict-return", "aggregate"}
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(after), after, debt, base=guard.proposal(debt), base_sites=debt,
+                       current_sources={"client/after.py": source})
+
+
+def test_literal_preview_cannot_forge_a_substantive_python_verdict_return():
+    source = "def value(allowed, ready):\n return allowed and ready\n"
+    debt = guard.python_sites("client/before.py", source)
+    current = guard.python_sites("client/after.py", source)
+    assert len(current) == 1 and current[0]["rule"] == "verdict-return"
+    current[0]["expression"] = "True"
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_literal_preview_cannot_forge_a_substantive_node_verdict_return(parser):
+    source = "function value(allowed, ready) { return allowed && ready; }"
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=source)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=source)]))["sites"]
+    assert len(current) == 1 and current[0]["rule"] == "verdict-return"
+    current[0]["expression"] = "true"
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt)
+
+
+def test_literal_proof_uses_full_python_source_not_the_truncated_preview():
+    before = "def value():\n return 'approved'\n"
+    after = "def value():\n return '" + "\\\n" * 130 + "approved'\n"
+    debt = guard.python_sites("client/before.py", before)
+    current = guard.python_sites("client/after.py", after)
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.py": after})
+
+
+def test_literal_proof_uses_full_node_source_not_the_truncated_preview(parser):
+    before = "function value() { return 'approved'; }"
+    after = "function value() { return '" + "\\\n" * 130 + "approved'; }"
+    debt = guard.node_reply(dict(sources=[dict(path="client/before.ts", text=before)]))["sites"]
+    current = guard.node_reply(dict(sources=[dict(path="client/after.ts", text=after)]))["sites"]
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={"client/after.ts": after})
+
+
+@pytest.mark.parametrize("shape", ["exact", "moved"])
+def test_check_preserves_v2_only_debt_when_it_is_readmitted_as_boundary(tmp_path, monkeypatch, shape):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    source = "def answer(rows):\n return len(rows)\n"
+    debt = guard.python_sites("client/writer.py", source)
+    assert len(debt) == 1 and debt[0]["rule"] == "aggregate"
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    legacy = {key: value for key, value in guard.proposal(debt).items() if key != "boundary"}
+    legacy["schema"] = "interface-computation-debt/2"
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Historical v2-only debt")
+    monkeypatch.setattr(guard, "LEGACY_V2_REGISTER_HEAD", git("rev-parse", "HEAD"))
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Remove debt before the active boundary policy")
+    base = git("rev-parse", "HEAD")
+    path = debt[0]["path"] if shape == "exact" else "client/transport.py"
+    after = guard.python_sites(path, source)
+    target.write_text(json.dumps(boundary_registry_of(after)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to readmit old v2 debt as boundary")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {} if revision else {path: source})
+    monkeypatch.setattr(guard, "scan", lambda sources: after if sources else [])
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    with pytest.raises(ValueError, match="Debt-to-boundary"):
+        guard.check()
+
+
+@pytest.mark.parametrize("container", ["script", "event", "srcdoc"])
+def test_literal_proof_reads_full_browser_entry_fragments(parser, container):
+    before = "function value() { return 'approved'; }"
+    expression = "'" + "\\\n" * 130 + "approved'"
+    if container == "script":
+        source = "<script>function value() { return " + expression + "; }</script>"
+    else:
+        source = '<button onclick="return ' + expression + ';">x</button>'
+        if container == "srcdoc":
+            source = '<iframe srcdoc="' + source.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;') + '"></iframe>'
+    debt = [row for row in guard.node_reply(dict(sources=[dict(path="client/before.ts", text=before)]))["sites"]
+            if row["rule"] == "verdict-return"]
+    path = "client/entry.html"
+    current = [row for row in guard.node_reply(dict(sources=[dict(path=path, text=source)]))["sites"]
+               if row["rule"] == "verdict-return"]
+    assert len(current) == len(debt) == 1
+    assert current[0]["fingerprint"] == debt[0]["fingerprint"]
+    assert len(current[0]["expression"]) == 240
+    guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
+                   current_sources={path: source})
