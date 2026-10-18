@@ -641,7 +641,8 @@ def test_a_lower_bound_below_the_cut_is_disclosed_because_it_could_rank_among_th
 def test_a_stored_executive_brief_keystone_list_is_never_read(client, sample, mode):
     """No engine producer writes executive_brief.keystones (compute_executive_brief takes no failure-impact input),
     so a stored one is uploaded or hand-made. Read first, it bypassed every projection hold on the dashboard, the
-    /graph badge and the cutover plan's wave tags. Each surface now ranks only the projection, list or not."""
+    /graph badge and the cutover plan's wave tags. Summary and cutover rank only the projection;
+    the topology owner leaves its unowned badge explicitly not classified."""
     if mode == "held":
         snap, _why = _held_core1(sample, "no_run_config")       # the engine withholds core1's row
     else:
@@ -661,12 +662,15 @@ def test_a_stored_executive_brief_keystone_list_is_never_read(client, sample, mo
     assert client.get(f"/api/snapshots/{sid}").json()["summary"]["keystones"] == want
     nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
     tags = {tag for wave in cutover.build_plan(copy.deepcopy(snap))["waves"] for tag in wave["keystones"]}
-    assert nodes["podacc1"]["keystone"] is False and "podacc1" not in tags
+    # The topology owner publishes no keystone classification. Unknown is not
+    # False; the independent summary/cutover ranking still has its positive control.
+    assert nodes["podacc1"]["keystone"] is None and "podacc1" not in tags
+    assert nodes["core1"]["keystone"] is None
     if mode == "published":
-        # the control: the published positive rows still surface, from the projection
-        assert want[0]["host"] == "core1" and nodes["core1"]["keystone"] is True and "core1" in tags
+        # Published positive rows still surface in both ranking consumers.
+        assert want[0]["host"] == "core1" and "core1" in tags
     else:
-        assert nodes["core1"]["keystone"] is False and "core1" not in tags
+        assert "core1" not in tags
         assert "core1" not in {k["host"] for k in s["keystones"]}
     if mode == "failed":
         assert len(want) == 1 and want[0]["severity"] == summary.IMPACT_NOT_ASSESSED, want

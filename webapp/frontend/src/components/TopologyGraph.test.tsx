@@ -154,6 +154,21 @@ describe("Tools failures use source-bound engine pages", () => {
     expect(within(heading.closest("section")!).getAllByText("0").length).toBeGreaterThan(0);
     expect(screen.queryByText(/REFERENCE ANCHOR SELECTED/)).toBeNull();
   });
+  it.each([
+    { value: null, text: "keystone not classified" },
+    { value: undefined, text: "keystone not classified" },
+    { value: false, text: "not a keystone" },
+    { value: true, text: "keystone" },
+  ])("renders the explicit keystone state $value", async ({ value, text }) => {
+    ownerMock(topologyFixture(), deviceWith(published(0)));
+    vi.mocked(api.graph).mockResolvedValue({
+      nodes: [{ ...nodeOf("synthetic-edge-a", 0), keystone: value }], edges: [],
+      engine: topologyFixture().engine,
+    } as never);
+    render(<TopologyGraph snapId={1} />);
+    await selectDevice();
+    expect((await screen.findByTestId("topology-keystone-classification")).textContent).toBe(text);
+  });
   it("keeps a held value and its owner reason visible", async () => {
     ownerMock(topologyFixture(), deviceWith({ ...withheld(), reason: "No captured failure evidence" }));
     render(<TopologyGraph snapId={1} />); await selectDevice();

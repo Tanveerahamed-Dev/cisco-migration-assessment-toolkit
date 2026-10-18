@@ -2892,7 +2892,11 @@ def project_summary(snap: Any) -> Dict[str, Any]:
     legacy = {"n_switches": value(facts["n_devices"]["fact"]),
               "avg_health": value(facts["avg_health"]["fact"]),
               "n_critical": value(facts["n_critical"]["fact"]),
-              "bands": buckets(overview["fleet_health"]["bands"], "band"),
+              # Keep the legacy API's best-to-worst presentation order without
+              # re-counting or changing any admitted band value/state.
+              "bands": {band: value(next(row["n"] for row in overview["fleet_health"]["bands"]
+                                         if row["band"] == band))
+                        for band in (*reversed(HEALTH_BANDS), HEALTH_BAND_NOT_SCORED)},
               "readiness": buckets(readiness),
               "punchlist": {"total": value(findings["total"]),
                             "by_severity": buckets(severities),

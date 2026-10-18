@@ -4,6 +4,7 @@ import { equalJson, loadProjection, sameIdentity } from "../projection";
 import { EvidenceProvider, ImpactFactView } from "../pages/core/ProjectionEvidence";
 import { ProjectionList } from "../pages/core/ProjectionList";
 import { SummaryValue } from "./SummaryFacts";
+import { keystoneLabel } from "./topologyLabels";
 import { shortName } from "./CableMap";
 import { ErrorBox, Loading, SkelLines, useAsync } from "./ui";
 
@@ -287,7 +288,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       </div>
       <div className="dim">Band: <b style={{ color: "var(--text)" }}>{selNode.band || "—"}</b> · score {selNode.score ?? "—"}/100</div>
       <div className="dim">Role: {selNode.role || "—"}</div>
-      <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
+      <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"} · <span data-testid="topology-keystone-classification">{keystoneLabel(selNode.keystone)}</span></div>
       {selNode.health && <SummaryValue fact={selNode.health.band} />}
       <div data-testid="topology-failure-impact" style={{ marginTop: 8, maxHeight: "60vh", overflow: "auto" }}>
         <DeviceFailure key={`${snapId}:${selNode.id}`} snapId={snapId} host={selNode.id} engine={g.data?.engine} />
@@ -426,6 +427,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
                 <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer", opacity: faded ? 0.25 : 1 }}
                   onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)}
                   onClick={() => setSel((s) => (s === n.id ? null : n.id))}>
+                  <title>{keystoneLabel(n.keystone)}</title>
                   <rect x={-NW / 2} y={-NH / 2} rx={9} width={NW} height={NH}
                     fill={na ? "var(--surface)" : `color-mix(in srgb, var(--surface) 86%, ${bandColor(n.band)})`}
                     stroke={sel === n.id ? "var(--accent)" : na ? "var(--text-faint)" : "var(--border-strong)"}

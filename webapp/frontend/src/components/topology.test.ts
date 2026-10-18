@@ -160,10 +160,21 @@ describe("topoNodeLabel — the 3D tooltip is XSS-safe", () => {
     expect(label).toContain("&lt;img");            // the payload is rendered as inert escaped text instead
   });
 
-  it("also escapes a malformed band, and leaves a normal label byte-for-byte intact", () => {
+  it("also escapes a malformed band and explicitly labels an unclassified node", () => {
     expect(topoNodeLabel({ id: "n", band: "<b>x</b>" })).not.toContain("<b>");
-    expect(topoNodeLabel({ id: "SW-CORE-1", band: "Good", score: 80 })).toBe("SW-CORE-1 · Good 80");
+    expect(topoNodeLabel({ id: "SW-CORE-1", band: "Good", score: 80 }))
+      .toBe("SW-CORE-1 · Good 80 · keystone not classified");
     expect(topoNodeLabel({ id: "R1", band: "Critical", score: 12, keystone: true }))
       .toBe("R1 · Critical 12 · keystone");
+  });
+
+  it.each([
+    { value: null, text: "keystone not classified" },
+    { value: undefined, text: "keystone not classified" },
+    { value: false, text: "not a keystone" },
+    { value: true, text: "keystone" },
+  ])("distinguishes the engine's keystone state $value", ({ value, text }) => {
+    expect(topoNodeLabel({ id: "R1", band: "Good", score: 80, keystone: value }))
+      .toBe(`R1 · Good 80 · ${text}`);
   });
 });

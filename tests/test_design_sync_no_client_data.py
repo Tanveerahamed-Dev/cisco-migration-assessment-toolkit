@@ -81,6 +81,11 @@ _BARREL_HELPER_EXPORTS = frozenset(
 # be ScopeEntryLink, any other entry must name one of these qualifiers through aria-describedby, and programmatic
 # navigation to Scope is refused. Promoting any of them to a card would need its own hosted-captured baselines and a
 # new visual contract.
+# SummaryValue, SummaryBands and SummaryRows are internal assesshub_summary/1 adapters,
+# like ImpactValue: they preserve the server's complete fact envelopes and qualifiers.
+# A standalone Design card would create a second, fictional summary/evidence contract.
+# They remain inside their consuming app surfaces; promoting them requires deliberate
+# public props, provider fixtures, maps/docs/previews and hosted visual baselines.
 _DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
     "ComparisonDecision",
     "ImpactLowerBoundTag",
@@ -88,6 +93,9 @@ _DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
     "ObservedL2TrialInput",
     "ScopeEntryLink",
     "ScopePreviewTag",
+    "SummaryBands",
+    "SummaryRows",
+    "SummaryValue",
     "Topology3D",
     "WithScopePreview",
 })

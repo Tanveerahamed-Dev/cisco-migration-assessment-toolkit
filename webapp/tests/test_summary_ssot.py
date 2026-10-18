@@ -68,7 +68,9 @@ def test_missing_empty_and_malformed_are_never_recounted_as_clean(snap):
 
 
 def test_finding_minimum_is_explicit_and_withheld_zero_stays_null(stored):
-    stored["security"] = None
+    # A category-only source may qualify positive severity buckets. Removing a
+    # punch-list input such as security instead withholds the whole list.
+    stored.pop("multicast_intelligence", None)
     # Both severities are present, so their positive minimum can be added without
     # treating a withheld bucket as zero. The ordinary zero buckets remain held.
     stored["punchlist"] = [{"severity": severity, "category": "Security", "devices": []}
@@ -80,6 +82,20 @@ def test_finding_minimum_is_explicit_and_withheld_zero_stays_null(stored):
     rows = {row["k"]: row["n"] for row in cached["assessment"]["punchlist"]["by_severity"]}
     assert rows["Critical"]["minimum"] and rows["High"]["minimum"]
     assert rows["Low"]["state"] != "published" and cached["punchlist"]["by_severity"]["Low"] is None
+
+
+def test_missing_punchlist_input_withholds_even_positive_findings(stored):
+    stored["security"] = None
+    stored["punchlist"] = [{"severity": severity, "category": "Security", "devices": []}
+                           for severity in ("Critical", "High")]
+    cached = summary.summarize(stored)
+    owner = uip.project_findings(stored)
+    assert owner["rows"]["state"] == "not_collected"
+    assert cached["assessment"]["punchlist"]["crit_high"]["state"] != "published"
+    assert cached["assessment"]["punchlist"]["crit_high"]["value"] is None
+    assert cached["punchlist"]["crit_high"] is None
+    assert [plain(row["n"]) for row in cached["assessment"]["punchlist"]["by_severity"]] == [
+        row["n"] for row in owner["facets"]["severity"]]
 
 
 def test_readiness_is_counted_only_after_the_exact_owner_join(stored):
