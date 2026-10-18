@@ -17,6 +17,12 @@ POLICY = "b" * 64
 INSTANCE = "c" * 32
 
 
+def test_peer_diagnostics_do_not_include_the_logon_sid_or_process_identity():
+    assert PARENT.logon_sid not in repr(PARENT)
+    assert str(PARENT.creation_time) not in repr(PARENT)
+    assert str(PARENT.pid) not in repr(PARENT)
+
+
 def endpoint(role):
     return PresentationEndpoint(role=role, capability=KEY, session=SESSION, parent=PARENT, child=CHILD,
                                 origin=NativeOrigin.from_bound_url("http://127.0.0.1:8479/"),

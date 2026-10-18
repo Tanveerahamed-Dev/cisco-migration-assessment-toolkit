@@ -66,8 +66,8 @@ must carry `@pytest.mark.unshared`, without skipping or relaxing them.
 | 3. Pre-navigation handler/settings order and immutable-origin policy | URI/CSP source controls authored; actual event adapter and frozen integration NOT VERIFIED. |
 | 4. Sole profile owner, real browser exit, empty-only identity-bound cleanup | NOT IMPLEMENTED; no cleanup path introduced. |
 | 5. Verified production Evergreen and presentation-local unelevated eligibility | NOT IMPLEMENTED; native release admission stays closed. |
-| 6. GUI-only state machine and private identity-bound IPC | Pure transitions/codec/stateful endpoint authored; Windows handles, job and pipe transport NOT IMPLEMENTED. |
-| 7. Protected staging/final targets, same-volume publication and incomplete latch | Pure admission/revalidation model includes both paths, required inventory and attempt-bound GUI slot. Actual handle owner, atomic slot claim, SDK writer/publication and persisted incomplete latch NOT IMPLEMENTED. |
+| 6. GUI-only state machine and private identity-bound IPC | Pure transitions/codec/stateful endpoint authored; Windows GUI/process handles, job and pipe transport NOT IMPLEMENTED. |
+| 7. Protected staging/final targets, same-volume publication and incomplete latch | Admission/revalidation model includes both paths, required inventory and attempt-bound GUI slot. Existing-directory Windows identity reader authored but NOT VERIFIED on Windows. Protected-root inventory, directory creation/private ACL, atomic slot claim, SDK writer/publication and persisted incomplete latch NOT IMPLEMENTED. |
 | 8. Genuine same-WebView UI/download proof and strict consumer | NOT IMPLEMENTED; no NATIVE_PASS, FALLBACK_PASS or frozen result claimed. |
 | 9. Operator browser escape, size/process/RSS measurement, Windows 10/11 behavior | Existing browser retained; new UI/operator integration and measurements NOT VERIFIED. |
 
@@ -211,3 +211,58 @@ CI/portable workflows, shard jobs/pins, dependency/toolchain locks and original
 assertions/budgets/timeouts receive no authored change. Fresh committed-head
 privacy/every-parent/imported-history scans and hosted checks remain required;
 earlier-head source/CI evidence does not qualify this merge or native rendering.
+
+## Existing-directory Windows identity slice
+
+`portable/native_windows_identity.py` reads only existing directories. It opens
+every ancestor without delete sharing, refuses reparse/case-sensitive/unsupported
+media and holds normalized volume-GUID paths, the FileIdInfo 64-bit volume serial
+and 128-bit file ID. It rechecks the complete physical parent chain and identities.
+The 64-bit serial is not equated to the separate DWORD volume-information serial.
+Actual native AMD64 is required through IsWow64Process2; a 64-bit pointer alone
+does not establish architecture. Missing capability refuses admission.
+
+Known Folder lookup requests the current user's LocalAppData with DONT_VERIFY
+and no CREATE flag, avoiding Shell's existence probe of a redirected network
+location before local namespace refusal. Environment LOCALAPPDATA/TEMP cannot
+substitute a path. Its result is still
+subject to the same held-directory admission. It creates no profile, staging
+directory or download and is not called by the held browser path. It establishes
+no DACL/ownership, complete protected-root inventory, runtime trust, GUI group,
+same-volume publication or native readiness.
+
+Full paths and components count strict UTF-16 WCHAR units, not Unicode code
+points; unpaired surrogates refuse. The observed NTFS maximum must be 255 WCHARs.
+Download-plan revalidation now also requires known matching 64-bit volume serials.
+Snapshots/plans and peer diagnostics redact private paths/IDs/SIDs; this does not
+permit generic field serialization into public evidence.
+
+Review identified an original failed-close reporting gap, a physical-chain
+substitution gap, diagnostic repr disclosure, exception-annotation masking and
+code-point/WCHAR ambiguity and a default Known Folder existence probe before
+namespace admission. The source corrections retain failed handles for
+retry, latch retirement against readmission, check each held parent-child pair,
+redact diagnostic representations and preserve an original BaseException even
+if it refuses diagnostic attributes. Unknown cleanup remains unconfirmed; no
+profile/download deletion is introduced.
+
+Authored synthetic controls cover these faults, surrogate/length boundaries and
+Known Folder allocation disposal on success/refusal. Two real hosted-Windows
+tests require existing NTFS handle identities, deletion/rename exclusion and the
+OS-selected Known Folder. Missing APIs fail those Windows cases rather than skip.
+Non-Windows cases assert unsupported-platform refusal and do not qualify Windows.
+These tests have no wall-clock deadline/live UI capture; none was run locally.
+Actual short-name/reparse/DOS-remapping races, real cleanup-failure injection,
+private ACLs and native/frozen proof remain NOT VERIFIED.
+
+Primary API contracts: [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+[FileIdInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info),
+[volume information](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew),
+[Known Folder](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath)
+and [actual architecture](https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2).
+
+The supervisor's current stop boundary is this coherent source slice after
+exact-head 14/14 and an itemized proof-status comment, then independent review.
+It is not P1-E native completion. PR #693 stays draft; the licence BLOCK and pins
+remain unchanged. Terminal hosted failures must be inspected and genuine source
+failures corrected without changing gates, budgets, timeouts or assertions.

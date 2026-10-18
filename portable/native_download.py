@@ -21,15 +21,23 @@ _RESERVED = frozenset({"con", "prn", "aux", "nul", "conin$", "conout$",
                        *(f"lpt{digit}" for digit in "123456789¹²³")})
 
 
+def _utf16_units(value):
+    try:
+        return len(value.encode("utf-16-le", errors="strict")) // 2
+    except UnicodeError as error:
+        raise NativeRefusal("download_component") from error
+
+
 def _component(value):
     if (type(value) is not str or not value or value in {".", ".."} or len(value) > 255
+            or _utf16_units(value) > 255
             or value[-1] in " ." or any(ord(char) < 32 or ord(char) == 127 for char in value)
             or any(char in value for char in '\\/:*?"<>|')
             or value.split(".", 1)[0].rstrip(" ").casefold() in _RESERVED):
         raise NativeRefusal("download_component")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class DirectorySnapshot:
     """Trusted OS observation, not independently verified by this pure model.
 
@@ -44,22 +52,31 @@ class DirectorySnapshot:
     components: tuple[str, ...]
     filesystem: str
     writable: bool
+    volume_serial: int | None = None
+
+    def __repr__(self):
+        return "DirectorySnapshot(<private>)"
 
     def __post_init__(self):
         if (type(self.volume) is not str or _VOLUME.fullmatch(self.volume) is None
                 or type(self.file_id) is not bytes or len(self.file_id) != 16
                 or type(self.components) is not tuple or len(self.components) > 256
-                or type(self.filesystem) is not str or type(self.writable) is not bool):
+                or type(self.filesystem) is not str or type(self.writable) is not bool
+                or self.volume_serial is not None and (
+                    type(self.volume_serial) is not int or not 0 <= self.volume_serial < 2**64)):
             raise NativeRefusal("download_directory_identity")
         for component in self.components:
             _component(component)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class ProtectedRoot:
     kind: str
     volume: str
     components: tuple[str, ...]
+
+    def __repr__(self):
+        return "ProtectedRoot(<private>)"
 
     def __post_init__(self):
         if (type(self.kind) is not str or self.kind not in ROOT_KINDS
@@ -95,7 +112,7 @@ def _staging_disjoint(directory, roots):
             raise NativeRefusal("download_protected_destination")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class DownloadPlan:
     staging_parent: DirectorySnapshot
     final_parent: DirectorySnapshot
@@ -103,6 +120,9 @@ class DownloadPlan:
     expected_bytes: int
     expected_sha256: str | None
     attempt_id: str
+
+    def __repr__(self):
+        return "DownloadPlan(<private>)"
 
     def revalidate(self, *, staging_parent, final_parent, roots, target_exists, operation_supported,
                    staging_inventory, slot):
@@ -140,7 +160,9 @@ def _path_plan(*, staging_parent, final_parent, final_name, expected_bytes,
         raise NativeRefusal("download_collision_or_unknown")
     if type(operation_supported) is not bool or not operation_supported:
         raise NativeRefusal("download_publication_unsupported")
-    if (staging_parent.volume != final_parent.volume or staging_parent.filesystem != "NTFS"
+    if (staging_parent.volume != final_parent.volume
+            or staging_parent.volume_serial is None or final_parent.volume_serial is None
+            or staging_parent.volume_serial != final_parent.volume_serial or staging_parent.filesystem != "NTFS"
             or final_parent.filesystem != "NTFS" or not staging_parent.writable or not final_parent.writable):
         raise NativeRefusal("download_volume_or_media")
     # The whole planned staging directory and final parent must be outside every

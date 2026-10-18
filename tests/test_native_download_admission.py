@@ -13,8 +13,8 @@ from portable.native_origin import NativeRefusal
 
 VOLUME = "11111111-2222-3333-4444-555555555555"
 OTHER_VOLUME = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-STAGE = DirectorySnapshot(VOLUME, b"s" * 16, ("User", "NativeDownloads"), "NTFS", True)
-TARGET = DirectorySnapshot(VOLUME, b"t" * 16, ("User", "Reports"), "NTFS", True)
+STAGE = DirectorySnapshot(VOLUME, b"s" * 16, ("User", "NativeDownloads"), "NTFS", True, 123)
+TARGET = DirectorySnapshot(VOLUME, b"t" * 16, ("User", "Reports"), "NTFS", True, 123)
 ROOTS = tuple(ProtectedRoot(kind, VOLUME, ("Protected", kind)) for kind in sorted(ROOT_KINDS))
 ATTEMPT = "a" * 32
 OWNED = {"staging_inventory": StagingInventory(True, 0), "slot": DownloadSlot(ATTEMPT)}
@@ -40,6 +40,14 @@ def test_admitted_plan_retains_both_physical_identities_and_requires_fresh_reval
                         target_exists=True, operation_supported=True, **OWNED)
 
 
+def test_diagnostics_do_not_expose_physical_directories_selected_names_or_volume_ids():
+    plan = admit_download(**arguments())
+    for item in (plan, STAGE, TARGET, *ROOTS):
+        text = repr(item)
+        for private in (VOLUME, "NativeDownloads", "Reports", "Protected", "synthetic-report.json"):
+            assert private not in text
+
+
 @pytest.mark.parametrize("kind", sorted(ROOT_KINDS))
 @pytest.mark.parametrize("side", ["staging_parent", "final_parent"])
 @pytest.mark.parametrize("spelling", ["same", "case-alias", "resolved-short-name-alias"])
@@ -63,6 +71,8 @@ def test_c_staging_to_e_volume_is_refused_by_pure_admission_without_any_writer()
     {"target_exists": True}, {"target_exists": None}, {"operation_supported": False},
     {"final_parent": replace(TARGET, filesystem="FAT32")},
     {"staging_parent": replace(STAGE, writable=False)}, {"final_parent": replace(TARGET, writable=False)},
+    {"staging_parent": replace(STAGE, volume_serial=None)},
+    {"final_parent": replace(TARGET, volume_serial=456)},
     {"expected_bytes": None}, {"expected_bytes": True}, {"expected_bytes": -1},
     {"expected_bytes": MAX_NATIVE_DOWNLOAD_BYTES + 1}, {"expected_sha256": "unknown"},
     {"roots": ROOTS[:-1]}, {"roots": ()},
@@ -79,6 +89,14 @@ def test_unsupported_unknown_or_unbounded_admission_selects_refusal(change):
 def test_final_name_cannot_introduce_an_unsupported_windows_namespace(name):
     with pytest.raises(NativeRefusal, match="download_component"):
         admit_download(**arguments(final_name=name))
+
+
+def test_component_limit_counts_utf16_units_and_refuses_unpaired_surrogates():
+    name = "\U0001f642" * 127 + "x"  # 255 WCHARs, not 128.
+    assert admit_download(**arguments(final_name=name)).final_name == name
+    for invalid in ("\U0001f642" * 128, "bad\ud800name", "bad\udfffname"):
+        with pytest.raises(NativeRefusal, match="download_component"):
+            admit_download(**arguments(final_name=invalid))
 
 
 def test_new_protected_root_on_revalidation_blocks_publication_even_if_file_ids_are_same():

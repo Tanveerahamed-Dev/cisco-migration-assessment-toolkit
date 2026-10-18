@@ -26,12 +26,15 @@ _EMPTY = {"HELLO", "HELLO_ACK", "SHOW", "RETIRE_GUI", "CLOSE_REQUEST", "BROWSER_
 FAULT_REASONS = frozenset({"startup", "policy", "navigation", "process", "ipc", "profile", "download"})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class PeerIdentity:
     pid: int
     creation_time: int
     logon_sid: str
     integrity: int
+
+    def __repr__(self):
+        return "PeerIdentity(<private>)"
 
     def __post_init__(self):
         if (type(self.pid) is not int or self.pid <= 0 or type(self.creation_time) is not int
