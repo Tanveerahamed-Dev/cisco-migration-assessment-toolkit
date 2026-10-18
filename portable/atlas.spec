@@ -61,7 +61,9 @@ a = Analysis(  # noqa: F821
         str(ROOT / "portable" / "rthook_stdio_utf8.py"),
         str(ROOT / "portable" / "rthook_network_boundary.py"),
     ],
-    excludes=["tkinter"],
+    # release_contract also contains build-host helpers. Its frozen verifier never
+    # calls them; do not pull the builder/PE editing toolchain into the field app.
+    excludes=["tkinter", "portable.build_atlas", "portable.windows_version_info", "PyInstaller"],
 )
 # Upstream hooks can also collect distribution metadata; keep installer provenance out.
 a.datas = reviewed_validator_metadata_toc(a.datas)
