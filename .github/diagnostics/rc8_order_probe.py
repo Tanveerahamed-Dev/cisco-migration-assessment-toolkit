@@ -145,10 +145,14 @@ def main() -> int:
     parser.add_argument("--cut-before", default="")
     parser.add_argument("--test-module", choices=("control", *DIRECT_MODULES), default="control")
     parser.add_argument("--collection-case", choices=tuple(COLLECTION_CASES), default="pr-full")
+    parser.add_argument("--heap-plugin", choices=("rc8_heap_roots", "rc8_target_roots"), default="rc8_heap_roots")
     parser.add_argument("--profile", choices=("none", "native"), default="none")
     parser.add_argument("--profiler-binary", type=Path)
     parser.add_argument("--profiler-receipt", type=Path)
     args = parser.parse_args()
+    if args.heap_plugin == "rc8_target_roots" and (
+            args.mode != "heap" or args.collection_case != "pr-full" or args.expected_tree != _PR_TREE):
+        raise ValueError("target-root observation requires the fixed original full suite and exact tree")
     if args.profile != "none" and (args.mode != "collection-cut" or args.collection_case != "pr-full"):
         raise ValueError("external sampling is confined to the fixed no-exclusion PR collection control")
     subject, output = args.subject.resolve(), args.output.resolve()
@@ -181,7 +185,9 @@ def main() -> int:
             env.pop("ATLAS_ORDER_SELECTION", None)
             env.pop("PROFILE_MODE", None)  # Parent-only matrix selector, never a child input.
             env.pop("HEAP_CASE", None)
-            for name in ("ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE"):
+            for name in ("ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE",
+                         "ATLAS_TARGET_ROOTS_REPORT", "ATLAS_TARGET_ROOTS_SOURCE_ROOT",
+                         "ATLAS_TARGET_ROOTS_SOURCE", "ATLAS_TARGET_ROOTS_TREE"):
                 env.pop(name, None)
         if minimal:
             env = {**environment, "ATLAS_MINIMAL_REPORT": str(case / "target-result.json"),
@@ -197,11 +203,12 @@ def main() -> int:
         if args.mode == "heap":
             # Full default collection AND execution. Only this diagnostic plugin
             # enters the child; the historical order/GC observer stays inactive.
+            prefix = "ATLAS_TARGET_ROOTS" if args.heap_plugin == "rc8_target_roots" else "ATLAS_HEAP"
+            report_name = "target-roots.json" if args.heap_plugin == "rc8_target_roots" else "heap.json"
             env.update({"PYTHONPATH": str(Path(__file__).resolve().parent),
-                        "ATLAS_HEAP_REPORT": str(case / "heap.json"),
-                        "ATLAS_HEAP_SOURCE_ROOT": str(subject),
-                        "ATLAS_HEAP_SOURCE": actual, "ATLAS_HEAP_TREE": provenance["tree"]})
-            command = [sys.executable, "-m", "pytest", "-p", "rc8_heap_roots", "--durations=40"]
+                        prefix + "_REPORT": str(case / report_name), prefix + "_SOURCE_ROOT": str(subject),
+                        prefix + "_SOURCE": actual, prefix + "_TREE": provenance["tree"]})
+            command = [sys.executable, "-m", "pytest", "-p", args.heap_plugin, "--durations=40"]
         if collect:
             command.append("--collect-only")
         command.extend(paths)
@@ -320,15 +327,17 @@ def main() -> int:
                 "no per-test reports. Read pytest.log for all failures and terminal summary."
             )
         if args.mode == "heap":
-            heap_path = case / "heap.json"
+            heap_path = case / report_name
+            result["heap_plugin"] = args.heap_plugin
+            result["heap_report_filename"] = report_name
             result["heap_report_present"] = heap_path.is_file()
-            result["heap_child_environment"] = {name: env[name] for name in (
-                "ATLAS_HEAP_REPORT", "ATLAS_HEAP_SOURCE_ROOT", "ATLAS_HEAP_SOURCE", "ATLAS_HEAP_TREE")}
+            result["heap_child_environment"] = {prefix + suffix: env[prefix + suffix] for suffix in (
+                "_REPORT", "_SOURCE_ROOT", "_SOURCE", "_TREE")}
             result["observation_scope"] = (
                 "Full default collection and execution with one post-fixture heap snapshot before TARGET. "
                 "Injected plugin/PYTHONPATH and snapshot allocations can change automatic GC and timing. "
                 "No manual GC, order/selection change or per-test reporter. Instrumented timings are diagnostic only. "
-                "Read heap.json limits and pytest.log actual exits, failures and terminal summary."
+                "Read the declared report's limits and pytest.log actual exits, failures and terminal summary."
             )
         if minimal:
             report_path = case / "target-result.json"
@@ -399,6 +408,7 @@ def main() -> int:
                 "expected_collection_count": expected_count, "target": TARGET,
                 "default_collection": True, "full_execution": True,
                 "ignored_modules": [], "deselected_modules": [],
+                "heap_plugin": args.heap_plugin,
                 "limits": "Expected count is navigation until the fresh raw summary. Observer changes allocations and may change automatic GC; no timing acceptance or ownership attribution from presence alone.",
             }, indent=2), encoding="utf-8")
             run("heap-full-default-suite", plain=True)
