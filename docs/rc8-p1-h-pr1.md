@@ -1,6 +1,6 @@
 # RC8-P1-H PR-1: summary and Tools owner convergence
 
-Base: `92490340e3c55c34c7a8d26e878ee5de7c729601`, the merged PR-0.
+Integrated base: `0491291c38f0d50f6d86ee7950666767e1edb6f7`, the merged PR-0b.
 Branch: `codex/rc8-p1-h-pr1`; holder: Codex. The supervisor owns `docs/NOW.md`;
 this feature does not edit the board. G confirmed its parked #674 workspace
 files do not overlap these Tools, Dashboard, Campaign, API and topology edits.
@@ -76,12 +76,13 @@ on the interactive canvas supplies room when the browser rounds scrolling over
 fractional layout coordinates; its effect remains unverified until the original
 hosted re-entry gate passes. No timeout, pixel tolerance or baseline is changed.
 
-## Post-PR-0b preparation (local, unpublished)
+## Post-PR-0b integration
 
-The supervisor integrated main into #682 as `6d5747b2`; this work does not rewrite
-or re-merge that branch. PR-1 waits for #682 to merge before integrating main and
-using its schema-4 register and unchanged detectors. Keep main's exact board and
-the Portable Atlas installation row when resolving the SSOT table.
+The supervisor integrated main into #682 as `6d5747b2` and merged it as
+`0491291c`. PR-1 merges that exact main after the prerequisite completed, using
+its schema-4 register and unchanged detectors. The SSOT conflict preserves every
+main row, including Portable Atlas and ADR 0008, plus PR-1's two owner rows.
+`docs/NOW.md` remains byte-identical to that main.
 
 Recovered hosted evidence: CI `39079414845`, job `117533311971`, observed merge
 checkout `ed8349b6` (parents `92490340` and `b4ecd442`). Its tree is exactly
@@ -89,7 +90,10 @@ checkout `ed8349b6` (parents `92490340` and `b4ecd442`). Its tree is exactly
 proposal contains 36,787 sites: 107 registered identities are stale, and three
 identities are new. Stale rows group as TopologyGraph 48, Snapshot 36, backend
 graph 6, backend summary 15, Campaign 1 and Dashboard 1. These are review input;
-the new hosted census must still prove the final post-#682 register.
+the new hosted census must still prove the final post-#682 register. The source
+edit deletes exactly those 107 identities: 36,891 to 36,784, zero additions,
+unchanged schema/origin/policy metadata and unchanged boundary records. These
+deletions are distinct from the three unadmitted CSS-triggered candidate records.
 
 All three new identities are `fact-decision` footprints on the complete JSX
 returns in TopologyGraph, Campaign and Snapshot. Source inspection identifies
@@ -110,3 +114,10 @@ reconcile and complete hosted gates. Rebuild the changed SPA through webapp-ci's
 source-bound build handoff and hosted artifact receipt. The held viewport change
 must pass the original re-entry assertion. No local runtime or receipt controller,
 golden/sample regeneration, gate relaxation, PR merge or release is authorized.
+
+The existing SPA producer requires committed source on GitHub and rejects a
+checkout that differs from `GITHUB_SHA`. Its received dist is source-edit data
+that must then be committed and pass exact-source reproduction. Therefore a
+source push followed by a dist-import push is needed with the existing handoff;
+no publication occurs until the supervisor resolves that sequence against the
+current single-push instruction. No new publication or build mechanism is added.

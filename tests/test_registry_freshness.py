@@ -265,7 +265,7 @@ def test_release_candidate_examples_reconcile_to_pyproject():
         f"commands={package_commands!r}, archive_lines={archive_lines!r}"
     )
     package_match = re.fullmatch(
-        r"powershell -File portable\\make_stick\.ps1 -Dest \S+ -Package (?P<package>\S+)",
+        r"powershell -File portable\\make_stick\.ps1 -Dest \S+ -Package (?P<package>\S+) -ExpectedSha256 <published-sha256>",
         package_commands[0],
         re.IGNORECASE,
     )

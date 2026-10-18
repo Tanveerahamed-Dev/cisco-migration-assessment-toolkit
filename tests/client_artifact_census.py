@@ -3046,6 +3046,14 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, _REDACTION_RUN, "takes the output lock and runs the field redaction"),
     "webapp/backend/ingest.py::_output_dir_lock": (
         1, NON_CLIENT, (), ".atlas-redaction.lock holds only a fixed NUL marker, never client data"),
+    "webapp/backend/serve.py::<module>": (
+        1, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "the guarded python -m invocation forwards shared client-output dispatch; importing "
+        "the module does not run this branch"),
+    "webapp/backend/serve.py::main": (
+        2, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "live-network-scoped shared dispatch through mutually exclusive legacy/callback "
+        "branches, preserving redaction and database ownership"),
     "webapp/backend/serve.py::_writable_failure": (
         1, NON_CLIENT, (), "a fixed 'ok' write probe, unlinked immediately; no client data"),
     "webapp/backend/serve.py::run_selftest": (2, NON_CLIENT, (), "write probes of the data folders"),
@@ -3055,7 +3063,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "Atlas.exe database preflight over a copy of the operator's database"),
     "webapp/backend/serve.py::_main_scoped": (
-        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        5, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
         "the Atlas.exe entry: self-test probes, database preflight and field redaction"),
     "webapp/backend/export_ui_projection_openapi.py::main": (
         1, NON_CLIENT, (), "the UI projection OpenAPI document generated from code"),
@@ -3080,8 +3088,33 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/frontend/e2e-real/serve_real_backend.py::write_collection": (
         2, NON_CLIENT, (), "the real-backend E2E collection; " + _SYNTHETIC),
     "webapp/frontend/e2e-real/serve_real_backend.py::main": (
-        2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
+        3, NON_CLIENT, ("atomic-staging", "devices-inventory", "incomplete-set-fallback",
+                        "incomplete-set-marker", "redaction-receipt", "unsafe-marker", "workbook"),
+        "the fixed generated collection and forwarded shared-server client-name shapes; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
+    "portable/atlas_entry.py::main": (
+        1, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "the frozen packaging adapter forwards shared client redaction/database surfaces; "
+        "installed-code maintenance paths have their own owner rows"),
+    "portable/atlas_entry.py::run_selftest": (
+        1, NON_CLIENT, (), "forwards the shared selftest's fixed data-folder write probes behind "
+        "the installation fence; no assessment payload is written"),
+    "portable/maintenance.py::_write_result": (
+        2, DELEGATED, ("atomic-staging",), "atomic maintenance protocol metadata; each caller owns its path"),
+    "portable/maintenance.py::_copy_installed_application": (
+        1, NON_CLIENT, (), "installed application code copied to a private helper; top-level data is never traversed"),
+    "portable/maintenance.py::_worker": (
+        1, OPERATOR_PATH, ("atomic-staging",), "private maintenance outcome can name operator paths and refusal details"),
+    "portable/maintenance.py::_finish": (
+        1, DELEGATED, ("atomic-staging",), "durable private result; caller owns its operator-selected output path"),
+    "portable/maintenance.py::_pending_handoff": (
+        1, OPERATOR_PATH, ("atomic-staging",), "private refusal preserves the recorded operator request without replay"),
+    "portable/maintenance.py::_restore_owned_pointer": (
+        2, DELEGATED, ("atomic-staging",), "restore only this attempt's private pointer to its prior byte identity"),
+    "portable/maintenance.py::main": (
+        7, OPERATOR_PATH, ("atomic-staging",), "private request/pointer paths and verified application-only helper; client data excluded"),
+    "portable/maintenance.py::_recover": (
+        2, OPERATOR_PATH, ("atomic-staging",), "private recovery result retains operator paths and failure reasons"),
     "portable/database_preflight.py::_open_readonly": (
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "opens the operator's AssessHub database copy read-only (mode=ro, query_only)"),
@@ -3129,6 +3162,24 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, NON_CLIENT, ("engine-log",),
         "an owned temporary log of the synthetic frozen qualification server, bounded on failure; " + _SYNTHETIC),
     # ---- other tracked Python (CI, tooling, references, research) --------------------------------
+    ".github/scripts/prove_portable_no_python.py::database_state": (
+        1, NON_CLIENT, ("database",), "read-only inspection of the hosted HTTP-seeded synthetic database"),
+    ".github/scripts/prove_portable_no_python.py::extract_bootstrap": (
+        1, NON_CLIENT, (), "closed-set public candidate code extracted to an external hosted proof folder"),
+    ".github/scripts/prove_portable_no_python.py::copy_runtime_for_smoke": (
+        1, NON_CLIENT, (), "a byte-equal runtime copy of packaged public application code; package metadata remains intact"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers": (
+        4, NON_CLIENT, (), "hosted-only OS launcher quarantine/restore and public binary identity journal"),
+    ".github/scripts/prove_portable_no_python.py::hidden_system_python_launchers.record": (
+        1, NON_CLIENT, (), "hosted OS launcher paths and restoration digests; no engagement data"),
+    ".github/scripts/prove_portable_no_python.py::copy_data_verified": (
+        1, NON_CLIENT, (), "hosted synthetic application/data inventory copies only"),
+    ".github/scripts/prove_portable_no_python.py::prove_verified_reinstall": (
+        14, NON_CLIENT, ("database",), "synthetic legacy kit, exact offline backup and candidate-copy preflight evidence"),
+    ".github/scripts/prove_portable_no_python.py::prove": (
+        22, NON_CLIENT, ("database",), "hosted synthetic demo/canary/backups, interrupted selftest recovery and both reinstall paths"),
+    ".github/scripts/prove_portable_no_python.py::main": (
+        2, NON_CLIENT, ("database",), "digest/status-only hosted synthetic maintenance proof"),
     ".github/scripts/classify_webapp_ci_scope.py::main": (
         1, NON_CLIENT, (), "the webapp CI scope verdict written to $GITHUB_OUTPUT"),
     ".github/scripts/engine_output_handoff.py::<module>": (1, NON_CLIENT, (), _CI_EVIDENCE),
@@ -3288,6 +3339,8 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
 NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
     (".github/scripts/frontend_artifact_receive.py", "-payload.json"): _CI_EVIDENCE,
     (".github/scripts/frontend_artifact_receive.py", ".stdout.json"): _CI_EVIDENCE,
+    (".github/scripts/prove_portable_no_python.py", "-launcher-restoration.json"):
+        "hosted OS Python launcher paths and exact restoration identities; no engagement data",
     (".github/scripts/refresh_visual_baseline_pins.py", "-728.png"):
         "the synthetic visual-baseline image at the 728-pixel viewport",
     ("cisco_toolkit/distribution_verify.py", "-py3-none-any.whl"):
@@ -3323,7 +3376,7 @@ NON_CLIENT_SUFFIX_LITERALS: Mapping[tuple[str, str], str] = {
 # --------------------------------------------------------------------------- PowerShell writers
 
 #: The PowerShell writer that copies client databases (W65 registry header names it).
-POWERSHELL_DATABASE_WRITERS = ("portable/make_stick.ps1",)
+POWERSHELL_DATABASE_WRITERS = ("portable/update_transaction.ps1",)
 
 
 def powershell_database_names(root: Path = ROOT) -> list[tuple[str, str]]:
