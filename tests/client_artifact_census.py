@@ -3046,6 +3046,14 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         2, CLIENT, _REDACTION_RUN, "takes the output lock and runs the field redaction"),
     "webapp/backend/ingest.py::_output_dir_lock": (
         1, NON_CLIENT, (), ".atlas-redaction.lock holds only a fixed NUL marker, never client data"),
+    "webapp/backend/serve.py::<module>": (
+        1, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "the guarded python -m invocation forwards shared client-output dispatch; importing "
+        "the module does not run this branch"),
+    "webapp/backend/serve.py::main": (
+        2, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "live-network-scoped shared dispatch through mutually exclusive legacy/callback "
+        "branches, preserving redaction and database ownership"),
     "webapp/backend/serve.py::_writable_failure": (
         1, NON_CLIENT, (), "a fixed 'ok' write probe, unlinked immediately; no client data"),
     "webapp/backend/serve.py::run_selftest": (2, NON_CLIENT, (), "write probes of the data folders"),
@@ -3055,7 +3063,7 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
         1, CLIENT, ("database", "database-wal", "database-shm", "database-journal"),
         "Atlas.exe database preflight over a copy of the operator's database"),
     "webapp/backend/serve.py::_main_scoped": (
-        4, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        5, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
         "the Atlas.exe entry: self-test probes, database preflight and field redaction"),
     "webapp/backend/export_ui_projection_openapi.py::main": (
         1, NON_CLIENT, (), "the UI projection OpenAPI document generated from code"),
@@ -3080,8 +3088,17 @@ WRITE_SITE_CENSUS: Mapping[str, tuple[int, str, tuple[str, ...], str]] = {
     "webapp/frontend/e2e-real/serve_real_backend.py::write_collection": (
         2, NON_CLIENT, (), "the real-backend E2E collection; " + _SYNTHETIC),
     "webapp/frontend/e2e-real/serve_real_backend.py::main": (
-        2, NON_CLIENT, (), "the real-backend E2E harness; " + _SYNTHETIC),
+        3, NON_CLIENT, ("atomic-staging", "devices-inventory", "incomplete-set-fallback",
+                        "incomplete-set-marker", "redaction-receipt", "unsafe-marker", "workbook"),
+        "the fixed generated collection and forwarded shared-server client-name shapes; " + _SYNTHETIC),
     # ---- Atlas packaging and qualification (portable) -------------------------------------------
+    "portable/atlas_entry.py::main": (
+        1, CLIENT, _REDACTION_RUN + ("database", "database-wal", "database-shm", "database-journal"),
+        "the frozen packaging adapter forwards shared client redaction/database surfaces; "
+        "installed-code maintenance paths have their own owner rows"),
+    "portable/atlas_entry.py::run_selftest": (
+        1, NON_CLIENT, (), "forwards the shared selftest's fixed data-folder write probes behind "
+        "the installation fence; no assessment payload is written"),
     "portable/maintenance.py::_write_result": (
         2, DELEGATED, ("atomic-staging",), "atomic maintenance protocol metadata; each caller owns its path"),
     "portable/maintenance.py::_copy_installed_application": (
