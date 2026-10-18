@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -817,34 +818,42 @@ def test_release_package_is_copied_verified_extracted_and_reverified(tmp_path):
 
 def test_release_package_longest_member_verifies_at_deep_updater_path(tmp_path):
     package = _release_package(tmp_path, longest_member=True)
-    dest = tmp_path / "deep-package-stick"
-    failed_member = (
-        dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
-    )
-    # Whole segments first, then one final segment sized from the actual prefix, so the failed-rollback
-    # member is 266 characters (267 if the prefix ends one short) and the staging member, always 27
-    # shorter, 239 or 240 -- whatever the length of the temporary root (a pytest-xdist worker's adds
-    # `popen-gwN`). Whole 30-character steps alone landed the staging member anywhere in 239..268.
-    while len(os.fspath(failed_member)) < 266 - 31:
-        dest /= "deep-segment-xxxxxxxxxxxxxxxx"
+    # The failed-rollback member must reach 266 characters while the staging member, always 27
+    # shorter, stays under 260: a 21-character window for the destination's own length. A
+    # pytest-xdist worker's tmp_path (...\popen-gwN\<test>) is already past that window before any
+    # padding, so the destination gets a short private root of its own, resolved so that a short 8.3
+    # TEMP name is measured in the long form the updater sees, and removed afterwards.
+    root = Path(tempfile.mkdtemp(prefix="atlas-ms-")).resolve()
+    try:
+        dest = root / "deep-package-stick"
         failed_member = (
             dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
         )
-    if len(os.fspath(failed_member)) < 266:
-        dest /= "d" * max(1, 266 - len(os.fspath(failed_member)) - 1)
-        failed_member = (
-            dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
-        )
-    staging_member = dest / ".Atlas.update-extract" / "Atlas" / LONGEST_RUNTIME_MEMBER
-    assert len(os.fspath(failed_member)) >= 266
-    assert len(os.fspath(staging_member)) < 260
-    extended = "\\\\?\\" + os.path.abspath(os.fspath(dest))
-    os.makedirs(extended)
+        # Whole segments first, then one final segment sized from the actual prefix: the
+        # failed-rollback member is 266 characters (267 if the prefix ends one short) and the staging
+        # member 239 (240).
+        while len(os.fspath(failed_member)) < 266 - 31:
+            dest /= "deep-segment-xxxxxxxxxxxxxxxx"
+            failed_member = (
+                dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
+            )
+        if len(os.fspath(failed_member)) < 266:
+            dest /= "d" * max(1, 266 - len(os.fspath(failed_member)) - 1)
+            failed_member = (
+                dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
+            )
+        staging_member = dest / ".Atlas.update-extract" / "Atlas" / LONGEST_RUNTIME_MEMBER
+        assert len(os.fspath(failed_member)) >= 266
+        assert len(os.fspath(staging_member)) < 260
+        extended = "\\\\?\\" + os.path.abspath(os.fspath(dest))
+        os.makedirs(extended)
 
-    result = _run("-Dest", os.fspath(dest), "-Package", os.fspath(package), skip_selftest=False)
-    assert result.returncode == 0, result.stdout + result.stderr
-    installed = dest / "Atlas" / LONGEST_RUNTIME_MEMBER
-    assert installed.read_bytes() == b"longest-member"
+        result = _run("-Dest", os.fspath(dest), "-Package", os.fspath(package), skip_selftest=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        installed = dest / "Atlas" / LONGEST_RUNTIME_MEMBER
+        assert installed.read_bytes() == b"longest-member"
+    finally:
+        shutil.rmtree("\\\\?\\" + os.fspath(root), ignore_errors=True)
 
 
 def test_path_sensitive_rollback_failure_restores_original_tree_and_data(tmp_path):
