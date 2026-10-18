@@ -1,7 +1,5 @@
 name: RC8 raw AST and dependency factor control
 on:
-  push:
-    branches: [codex/rc8-order-diagnostic]
   workflow_dispatch:
 permissions:
   contents: read
