@@ -258,7 +258,8 @@ def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     sentinel = re.search(r'ENGINE_SENTINEL\s*=\s*"(--[a-z-]+)"', serve_src)
     assert sentinel, "serve.ENGINE_SENTINEL moved — update this reconciler"
     valid.add(sentinel.group(1))  # checked pre-argparse by design
-    assert '"--verify-release"' in serve_src
+    entry_src = (ROOT / "portable" / "atlas_entry.py").read_text(encoding="utf-8")
+    assert '"--verify-release"' in entry_src
     valid.add("--verify-release")
     valid.update(_parser_flags("portable/verify_release.py"))
     named = set(_FLAG.findall(GUIDE.read_text(encoding="ascii")))

@@ -32,7 +32,6 @@ import hashlib
 import ipaddress
 import json
 import multiprocessing
-import ntpath
 import os
 import re
 import sqlite3
@@ -320,7 +319,7 @@ def _explorer_template_path() -> Path:
     return primary if primary.is_file() else here.parent / "blast_radius_explorer.html"
 
 
-def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
+def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None, *, write_admission=None) -> int:
     """Assert every asset that otherwise degrades SILENTLY when missing (ADR-0004 P1).
 
     Each check names the field symptom its failure would cause; returns 0 only when all pass. A check
@@ -329,7 +328,7 @@ def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
     # The writability probes create directories. Default/env-selected and kit-local
     # stores must not recreate detached data or pollute a recorded recovery helper.
     # Transaction selftests explicitly select a disposable DB outside the kit.
-    if _maintenance_write_refused(external_db=db_path):
+    if write_admission is not None and write_admission(external_db=db_path):
         return 1
     checks = []
     not_applicable = []
@@ -822,7 +821,14 @@ def run_database_preflight(path: str) -> int:
 
 
 # ── entry point ─────────────────────────────────────────────────────────────────
-def main(argv=None) -> int:
+def main(argv=None, *, command_handler=None, write_admission=None) -> int:
+    """Start the shared application, with optional executable-owned adapters.
+
+    A command handler returns an exit status or None to continue normal dispatch.
+    A write-admission callback returns true to refuse a writable operation; selftest
+    supplies its explicitly selected database. Without callbacks, the shared CLI
+    follows its existing dispatch and write checks.
+    """
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
     multiprocessing.freeze_support()
     argv = list(sys.argv[1:]) if argv is None else list(argv)
@@ -840,7 +846,9 @@ def main(argv=None) -> int:
     else:
         os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
     try:
-        return _main_scoped(argv)
+        if command_handler is None and write_admission is None:
+            return _main_scoped(argv)
+        return _main_scoped(argv, command_handler=command_handler, write_admission=write_admission)
     finally:
         if prior_live is None:
             os.environ.pop("ATLAS_PORTABLE_ALLOW_LIVE_NETWORK", None)
@@ -848,89 +856,13 @@ def main(argv=None) -> int:
             os.environ["ATLAS_PORTABLE_ALLOW_LIVE_NETWORK"] = prior_live
 
 
-def _maintenance_path_spelling(value: str, *, absolute: bool = False) -> None:
-    spelling = value.replace("/", "\\")
-    drive, tail = ntpath.splitdrive(spelling)
-    if (spelling.startswith("\\")
-            or (drive and (not re.fullmatch(r"[A-Za-z]:", drive) or not tail.startswith("\\")))
-            or (absolute and (not re.fullmatch(r"[A-Za-z]:", drive) or not tail.startswith("\\")))):
-        raise ValueError("unsupported Windows path namespace")
-
-
-def _maintenance_local_path(path: Path) -> Path:
-    """One ordinary local namespace only; never resolve UNC/device spellings."""
-    if os.name == "nt":
-        _maintenance_path_spelling(str(path))
-    resolved = path.resolve()
-    if os.name == "nt":
-        _maintenance_path_spelling(str(resolved), absolute=True)
-    return resolved
-
-
-def _maintenance_write_refused(*, external_db=None) -> bool:
-    """Fence every writable door, including a private recovery-helper executable."""
-    if not _frozen():
-        return False
-    try:
-        if os.name == "nt":
-            # _exe_dir also resolves, so validate its original input first.
-            _maintenance_path_spelling(sys.executable)
-        application = _maintenance_local_path(_exe_dir())
-        root = application.parent
-        helper = bool(re.fullmatch(r"Atlas\.maintenance-[0-9a-f]{32}", root.name, re.IGNORECASE))
-        if helper:
-            root = root.parent
-        root = _maintenance_local_path(root)
-        probes: tuple[Path, ...] = ()
-        if external_db is not None:
-            database = Path(external_db)
-            probes = tuple(_maintenance_local_path(path)
-                           for path in (database, database.parent, database.parent / "backups"))
-    except (OSError, ValueError, RuntimeError):
-        print(f"{APP_TITLE}: refusing to write - unsupported or unresolved maintenance path namespace.\n"
-              "  Use an ordinary local drive path; UNC, extended-length and device namespaces "
-              "are not supported by the selftest write fence.", file=sys.stderr)
-        return True
-    pending = os.path.lexists(root / "Atlas.update-state.json")
-    if not pending and not helper:
-        return False
-    if external_db is not None:
-        external = True
-        # DEST may be a drive root, with the transaction's TEMP directory
-        # elsewhere on that drive. Every operand now shares the validated
-        # ordinary local namespace, including redirected backup targets.
-        for resolved in probes:
-            if resolved.is_relative_to(application):
-                external = False
-            if resolved.is_relative_to(root):
-                relative = resolved.relative_to(root).parts
-                if relative and (relative[0].casefold() == "atlas"
-                                 or relative[0].casefold().startswith(("atlas.", ".atlas."))):
-                    external = False
-        if external:
-            return False
-    reason = "portable maintenance is incomplete" if pending else "private maintenance helpers are code-only"
-    print(f"{APP_TITLE}: refusing to write - {reason}.\n"
-          "  Preserve every Atlas* path and explicitly recover with the recorded "
-          "installed-version helper (README-FIELD.txt, UPDATE).", file=sys.stderr)
-    return True
-
-
-def _main_scoped(argv: list[str]) -> int:
-    # Maintenance uses the code frozen into THIS executable, before server setup.
-    if _frozen() and argv and argv[0] == "--verify-release":
-        from portable.verify_release import main as verify_release_main
-
-        return verify_release_main(argv[1:])
-    if _frozen() and argv and argv[0] != ENGINE_SENTINEL:
-        from portable.maintenance import COMMANDS as maintenance_commands
-
-        if any(argument in maintenance_commands for argument in argv):
-            from portable.maintenance import main as maintenance_main
-
-            return maintenance_main(argv)
+def _main_scoped(argv: list[str], *, command_handler=None, write_admission=None) -> int:
+    if command_handler is not None:
+        status = command_handler(argv)
+        if status is not None:
+            return status
     if argv and argv[0] == ENGINE_SENTINEL:
-        if _maintenance_write_refused():
+        if write_admission is not None and write_admission():
             return 1
         log_path = None
         if _frozen():
@@ -1081,7 +1013,9 @@ def _main_scoped(argv: list[str]) -> int:
         return 2
 
     if args.selftest:
-        return run_selftest(dist_dir=args.dist, db_path=args.db)
+        if write_admission is None:
+            return run_selftest(dist_dir=args.dist, db_path=args.db)
+        return run_selftest(dist_dir=args.dist, db_path=args.db, write_admission=write_admission)
 
     if args.verify_manifest is not None:    # `is not None`: --verify-manifest "" must be REFUSED,
         # not fall through and quietly start the server instead of running the check that was asked for
@@ -1110,7 +1044,7 @@ def _main_scoped(argv: list[str]) -> int:
     # Keep this as ONE pair: `is not None` from the guard, `reuse_out` + the 3-flag message
     # from #438. Re-stacking them re-breaks whichever half is listed second.
     if args.redact_folder is not None:
-        if _maintenance_write_refused():
+        if write_admission is not None and write_admission():
             return 1
         return run_redaction(args.redact_folder, args.out, args.redact_collection, args.reuse_out)
     if args.out is not None or args.redact_collection or args.reuse_out:
@@ -1118,7 +1052,7 @@ def _main_scoped(argv: list[str]) -> int:
               f"--redact-folder.", file=sys.stderr)
         return 2
 
-    if _maintenance_write_refused():
+    if write_admission is not None and write_admission():
         return 1
 
     if bool(args.ssl_certfile) != bool(args.ssl_keyfile):

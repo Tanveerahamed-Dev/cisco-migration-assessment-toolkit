@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from portable import maintenance, release_contract, verify_release
+from portable import atlas_entry, maintenance, release_contract, verify_release
 from webapp.backend import serve
 
 
@@ -25,7 +25,7 @@ def test_frozen_verifier_dispatch_never_loads_the_engine(monkeypatch):
     monkeypatch.setattr(serve, "_frozen", lambda: True)
     monkeypatch.setattr(verify_release, "main", lambda argv: seen.append(argv) or 23)
     monkeypatch.setattr(serve, "_load_engine_main", lambda: pytest.fail("engine loaded"))
-    assert serve._main_scoped(["--verify-release", "--installed", "example"]) == 23
+    assert atlas_entry.main(["--verify-release", "--installed", "example"]) == 23
     assert seen == [["--installed", "example"]]
 
 
@@ -52,7 +52,7 @@ def test_maintenance_command_keeps_engine_argv_opaque(monkeypatch, tmp_path):
     monkeypatch.setattr(serve, "_exe_dir", lambda: tmp_path / "Atlas")
     monkeypatch.setattr(serve, "engine_log_path", lambda **kw: "synthetic-engine.log")
     monkeypatch.setattr(maintenance, "main", lambda argv: pytest.fail("engine argv entered maintenance"))
-    assert serve._main_scoped(["--run-engine", "--update", "opaque"]) == 9
+    assert atlas_entry.main(["--run-engine", "--update", "opaque"]) == 9
     assert seen == [["--update", "opaque"]]
 
 
@@ -63,7 +63,7 @@ def test_pending_maintenance_refuses_server_before_creating_an_empty_store(tmp_p
     monkeypatch.setattr(serve, "_frozen", lambda: True)
     monkeypatch.setattr(serve, "_exe_dir", lambda: bundle)
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("store path was touched"))
-    assert serve._main_scoped(["--no-browser"]) == 1
+    assert atlas_entry.main(["--no-browser"]) == 1
     assert "portable maintenance is incomplete" in capsys.readouterr().err
     assert not (bundle / "data").exists()
 
@@ -87,7 +87,7 @@ def test_pending_journal_fences_every_writable_door_in_active_and_helper_apps(
     monkeypatch.setattr(serve, "_run_engine", lambda argv: pytest.fail("engine started"))
     monkeypatch.setattr(serve, "run_redaction", lambda *a: pytest.fail("redaction started"))
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("store path touched"))
-    assert serve._main_scoped(argv) == 1
+    assert atlas_entry.main(argv) == 1
     assert "portable maintenance is incomplete" in capsys.readouterr().err
     assert not (application / "data").exists()
 
@@ -102,7 +102,7 @@ def test_completed_private_helpers_are_never_writable_application_doors(tmp_path
     monkeypatch.setattr(serve, "_run_engine", lambda argv: pytest.fail("helper engine started"))
     monkeypatch.setattr(serve, "run_redaction", lambda *a: pytest.fail("helper redaction started"))
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("helper store touched"))
-    assert serve._main_scoped(argv) == 1
+    assert atlas_entry.main(argv) == 1
     assert "code-only" in capsys.readouterr().err
     assert not (helper / "data").exists()
 
@@ -133,7 +133,7 @@ def test_selftest_fences_default_and_kit_local_db_before_any_asset_or_write(
         database = str(installation / "Atlas/data/assesshub.db")
     elif selection == "reserved_preflight":
         database = str(installation / ".Atlas.database-preflight/assesshub.db")
-    assert serve.run_selftest(db_path=database) == 1
+    assert atlas_entry.run_selftest(db_path=database) == 1
     assert "portable maintenance is incomplete" in capsys.readouterr().err
     assert not (application / "data").exists()
     assert not (installation / "Atlas/data").exists()
@@ -159,7 +159,7 @@ def test_journaled_selftest_allows_explicit_external_db_only(tmp_path, monkeypat
     monkeypatch.setattr(serve, "_explorer_template_path", assets)
     temporary = installation if location == "temp_beneath_destination" else tmp_path
     with pytest.raises(AssetsReached):
-        serve.run_selftest(db_path=str(temporary / "disposable/selftest.db"))
+        atlas_entry.run_selftest(db_path=str(temporary / "disposable/selftest.db"))
     assert not (application / "data").exists()
 
 
@@ -176,7 +176,7 @@ def test_journaled_selftest_refuses_external_db_with_backups_redirected_into_kit
     monkeypatch.setattr(serve, "_frozen", lambda: True)
     monkeypatch.setattr(serve, "_exe_dir", lambda: application)
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("redirected write probe reached"))
-    assert serve.run_selftest(db_path=str(disposable / "selftest.db")) == 1
+    assert atlas_entry.run_selftest(db_path=str(disposable / "selftest.db")) == 1
     assert list((application / "data").iterdir()) == []
 
 
@@ -207,7 +207,7 @@ def test_windows_selftest_namespaces_cannot_recreate_kit_or_custody_data(
     monkeypatch.setattr(serve, "_exe_dir", lambda: application)
     monkeypatch.setattr(serve, "_explorer_template_path", lambda: pytest.fail("namespace reached selftest assets"))
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("namespace reached a write probe"))
-    assert serve._main_scoped(["--selftest", "--db", spelling]) == 1
+    assert atlas_entry.main(["--selftest", "--db", spelling]) == 1
     assert "refusing to write" in capsys.readouterr().err
     assert not (active / "data").exists()
     assert not (helper / "data").exists()
@@ -225,7 +225,7 @@ def test_namespace_spelling_is_refused_before_resolution_or_journal_lookup(tmp_p
     monkeypatch.setattr(serve, "_exe_dir", lambda: application)
     monkeypatch.setattr(Path, "resolve", lambda *a, **k: pytest.fail("unsupported namespace was resolved"))
     monkeypatch.setattr(serve.os.path, "lexists", lambda *a: pytest.fail("unsupported root reached journal lookup"))
-    assert serve._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
+    assert atlas_entry._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
     assert "namespace" in capsys.readouterr().err
 
 
@@ -239,7 +239,7 @@ def test_executable_namespace_is_refused_before_production_exe_dir_resolves(tmp_
     monkeypatch.setattr(serve, "_frozen", lambda: True)
     monkeypatch.setattr(serve.sys, "executable", executable)
     monkeypatch.setattr(Path, "resolve", lambda *a, **k: pytest.fail("executable namespace reached resolution"))
-    assert serve._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
+    assert atlas_entry._maintenance_write_refused(external_db=str(tmp_path / "external/selftest.db"))
     assert "namespace" in capsys.readouterr().err
 
 
@@ -260,7 +260,7 @@ def test_resolved_namespace_alias_is_not_treated_as_external(tmp_path, monkeypat
     monkeypatch.setattr(serve, "_exe_dir", lambda: application)
     monkeypatch.setattr(Path, "resolve", resolved)
     monkeypatch.setattr(serve, "_writable_failure", lambda path: pytest.fail("resolved alias reached a probe"))
-    assert serve.run_selftest(db_path=str(database)) == 1
+    assert atlas_entry.run_selftest(db_path=str(database)) == 1
     assert "namespace" in capsys.readouterr().err
     assert not (application / "data").exists()
 

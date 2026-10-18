@@ -314,7 +314,7 @@ def test_python_absent_proof_runs_in_existing_build_context_after_packaging() ->
     workflow = yaml.load((ROOT / ".github/workflows/portable-release.yml").read_text(encoding="utf-8"),
                          Loader=_RunnerWorkflowLoader)
     jobs = workflow["jobs"]
-    assert set(jobs) == {"gate", "portable", "verify_candidate", "draft"}
+    assert set(jobs) == {"gate_shard", "gate", "portable", "verify_candidate", "draft"}
     portable = jobs["portable"]
     assert portable["name"] == "Build and qualify Atlas.exe"
     assert portable["timeout-minutes"] == 120
