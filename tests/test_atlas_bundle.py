@@ -132,7 +132,7 @@ def test_datas_cover_every_selftest_guarded_asset():
 
 def test_spec_collects_runtime_package_resources_from_the_pure_manifest(monkeypatch):
     """The IRI checker reads its grammar at import time; importing Python code alone is insufficient."""
-    assert atlas_bundle.package_data_modules() == ("rfc3987_syntax",)
+    assert atlas_bundle.package_data_modules() == ("rfc3987_syntax", "cyclonedx")
     spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
     analysis = next(node for node in ast.walk(spec)
                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
@@ -330,6 +330,7 @@ def test_hidden_imports_cover_the_dynamic_seams():
     # --verify-manifest's module is imported inside a function body too, and README-FIELD teaches
     # that command to an engineer with no Python and no second machine
     assert "cisco_toolkit.manifest" in hidden
+    assert {"portable.maintenance", "portable.verify_release", "cyclonedx.validation.json"} <= hidden
     # ADR-0004 D2: every registry-owned lazy renderer must ship.
     dependencies = set(artifact_dependency_modules())
     assert dependencies and dependencies <= hidden
