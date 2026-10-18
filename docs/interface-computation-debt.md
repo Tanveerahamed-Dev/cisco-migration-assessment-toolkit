@@ -68,9 +68,12 @@ same-file narrowing. Exact-tuple debt transfers still refuse for every rule.
 The location-independent and removed-symbol checks deliberately exclude the
 context-free lexical `<forbidden-pattern>` and `<generated-payload>` rows:
 their short token spans collide across unrelated code. **Reviewer-only provenance
-checks remain mandatory** for rewritten debt whose fingerprint changes and whose
-path/symbol/rule also changes, engine-role computations moved into the interface,
-and sites detected only by lexical tripwires. Reviewers must reject these when
+checks remain mandatory** for rewritten debt whose fingerprint changes,
+including a rewritten copy that retains the original debt row in the same symbol.
+Only replacements matching a debt row removed by this PR receive the same-symbol
+mechanical refusal; changed-location rewrites also require review. Engine-role
+computations moved into the interface and sites detected only by lexical
+tripwires likewise require reviewer provenance checks. Reviewers must reject these when
 they compute engine-owned facts; syntactic eligibility is not semantic admission.
 No category mechanically certifies a detector rule fact-free. Boundary records
 must also match current detections exactly, so removal of code requires removal of its
