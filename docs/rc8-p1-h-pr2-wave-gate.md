@@ -227,3 +227,30 @@ The final repair uses complete literal loop restoration. There is no detector,
 role or boundary change and no candidate admission. A fresh exact-source hosted
 observation, not a locally reconstructed census, must validate the repaired source
 before all remaining stale entries can be removed.
+
+
+### Complete stale-set import from the literal-restored source
+
+Source `897b2d4a1035f82987ee2a9ab4c485d8bd868f58`, CI `39171530046`, Linux 3.11
+job `117805473118`, passes 491 early controls and the real-producer canonical check.
+Its complete ratchet reports 493 passed / one failed solely for stale rows;
+**unregistered or resurrected sites is empty**. The complete observation emits
+36,732 sites, fingerprint `74baca876c01142eb78a081f95ce88ec6bb3cc2f0882038bd326991d8d1e3d17`,
+for tested merge `b8bb9005554b3ff59f407fbbd25e94b3ec6c9f37`, exact source tree
+`4b3501885591253899cec7b2a9da0a61eadb95b7`.
+
+The edit compares the full 36,754-row provisional register with the full hosted
+proposal, refuses every addition and policy/boundary change, and deletes all 22
+stale rows. It does not use only the error message's capped twelve examples and
+never executes the census locally. `docs/rc8-p1-h-pr2-census-retirement.json` records
+every one of these 22 deletions and all 52 cumulative identities removed from the
+post-#681 main register: **36,784 -> 36,732, 52 removals, zero additions**. All removals
+are in cisco_toolkit/mop.py or webapp/backend/cutover.py. Schema, origin, active stage,
+boundary rows and detector bytes remain unchanged. Restored legacy assembly identities
+were retained throughout; the three unadmitted candidates were never registered.
+
+This data edit closes the known stale set for that exact source observation, not the
+final-head gate by itself. The new pushed head must pass the unchanged complete census,
+all canonical checks, full default/unshared complements, every required context and the
+source-bound frontend import/reproduction chain. The failed/superseded source runs stay
+negative history. No local runtime, test, engine, build or receipt controller is used.

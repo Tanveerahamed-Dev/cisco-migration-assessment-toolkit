@@ -1174,3 +1174,16 @@ retained functions also lose expressions and lexical occurrences, whose stale re
 be removed from the authorized hosted observation after the #682 schema rebase. No detector,
 role, boundary, assertion, budget or timeout is changed to manufacture a subset. No local
 inspector or tests run, and no push/CI is authorized by this handoff.
+
+
+### PR-2 complete hosted retirement
+
+After literal restoration of the incidental assembly changes, source `897b2d4a`
+CI `39171530046`, job `117805473118`, observes 36,732 sites with fingerprint
+`74baca876c01142eb78a081f95ce88ec6bb3cc2f0882038bd326991d8d1e3d17` and zero
+unregistered/resurrected identities. The full proposal, not the twelve-entry diagnostic
+sample, removes all remaining 22 stale rows. Relative to post-#681 main `bc54fa80`,
+PR-2 is **52 removals and zero additions, 36,784 to 36,732**. Full exact identities
+and tested-source/detector metadata are in `docs/rc8-p1-h-pr2-census-retirement.json`.
+The detector, boundary policy, role declarations and historical subsets are unchanged.
+Fresh final-head census equality and complete hosted checks remain the acceptance gate.
