@@ -13,6 +13,7 @@ from collections import Counter
 import hashlib
 import gzip
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -26,7 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DETECTOR_ROOT = ROOT
 REGISTRY = "docs/interface-computation-debt.json"
 ORIGIN = "fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1"
-SCHEMA = "interface-computation-debt/3"
+SCHEMA = "interface-computation-debt/4"
+LEGACY_V3_REGISTER_HEAD = "92490340e3c55c34c7a8d26e878ee5de7c729601"
+BOUNDARY_CATEGORIES = frozenset({"transport-bound", "response-identity", "cancellation", "ui-state"})
 ROLE_ORIGIN = "2efe2fd77a1e67ea3c298408141a466e65cf3945"  # Initial role proposal, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 LEGACY_V2_REGISTER_HEAD = "2920e79b2a80093e16fb0d9982cb9baf29cebda1"
@@ -379,14 +382,280 @@ def disposition(row):
     return "legacy-site-review-required"
 
 
-def proposal(sites):
+def proposal(sites, boundary=()):
+    """Observe every site; preserve only already-declared, still-present boundary records.
+
+    Unadmitted findings remain visible in sites. This proposal cannot authorize
+    debt growth or a boundary admission; validation and independent review do that.
+    """
+    found = {identity(row) for row in sites}
+    boundary_records(list(boundary))
+    retained = [dict(row) for row in boundary if identity(row) in found]
+    boundary_keys = {identity(row) for row in retained}
     return {"schema": SCHEMA, "origin": ORIGIN, "stage": "active",
+            "boundary": retained,
             "sites": [{**{key: row[key] for key in ("path", "symbol", "rule", "fingerprint", "occurrence")},
-                       "disposition": disposition(row)} for row in sites]}
+                       "disposition": disposition(row)} for row in sites if identity(row) not in boundary_keys]}
 
 
-def validate(registry, current, origin, ancestors=()):
-    if set(registry) != {"schema", "origin", "stage", "sites"} or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
+
+LEXICAL_MARKERS = frozenset({"<forbidden-pattern>", "<generated-payload>"})
+
+
+def lexical_rule_vocabulary(lexer_text=None, payload_text=None):
+    """Derive the closed marker vocabulary from the frozen emission sites.
+
+    Unresolvable emitter shapes fail closed. The Node-backed producer control
+    independently checks the payload rule extraction; detector byte pins remain.
+    """
+    if lexer_text is None:
+        lexer_text = (DETECTOR_ROOT / "tests/interface_computation_lex.py").read_text(encoding="utf-8")
+    if payload_text is None:
+        payload_text = (DETECTOR_ROOT / ".github/scripts/interface_computation_ast.mjs").read_text(encoding="utf-8")
+    lexical = next(node for node in ast.parse(lexer_text).body
+                   if isinstance(node, ast.FunctionDef) and node.name == "lexical_sites")
+    calls = [node for node in ast.walk(lexical) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "emit"]
+    if not calls or any(len(node.args) != 3 or node.keywords
+                        or not isinstance(node.args[2], ast.Constant)
+                        or type(node.args[2].value) is not str for node in calls):
+        raise ValueError("Unresolvable lexical rule producer")
+    rules = {node.args[2].value for node in calls}
+    payloads = re.findall(
+        r"generatedOpaqueSites\s*\.\s*push\s*\(\s*\{\s*path\s*,\s*symbol:\s*(['\"])([^'\"]+)\1\s*,\s*rule:\s*(['\"])([^'\"]+)\3\s*,",
+        payload_text)
+    pushes = re.findall(r"\bgeneratedOpaqueSites\s*\.\s*push\s*\(", payload_text)
+    if not payloads or len(payloads) != len(pushes) or any(row[1] not in LEXICAL_MARKERS for row in payloads):
+        raise ValueError("Unresolvable payload rule producer")
+    return frozenset(rules | {row[3] for row in payloads})
+
+
+LEXICAL_PRODUCER_RULES = lexical_rule_vocabulary()
+
+
+def lexical_identity(key):
+    """A marker alone is forgeable as a JavaScript string-literal method name."""
+    return key[1] in LEXICAL_MARKERS and key[2] in LEXICAL_PRODUCER_RULES
+
+
+def literal_verdict_fingerprints(current, candidates, current_sources=None):
+    """Prove literal-only returns with the unchanged fingerprint producers.
+
+    Full live sources avoid the census expression preview's truncation. Direct
+    validate callers can supply complete expression previews instead; missing or
+    unparseable previews provide no exception. No expression is executed.
+    """
+    paths = {key[0] for key in candidates if key[2] == "verdict-return"}
+    if not paths:
+        return set()
+    expressions, javascript = set(), []
+    sources = current_sources or {}
+    for path in paths:
+        full = path in sources
+        texts = [sources[path]] if full else [row.get("expression", "") for row in current
+                 if row["path"] == path and row["rule"] == "verdict-return"]
+        for text in texts:
+            if not text:
+                continue
+            if python_module(path):
+                try:
+                    tree = ast.parse(text if full else "def literal_probe():\n return " + text + "\n")
+                except (SyntaxError, ValueError):
+                    if full:
+                        raise
+                    continue
+                for node in ast.walk(tree):
+                    value = node.value if isinstance(node, ast.Return) else node.body if isinstance(node, ast.Lambda) else None
+                    if isinstance(value, ast.Constant) and _python_return_verdict(value):
+                        expressions.add(ast.get_source_segment(text if full else "def literal_probe():\n return " + text + "\n", value))
+            else:
+                javascript.append(dict(path=path, text=text if full else "function literal_probe() { return " + text + "; }",
+                                       required=full, document=full and path.lower().endswith(BROWSER_DOCUMENT_SUFFIXES)))
+    fingerprints = {row["fingerprint"] for expression in expressions
+                    for row in python_sites("literal_probe.py", "def literal_probe():\n return " + expression + "\n")
+                    if row["rule"] == "verdict-return"}
+    if javascript:
+        # This policy proof only identifies bare literal nodes. The existing
+        # detector remains the sole owner of every resulting fingerprint.
+        script = r"""
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const require = createRequire(resolve(process.cwd(), 'atlas-scope/package.json'));
+const ts = require('typescript');
+if (ts.version !== '5.9.3') throw new Error('Literal policy proof requires the locked parser');
+const inputs = JSON.parse(readFileSync(0, 'utf8'));
+const parseHtml = inputs.some(input => input.document) ? (await import(pathToFileURL(require.resolve('parse5')).href)).parse : null;
+function documentFragments(text, depth = 0) {
+  if (depth > 8) throw new Error('Literal policy HTML depth exceeds the source contract');
+  const fragments = [];
+  function visit(node) {
+    if (node.tagName === 'script') fragments.push((node.childNodes ?? []).filter(child => child.nodeName === '#text').map(child => child.value).join(''));
+    for (const attr of node.attrs ?? []) {
+      fragments.push(attr.value);
+      try {
+        const url = new URL(attr.value, 'https://static-census.invalid/');
+        if (url.protocol === 'javascript:') fragments.push(decodeURIComponent(url.href.slice(url.protocol.length)));
+      } catch { /* An unproved fragment creates no literal exception. */ }
+      if (attr.name === 'srcdoc') fragments.push(...documentFragments(attr.value, depth + 1));
+    }
+    for (const child of node.childNodes ?? []) visit(child);
+    if (node.content) visit(node.content);
+  }
+  visit(parseHtml(text));
+  return fragments;
+}
+const literals = new Set();
+for (const {path, text, required, document} of inputs) {
+  const lower = path.toLowerCase();
+  const kind = lower.endsWith('.tsx') ? ts.ScriptKind.TSX : lower.endsWith('.jsx') ? ts.ScriptKind.JSX : /\.[mc]?ts$/.test(lower) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  for (const fragment of document ? documentFragments(text) : [text]) {
+  let file = ts.createSourceFile(path, fragment, ts.ScriptTarget.Latest, true, kind);
+  if (file.parseDiagnostics.length && document) file = ts.createSourceFile(path, 'function literal_probe() {\n' + fragment + '\n}', ts.ScriptTarget.Latest, true, kind);
+  if (file.parseDiagnostics.length) {
+    if (required && !document) throw new Error('Literal policy source parse failed');
+    continue;
+  }
+  function visit(node) {
+    const value = ts.isReturnStatement(node) ? node.expression : ts.isArrowFunction(node) && !ts.isBlock(node.body) ? node.body : null;
+    if (value && (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(value.kind))) literals.add(value.getText(file));
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  }
+}
+process.stdout.write(JSON.stringify([...literals]));
+"""
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node is required for the literal boundary policy proof")
+        result = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(javascript),
+                                cwd=DETECTOR_ROOT, text=True, encoding="utf-8", capture_output=True, check=True, timeout=90)
+        literals = json.loads(result.stdout)
+        if literals:
+            text = "\n".join("function literal_probe_" + str(index) + "() { return " + value + "; }"
+                             for index, value in enumerate(literals))
+            fingerprints.update(row["fingerprint"] for row in node_reply(dict(sources=[dict(path="literal_probe.ts", text=text)]))["sites"]
+                                if row["rule"] == "verdict-return")
+    return fingerprints
+
+
+def boundary_records(rows):
+    """Closed exact-site metadata, never a file/symbol/category-wide exemption."""
+    fields = {"path", "symbol", "rule", "fingerprint", "occurrence", "category"}
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or set(row) != fields for row in rows):
+        raise ValueError("Boundary records require closed exact sites and one category")
+    for row in rows:
+        if (any(type(row[key]) is not str or not row[key] for key in ("path", "symbol", "rule", "fingerprint"))
+                or re.fullmatch(r"[0-9a-f]{64}", row["fingerprint"]) is None
+                or type(row["occurrence"]) is not int or row["occurrence"] < 1
+                or any("*" in row[key] for key in ("path", "symbol", "rule"))):
+            raise ValueError("Boundary identities have malformed exact types")
+        if type(row["category"]) is not str or row["category"] not in BOUNDARY_CATEGORIES:
+            raise ValueError("Boundary category is missing or unknown")
+        if row["rule"] == "dynamic-code":
+            raise ValueError("Dynamic code can never be a boundary record")
+        if row["symbol"] in LEXICAL_MARKERS and not lexical_identity(identity(row)):
+            raise ValueError("Reserved lexical marker has a non-lexical boundary rule")
+    keys = [identity(row) for row in rows]
+    if len(keys) != len(set(keys)) or keys != sorted(keys):
+        raise ValueError("Duplicate or unordered boundary sites")
+    return {identity(row): row for row in rows}
+
+
+def admission_base():
+    """Use the immutable hosted event's PR base, not a caller-selected comparison.
+
+    A main push rechecks the merged delta against its before SHA. Other contexts
+    use HEAD's merge-base with main for retention only, never new admissions.
+    Review approval is a separate human gate; this checks structural eligibility.
+    """
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    def retained_only():
+        return git("merge-base", "HEAD", "origin/main").decode().strip(), False
+
+    if event_name not in {"pull_request", "push"}:
+        return retained_only()
+    try:
+        event = read_registry(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        if event_name == "pull_request":
+            if event["pull_request"]["base"]["ref"] != "main":
+                return retained_only()
+            if event["pull_request"]["base"]["repo"]["full_name"] != os.environ["GITHUB_REPOSITORY"]:
+                raise ValueError("Boundary admission requires this repository's main PR base")
+            base, head = event["pull_request"]["base"]["sha"], event["pull_request"]["head"]["sha"]
+        else:
+            if event["ref"] != "refs/heads/main":
+                return retained_only()
+            base, head = event["before"], event["after"]
+        if any(type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None
+               or value == "0" * 40 for value in (base, head)):
+            raise ValueError("Boundary PR/base identities are malformed")
+    except (KeyError, TypeError, OSError, UnicodeError) as error:
+        raise ValueError("Boundary PR/base context is missing or malformed") from error
+    git("cat-file", "-e", base + "^{commit}")
+    checkout = git("rev-parse", "HEAD").decode().strip()
+    if checkout != head:
+        parents = git("rev-list", "--parents", "-n", "1", "HEAD").decode().split()
+        if (event_name != "pull_request" or checkout != os.environ.get("GITHUB_SHA")
+                or parents != [checkout, base, head]):
+            raise ValueError("Boundary PR/base event does not bind the checked-out source")
+    return base, True
+
+
+def legacy_v3_carried(commit):
+    """An unchanged v3 continuation is not a new policy event or a v4 rollback."""
+    blob = git("rev-parse", commit + ":" + REGISTRY).strip()
+    carried = False
+    for parent in git("rev-list", "--parents", "-n", "1", commit).decode().split()[1:]:
+        entry = git("ls-tree", parent, "--", REGISTRY).split()
+        if not entry:
+            continue
+        raw = read_registry(git("show", parent + ":" + REGISTRY))
+        if raw.get("schema") not in {"interface-computation-debt/1", "interface-computation-debt/2",
+                                     "interface-computation-debt/3"}:
+            return False  # A v4/unknown parent cannot be downgraded via the other parent.
+        if (entry[2] == blob and raw.get("schema") == "interface-computation-debt/3"
+                and raw.get("stage") == "active" and raw.get("origin") == ORIGIN):
+            carried = True
+    return carried
+
+
+def policy_record(commit, record, *, historical=True):
+    """Read history without resetting the debt floor or reopening a legacy policy."""
+    schema = record.get("schema")
+    legacy_heads = {"interface-computation-debt/1": LEGACY_REGISTER_HEAD,
+                    "interface-computation-debt/2": LEGACY_V2_REGISTER_HEAD}
+    if schema in legacy_heads:
+        if historical:
+            git("merge-base", "--is-ancestor", commit, legacy_heads[schema])
+        return None
+    if schema == "interface-computation-debt/3" and record.get("stage") == "observation_required":
+        if historical:
+            git("merge-base", "--is-ancestor", commit, LEGACY_V3_OBSERVATION_HEAD)
+        return None
+    if schema == "interface-computation-debt/3":
+        if historical:
+            try:
+                git("merge-base", "--is-ancestor", commit, LEGACY_V3_REGISTER_HEAD)
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 1 or not legacy_v3_carried(commit):
+                    raise
+        if (set(record) != {"schema", "origin", "stage", "sites"}
+                or record.get("origin") != ORIGIN or record.get("stage") != "active"):
+            raise ValueError("An unauthorized legacy v3 policy appeared in history")
+        return {**record, "schema": SCHEMA, "boundary": []}
+    if (schema != SCHEMA or record.get("origin") != ORIGIN or record.get("stage") != "active"
+            or set(record) != {"schema", "origin", "stage", "sites", "boundary"}):
+        raise ValueError("An unauthorized debt policy/schema appeared in history")
+    boundary_records(record["boundary"])
+    return record
+
+
+def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=None,
+             removed_boundary=(), historic_debt=(), allow_new_boundary=True, current_sources=None):
+    if set(registry) != {"schema", "origin", "stage", "sites", "boundary"} or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
         raise ValueError("Debt register requires source-bound active review")
     expected_keys = {"path", "symbol", "rule", "fingerprint", "occurrence", "disposition"}
     rows = registry["sites"]
@@ -401,17 +670,62 @@ def validate(registry, current, origin, ancestors=()):
         raise ValueError("Debt entries repeat or are not deterministically ordered")
     if any(row["disposition"] != disposition(row) for row in rows):
         raise ValueError("Debt disposition changed without its owner")
+    boundary = boundary_records(registry["boundary"])
+    ancestors = list(ancestors)
     registered, found, ceiling = set(keys), {identity(row) for row in current}, {identity(row) for row in origin}
-    if found != registered:
-        raise ValueError(f"Unregistered or resurrected sites: {sorted(found - registered)[:12]}; remove stale entries: {sorted(registered - found)[:12]}")
+    debt_history = registered | set(historic_debt)
+    if base is not None:
+        debt_history.update(identity(row) for row in base["sites"])
     if not registered <= ceiling:
         raise ValueError(f"Register grew beyond the immutable source ceiling: {sorted(registered - ceiling)[:12]}")
     for previous in ancestors:
         if (previous.get("schema") != SCHEMA or previous.get("origin") != ORIGIN
                 or previous.get("stage") != "active"):
             raise ValueError("An unauthorized debt policy/schema appeared in history")
+        prior_boundary = boundary_records(previous["boundary"])
+        debt_history.update(identity(row) for row in previous["sites"])
         if not registered <= {identity(row) for row in previous["sites"]}:
             raise ValueError("A removed debt/allowance entry reappeared; the register may only shrink")
+        if any(key in prior_boundary and row["category"] != prior_boundary[key]["category"]
+               for key, row in boundary.items()):
+            raise ValueError("A retained boundary category changed")
+    if set(boundary) & debt_history:
+        raise ValueError("Debt-to-boundary moves/reclassification are forbidden, including historical debt")
+    if set(boundary) & set(removed_boundary):
+        raise ValueError("A removed boundary record was resurrected")
+    admitted = registered | set(boundary)
+    if found != admitted:
+        raise ValueError(f"Unregistered or resurrected sites: {sorted(found - admitted)[:12]}; remove stale entries: {sorted(admitted - found)[:12]}")
+    if boundary:
+        if base is None:
+            raise ValueError("Boundary records require an exact PR base")
+        prior = boundary_records(base["boundary"])
+        if any(key in prior and row["category"] != prior[key]["category"] for key, row in boundary.items()):
+            raise ValueError("A retained boundary category changed")
+        introduced = set(boundary) - set(prior)
+        # A reserved symbol is lexical only with a producer-emitted lexer rule.
+        # Name-only rows and proved bare literals carry no computation alone:
+        # exclude them from form matching only, never exact/same-symbol checks.
+        ast_debt = {key for key in debt_history if not lexical_identity(key)}
+        debt_forms = {(key[2], key[3]) for key in ast_debt
+                      if key[2] not in {"verdict-symbol", "analysis-symbol"}}
+        literal_forms = literal_verdict_fingerprints(current,
+            [key for key in introduced if (key[2], key[3]) in debt_forms], current_sources)
+        removed_debt = {identity(row) for row in base["sites"]} - registered
+        removed_symbols = {(key[0], key[1], key[2]) for key in removed_debt if not lexical_identity(key)}
+        for key in introduced:
+            if lexical_identity(key):
+                continue
+            if (key[2], key[3]) in debt_forms and not (key[2] == "verdict-return" and key[3] in literal_forms):
+                raise ValueError("Debt-to-boundary AST form moved/copied from current or historical debt")
+            if (key[0], key[1], key[2]) in removed_symbols:
+                raise ValueError("Debt-to-boundary rewrite of a debt symbol removed by this PR")
+        if introduced and not allow_new_boundary:
+            raise ValueError("New boundary admissions require the PR/base event, not a manual run")
+        if introduced and base_sites is None:
+            raise ValueError("New boundary admissions require the PR base's source sites")
+        if introduced & {identity(row) for row in base_sites or ()}:
+            raise ValueError("Boundary file/symbol site is unchanged versus the PR base")
 
 
 def check():
@@ -419,44 +733,85 @@ def check():
     if registry.get("stage") != "active":
         raise ValueError("Debt register requires source-bound active review")
     subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ORIGIN, "HEAD"], check=True)
-    current, origin = scan(source_map()), scan(source_map(ORIGIN))
+    current_sources = source_map()
+    current, origin = scan(current_sources), scan(source_map(ORIGIN))
     previous = []
+    historic_debt = set()
+    blobs = {}
+    boundary = boundary_records(registry["boundary"])
+    base, allow_new = admission_base() if boundary else (None, True)
+
+    def read_record(commit, *, historical=False):
+        entry = git("ls-tree", commit, "--", REGISTRY).split()
+        present = bool(entry)
+        blob = entry[2].decode("ascii") if present else None
+        if present and blob not in blobs:
+            raw = read_registry(git("show", commit + ":" + REGISTRY))
+            if boundary:
+                historic_debt.update(identity(row) for row in raw["sites"])
+            if (raw.get("schema") in {"interface-computation-debt/1", "interface-computation-debt/2"}
+                    or raw.get("schema") == "interface-computation-debt/3"
+                    and raw.get("stage") == "observation_required"):
+                raw = {"schema": raw["schema"], "stage": raw.get("stage")}
+            blobs[blob] = raw
+        raw = blobs[blob] if present else None
+        # Arbitrary parents/base revisions may carry unchanged legacy bytes.
+        # Cutoffs bind every register-change COMMIT in the full history below,
+        # even when a replay reuses a cached blob. Bootstrap payloads need not
+        # remain live; their identities suffice for no-transfer.
+        return present, policy_record(commit, raw, historical=historical) if raw is not None else None
+
+    removed_boundary = set()
     # Default path history can prune a merge parent when the result matches the
     # other parent, hiding a removal that the merge resurrected.
-    for commit in git("log", "--full-history", "--format=%H", "HEAD", "--", REGISTRY).decode().splitlines():
-        record = read_registry(git("show", commit + ":" + REGISTRY))
-        legacy_heads = {"interface-computation-debt/1": LEGACY_REGISTER_HEAD,
-                        "interface-computation-debt/2": LEGACY_V2_REGISTER_HEAD}
-        if record.get("schema") in legacy_heads:
-            # Initial widening is authorized only in this unmerged PR. The v2
-            # baseline predates approved main #666; only its fixed development
-            # ancestry is historical. A later old-policy reset still refuses.
-            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit,
-                            legacy_heads[record["schema"]]], check=True)
-            continue
-        if record.get("schema") == SCHEMA and record.get("stage") == "observation_required":
-            # The initial capture had an empty register before admission. Only
-            # that fixed ancestry is historical; later inactive commits cannot
-            # hide removal/resurrection between green heads.
-            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", commit,
-                            LEGACY_V3_OBSERVATION_HEAD], check=True)
+    roots = ["HEAD", base] if base is not None else ["HEAD"]
+    for commit in git("log", "--full-history", "--format=%H", *roots, "--", REGISTRY).decode().splitlines():
+        present, record = read_record(commit, historical=True)
+        if not present:
+            raise ValueError("The closed register was removed in history")
+        if record is None:
             continue
         previous.append(record)
-    validate(registry, current, origin, previous)
+        if boundary:
+            here = set(boundary_records(record["boundary"]))
+            for parent in git("rev-list", "--parents", "-n", "1", commit).decode().split()[1:]:
+                _present, prior = read_record(parent)
+                if prior is not None:
+                    removed_boundary.update(set(boundary_records(prior["boundary"])) - here)
+    base_record, base_sites = None, None
+    if boundary:
+        _present, base_record = read_record(base)
+        if base_record is None:
+            raise ValueError("Boundary PR base has no active register")
+        introduced = set(boundary) - set(boundary_records(base_record["boundary"]))
+        if introduced:
+            base_sources = source_map(base)
+            # Compare the full base file even when it was not in that revision's
+            # import closure. Adding an import cannot launder an unchanged helper.
+            _names, source_bytes = revision_sources(base)
+            for path in {key[0] for key in introduced}:
+                if path in source_bytes and path not in base_sources:
+                    base_sources[path] = source_bytes[path].decode("utf-8")
+            base_sites = scan(base_sources)
+    validate(registry, current, origin, previous, base=base_record, base_sites=base_sites,
+             historic_debt=historic_debt, removed_boundary=removed_boundary, allow_new_boundary=allow_new,
+             current_sources=current_sources)
     return len(current)
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--observe":
         observations = scan(source_map())
+        registry = read_registry((ROOT / REGISTRY).read_text(encoding="utf-8"))
+        observed_proposal = proposal(observations, registry["boundary"])
         record = {"source_commit": git("rev-parse", "HEAD").decode().strip(),
                   "source_tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
                   "python": sys.version.split()[0], "platform": sys.platform,
-                  "sites_sha256": digest(json.dumps(proposal(observations), sort_keys=True, separators=(",", ":"))),
+                  "sites_sha256": digest(json.dumps(observed_proposal, sort_keys=True, separators=(",", ":"))),
                   "detectors": {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in (
                       "tests/interface_computation_guard.py", "tests/interface_computation_lex.py",
                       "tests/interface_computation_sources.py", ".github/scripts/interface_computation_ast.mjs")},
-                  "proposal": proposal(observations), "observations": observations}
+                  "proposal": observed_proposal, "observations": observations}
         Path(sys.argv[2]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         print(f"Observed {len(observations)} exact static sites; admission still requires review")
         print(f"DEBT_CENSUS_FINGERPRINT python={record['python']} platform={record['platform']} sites={len(observations)} sha256={record['sites_sha256']}")
