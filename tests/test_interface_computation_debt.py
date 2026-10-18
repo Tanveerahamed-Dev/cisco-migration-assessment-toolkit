@@ -667,6 +667,9 @@ def test_hosted_admission_removed_only_whole_paths_outside_the_interface_closure
         "ollama_retrieval_judge.py": 8, "portable": 860, "research_lane": 148,
         "setup.py": 3, "tools": 1720, "webapp": 16,
     }
+    assert Counter(row["path"] for row in removed if row["path"].startswith("webapp/")) == {
+        "webapp/dev.py": 7, "webapp/frontend/e2e-real/serve_real_backend.py": 9,
+    }
     selected = guard.source_map("26b9a978728f72f648dd01ef3d60bd9cd2da114d")
     removed_paths = {row["path"] for row in removed}
     assert removed_paths.isdisjoint(selected), "A live scanned module lost an allowance"
@@ -2283,3 +2286,274 @@ def test_literal_proof_reads_full_browser_entry_fragments(parser, container):
     assert len(current[0]["expression"]) == 240
     guard.validate(boundary_registry_of(current), current, debt, base=guard.proposal(debt), base_sites=debt,
                    current_sources={path: source})
+
+
+# Owner ruling 2026-10-19: explicit generic collisions, not debt transfers.
+def collision_example():
+    source = "def byte_count(value):\n return len(value)\n"
+    debt = guard.python_sites("shared/legacy.py", source)
+    after = guard.python_sites("client/transport.py", source)
+    assert len(debt) == len(after) == 1
+    assert debt[0]["rule"] == after[0]["rule"] == "aggregate"
+    assert debt[0]["fingerprint"] == after[0]["fingerprint"]
+    return debt[0], after[0]
+
+
+def collision_registry_of(debt, collisions, admission_class="response-shape-validation"):
+    record = guard.proposal(debt)
+    record["collisions"] = sorted([
+        {**boundary_record_of(site), "admission_class": admission_class,
+         "justification": "Checks transported element cardinality; derives no network fact."}
+        for site in collisions], key=guard.identity)
+    return record
+
+
+@pytest.mark.parametrize("admission_class", ["transport-serialization", "response-shape-validation",
+                                           "user-input-validation", "empty-state-presentation"])
+def test_collision_admits_a_new_file_only_with_visible_class_and_justification(admission_class):
+    assert guard.COLLISION_ADMISSION_CLASSES == {"transport-serialization", "response-shape-validation",
+                                                "user-input-validation", "empty-state-presentation"}
+    debt, after = collision_example()
+    assert guard.identity(debt) != guard.identity(after)
+    record = collision_registry_of([debt], [after], admission_class)
+    guard.validate(record, [debt, after], [debt], base=guard.proposal([debt]), base_sites=[debt])
+    # Without the explicit collision section the original copy refusal remains.
+    ordinary = guard.proposal([debt])
+    ordinary["boundary"] = [boundary_record_of(after)]
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(ordinary, [debt, after], [debt], base=guard.proposal([debt]), base_sites=[debt])
+
+
+@pytest.mark.parametrize("location", ["base", "ancestor", "historic"])
+def test_collision_never_reclassifies_an_exact_debt_identity(location):
+    debt, _after = collision_example()
+    kwargs = {"base": guard.proposal([]), "base_sites": []}
+    ancestors = []
+    if location == "base":
+        kwargs["base"] = guard.proposal([debt])
+    elif location == "ancestor":
+        ancestors = [guard.proposal([debt])]
+    else:
+        kwargs["historic_debt"] = {guard.identity(debt)}
+    with pytest.raises(ValueError, match="Debt-to-boundary moves/reclassification"):
+        guard.validate(collision_registry_of([], [debt]), [debt], [debt], ancestors, **kwargs)
+
+
+@pytest.mark.parametrize("change", ["all-removed", "one-of-two-removed", "one-of-two-modified"])
+def test_collision_preserves_every_base_debt_row_with_the_fingerprint(change):
+    debt, after = collision_example()
+    second = {**debt, "path": "shared/second.py"}
+    original = [debt, second]
+    if change == "all-removed":
+        remaining = []
+    elif change == "one-of-two-removed":
+        remaining = [debt]
+    else:
+        replacement = {**second, "fingerprint": "b" * 64}
+        original.append(replacement)  # Keep the immutable-ceiling check independent.
+        remaining = [debt, replacement]
+    with pytest.raises(ValueError, match="Collision admission removes or modifies matching debt"):
+        guard.validate(collision_registry_of(remaining, [after]), [*remaining, after], original,
+                       base=guard.proposal([debt, second]), base_sites=[debt, second])
+
+
+def test_collision_preserves_matching_fingerprints_across_other_debt_rules_too():
+    debt, after = collision_example()
+    other_rule = {**debt, "path": "shared/second.py", "rule": "count"}
+    with pytest.raises(ValueError, match="Collision admission removes or modifies matching debt"):
+        guard.validate(collision_registry_of([debt], [after]), [debt, after], [debt, other_rule],
+                       base=guard.proposal([debt, other_rule]), base_sites=[debt, other_rule])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("admission_class", None), ("admission_class", "unknown"), ("admission_class", False),
+    ("justification", None), ("justification", ""), ("justification", " "),
+    ("justification", "two\nlines"), ("justification", "two\r\nlines"),
+    ("justification", "two\u2028lines"), ("justification", " padded "),
+])
+def test_collision_missing_unknown_or_multiline_metadata_refuses(field, value):
+    debt, after = collision_example()
+    record = collision_registry_of([debt], [after])
+    if value is None:
+        record["collisions"][0].pop(field)
+    else:
+        record["collisions"][0][field] = value
+    with pytest.raises(ValueError, match="class|justification"):
+        guard.validate(record, [debt, after], [debt], base=guard.proposal([debt]), base_sites=[debt])
+
+
+@pytest.mark.parametrize("bad", [None, {}, "", False])
+def test_collision_omission_is_empty_but_malformed_explicit_section_refuses(bad):
+    debt, _after = collision_example()
+    legacy = guard.proposal([debt])
+    assert "collisions" not in legacy
+    guard.validate(legacy, [debt], [debt])
+    guard.validate({**legacy, "collisions": []}, [debt], [debt])
+    with pytest.raises(ValueError, match="Collision records"):
+        guard.validate({**legacy, "collisions": bad}, [debt], [debt])
+
+
+def test_collision_duplicate_extra_fields_and_cross_section_repetition_refuse():
+    debt, after = collision_example()
+    for kind in ("duplicate", "extra-field", "cross-section"):
+        record = collision_registry_of([debt], [after])
+        if kind == "duplicate":
+            record["collisions"].append(dict(record["collisions"][0]))
+        elif kind == "extra-field":
+            record["collisions"][0]["approval"] = "self-declared"
+        else:
+            record["boundary"] = [boundary_record_of(after)]
+        with pytest.raises(ValueError, match="Duplicate|closed exact"):
+            guard.validate(record, [debt, after], [debt], base=guard.proposal([debt]), base_sites=[debt])
+
+
+@pytest.mark.parametrize("direction", ["normal-to-collision", "collision-to-normal"])
+def test_collision_section_provenance_cannot_change_on_a_retained_identity(direction):
+    _debt, after = collision_example()
+    ordinary = boundary_registry_of([after])
+    collision = collision_registry_of([], [after])
+    before, record = (ordinary, collision) if direction == "normal-to-collision" else (collision, ordinary)
+    with pytest.raises(ValueError, match="changed normal/collision section"):
+        guard.validate(record, [after], [], base=before)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("admission_class", "user-input-validation"),
+    ("justification", "A different statement of purpose."), ("category", "ui-state"),
+])
+@pytest.mark.parametrize("location", ["base", "ancestor"])
+def test_collision_metadata_is_immutable_against_the_base_and_every_parent(field, value, location):
+    debt, after = collision_example()
+    before = collision_registry_of([debt], [after])
+    record = collision_registry_of([debt], [after])
+    record["collisions"][0][field] = value
+    kwargs = {"base": before} if location == "base" else {"base": record, "ancestors": [before]}
+    with pytest.raises(ValueError, match="retained .* changed"):
+        guard.validate(record, [debt, after], [debt], **kwargs)
+
+
+def test_retained_collision_does_not_freeze_later_genuine_debt_retirement():
+    debt, after = collision_example()
+    admitted = collision_registry_of([debt], [after])
+    guard.validate(admitted, [debt, after], [debt], base=guard.proposal([debt]), base_sites=[debt])
+    retained = collision_registry_of([], [after])
+    guard.validate(retained, [after], [debt], [admitted], base=admitted)
+    guard.validate(retained, [after], [debt], [admitted], base=retained, allow_new_boundary=False)
+
+
+def test_collision_must_have_a_substantive_active_base_witness():
+    debt, after = collision_example()
+    with pytest.raises(ValueError, match="active-base debt form"):
+        guard.validate(collision_registry_of([], [after]), [after], [debt],
+                       base=guard.proposal([]), base_sites=[], historic_debt={guard.identity(debt)})
+    different = {**after, "fingerprint": "b" * 64}
+    with pytest.raises(ValueError, match="active-base debt form"):
+        guard.validate(collision_registry_of([debt], [different]), [debt, different], [debt],
+                       base=guard.proposal([debt]), base_sites=[debt])
+
+
+@pytest.mark.parametrize("kind", ["dynamic-code", "forged-marker", "name-only", "qualified-lexical"])
+def test_collision_section_does_not_extend_other_existing_exceptions(kind):
+    debt, after = collision_example()
+    if kind == "dynamic-code":
+        debt, after = ({**row, "rule": "dynamic-code"} for row in (debt, after))
+    elif kind == "forged-marker":
+        after = {**after, "symbol": "<forbidden-pattern>"}
+    elif kind == "name-only":
+        debt, after = ({**row, "rule": "verdict-symbol"} for row in (debt, after))
+    else:
+        debt, after = ({**row, "symbol": "<forbidden-pattern>", "rule": "raw-count"} for row in (debt, after))
+    with pytest.raises(ValueError, match="Dynamic code|Reserved lexical marker|active-base debt form"):
+        guard.validate(collision_registry_of([debt], [after]), [debt, after], [debt],
+                       base=guard.proposal([debt]), base_sites=[debt])
+
+
+def test_collision_refuses_a_real_bare_literal_while_ordinary_literal_exception_survives():
+    source = "def fixed_value():\n return True\n"
+    debt = guard.python_sites("shared/legacy.py", source)
+    after = guard.python_sites("client/transport.py", source)
+    assert len(debt) == len(after) == 1
+    assert debt[0]["rule"] == after[0]["rule"] == "verdict-return"
+    assert after[0]["expression"] == "True"
+    ordinary = guard.proposal(debt)
+    ordinary["boundary"] = [boundary_record_of(after[0])]
+    guard.validate(ordinary, [*debt, *after], debt, base=guard.proposal(debt), base_sites=debt)
+    with pytest.raises(ValueError, match="active-base debt form"):
+        guard.validate(collision_registry_of(debt, after), [*debt, *after], debt,
+                       base=guard.proposal(debt), base_sites=debt)
+
+
+def test_collision_exception_still_refuses_same_symbol_replacement():
+    debt, _after = collision_example()
+    removed = {**debt, "path": "client/transport.py", "fingerprint": "b" * 64}
+    after = {**removed, "fingerprint": debt["fingerprint"]}
+    with pytest.raises(ValueError, match="rewrite of a debt symbol"):
+        guard.validate(collision_registry_of([debt], [after]), [debt, after], [debt, removed],
+                       base=guard.proposal([debt, removed]), base_sites=[debt, removed])
+
+
+def test_collision_keeps_unchanged_source_event_stale_and_resurrection_refusals():
+    debt, after = collision_example()
+    record = collision_registry_of([debt], [after])
+    base = guard.proposal([debt])
+    for kwargs, expected in [
+        ({"base_sites": [debt, after]}, "unchanged versus"),
+        ({"base_sites": [debt], "allow_new_boundary": False}, "PR/base event"),
+        ({"base_sites": [debt], "removed_boundary": {guard.identity(after)}}, "resurrected"),
+    ]:
+        with pytest.raises(ValueError, match=expected):
+            guard.validate(record, [debt, after], [debt], base=base, **kwargs)
+    with pytest.raises(ValueError, match="remove stale entries"):
+        guard.validate(record, [debt], [debt], base=base, base_sites=[debt])
+
+
+def test_collision_proposal_preserves_only_existing_visible_metadata_without_minting_it():
+    debt, after = collision_example()
+    admitted = collision_registry_of([debt], [after])["collisions"]
+    unadmitted = {**after, "path": "client/other.py"}
+    result = guard.proposal([debt, after, unadmitted], (), admitted)
+    assert result["collisions"] == admitted
+    assert {guard.identity(row) for row in result["sites"]} == {guard.identity(debt), guard.identity(unadmitted)}
+    result["collisions"][0]["justification"] = "Changed copy, not retained source metadata."
+    assert result["collisions"] != admitted
+    assert guard.proposal([], (), admitted)["collisions"] == []
+
+
+def test_collision_merge_cannot_hide_a_removed_collision_on_its_other_parent(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=keep")
+    (tmp_path / "basis.txt").write_text("source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    registry = tmp_path / guard.REGISTRY
+    registry.parent.mkdir(parents=True)
+    debt, after = collision_example()
+    registry.write_text(json.dumps(guard.proposal([debt])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Legacy debt base")
+    base = git("rev-parse", "HEAD")
+    retained = json.dumps(collision_registry_of([debt], [after]))
+    registry.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Reviewed generic collision")
+    git("checkout", "-b", "remove")
+    registry.write_text(json.dumps(guard.proposal([debt])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Remove collision and source")
+    removed = git("rev-parse", "HEAD")
+    git("checkout", "keep")
+    (tmp_path / "basis.txt").write_text("unrelated edit\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Advance other parent")
+    git("merge", "--no-ff", "--no-commit", "remove")
+    registry.write_text(retained, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt collision resurrection in merge")
+    assert removed in git("rev-list", "HEAD").splitlines()
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [debt, after])
+    monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
+    with pytest.raises(ValueError, match="resurrected"):
+        guard.check()

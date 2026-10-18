@@ -1,0 +1,44 @@
+{
+  "acceptance": false,
+  "candidate_policy": "Shared reviewed current helper, not independent policy implementation",
+  "compatibility": false,
+  "current_source_ready": false,
+  "dependency_validation": false,
+  "errors": [],
+  "final_source_rebuild_required": true,
+  "receiver": {
+    "commit": "03cd3376d4aa471ac71bc585a6211852fb963411",
+    "inputs": {
+      ".github/scripts/frontend_artifact_receive.py": "a77cf7713c3217165d061b083ae7dad400061a9e24a9c671f8fbd3bfda82be29",
+      ".github/scripts/frontend_candidate_admit.mjs": "cac9ebdd9b916d561c0d0c1882524d4c19bb4e9eb5cd67bfc32b730869e76f55",
+      ".github/scripts/frontend_dependency_prepare.mjs": "9bd8fa6d9bd0f06fb3d724601e2ef66f0ad01b703d521ce330b8fd516d17b35b",
+      "cisco_toolkit/__init__.py": "d05d733d491a76f9b2393e1e7bcf4e497efcc9c817ae8cee61d6ff49d30bb492",
+      "cisco_toolkit/distribution_verify.py": "532feb7505b984202b03dc10903e7baf42907cb9addccb99f79d0371e74e9b8f",
+      "cisco_toolkit/eoldb.py": "f782ab2bc422088463268d50f46d304ce826f1c870414d339414f13e101c2335",
+      "cisco_toolkit/registry_integrity.py": "a619c7847d0474122760bb79c551f3584e88964dd1f6cf26490368e847654e22"
+    },
+    "job": "frontend",
+    "platform": "linux",
+    "python": "3.12.15 (main, Oct  1 2026, 02:35:59) [GCC 13.3.0]",
+    "run_attempt": "1",
+    "run_id": "39157655584"
+  },
+  "release_authority": false,
+  "schema": "frontend-artifact-receive/1",
+  "status": "ADMITTED_EDIT_DATA_REVIEW_REQUIRED",
+  "subject": {
+    "artifact_bytes": 572287,
+    "artifact_id": 12146918318,
+    "artifact_sha256": "18b7f05cfb9ccf3772cc23d84d1350b7889a0fc539398de221f5d41b94ef1ece",
+    "base_sha": "0491291c38f0d50f6d86ee7950666767e1edb6f7",
+    "event": "pull_request",
+    "head_sha": "03cd3376d4aa471ac71bc585a6211852fb963411",
+    "job_id": 117759035229,
+    "npm_version": "11.17.0",
+    "profile": "frontend-dist",
+    "run_attempt": 1,
+    "run_id": 39155861315,
+    "schema": "frontend-artifact-selection/1",
+    "source_sha": "11ba0cf456cfc8f065336785486678c86fa288c0"
+  }
+}
