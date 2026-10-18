@@ -165,23 +165,23 @@ jobs:
           webapp/tests/test_carriage_ingestion.py webapp/tests/test_snapshot_raw.py
           webapp/tests/test_carriage_lifecycle.py
           webapp/tests/test_atlas_unplug_safety.py::test_serve_main_legacy_preparation_limit_refuses_clearly_and_retries_original_snapshot
-      # Hosted Linux Python 3.12 is the only timed leg (tests/test_vlan_carriage_budget.py :: _timed_leg):
-      # its millisecond ceilings need one unshared process, so that leg stays serial.
+      # Every leg runs the default suite in two passes that together are exactly the complete suite
+      # (tests/test_ci_gates.py :: test_every_parallel_suite_pass_has_its_serial_unshared_complement).
+      # The rest runs first in pytest-xdist workers, one test file per worker (--dist=loadfile, the Stop
+      # hook's mode). The tests marked `unshared` (pytest.ini) need the runner to themselves -- the G14
+      # millisecond budgets, real Windows captures under the product's own git and debugger deadlines --
+      # and run last in one serial process. The whole suite in ONE interpreter, the cross-file
+      # contamination check, stays with the serial Coverage job and the portable gate's serial shards.
       - name: Run the complete default suite
-        if: matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-        run: python -m pytest --durations=40
-      # Every other leg runs the identical default suite in pytest-xdist workers, one test file per
-      # worker (--dist=loadfile, the mode the local Stop hook already uses). Nothing is deselected,
-      # skipped or retried; only the wall clock changes (Windows was about 127 minutes serially).
-      - name: Run the complete default suite in parallel workers
-        if: matrix.os != 'ubuntu-24.04' || matrix.python-version != '3.12'
+        run: python -m pytest --durations=40 -n auto --dist=loadfile -m "not unshared"
+      - name: Run the unshared part of the default suite in one process
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-        run: python -m pytest --durations=40 -n auto --dist=loadfile
+        run: python -m pytest --durations=40 -m unshared
       - name: Reproduce the complete committed sample under UTC
         if: matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'
         env:
@@ -225,13 +225,9 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      # The same default suite and the same 85 % floor, measured across pytest-xdist workers (pytest-cov
-      # combines their data before the floor is checked); serially this job took about 147 minutes.
       - name: Coverage gate
         run: >-
           python -m pytest
-          -n auto
-          --dist=loadfile
           --cov=cisco_toolkit
           --cov-report=term-missing:skip-covered
           --cov-fail-under=85

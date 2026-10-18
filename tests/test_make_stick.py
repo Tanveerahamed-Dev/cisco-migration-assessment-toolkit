@@ -821,8 +821,17 @@ def test_release_package_longest_member_verifies_at_deep_updater_path(tmp_path):
     failed_member = (
         dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
     )
-    while len(os.fspath(failed_member)) < 266:
+    # Whole segments first, then one final segment sized from the actual prefix, so the failed-rollback
+    # member is 266 characters (267 if the prefix ends one short) and the staging member, always 27
+    # shorter, 239 or 240 -- whatever the length of the temporary root (a pytest-xdist worker's adds
+    # `popen-gwN`). Whole 30-character steps alone landed the staging member anywhere in 239..268.
+    while len(os.fspath(failed_member)) < 266 - 31:
         dest /= "deep-segment-xxxxxxxxxxxxxxxx"
+        failed_member = (
+            dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
+        )
+    if len(os.fspath(failed_member)) < 266:
+        dest /= "d" * max(1, 266 - len(os.fspath(failed_member)) - 1)
         failed_member = (
             dest / ("Atlas.failed-rollback-" + "a" * 32) / LONGEST_RUNTIME_MEMBER
         )

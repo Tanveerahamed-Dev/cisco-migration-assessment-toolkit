@@ -38,6 +38,12 @@ def _timed_leg():
     return sys.platform.startswith("linux") and sys.version_info[:2] == (3, 12) and not traced
 
 
+# The ceilings need the runner to themselves, so CI runs this module in its serial `unshared` pass
+# (pytest.ini). The mark is unconditional: a mark that followed _timed_leg() would depend on when each
+# process starts coverage tracing, and a module marked in one pass but not the other runs in neither.
+pytestmark = pytest.mark.unshared
+
+
 BUDGET = {"section_bytes": 6_000_000, "section_growth_v100_v200": 600_000, "summary_bytes": 4_096,
           "inventory_growth_bytes": 1_000_000, "compute_ms": 3_000, "validate_ms": 1_500,
           "document_growth_ms": 2_000, "page_ms": 300, "page_bytes": 3_000_000}
