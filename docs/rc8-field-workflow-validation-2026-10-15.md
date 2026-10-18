@@ -699,3 +699,44 @@ observation/acquisition sequence or explicit static-observer direction is still 
 The existing frontend-input/reproduction and independent per-record review requirements remain.
 There is no 14/14, runtime, admission or completion claim for this local integration. No PR
 merge or release publishing is authorized.
+
+## Owner clarification, main #690 and isolated parser preflight — 2026-10-18
+
+The owner resolves the preceding scope and identity questions: keep the registered `equalJson`
+reuse; the earlier `sameIdentity` wording is superseded. Independent static review at local
+`268c189e52d75c8d36ad9570387925d85e5ebe9a` confirms that the actual fresh three-field pin
+comparison retains revision, digest and selection-event equality. It finds no new engine-owned
+network fact in the reviewed page/API additions. Structure, request identity, cancellation,
+bounded byte handling and form serialization remain candidates for individual exact-site
+review, not a blanket admission or runtime PASS. The independent final reviewer must confirm
+equivalence and approve or reject every proposed record by its exact identity.
+
+Zero additions applies to the debt list. The owner permits separately justified boundary
+proposals beyond `planResponseChunks`, including pure serialization and transport mechanics.
+A user-facing engine-owned fact cannot be admitted. The exact detector result is still needed;
+no fingerprint, occurrence or additional allowance is inferred from this semantic review.
+
+Normal merge `268c189e52d75c8d36ad9570387925d85e5ebe9a` integrates specified main
+`ee5ee274210d84083b99ae1c407b2c1ca9182e86` (#690) onto local `3de6f5f9`. All seven incoming
+non-SSOT files exactly retain main's bytes, including faster parallel CI, the `unshared`
+pytest marker and its tests. The merged SSOT retains both main's partition contract and this
+feature's saved-plan owner row. `docs/NOW.md` is byte-identical to main. No authored detector,
+test, budget, timeout, sample, golden, package manifest, lockfile or compiled asset is changed.
+
+The owner explicitly permits the canonical source-only observer locally: deterministic,
+sub-minute source parsing, no tests or application imports, with hosted observation binding on
+the pushed head. Exactly `typescript@5.9.3` and `parse5@8.0.1` may be installed outside the
+repository with `--ignore-scripts`, after comparing integrity with the repository lockfile;
+the scratch installation must be deleted afterward. Both package versions and SHA-512 entries
+exist in both repository lockfiles. Static dependency preflight, before any installation,
+finds that parse5 also requires `entities` (`^8.0.0`); `atlas-scope/package-lock.json` locks it
+to `8.1.0`. That third package is outside the explicit two-package authorization. A required
+scope question is pending before any installation; no packages, repository `node_modules` or
+lockfiles have been installed or modified. No observer or test function has executed, and no
+observer output digest exists. This is a dependency-authorization blocker, not an integrity
+mismatch or an executed detector failure.
+
+The one source push remains unused. Exact records, fresh final-tree Rule-7 scans, source-bound
+frontend reproduction, the binding hosted observation and all 14 exact-head required contexts
+remain pending. Earlier Rule-7 and hosted receipts keep their original source scope. No PR merge,
+signing, qualification or release publication is authorized.
