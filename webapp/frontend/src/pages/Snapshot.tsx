@@ -1037,15 +1037,6 @@ export default function SnapshotPage() {
 
       <VerificationWarning value={s.verification} />
 
-      <section className="panel" aria-labelledby="saved-plan-door">
-        <h2 id="saved-plan-door" style={{ lineHeight: "32px" }}>Saved plans and document downloads</h2>
-        <p>Save requirements as a named revision, reopen that plan, and download its matching MOP,
-          NRFU and design documents. Saving a plan keeps it an unapproved draft.</p>
-        <Link className="btn primary" to={`/snapshots/${sid}/plans`}>Open saved plans · MOP / NRFU</Link>
-        <p className="faint">The design tools below are an unsaved preview. Their assessment download
-          buttons use the original baseline; edited preview requirements do not change those downloads.</p>
-      </section>
-
       {/* KPI hero */}
       <div className="grid" style={{ gridTemplateColumns: "auto 1fr 1fr 1fr", gap: 16, alignItems: "stretch" }}>
         <div className="panel" style={{ display: "grid", placeItems: "center" }}>
