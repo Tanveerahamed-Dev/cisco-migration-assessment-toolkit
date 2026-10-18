@@ -1,0 +1,14 @@
+{
+  "base_source": "8c4b87d8bc149a30fcd05f5efcd123856a2778e6",
+  "base_tree": "aa003b01248588220d22face7e8218f96a9ada84",
+  "candidate_source": "a7a8bf141637cd7d1be40260126b0cbbec071ecb",
+  "candidate_tree": "139a46f044ee66d7a239f9e5b242ff8808f7e8c1",
+  "candidate_data_sha256": "a4acad6bcefc29dae6c7bbe803fc43394314b9b34f0efbea33793572220611d6",
+  "author_name": "Atlas diagnostic",
+  "author_email": "atlas-diagnostic@users.noreply.github.com",
+  "author_date": "2026-10-18T00:00:00+00:00",
+  "committer_name": "Atlas diagnostic",
+  "committer_email": "atlas-diagnostic@users.noreply.github.com",
+  "committer_date": "2026-10-18T00:00:00+00:00",
+  "message": "diagnostic: source-view fixture template counterfactual\n"
+}

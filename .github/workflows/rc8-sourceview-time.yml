@@ -1,0 +1,92 @@
+name: RC8 source-view fixture cost counterfactual
+on:
+  push:
+    branches: [codex/rc8-order-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [original, candidate]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Start unchanged absolute diagnostic clock
+        shell: bash
+        run: echo "ATLAS_DIAGNOSTIC_DEADLINE=$(( $(date +%s) + 6900 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 5
+        env:
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          path: control
+          persist-credentials: false
+      - name: Budget the source checkout
+        shell: bash
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        env:
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.eol
+          GIT_CONFIG_VALUE_1: lf
+        with:
+          ref: 8c4b87d8bc149a30fcd05f5efcd123856a2778e6
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Budget Python setup
+        shell: bash
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          arm_action
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        timeout-minutes: ${{ fromJSON(env.ATLAS_SETUP_MINUTES) }}
+        with:
+          python-version: "3.12.10"
+      - name: Prepare the exact original or runner-only fixture candidate
+        id: subject
+        shell: bash
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          mkdir "$RUNNER_TEMP/sourceview"
+          bounded python -I -B control/.github/diagnostics/rc8_sourceview_prepare.py --subject subject \
+            --candidate-json control/.github/diagnostics/rc8_sourceview_candidate.json \
+            --recipe control/.github/diagnostics/rc8_sourceview_counterfactual.json \
+            --case "${{ matrix.case }}" --output "$RUNNER_TEMP/sourceview/preparation.json"
+      - name: Install the common development environment
+        working-directory: subject
+        shell: bash
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -m pip install --upgrade 'pip==26.2.1'
+          bounded python -m pip install -r requirements-dev.txt
+      - name: Raw six cases, then a separate fixture-copy proof
+        shell: bash
+        run: |
+          source "$GITHUB_WORKSPACE/control/.github/diagnostics/rc8_deadline.sh"
+          bounded python -I -B control/.github/diagnostics/rc8_sourceview_time.py --subject subject \
+            --candidate-json control/.github/diagnostics/rc8_sourceview_candidate.json \
+            --recipe control/.github/diagnostics/rc8_sourceview_counterfactual.json \
+            --case "${{ matrix.case }}" --source ${{ steps.subject.outputs.source }} \
+            --tree ${{ steps.subject.outputs.tree }} --output "$RUNNER_TEMP/sourceview/measurements"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: rc8-sourceview-time-${{ matrix.case }}-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/sourceview
+          if-no-files-found: error
