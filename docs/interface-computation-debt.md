@@ -989,3 +989,38 @@ buffers and caller-discarded facts without cyclic collection. It cannot collect
 or prime the main pytest process. A passing probe establishes that payload
 lifetime property, not the cause or resolution of either timing violation. Both
 full-suite budget failures remain negative evidence for independent review.
+
+## PR-1 presentation-only JSX footprints
+
+The owner approved extracting exactly three inline `display: "block"` declarations
+into one dedicated stylesheet rule. These CSS values are presentation, not engine
+computations. In hosted CI `39079414845`, job `117533311971`, the unchanged detector
+conservatively captured each complete JSX return because it contained the exact
+verdict-vocabulary literal `"block"`. The checkout `ed8349b6` has the exact
+`b4ecd442` tree, `52c9cb080067792b1e61a0d526ad9791924c7d35`.
+
+These are the **unadmitted candidate** footprints removed by that presentation
+refactor; they were never added to the register. Lines below refer to `b4ecd442`.
+
+| File and symbol | JSX return line / CSS trigger line | Old `fact-decision` fingerprint (occurrence 1) |
+|---|---|---|
+| `webapp/frontend/src/components/TopologyGraph.tsx :: TopologyGraph` | 305 / 388 | `d6b8a1719cdef1f47139aa6121410599e4509375bb0639466a8009ad6c925838` |
+| `webapp/frontend/src/pages/Campaign.tsx :: CampaignPage` | 672 / 693 | `9d9e32e0e90a3bea4a8c2031d5602556b283aa5ee7886a85ccfa9bbe5f420be7` |
+| `webapp/frontend/src/pages/Snapshot.tsx :: SnapshotPage` | 997 / 1078 | `6ce0ceb560899b0b7747e611089b7133e0a21906247472896d84031c8f7884db` |
+
+`styles.css` ends with one rule for `svg.atlas-ssot-block`,
+`a.atlas-ssot-block` and `iframe.atlas-ssot-block`: `display: block`. The dedicated
+class is used only at those three sites; no other markup is restructured. Each
+selector has specificity `(0,1,1)`. The three authored stylesheets contain no
+competing display declaration matching these elements: the campaign link's
+existing `panel` class does not set display, and the projection-specific display
+selectors do not match. No `!important` or runtime style override is introduced.
+Independent review must explicitly verify the unchanged rendering/cascade,
+three-site-only scope, old fingerprint/file/line disclosures and zero additions.
+
+This refactor leaves every detector, boundary-register rule and engine
+computation byte-unchanged. It admits no boundary record and adds **zero** debt
+identities. The separate 107 stale registered identities identified by that
+hosted census may only be deleted; the final post-#682 census and shrink-only
+checks must still execute on GitHub. Tracked frontend dist is rebuilt and
+received through the existing hosted handoff, never locally.

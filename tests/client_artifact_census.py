@@ -1381,7 +1381,7 @@ ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
     "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
-    "webapp/frontend/src/pages/Snapshot.tsx": "1a368837046e31d089d4c8549798949f49083c15",
+    "webapp/frontend/src/pages/Snapshot.tsx": "c0346779e2bb683eae1b89dcd92bb74fc808dcf6",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
     "webapp/backend/app.py": "6ee882af65599d7209be6b4a64a07dd73757515a",

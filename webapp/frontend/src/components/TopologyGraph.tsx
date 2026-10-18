@@ -385,7 +385,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             Every switch is hidden by the current filter — clear “Linked only” above.
           </div>
         )}
-        <svg viewBox={`0 0 ${view.W} ${view.H}`} style={{ width: "100%", height: "auto", maxHeight: "72vh", display: "block", cursor: drag.current ? "grabbing" : "grab" }}
+        <svg className="atlas-ssot-block" viewBox={`0 0 ${view.W} ${view.H}`} style={{ width: "100%", height: "auto", maxHeight: "72vh", cursor: drag.current ? "grabbing" : "grab" }}
           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => { onUp(); setHover(null); }}>
           <g transform={`translate(${t.x},${t.y}) scale(${t.k})`}>
             {/* role lane bands + labels */}

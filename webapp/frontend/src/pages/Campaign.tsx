@@ -689,8 +689,8 @@ export default function CampaignPage() {
             {snaps.length === 0 ? <div className="faint" style={{ fontSize: 13 }}>No snapshots yet — upload one on the right.</div> : (
               <div className="grid" style={{ gap: 10 }}>
                 {snaps.map((s, i) => (
-                  <Link key={s.id} to={`/snapshots/${s.id}`} className="panel"
-                    style={{ padding: 14, display: "block", color: "inherit", textDecoration: "none", background: "var(--surface-2)", ["--stagger-i" as any]: Math.min(i, 8) }}>
+                  <Link key={s.id} to={`/snapshots/${s.id}`} className="panel atlas-ssot-block"
+                    style={{ padding: 14, color: "inherit", textDecoration: "none", background: "var(--surface-2)", ["--stagger-i" as any]: Math.min(i, 8) }}>
                     <div className="spread">
                       <div className="row-flex" style={{ gap: 10 }}>
                         <span className="chip mono">C{i + 1}</span>

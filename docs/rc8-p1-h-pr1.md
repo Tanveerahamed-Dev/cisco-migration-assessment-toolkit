@@ -94,9 +94,16 @@ the new hosted census must still prove the final post-#682 register.
 All three new identities are `fact-decision` footprints on the complete JSX
 returns in TopologyGraph, Campaign and Snapshot. Source inspection identifies
 the only exact verdict-vocabulary string in each return as the CSS display
-value `"block"`. The requested shared-stylesheet cleanup is awaiting the
-supervisor's ruling; no detector exception, boundary admission or register
-growth is proposed. Existing engine facts and rendering states stay required.
+value `"block"`. The owner approved moving only those three declarations into
+the dedicated `atlas-ssot-block` stylesheet rule. The exact CSS value is retained;
+no other markup is restructured. The authored stylesheets have no competing
+display rule on these three elements. The detector, boundary rules and engine
+computations remain byte-identical across this presentation refactor.
+`docs/interface-computation-debt.md` names every old candidate fingerprint and
+source line; no detector exception, boundary admission or register addition is
+proposed. Independent review must verify the cascade, three-site-only scope,
+fingerprint disclosures and zero additions explicitly. Existing engine facts
+and rendering states stay required.
 
 After integration, re-run the stale-entry, shrink-only, resurrection, canonical
 reconcile and complete hosted gates. Rebuild the changed SPA through webapp-ci's

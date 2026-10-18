@@ -1073,9 +1073,9 @@ export default function SnapshotPage() {
             {/* sandbox WITHOUT allow-same-origin: the explorer is fully self-contained (embedded
                 snapshot; storage is feature-detected for opaque origins), so it needs no origin —
                 and must never inherit ours (script there would otherwise reach this app's API). */}
-            <iframe title="Network Migration Explorer" src={api.explorerUrl(sid)}
+            <iframe className="atlas-ssot-block" title="Network Migration Explorer" src={api.explorerUrl(sid)}
               sandbox="allow-scripts allow-downloads allow-modals"
-              style={{ width: "100%", height: "78vh", border: 0, display: "block", background: "var(--bg)" }} />
+              style={{ width: "100%", height: "78vh", border: 0, background: "var(--bg)" }} />
           </div>
         )}
 
