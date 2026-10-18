@@ -26,7 +26,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32",
                                 reason="Windows-only stick layout script (robocopy/powershell)")
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "portable" / "make_stick.ps1"
+# The same transaction is now a bundled resource. Keep every fault/recovery case
+# on the real owner; the public wrapper has its own frozen end-to-end proof.
+SCRIPT = ROOT / "portable" / "update_transaction.ps1"
 
 
 def _command(*args: str, skip_selftest: bool = True) -> list[str]:
@@ -36,6 +38,9 @@ def _command(*args: str, skip_selftest: bool = True) -> list[str]:
     ]
     if skip_selftest:
         command.append("-SkipSelftest")
+    if "-Package" in args:
+        package = Path(args[args.index("-Package") + 1])
+        command.extend(["-VerifierExe", str(package.parent / "verifier.exe")])
     return command
 
 
@@ -799,14 +804,75 @@ def _release_package(tmp_path: Path, *, longest_member: bool = False) -> Path:
     }
     output = tmp_path / "package-output"
     index = release.build_portable_release(repository, bundle, output, qualification)
+    # A test-only protocol adapter lets the unmodified transaction exercise the
+    # exact Python verifier on synthetic packages. Production always supplies the
+    # installed frozen executable; it has no interpreter fallback.
+    shim_source = tmp_path / "verifier.cs"
+    executable = str(Path(sys.executable)).replace('"', '""')
+    working = str(ROOT).replace('"', '""')
+    shim_source.write_text(
+        r'''using System; using System.Diagnostics; using System.Linq;
+class V {
+  static int Main(string[] a) {
+    if (a.Length == 0 || a[0] != "--verify-release") return 2;
+    var p = new ProcessStartInfo();
+    p.FileName = @"''' + executable + r'''";
+    p.WorkingDirectory = @"''' + working + r'''";
+    p.UseShellExecute = false;
+    p.Arguments = "-B -m portable.verify_release " + String.Join(" ", a.Skip(1).Select(x => "\"" + x.Replace("\"", "\\\"") + "\""));
+    using (var child = Process.Start(p)) { child.WaitForExit(); return child.ExitCode; }
+  }
+}''', encoding="ascii",
+    )
+    _compile_test_exe(shim_source, output / "verifier.exe")
     return output / index["zip"]["name"]
+
+
+@pytest.mark.parametrize("phase,committed", [("activated", False), ("rollback_slot_prepared", True)])
+def test_explicit_recovery_finishes_recorded_version_without_reapplying_new_source(tmp_path, phase, committed):
+    source = _fake_bundle(tmp_path)
+    destination = tmp_path / "recover-only"
+    destination.mkdir()
+    assert _run("-Dest", str(destination), "-Source", str(source)).returncode == 0
+    active = destination / "Atlas"
+    (active / "data" / "synthetic-evidence.bin").write_bytes(b"original client bytes")
+    original_exe = (active / "Atlas.exe").read_bytes()
+    (source / "Atlas.exe").write_bytes(b"MZ candidate version two")
+    interrupted = _run("-Dest", str(destination), "-Source", str(source), "-TestFailAfter", phase)
+    assert interrupted.returncode == 70, interrupted.stdout + interrupted.stderr
+    # A normal retry would apply this third version after recovery. Explicit
+    # recovery must stop after the existing conservative rollback/commit decision.
+    (source / "Atlas.exe").write_bytes(b"MZ later source version three")
+    recovered = _run("-Dest", str(destination), "-Source", str(source), "-RecoverOnly")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    if committed:
+        assert (active / "Atlas.exe").read_bytes() == b"MZ candidate version two"
+        assert (destination / "Atlas.previous" / "Atlas.exe").read_bytes() == original_exe
+    else:
+        assert (active / "Atlas.exe").read_bytes() == original_exe
+        assert not (destination / "Atlas.previous").exists()
+        quarantined = list(destination.glob("Atlas.failed-update-*"))
+        assert len(quarantined) == 1
+        assert (quarantined[0] / "Atlas.exe").read_bytes() == b"MZ candidate version two"
+    assert (active / "data" / "synthetic-evidence.bin").read_bytes() == b"original client bytes"
+    assert not (destination / "Atlas.update-state.json").exists()
+    before = _app_tree_hash(active)
+    refused = _run("-Dest", str(destination), "-Source", str(source), "-RecoverOnly")
+    assert refused.returncode != 0
+    assert "requires an existing transaction journal" in refused.stdout + refused.stderr
+    assert _app_tree_hash(active) == before
+    if committed:
+        assert (destination / "Atlas.previous" / "Atlas.exe").read_bytes() == original_exe
+    else:
+        assert not (destination / "Atlas.previous").exists()
 
 
 def test_release_package_is_copied_verified_extracted_and_reverified(tmp_path):
     package = _release_package(tmp_path)
     dest = tmp_path / "package-stick"
     dest.mkdir()
-    result = _run("-Dest", str(dest), "-Package", str(package), skip_selftest=False)
+    result = _run("-Dest", str(dest), "-Package", str(package),
+                  "-ExpectedSha256", hashlib.sha256(package.read_bytes()).hexdigest(), skip_selftest=False)
     assert result.returncode == 0, result.stdout + result.stderr
     target = dest / "Atlas"
     assert (target / "Atlas.exe").is_file()
@@ -814,6 +880,22 @@ def test_release_package_is_copied_verified_extracted_and_reverified(tmp_path):
     assert (target / "data").is_dir()
     assert not (dest / ".Atlas.update-package.zip").exists()
     assert not (dest / ".Atlas.update-extract").exists()
+
+
+def test_release_transaction_refuses_wrong_operator_digest_before_activation(tmp_path):
+    package = _release_package(tmp_path)
+    dest = tmp_path / "wrong-digest-stick"
+    dest.mkdir()
+    canary = dest / "operator-canary.bin"
+    canary.write_bytes(b"preserve outside application")
+    result = _run("-Dest", str(dest), "-Package", str(package),
+                  "-ExpectedSha256", "0" * 64, skip_selftest=False)
+    assert result.returncode != 0
+    assert "differs from the published sha-256 expectation" in (result.stdout + result.stderr).lower()
+    assert not (dest / "Atlas").exists()
+    assert not (dest / "Atlas.previous").exists()
+    assert not (dest / "Atlas.update-state.json").exists()
+    assert canary.read_bytes() == b"preserve outside application"
 
 
 def test_release_package_longest_member_verifies_at_deep_updater_path(tmp_path):

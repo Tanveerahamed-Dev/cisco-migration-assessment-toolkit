@@ -315,6 +315,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if (-not (Test-Path -LiteralPath dist-hub/index.html -PathType Leaf)) { throw 'npm run build:hub wrote no dist-hub/index.html' }
           if (Get-ChildItem -LiteralPath dist-hub -Recurse -File -Filter '*.map') { throw 'the hub build carries sourcemaps' }
+      - name: Run desktop source contracts in an external development environment
+        shell: pwsh
+        run: |
+          $desktopSourceRoot = (Get-Location).Path
+          $desktopDevSource = Join-Path $env:RUNNER_TEMP 'atlas-desktop-dev-source'
+          $desktopDevVenv = Join-Path $env:RUNNER_TEMP 'atlas-desktop-dev-venv'
+          if ((Test-Path -LiteralPath $desktopDevSource) -or (Test-Path -LiteralPath $desktopDevVenv)) { throw 'desktop development environment must be fresh' }
+          git -c core.hooksPath=NUL clone --no-hardlinks --no-checkout $desktopSourceRoot $desktopDevSource
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $desktopDevSource config core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $desktopDevSource config core.eol lf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -c core.hooksPath=NUL -C $desktopDevSource checkout --detach '${{ steps.source.outputs.commit }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((git -C $desktopDevSource rev-parse HEAD) -ne '${{ steps.source.outputs.commit }}') { throw 'desktop development source commit differs' }
+          if ((git -C $desktopDevSource rev-parse 'HEAD^{tree}') -ne '${{ steps.source.outputs.tree }}') { throw 'desktop development source tree differs' }
+          if (git -C $desktopDevSource status --porcelain) { throw 'desktop development source is not clean' }
+          python -m venv $desktopDevVenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $desktopPriorPath = $env:PATH
+          try {
+            $env:PATH = (Join-Path $desktopDevVenv 'Scripts') + [IO.Path]::PathSeparator + $desktopPriorPath
+            python -m pip install --upgrade 'pip==26.2.1'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # The editable installation writes only in this external source copy.
+            Set-Location -LiteralPath $desktopDevSource
+            python -m pip install -r requirements-dev.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Set-Location -LiteralPath $desktopSourceRoot
+            python -m pytest -q -p no:cacheprovider tests/test_portable_maintenance.py tests/test_portable_maintenance_handoff.py tests/test_portable_source_view.py tests/test_portable_managed_pe.py tests/test_portable_desktop_proof.py tests/test_make_stick.py tests/test_readme_field.py tests/test_atlas_bundle.py tests/test_registry_freshness.py tests/test_portable_entry_adapter.py
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Set-Location -LiteralPath $desktopSourceRoot
+            $env:PATH = $desktopPriorPath
+          }
       - name: Create isolated hash-locked build environment
         shell: pwsh
         run: |
@@ -336,6 +372,13 @@ jobs:
           & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.build_release --output "$env:RUNNER_TEMP\atlas-portable-release" --json-out "$env:RUNNER_TEMP\portable-controller.json"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" -m portable.verify_release --release-dir "$env:RUNNER_TEMP\atlas-portable-release"
+      - name: Prove frozen smoke and desktop maintenance with every host Python hidden
+        shell: pwsh
+        run: |
+          # The absolute interpreter is the observing harness only. Atlas and every child
+          # receive System32-only PATH, no py launcher, no Python overrides, and an external cwd.
+          & "$env:RUNNER_TEMP\atlas-portable-venv\Scripts\python.exe" .github/scripts/prove_portable_no_python.py --release-dir "$env:RUNNER_TEMP\atlas-portable-release" --json-out "$env:RUNNER_TEMP\atlas-desktop-no-python-proof.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prove build did not change tracked source
         shell: pwsh
         run: |
@@ -346,6 +389,13 @@ jobs:
           name: atlas-portable-${{ steps.source.outputs.commit }}
           path: |
             ${{ runner.temp }}/atlas-portable-release/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Python-absent desktop proof separately from the closed release set
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: atlas-desktop-no-python-${{ steps.source.outputs.commit }}
+          path: ${{ runner.temp }}/atlas-desktop-no-python-proof.json
           if-no-files-found: error
           retention-days: 30
   verify_candidate:
