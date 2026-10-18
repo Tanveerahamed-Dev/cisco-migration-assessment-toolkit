@@ -47,13 +47,33 @@ unchanged helper. A new record must identify a site introduced or moved by this
 PR under the detector's normalized identity; comments, whitespace and line moves
 alone are not new sites. Retained base records need no repeat admission, but
 their categories cannot change. Main-push validation rechecks the merged delta
-against its `before` SHA. Manual jobs may retain main's records and cannot admit
-new ones; missing, malformed or mismatched PR/base context refuses.
+against its `before` SHA. Outside a main-PR or main-push event (including stacked
+PRs, local runs and manual dispatch), the comparison is `git merge-base HEAD
+origin/main`, with **retention only**. An older checkout is not compared with
+later main removals. Introduced records still refuse there; a missing comparison
+ref or malformed/mismatched main event fails closed. An admission PR must target
+`main` (including #667 before its admission push). Direct main pushes can pass
+structural admission: branch protection and independent review, not this event
+reader, enforce the prohibition on unreviewed direct publication.
 
 Debt remains **strictly shrink-only** against its immutable source ceiling and
 every active ancestor. No debt record, including a deleted historical record
-from an earlier schema, may move into `boundary`. Boundary records must also
-match current detections exactly, so removal of code requires removal of its
+from an earlier schema, may move into `boundary`. For each introduced
+symbol-qualified AST record, the guard rejects a `(rule, fingerprint)` match
+against **all** current, base, active-ancestor and historic debt, independent of
+path, symbol or occurrence. It also rejects a `(path, symbol, rule)` match to a
+debt row removed by this PR, catching rewrites in the same symbol. There is no
+same-file narrowing. Exact-tuple debt transfers still refuse for every rule.
+
+The location-independent and removed-symbol checks deliberately exclude the
+context-free lexical `<forbidden-pattern>` and `<generated-payload>` rows:
+their short token spans collide across unrelated code. **Reviewer-only provenance
+checks remain mandatory** for rewritten debt whose fingerprint changes and whose
+path/symbol/rule also changes, engine-role computations moved into the interface,
+and sites detected only by lexical tripwires. Reviewers must reject these when
+they compute engine-owned facts; syntactic eligibility is not semantic admission.
+No category mechanically certifies a detector rule fact-free. Boundary records
+must also match current detections exactly, so removal of code requires removal of its
 record. Full Git history and every merge parent expose boundary removals;
 restoring a removed identity, even with another category, refuses. An admission
 proposal preserves existing boundary metadata only for still-observed sites and
@@ -73,8 +93,11 @@ Synthetic controls in `tests/test_interface_computation_debt.py` cover each
 category, malformed/missing categories and identities, duplicates, additional
 findings in the same symbol, unchanged base code, outside-closure helpers,
 unrelated-symbol edits, legitimate new/moved sites, missing/base context,
-category changes, current/base/ancestor/historical debt transfers, boundary
-removal/resurrection on either merge parent, and forbidden later v3 resets.
+category changes, current/base/ancestor/historical debt transfers, moves to a
+new file, symbol renames, copied occurrences, renamed historic debt and in-place
+rewrites, boundary removal/resurrection on either merge parent, register deletion
+and restoration, retained-only contexts and forbidden later v3/observation resets.
+A hosted-only control binds the real event base even when the boundary is empty.
 They also pin the unchanged detector. Runtime execution and final-head evidence
 belong to GitHub; PR-0b requires 15/15 and maximum-depth independent review.
 

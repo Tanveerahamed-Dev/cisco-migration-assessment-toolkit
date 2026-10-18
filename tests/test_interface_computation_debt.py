@@ -1357,8 +1357,12 @@ def test_a_different_historical_source_origin_cannot_reset_the_ceiling():
         guard.validate(guard.proposal([]), [], [], [prior])
 
 
-@pytest.mark.parametrize("stage", ["observation_required", "disabled"])
-def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_path, monkeypatch, stage):
+@pytest.mark.parametrize("schema,stage,error,match", [
+    ("interface-computation-debt/3", "observation_required", subprocess.CalledProcessError, None),
+    ("interface-computation-debt/4", "observation_required", ValueError, "unauthorized"),
+    ("interface-computation-debt/4", "disabled", ValueError, "unauthorized"),
+])
+def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_path, monkeypatch, schema, stage, error, match):
     def git(*args):
         return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Ratchet Test",
             "-c", "user.email=ratchet@example.invalid", "-c", "commit.gpgsign=false",
@@ -1387,9 +1391,12 @@ def test_only_the_pinned_initial_observation_may_be_inactive_in_git_history(tmp_
     monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
     monkeypatch.setattr(guard, "scan", lambda sources: [site])
     assert guard.check() == 1  # The genuine pinned bootstrap remains admissible.
-    record({**guard.proposal([]), "stage": stage}, "Remove while attempting to disable")
+    inactive = {**guard.proposal([]), "schema": schema, "stage": stage}
+    if schema == "interface-computation-debt/3":
+        inactive.pop("boundary")
+    record(inactive, "Remove while attempting to disable")
     record(guard.proposal([site]), "Restore the removed allowance and active stage")
-    with pytest.raises(ValueError, match="unauthorized"):
+    with pytest.raises(error, match=match):
         guard.check()
 
 
@@ -1502,7 +1509,7 @@ def test_boundary_exact_identity_shape_is_not_a_wildcard_or_loose_type(field, va
     sites = boundary_comparison_sites()
     record = boundary_registry_of(sites)
     record["boundary"][0][field] = value
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="closed exact sites" if field == "extra" else "malformed exact types"):
         guard.validate(record, sites, [], base=guard.proposal([]), base_sites=[])
 
 
@@ -1710,7 +1717,7 @@ def test_boundary_policy_does_not_change_the_merged_detector_or_source_discovery
         assert (guard.ROOT / path).read_bytes() == guard.git("show", baseline + ":" + path)
 
 
-@pytest.mark.parametrize("source_kind", ["pr-head", "pr-merge", "wrong-checkout", "malformed-base", "missing-base", "push-main", "manual"])
+@pytest.mark.parametrize("source_kind", ["pr-head", "pr-merge", "wrong-checkout", "malformed-base", "missing-base", "wrong-repository", "stacked-pr", "push-main", "push-branch", "manual"])
 def test_boundary_admission_binds_the_actual_hosted_base_and_checkout(tmp_path, monkeypatch, source_kind):
     base, head, merge = "1" * 40, "2" * 40, "3" * 40
     event = {"pull_request": {"base": {"sha": base, "ref": "main", "repo": {"full_name": "owner/repo"}},
@@ -1720,8 +1727,12 @@ def test_boundary_admission_binds_the_actual_hosted_base_and_checkout(tmp_path, 
         event["pull_request"]["base"]["sha"] = "not-a-commit"
     if source_kind == "missing-base":
         event["pull_request"].pop("base")
-    if source_kind == "push-main":
-        event_name, event = "push", {"ref": "refs/heads/main", "before": base, "after": head}
+    if source_kind == "wrong-repository":
+        event["pull_request"]["base"]["repo"]["full_name"] = "other/repo"
+    if source_kind == "stacked-pr":
+        event["pull_request"]["base"]["ref"] = "feature-base"
+    if source_kind in ("push-main", "push-branch"):
+        event_name, event = "push", {"ref": "refs/heads/main" if source_kind == "push-main" else "refs/heads/feature", "before": base, "after": head}
     if source_kind == "manual":
         event_name = "workflow_dispatch"
     path = tmp_path / "event.json"
@@ -1733,7 +1744,7 @@ def test_boundary_admission_binds_the_actual_hosted_base_and_checkout(tmp_path, 
     calls = []
     def git(*args, **_kwargs):
         calls.append(args)
-        if args[:2] == ("rev-parse", "--verify"):
+        if args == ("merge-base", "HEAD", "origin/main"):
             return (base + "\n").encode()
         if args == ("rev-parse", "HEAD"):
             return ((merge if source_kind in ("pr-merge", "wrong-checkout") else head) + "\n").encode()
@@ -1742,19 +1753,35 @@ def test_boundary_admission_binds_the_actual_hosted_base_and_checkout(tmp_path, 
             return (" ".join(parents) + "\n").encode()
         return b""
     monkeypatch.setattr(guard, "git", git)
-    if source_kind in ("wrong-checkout", "malformed-base", "missing-base"):
+    if source_kind in ("wrong-checkout", "malformed-base", "missing-base", "wrong-repository"):
         with pytest.raises(ValueError, match="Boundary"):
             guard.admission_base()
     else:
-        assert guard.admission_base() == (base, source_kind != "manual")
-        if source_kind != "manual":
+        retained_only = source_kind in ("manual", "stacked-pr", "push-branch")
+        assert guard.admission_base() == (base, not retained_only)
+        if retained_only:
+            assert ("merge-base", "HEAD", "origin/main") in calls
+            sites = boundary_comparison_sites()
+            guard.validate(boundary_registry_of(sites), sites, [], base=boundary_registry_of(sites), allow_new_boundary=False)
+            with pytest.raises(ValueError, match="not a manual run"):
+                guard.validate(boundary_registry_of(sites), sites, [], base=guard.proposal([]), base_sites=[], allow_new_boundary=False)
+        else:
             assert ("cat-file", "-e", base + "^{commit}") in calls
 
 
-def test_boundary_missing_hosted_event_context_refuses(monkeypatch):
+def test_boundary_missing_hosted_event_context_retains_only_at_merge_base(monkeypatch):
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
-    with pytest.raises(ValueError, match="hosted PR/base"):
-        guard.admission_base()
+    calls = []
+    def git(*args):
+        calls.append(args)
+        return b"1111111111111111111111111111111111111111\n"
+    monkeypatch.setattr(guard, "git", git)
+    assert guard.admission_base() == ("1" * 40, False)
+    assert calls == [("merge-base", "HEAD", "origin/main")]
+    sites = boundary_comparison_sites()
+    guard.validate(boundary_registry_of(sites), sites, [], base=boundary_registry_of(sites), allow_new_boundary=False)
+    with pytest.raises(ValueError, match="not a manual run"):
+        guard.validate(boundary_registry_of(sites), sites, [], base=guard.proposal([]), base_sites=[], allow_new_boundary=False)
 
 
 @pytest.mark.parametrize("replay", ["linear", "merge"])
@@ -1842,3 +1869,130 @@ def test_unchanged_v3_survives_docs_continuation_merge_and_base_reads(tmp_path, 
     monkeypatch.setattr(guard, "source_map", lambda revision=None: {} if revision else {path: source})
     monkeypatch.setattr(guard, "admission_base", lambda: (base, True))
     assert guard.check() == len(sites)
+
+
+@pytest.mark.parametrize("shape", ["new-file", "renamed-symbol", "copied-occurrence", "historic-renamed", "rewrite-in-place"])
+def test_boundary_refuses_each_debt_laundering_shape(shape):
+    path = "cisco_toolkit/writer.py"
+    source = "def answer(rows):\n return len(rows)\n"
+    debt = guard.python_sites(path, source)
+    assert len(debt) == 1 and debt[0]["rule"] == "aggregate"
+    base = guard.proposal(debt)
+    kwargs = {"base": base, "base_sites": debt}
+    remaining = []
+    if shape == "new-file":
+        moved = guard.python_sites("cisco_toolkit/report_metrics.py", source)
+    elif shape in ("renamed-symbol", "historic-renamed"):
+        moved = guard.python_sites(path, source.replace("answer", "answer_again"))
+        if shape == "historic-renamed":
+            kwargs.update(base=guard.proposal([]), base_sites=[],
+                          historic_debt={guard.identity(row) for row in debt})
+    elif shape == "copied-occurrence":
+        copied = guard.python_sites(path, "def answer(rows):\n return len(rows), len(rows)\n")
+        remaining, moved = [copied[0]], [copied[1]]
+        assert moved[0]["occurrence"] == 2
+    else:
+        moved = guard.python_sites(path, source.replace("len(rows)", "len(tuple(rows))"))
+        assert moved[0]["fingerprint"] != debt[0]["fingerprint"]
+    assert {guard.identity(row) for row in moved}.isdisjoint(map(guard.identity, debt))
+    record = guard.proposal(remaining)
+    record["boundary"] = boundary_registry_of(moved, "transport-bound")["boundary"]
+    match = "rewrite of a debt symbol" if shape == "rewrite-in-place" else "AST form moved/copied"
+    with pytest.raises(ValueError, match=match):
+        guard.validate(record, [*remaining, *moved], debt, **kwargs)
+
+
+@pytest.mark.parametrize("location", ["current", "base", "ancestor", "historic"])
+def test_boundary_ast_provenance_checks_all_debt_sources(location):
+    debt = guard.python_sites("cisco_toolkit/writer.py", "def answer(rows):\n return len(rows)\n")
+    moved = guard.python_sites("shared/transport.py", "def answer_again(rows):\n return len(rows)\n")
+    record = boundary_registry_of(moved)
+    kwargs = {"base": guard.proposal([]), "base_sites": []}
+    ancestors, current = [], moved
+    if location == "current":
+        record["sites"] = guard.proposal(debt)["sites"]
+        current = debt + moved
+    elif location == "base":
+        kwargs["base"] = guard.proposal(debt)
+    elif location == "ancestor":
+        ancestors = [guard.proposal(debt)]
+    else:
+        kwargs["historic_debt"] = {guard.identity(row) for row in debt}
+    with pytest.raises(ValueError, match="AST form moved/copied"):
+        guard.validate(record, current, debt, ancestors, **kwargs)
+
+
+@pytest.mark.parametrize("symbol", ["<forbidden-pattern>", "<generated-payload>"])
+@pytest.mark.parametrize("change", ["moved", "rewritten"])
+def test_context_free_lexical_rows_require_review_not_ast_provenance(symbol, change):
+    debt = {**sample_site(), "symbol": symbol, "rule": "raw-count"}
+    after = {**debt, **({"path": "shared/transport.py"} if change == "moved" else {"fingerprint": "b" * 64})}
+    guard.validate(boundary_registry_of([after]), [after], [debt],
+                   base=guard.proposal([debt]), base_sites=[debt],
+                   historic_debt={guard.identity(debt)})
+
+
+def test_removed_register_cannot_be_hidden_by_restoration(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Closed register")
+    git("rm", guard.REGISTRY)
+    git("commit", "-m", "Remove closed register")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt to hide removal")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: [])
+    with pytest.raises(ValueError, match="closed register was removed in history"):
+        guard.check()
+
+
+def test_manual_old_checkout_retains_boundary_against_merge_base_not_new_main(tmp_path, monkeypatch):
+    git = boundary_git(tmp_path)
+    git("init", "--initial-branch=main")
+    (tmp_path / "basis.txt").write_text("Source ceiling\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Source ceiling")
+    monkeypatch.setattr(guard, "ORIGIN", git("rev-parse", "HEAD"))
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    target = tmp_path / guard.REGISTRY
+    target.parent.mkdir()
+    sites = boundary_comparison_sites()
+    target.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Reviewed retained boundary")
+    retained = git("rev-parse", "HEAD")
+    target.write_text(json.dumps(guard.proposal([])), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Main subsequently removes boundary")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    git("checkout", "--detach", retained)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setattr(guard, "source_map", lambda revision=None: {})
+    monkeypatch.setattr(guard, "scan", lambda sources: sites)
+    assert guard.admission_base() == (retained, False)
+    assert guard.check() == len(sites)
+    sites.extend(boundary_comparison_sites("shared/new_transport.py"))
+    target.write_text(json.dumps(boundary_registry_of(sites)), encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "Attempt a new admission outside a main event")
+    assert guard.admission_base() == (retained, False)
+    with pytest.raises(ValueError, match="not a manual run"):
+        guard.check()
+
+
+@pytest.mark.skipif(os.environ.get("GITHUB_ACTIONS") != "true", reason="Real hosted event binding executes on GitHub")
+def test_boundary_base_binds_the_real_hosted_event_without_any_admission():
+    base, allow_new = guard.admission_base()
+    assert len(base) == 40 and type(allow_new) is bool
+    guard.git("merge-base", "--is-ancestor", base, "HEAD")

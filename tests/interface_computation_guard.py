@@ -420,25 +420,27 @@ def boundary_records(rows):
 def admission_base():
     """Use the immutable hosted event's PR base, not a caller-selected comparison.
 
-    A main push rechecks the merged delta against its before SHA. Manual runs
-    may retain main's admissions but cannot introduce admissions without a PR.
+    A main push rechecks the merged delta against its before SHA. Other contexts
+    use HEAD's merge-base with main for retention only, never new admissions.
     Review approval is a separate human gate; this checks structural eligibility.
     """
     event_name = os.environ.get("GITHUB_EVENT_NAME")
-    if event_name not in {"pull_request", "push", "workflow_dispatch"}:
-        raise ValueError("Boundary admission requires a hosted PR/base context")
-    if event_name == "workflow_dispatch":
-        return git("rev-parse", "--verify", "origin/main^{commit}").decode().strip(), False
+    def retained_only():
+        return git("merge-base", "HEAD", "origin/main").decode().strip(), False
+
+    if event_name not in {"pull_request", "push"}:
+        return retained_only()
     try:
         event = read_registry(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         if event_name == "pull_request":
-            if (event["pull_request"]["base"]["ref"] != "main"
-                    or event["pull_request"]["base"]["repo"]["full_name"] != os.environ["GITHUB_REPOSITORY"]):
+            if event["pull_request"]["base"]["ref"] != "main":
+                return retained_only()
+            if event["pull_request"]["base"]["repo"]["full_name"] != os.environ["GITHUB_REPOSITORY"]:
                 raise ValueError("Boundary admission requires this repository's main PR base")
             base, head = event["pull_request"]["base"]["sha"], event["pull_request"]["head"]["sha"]
         else:
             if event["ref"] != "refs/heads/main":
-                raise ValueError("Boundary push admission requires main")
+                return retained_only()
             base, head = event["before"], event["after"]
         if any(type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None
                or value == "0" * 40 for value in (base, head)):
@@ -554,6 +556,22 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
         if any(key in prior and row["category"] != prior[key]["category"] for key, row in boundary.items()):
             raise ValueError("A retained boundary category changed")
         introduced = set(boundary) - set(prior)
+        # Lexical tripwires have context-free token fingerprints. Only AST rows
+        # support location-independent provenance checks; semantic rewrites and
+        # engine-to-interface moves still require independent source review.
+        ast_debt = {key for key in debt_history
+                    if key[1] not in {"<forbidden-pattern>", "<generated-payload>"}}
+        debt_forms = {(key[2], key[3]) for key in ast_debt}
+        removed_debt = {identity(row) for row in base["sites"]} - registered
+        removed_symbols = {(key[0], key[1], key[2]) for key in removed_debt
+                           if key[1] not in {"<forbidden-pattern>", "<generated-payload>"}}
+        for key in introduced:
+            if key[1] in {"<forbidden-pattern>", "<generated-payload>"}:
+                continue
+            if (key[2], key[3]) in debt_forms:
+                raise ValueError("Debt-to-boundary AST form moved/copied from current or historical debt")
+            if (key[0], key[1], key[2]) in removed_symbols:
+                raise ValueError("Debt-to-boundary rewrite of a debt symbol removed by this PR")
         if introduced and not allow_new_boundary:
             raise ValueError("New boundary admissions require the PR/base event, not a manual run")
         if introduced and base_sites is None:
