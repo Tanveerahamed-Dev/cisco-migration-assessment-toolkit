@@ -133,3 +133,33 @@ The tracked golden snapshot, sheet schema and sample bytes remain unchanged. Thi
 not modify detector, boundary, workflow, budget, timeout or assertion policy. PR #682 remains OPEN;
 its schema rebase remains pending. The new frontend source intentionally needs the ordinary reviewed
 hosted frontend build; no generated distribution or visual baseline is replaced locally.
+
+
+## Authorized hosted closing phase — 2026-10-19
+
+The supervisor released HOLD after #682 and #681 merged and authorized source pushes,
+then one final push containing only received frontend dist and its receipt. No merge is
+permitted. This section supersedes the earlier local-only authority statements above.
+
+PR-2 is rebased onto main `bc54fa80721adf00f0e4c9f309b7264739ffc6fb`.
+The original local heads remain `8b0d10dd` and `e6fb1933`; their rebased equivalents
+are `8d2c5ebd` and `2c1a6978`. Main's v4 schema and empty boundary registry are preserved,
+and main's `docs/NOW.md` is byte-identical. The only conflict was the append-only debt
+narrative: both the complete PR-1 JSX history and PR-2 handoff were retained. PR-1's
+summary/topology source, distribution and admission receipt are retained unchanged.
+
+Post-#681 main has 36,784 registered sites. The existing 30 PR-2 deletions leave
+36,754 provisionally; exact-source hosted observation must remove every remaining stale
+identity with zero additions before completion. No local census or runtime probe is used.
+
+The added wave-gate tests use synthetic mappings and per-test temporary outputs, with no
+millisecond budget, live host capture or shared runner mutation. They do not require the
+runner exclusively. Any hosted discovery of such a requirement must be fixed with the
+existing `unshared` marker, retaining the full complementary execution and every assertion.
+
+The unchanged matrix census supplies the first P2's evidence. A successful webapp-ci
+producer, hosted frontend receiver, dist/receipt-only import and hosted post_import supply
+the second P2's custody chain. The source/dist reproduction checks remain required. Final
+acceptance requires 14/14 exact-head protected contexts and applicable app workflows, then
+one completion comment with every source/import head and per-finding evidence. Independent
+review follows; CI success grants no merge or release authority.
