@@ -7,6 +7,8 @@ schema **`interface-computation-debt/4`** under the
 Its `sites` debt records are unchanged from merged main, as are the immutable
 source ceiling, roles and detector forms. The separate `boundary` list starts
 **empty**: PR-0b admits no boundary site and reclassifies no debt.
+The owner ruling of 2026-10-19 adds the separate, visible `collisions` list,
+also **empty** in this policy change. It admits no #667 record here.
 
 The dated proposal/capture sections below preserve their original failures,
 counts and then-pending decisions. They are history, not the current admission
@@ -59,9 +61,10 @@ reader, enforce the prohibition on unreviewed direct publication.
 Debt remains **strictly shrink-only** against its immutable source ceiling and
 every active ancestor. No debt record, including a deleted historical record
 from an earlier schema, may move into `boundary`. For each introduced
-substantive AST record, the guard rejects a `(rule, fingerprint)` match
+ordinary substantive AST boundary record, the guard rejects a `(rule, fingerprint)` match
 against **all** current, base, active-ancestor and historic debt, independent of
-path, symbol or occurrence. Under the [supervisor's option (b)](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/682#issuecomment-6247503468),
+path, symbol or occurrence. The explicit generic-collision rule below is the
+only new exception to that form-match refusal. Under the [supervisor's option (b)](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/682#issuecomment-6247503468),
 name-only `verdict-symbol` / `analysis-symbol` rows and bare-literal
 `verdict-return` rows are excluded **only from this location-independent check**.
 They carry no computation alone; exact-tuple transfers and same-symbol checks
@@ -99,6 +102,62 @@ restoring a removed identity, even with another category, refuses. An admission
 proposal preserves existing boundary metadata only for still-observed sites and
 retains **every** raw detection; it does not authorize a new record or debt growth.
 
+### Explicit generic collisions (owner ruling, 2026-10-19)
+
+Generic transport and UI validation can have the same normalized AST form as
+unrelated legacy debt. For example, a download byte-prefix length is not a
+keyboard-chord length calculation, and checking duplicate submitted VLAN IDs is
+not STP election analysis. Code must not be renamed or reshaped merely to alter
+its fingerprint. Reuse an existing owner when its actual semantics match.
+
+An exception is proposed only in the register's visible **`collisions`** section.
+Each row has the ordinary six boundary fields plus exactly `admission_class`
+and `justification`. Its category remains one of the existing four categories.
+Its admission class must be exactly one of these closed values:
+
+| Admission class | Eligible generic purpose |
+|---|---|
+| `transport-serialization` | Transport mechanics or serialization of already-computed output |
+| `response-shape-validation` | Validating the shape of a transported response |
+| `user-input-validation` | Validating submitted form input |
+| `empty-state-presentation` | Presenting an empty UI state without deriving a network fact |
+
+The justification is a nonblank single line, without leading/trailing whitespace.
+These strings are eligibility metadata, not proof of purpose or approval. The
+independent reviewer must approve **each exact record by name** with its one-line
+justification in the PR description. An engine-owned fact, actual copied analysis
+or an unreviewed record remains forbidden; a category/class label and green CI
+grant no semantic approval or merge authority.
+
+For first admission, all of the following are mandatory:
+
+1. The site matches a substantive `(rule, fingerprint)` in the pinned main PR
+   base's active debt. It must differ in exact identity (path, symbol, rule and
+   occurrence) from **every** current or historical debt row with that fingerprint.
+2. **Every base debt entry carrying that fingerprint remains identical**, including
+   its disposition, in the current debt list. Removing or modifying even one of
+   two matching entries refuses. A debt entry can never be moved or relabelled.
+3. The existing same-symbol replacement, unchanged-base, event/source binding,
+   exact observed-union, stale-entry and resurrection rules still pass. Dynamic
+   code is still forbidden; this rule does not broaden name-only, literal-return
+   or producer-qualified lexical exceptions.
+
+The exception changes only the substantive form-match refusal at introduction.
+Already-admitted collisions retain immutable category, class and justification;
+they do not prevent later genuine debt retirement. Normal and collision records
+cannot duplicate an identity or relabel one between sections. Both sections enter
+the same exact coverage/base/history/removal checks, including every merge parent.
+Deleting a collision and its source is allowed; restoring its removed identity is
+not. The observer only retains existing, still-observed metadata and never mints
+collision admissions.
+
+Schema `/4` accepts exactly the original root fields or those fields plus
+`collisions`. Missing means no collision exceptions for legacy compatibility;
+an explicit `null`, unknown fields, malformed entries or unknown classes refuse.
+The current register initializes the visible section to `[]` and leaves all debt
+and ordinary boundary rows unchanged. No detector, source discovery, immutable
+ceiling, shrink-only rule, stale-entry rule, test gate, budget or timeout changes.
+
 V3 registry-change history is bounded at merged
 `92490340e3c55c34c7a8d26e878ee5de7c729601`. A later commit may carry unchanged
 v3 bytes from a parent, but cannot downgrade a v4/unknown parent through another
@@ -129,7 +188,9 @@ belong to GitHub; PR-0b requires 15/15 and maximum-depth independent review.
 ## Reuse, never clone
 
 A new site's substantive form that matches registered debt must **call the
-existing owner**, rather than clone it. A rename or reshaping made only to clear
+existing owner** when its semantics match. The reviewed, explicitly listed
+generic collision above is the only additional admission path; it is not permission
+to clone analysis. A rename or reshaping made only to clear
 the check is laundering; the independent reviewer blocks it. The name/literal
 exceptions do not authorize a substantive copy or any engine-owned user fact.
 The mechanical guard is a closed form ratchet, not proof of provenance or absence.

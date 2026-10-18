@@ -30,6 +30,8 @@ ORIGIN = "fdd6a7de9b9b2e51fccc54ece5a7b77f6c6a44b1"
 SCHEMA = "interface-computation-debt/4"
 LEGACY_V3_REGISTER_HEAD = "92490340e3c55c34c7a8d26e878ee5de7c729601"
 BOUNDARY_CATEGORIES = frozenset({"transport-bound", "response-identity", "cancellation", "ui-state"})
+COLLISION_ADMISSION_CLASSES = frozenset({"transport-serialization", "response-shape-validation",
+                                         "user-input-validation", "empty-state-presentation"})
 ROLE_ORIGIN = "2efe2fd77a1e67ea3c298408141a466e65cf3945"  # Initial role proposal, pinned independently of future edits.
 LEGACY_REGISTER_HEAD = "3d3bca015a24a1d3aeec19471d81ae277043cb48"
 LEGACY_V2_REGISTER_HEAD = "2920e79b2a80093e16fb0d9982cb9baf29cebda1"
@@ -382,7 +384,7 @@ def disposition(row):
     return "legacy-site-review-required"
 
 
-def proposal(sites, boundary=()):
+def proposal(sites, boundary=(), collisions=None):
     """Observe every site; preserve only already-declared, still-present boundary records.
 
     Unadmitted findings remain visible in sites. This proposal cannot authorize
@@ -390,12 +392,20 @@ def proposal(sites, boundary=()):
     """
     found = {identity(row) for row in sites}
     boundary_records(list(boundary))
+    collision_rows = [] if collisions is None else collisions
+    collision_records(collision_rows)
+    if {identity(row) for row in boundary} & {identity(row) for row in collision_rows}:
+        raise ValueError("Duplicate boundary identity across normal and collision sections")
     retained = [dict(row) for row in boundary if identity(row) in found]
-    boundary_keys = {identity(row) for row in retained}
-    return {"schema": SCHEMA, "origin": ORIGIN, "stage": "active",
+    retained_collisions = [dict(row) for row in collision_rows if identity(row) in found]
+    boundary_keys = {identity(row) for row in [*retained, *retained_collisions]}
+    record = {"schema": SCHEMA, "origin": ORIGIN, "stage": "active",
             "boundary": retained,
             "sites": [{**{key: row[key] for key in ("path", "symbol", "rule", "fingerprint", "occurrence")},
                        "disposition": disposition(row)} for row in sites if identity(row) not in boundary_keys]}
+    if collisions is not None:
+        record["collisions"] = retained_collisions
+    return record
 
 
 
@@ -564,6 +574,41 @@ def boundary_records(rows):
     return {identity(row): row for row in rows}
 
 
+def collision_records(rows):
+    """Visible exact-site collision proposals, never automatic semantic approval."""
+    boundary_fields = {"path", "symbol", "rule", "fingerprint", "occurrence", "category"}
+    fields = boundary_fields | {"admission_class", "justification"}
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or set(row) != fields for row in rows):
+        raise ValueError("Collision records require closed exact sites, admission class and justification")
+    boundary_records([{key: row[key] for key in boundary_fields} for row in rows])
+    for row in rows:
+        if type(row["admission_class"]) is not str or row["admission_class"] not in COLLISION_ADMISSION_CLASSES:
+            raise ValueError("Collision admission class is missing or unknown")
+        text = row["justification"]
+        if type(text) is not str or not text.strip() or text != text.strip() or text.splitlines() != [text]:
+            raise ValueError("Collision justification must be nonblank and one line")
+    return {identity(row): row for row in rows}
+
+
+def boundary_sections(record):
+    """Legacy omission means no collision exception; explicit malformed data refuses."""
+    normal = boundary_records(record["boundary"])
+    collisions = collision_records(record.get("collisions", []))
+    if normal.keys() & collisions.keys():
+        raise ValueError("Duplicate boundary identity across normal and collision sections")
+    return {**normal, **collisions}, collisions
+
+
+def require_retained_boundary_metadata(current, current_collisions, previous, previous_collisions):
+    for key in current.keys() & previous.keys():
+        if current[key]["category"] != previous[key]["category"]:
+            raise ValueError("A retained boundary category changed")
+        if (key in current_collisions) != (key in previous_collisions):
+            raise ValueError("A retained boundary changed normal/collision section")
+        if key in current_collisions and current_collisions[key] != previous_collisions[key]:
+            raise ValueError("A retained collision admission changed")
+
+
 def admission_base():
     """Use the immutable hosted event's PR base, not a caller-selected comparison.
 
@@ -646,16 +691,18 @@ def policy_record(commit, record, *, historical=True):
                 or record.get("origin") != ORIGIN or record.get("stage") != "active"):
             raise ValueError("An unauthorized legacy v3 policy appeared in history")
         return {**record, "schema": SCHEMA, "boundary": []}
+    fields = {"schema", "origin", "stage", "sites", "boundary"}
     if (schema != SCHEMA or record.get("origin") != ORIGIN or record.get("stage") != "active"
-            or set(record) != {"schema", "origin", "stage", "sites", "boundary"}):
+            or set(record) not in (fields, fields | {"collisions"})):
         raise ValueError("An unauthorized debt policy/schema appeared in history")
-    boundary_records(record["boundary"])
+    boundary_sections(record)
     return record
 
 
 def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=None,
              removed_boundary=(), historic_debt=(), allow_new_boundary=True, current_sources=None):
-    if set(registry) != {"schema", "origin", "stage", "sites", "boundary"} or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
+    fields = {"schema", "origin", "stage", "sites", "boundary"}
+    if set(registry) not in (fields, fields | {"collisions"}) or registry["schema"] != SCHEMA or registry["origin"] != ORIGIN or registry["stage"] != "active":
         raise ValueError("Debt register requires source-bound active review")
     expected_keys = {"path", "symbol", "rule", "fingerprint", "occurrence", "disposition"}
     rows = registry["sites"]
@@ -670,7 +717,7 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
         raise ValueError("Debt entries repeat or are not deterministically ordered")
     if any(row["disposition"] != disposition(row) for row in rows):
         raise ValueError("Debt disposition changed without its owner")
-    boundary = boundary_records(registry["boundary"])
+    boundary, collisions = boundary_sections(registry)
     ancestors = list(ancestors)
     registered, found, ceiling = set(keys), {identity(row) for row in current}, {identity(row) for row in origin}
     debt_history = registered | set(historic_debt)
@@ -682,13 +729,11 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
         if (previous.get("schema") != SCHEMA or previous.get("origin") != ORIGIN
                 or previous.get("stage") != "active"):
             raise ValueError("An unauthorized debt policy/schema appeared in history")
-        prior_boundary = boundary_records(previous["boundary"])
+        prior_boundary, prior_collisions = boundary_sections(previous)
         debt_history.update(identity(row) for row in previous["sites"])
         if not registered <= {identity(row) for row in previous["sites"]}:
             raise ValueError("A removed debt/allowance entry reappeared; the register may only shrink")
-        if any(key in prior_boundary and row["category"] != prior_boundary[key]["category"]
-               for key, row in boundary.items()):
-            raise ValueError("A retained boundary category changed")
+        require_retained_boundary_metadata(boundary, collisions, prior_boundary, prior_collisions)
     if set(boundary) & debt_history:
         raise ValueError("Debt-to-boundary moves/reclassification are forbidden, including historical debt")
     if set(boundary) & set(removed_boundary):
@@ -699,9 +744,8 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
     if boundary:
         if base is None:
             raise ValueError("Boundary records require an exact PR base")
-        prior = boundary_records(base["boundary"])
-        if any(key in prior and row["category"] != prior[key]["category"] for key, row in boundary.items()):
-            raise ValueError("A retained boundary category changed")
+        prior, prior_collisions = boundary_sections(base)
+        require_retained_boundary_metadata(boundary, collisions, prior, prior_collisions)
         introduced = set(boundary) - set(prior)
         # A reserved symbol is lexical only with a producer-emitted lexer rule.
         # Name-only rows and proved bare literals carry no computation alone:
@@ -711,12 +755,25 @@ def validate(registry, current, origin, ancestors=(), *, base=None, base_sites=N
                       if key[2] not in {"verdict-symbol", "analysis-symbol"}}
         literal_forms = literal_verdict_fingerprints(current,
             [key for key in introduced if (key[2], key[3]) in debt_forms], current_sources)
+        current_debt_rows = {identity(row): row for row in rows}
+        for key in introduced & collisions.keys():
+            # A new exception needs an active base witness, while every base
+            # debt row with the fingerprint must survive the same change intact.
+            # Retained collisions do not prevent later genuine debt retirement.
+            witnesses = [row for row in base["sites"] if row["fingerprint"] == key[3]]
+            if (lexical_identity(key) or (key[2], key[3]) not in debt_forms
+                    or not any(row["rule"] == key[2] for row in witnesses)
+                    or key[2] == "verdict-return" and key[3] in literal_forms):
+                raise ValueError("Collision admission requires a substantive active-base debt form")
+            if any(current_debt_rows.get(identity(row)) != row for row in witnesses):
+                raise ValueError("Collision admission removes or modifies matching debt")
         removed_debt = {identity(row) for row in base["sites"]} - registered
         removed_symbols = {(key[0], key[1], key[2]) for key in removed_debt if not lexical_identity(key)}
         for key in introduced:
             if lexical_identity(key):
                 continue
-            if (key[2], key[3]) in debt_forms and not (key[2] == "verdict-return" and key[3] in literal_forms):
+            if ((key[2], key[3]) in debt_forms and not (key[2] == "verdict-return" and key[3] in literal_forms)
+                    and key not in collisions):
                 raise ValueError("Debt-to-boundary AST form moved/copied from current or historical debt")
             if (key[0], key[1], key[2]) in removed_symbols:
                 raise ValueError("Debt-to-boundary rewrite of a debt symbol removed by this PR")
@@ -738,7 +795,7 @@ def check():
     previous = []
     historic_debt = set()
     blobs = {}
-    boundary = boundary_records(registry["boundary"])
+    boundary, _collisions = boundary_sections(registry)
     base, allow_new = admission_base() if boundary else (None, True)
 
     def read_record(commit, *, historical=False):
@@ -773,17 +830,17 @@ def check():
             continue
         previous.append(record)
         if boundary:
-            here = set(boundary_records(record["boundary"]))
+            here = set(boundary_sections(record)[0])
             for parent in git("rev-list", "--parents", "-n", "1", commit).decode().split()[1:]:
                 _present, prior = read_record(parent)
                 if prior is not None:
-                    removed_boundary.update(set(boundary_records(prior["boundary"])) - here)
+                    removed_boundary.update(set(boundary_sections(prior)[0]) - here)
     base_record, base_sites = None, None
     if boundary:
         _present, base_record = read_record(base)
         if base_record is None:
             raise ValueError("Boundary PR base has no active register")
-        introduced = set(boundary) - set(boundary_records(base_record["boundary"]))
+        introduced = set(boundary) - set(boundary_sections(base_record)[0])
         if introduced:
             base_sources = source_map(base)
             # Compare the full base file even when it was not in that revision's
@@ -803,7 +860,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--observe":
         observations = scan(source_map())
         registry = read_registry((ROOT / REGISTRY).read_text(encoding="utf-8"))
-        observed_proposal = proposal(observations, registry["boundary"])
+        observed_proposal = proposal(observations, registry["boundary"], registry.get("collisions", []))
         record = {"source_commit": git("rev-parse", "HEAD").decode().strip(),
                   "source_tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
                   "python": sys.version.split()[0], "platform": sys.platform,
