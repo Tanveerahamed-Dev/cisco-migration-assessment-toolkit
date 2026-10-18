@@ -740,3 +740,97 @@ The one source push remains unused. Exact records, fresh final-tree Rule-7 scans
 frontend reproduction, the binding hosted observation and all 14 exact-head required contexts
 remain pending. Earlier Rule-7 and hosted receipts keep their original source scope. No PR merge,
 signing, qualification or release publication is authorized.
+
+
+## Canonical static observation and remaining form-collision blocker — 2026-10-18
+
+The owner extends the external parser allowance to exactly the locked closure: TypeScript
+`5.9.3`, parse5 `8.0.1` and entities `8.1.0`, from `atlas-scope/package-lock.json`.
+A fresh external scratch install used `npm ci --ignore-scripts --no-audit --no-fund
+--bin-links=false --include=dev` with a three-package lock copied from that owner. Installed
+membership was exactly those three; each installed lock integrity and actual downloaded
+SHA-512 content matched the owner. Repository node_modules, manifests and lockfiles stayed
+unchanged. Both temporary installations and their caches were deleted afterward.
+
+| Package | Actual downloaded integrity, equal to the owner lock |
+|---|---|
+| `typescript@5.9.3` | `sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==` |
+| `parse5@8.0.1` | `sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==` |
+| `entities@8.1.0` | `sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==` |
+
+The full `py -3.12 -B tests/interface_computation_guard.py --observe OUTPUT` attempt was
+stopped at its explicit 59-second local authorization bound, with no valid output. The cause
+is unconfirmed. That remains negative evidence; no timeout was enlarged or passing full
+census claimed.
+
+The separately scoped, permitted AST-only discovery then completed in **2.015 seconds**.
+Command: `py -3.12 -B scoped-observer.py`, from an external evidence directory, with
+`ATLAS_SOURCE_ROOT` naming this checkout and `NODE_PATH` naming only the temporary parser
+installation. The helper loads the canonical static observer module and calls its unchanged
+`scan(SourceMap(...))` on the whole eight changed interface files and their pinned main
+counterparts. It imports no application module and executes no test function, build, engine
+or validation/controller. Local Node was `v24.18.0`; the hosted toolchain and full observation
+remain binding. This is not full class/import discovery or a required-gate execution.
+
+| Source or output | SHA-256 |
+|---|---|
+| `tests/interface_computation_guard.py` | `0f80a96dd9b014d3ba0c0bffd19f709675b3c3d0acee19e4017bcd2dd9274b51` |
+| `tests/interface_computation_lex.py` | `9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c` |
+| `tests/interface_computation_sources.py` | `6b29467c0b11ea6e64282e3701031b250f3b332c130fe28aac0e646b28992741` |
+| `.github/scripts/interface_computation_ast.mjs` | `f230971bba5c3d6802760164e642d345adbb1c2d57dc8422b40cb0290a2fb6a3` |
+| External `scoped-observer.py` | `302b73099ccea3789d652bf7d7747ac4a567e270759bbfbfb13d629877cda63b` |
+| Scoped output JSON | `556b4d3e2d010d04592267fa38b63eb12596d204ce6dfd79c67d1e470be4b81c` |
+| Scoped proposal normalization | `eb9355bd6324e773231985b7cfe375d99129ba205bd078712098ec4599b38fbc` |
+
+The capture is bound to `7591c533325a571e161085f92f4b5f1a27ebca0a` and its eight
+source-byte hashes. It observes 670 current sites and 454 base sites in that scope, initially
+217 new exact identities and one stale debt record. These are scoped counts only.
+
+Independent review confirms the added Tools-page navigation changes an entire registered
+JSX `fact-decision` return. That whole expression cannot truthfully be admitted as navigation.
+Narrow correction `6827440a3d05efe19e117280dee14f2bcbc9fd37` restores `Snapshot.tsx`
+byte-identically to main, retaining the primary `CoreSnapshot` saved-plan link covered by
+`CoreSnapshot.test.tsx` and the real saved-plan operator journey. No test is removed or
+changed. The captured base rows therefore rejoin this byte-identical restored file; all
+other captured source hashes are unchanged. This data-only rejoin is not another observer
+run. It leaves 216 new scoped identities and no stale scoped debt record.
+
+**BLOCKED before the source push:** 23 new AST instances match current debt forms.
+Seven are bare literal returns covered by the existing literal rule; the remaining **16**
+instances below are substantive under the executing rule. `validate` lines 709–720 rejects
+a `(rule, fingerprint)` match against current or historic debt regardless of path, purpose
+or proposed category. Source-only independent review finds no complete semantically
+equivalent owner-reuse path for these instances. The result is an inferred refusal from
+observed canonical identities and the unchanged guard, not an executed validator result.
+
+| New exact site (path / symbol / rule / occurrence) | Fingerprint | Expression |
+|---|---|---|
+| `webapp/frontend/src/api.ts / planInteger / returned-comparison / 1` | `769874aa5db9480902186ad363ac8debe4e8131f7f4967c8079ed52519b601e2` | `typeof value === "number"` |
+| `webapp/frontend/src/api.ts / planNonempty / count / 1` | `d59d95b6279ab3f715f413e213fd1d50fdefc3905cd0954a0c3a424f30b4a0ac` | `value.trim().length` |
+| `webapp/frontend/src/api.ts / planObject / returned-comparison / 1` | `0c826da5d39395e0f298503c4c39c85fa0d1a367359de453fd0c12bbeffac601` | `value !== null` |
+| `webapp/frontend/src/api.ts / planObject / returned-comparison / 1` | `6a92bed2ade8168bed69bf6645dbb1685ee7dd7fd87ab06d4d7f90740f61b4fc` | `typeof value === "object"` |
+| `webapp/frontend/src/api.ts / planString / returned-comparison / 1` | `5ff5d5487ac5420a2bcd54b5b02ec773d16f8a3aa44664fd8b897b53434e2047` | `typeof value === "string"` |
+| `webapp/frontend/src/api.ts / savedPlanDocument / count / 1` | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | `prefix.length` |
+| `webapp/frontend/src/api.ts / savedPlanDocument / count / 2` | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | `prefix.length` |
+| `webapp/frontend/src/api.ts / savedPlanDocument / count / 3` | `f0816c33175ecae63d9febc05e784e458bd9f33e6d871f470c851e66ebee9193` | `prefix.length` |
+| `webapp/frontend/src/api.ts / validPlanConvergence / count / 1` | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | `digits.length` |
+| `webapp/frontend/src/api.ts / validPlanConvergence / count / 2` | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | `digits.length` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / SavedPlanWorkspace / count / 1` | `33dcbe05f48c894f1d9c5f2d7c3a53e276dfddaba60167945f370b0ad55d27c4` | `items.length` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / SavedPlanWorkspace / returned-comparison / 1` | `0cc66f17a5cd1f086984db045486e6f76bd644be6c88935cd9fdaa1436719639` | `items.length === 0` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / formRequirements / collection-update / 1` | `90b33a0c54e9726ededfcffd48426b4773abaabaae29804fd9b995705d2fc8d3` | `seen.add(vid)` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / formRequirements / count / 1` | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | `digits.length` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / formRequirements / count / 2` | `2eb47204f67cd87a3a1aa93252d51bf9afd23d5031f7c6e9659ab5ac21100bf5` | `digits.length` |
+| `webapp/frontend/src/pages/SavedPlan.tsx / listText / returned-comparison / 1` | `5ff5d5487ac5420a2bcd54b5b02ec773d16f8a3aa44664fd8b897b53434e2047` | `typeof value === "string"` |
+
+For example, the download ZIP-prefix length matches keyboard-chord and route-prefix
+length expressions; convergence-input digit length matches the Master Reference floating
+serializer; duplicate input `seen.add(vid)` matches the legacy STP election implementation.
+Calling those unrelated algorithms would not be equivalent reuse. Renaming operands or
+reshaping expressions solely to change fingerprints is forbidden and was not attempted.
+
+A policy-owner resolution is required for the unresolved form collisions before exact
+boundary admission can finish. No boundary record or debt addition is made; register,
+detector, roles and tests remain unchanged. The single source push is unused. Fresh final-tree
+Rule-7 scans precede any eventual push; all 14 exact-head hosted required contexts, full
+binding observation and source-bound frontend reproduction remain pending. No PR merge,
+signing, qualification or release publication is authorized.
