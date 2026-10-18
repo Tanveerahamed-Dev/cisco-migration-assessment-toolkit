@@ -108,6 +108,16 @@ release or production authority. Synthetic wheel fixtures are not dependency
 builds and certify no actual accepted wheel. Provenance/release admission and
 the isolated producer workflow remain future work; no dependency build has run.
 
+Independent source review of `0337ae40` identified that ordinary ZIP member
+reads could ignore carrier bytes inside a stored/deflated compressed range, and
+that required Metadata-Version was not checked. The correction decodes bounded
+raw deflate itself, requires EOF with no unused/unconsumed input, exact decoded
+length/CRC and exact stored sizes, then verifies the closed central layout and
+RECORD. It requires one Metadata-Version 2.4 and strict UTF-8 metadata. Synthetic
+regressions preserve logical member bytes/CRC/RECORD while extending compressed
+ranges and adjusting offsets, plus missing/duplicate/unsupported version and
+invalid-encoding cases. These are authored controls, not executed proof.
+
 ### Pinned-source licence evidence — unresolved
 
 Static archive inspection on 2026-10-19 read the public, hash-pinned sdist as data

@@ -17,6 +17,7 @@ import stat
 import struct
 import tarfile
 import zipfile
+import zlib
 
 from portable.native_origin import NativeRefusal
 
@@ -74,6 +75,10 @@ def inspect_proxy_sdist(raw: bytes) -> dict:
 
 
 def _metadata(raw):
+    try:
+        raw.decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise NativeRefusal("dependency_metadata_encoding") from error
     parsed = BytesParser(policy=policy.default).parsebytes(raw)
     if parsed.defects:
         raise NativeRefusal("dependency_metadata")
@@ -88,6 +93,7 @@ def _single(parsed, name, expected):
 def _zip_closure(raw, archive):
     """Reject prefix, unindexed local bytes, extra fields and trailing carriers."""
     cursor = 0
+    files = {}
     for member in archive.infolist():
         if member.header_offset != cursor or member.flag_bits not in {0, 0x800}:
             raise NativeRefusal("dependency_wheel_layout")
@@ -99,7 +105,23 @@ def _zip_closure(raw, archive):
                 or crc != member.CRC or compressed != member.compress_size or size != member.file_size
                 or name_size != len(name) or extra != 0 or raw[start:start + name_size] != name):
             raise NativeRefusal("dependency_wheel_layout")
-        cursor = start + name_size + compressed
+        body_start = start + name_size
+        cursor = body_start + compressed
+        body = raw[body_start:cursor]
+        if len(body) != compressed:
+            raise NativeRefusal("dependency_wheel_stream")
+        if method == zipfile.ZIP_STORED:
+            if compressed != size:
+                raise NativeRefusal("dependency_wheel_stream")
+            decoded = body
+        else:
+            decoder = zlib.decompressobj(-15)
+            decoded = decoder.decompress(body, size + 1)
+            if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                raise NativeRefusal("dependency_wheel_stream")
+        if len(decoded) != size or zlib.crc32(decoded) & 0xffffffff != crc:
+            raise NativeRefusal("dependency_wheel_stream")
+        files[member.filename] = decoded
     if len(raw) < 22 or raw[-22:-18] != b"PK\x05\x06":
         raise NativeRefusal("dependency_wheel_layout")
     _signature, disk, central_disk, count_disk, count, central_size, central_offset, comment = struct.unpack(
@@ -107,6 +129,7 @@ def _zip_closure(raw, archive):
     if (disk or central_disk or comment or count_disk != count or count != len(_MEMBERS)
             or central_offset != cursor or central_offset + central_size != len(raw) - 22):
         raise NativeRefusal("dependency_wheel_layout")
+    return files
 
 
 def inspect_proxy_wheel(raw: bytes, *, expected_sha256: str, applicable_license_sha256: str) -> dict:
@@ -133,15 +156,16 @@ def inspect_proxy_wheel(raw: bytes, *, expected_sha256: str, applicable_license_
                 if (item.file_size > 1024 * 1024 or item.extra or item.comment or kind not in {0, stat.S_IFREG}
                         or item.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}):
                     raise NativeRefusal("dependency_wheel_member")
-            _zip_closure(raw, archive)
-            files = {item.filename: archive.read(item) for item in members}
-    except (zipfile.BadZipFile, OSError, ValueError, UnicodeError, struct.error, NotImplementedError) as error:
+            files = _zip_closure(raw, archive)
+    except (zipfile.BadZipFile, OSError, ValueError, UnicodeError, struct.error, zlib.error,
+            NotImplementedError) as error:
         raise NativeRefusal("dependency_wheel_archive") from error
     if (_digest(files[_PACKAGE]) != PROXY_SOURCE_SHA256
             or _digest(files[_LICENSE]) != applicable_license_sha256
             or not files[_LICENSE] or files[_DIST + "top_level.txt"] != b"proxy_tools\n"):
         raise NativeRefusal("dependency_wheel_source_or_license")
     metadata = _metadata(files[_DIST + "METADATA"])
+    _single(metadata, "Metadata-Version", "2.4")
     name = metadata.get_all("Name", [])
     if len(name) != 1 or re.sub(r"[-_.]+", "-", name[0]).lower() != "proxy-tools":
         raise NativeRefusal("dependency_wheel_name")

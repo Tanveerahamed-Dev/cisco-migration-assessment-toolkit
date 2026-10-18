@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import struct
 import zipfile
 
 import pytest
@@ -19,7 +20,7 @@ SOURCE = b"# Synthetic package; no upstream code or licence acceptance.\n"
 LICENSE = b"SYNTHETIC LICENCE FIXTURE ONLY\n"
 
 
-def wheel(*, changes=None, record_changes=None):
+def wheel(*, changes=None, record_changes=None, compression=zipfile.ZIP_DEFLATED):
     files = {
         "proxy_tools/__init__.py": SOURCE,
         DIST + "licenses/LICENSE": LICENSE,
@@ -37,7 +38,7 @@ def wheel(*, changes=None, record_changes=None):
     writer.writerows([path, *value] for path, value in sorted(record.items()))
     files[DIST + "RECORD"] = text.getvalue().encode()
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output, "w", compression=compression) as archive:
         for path, raw in sorted(files.items()):
             archive.writestr(path, raw)
     return output.getvalue()
@@ -93,6 +94,58 @@ def test_source_license_and_pure_python_tag_refuse_drift(path, raw, monkeypatch)
 def test_record_hashes_and_sizes_cover_the_complete_closed_file_set(monkeypatch):
     with pytest.raises(NativeRefusal):
         inspect(wheel(record_changes={"proxy_tools/__init__.py": ["sha256=wrong", "0"]}), monkeypatch)
+
+
+@pytest.mark.parametrize("version", [None, "999.0", "2.4\nMetadata-Version: 2.4"])
+def test_metadata_version_is_required_single_and_producer_pinned(version, monkeypatch):
+    prefix = "" if version is None else f"Metadata-Version: {version}\n"
+    metadata = (prefix + "Name: proxy_tools\nVersion: 0.1.0\nLicense: MIT\nLicense-File: LICENSE\n\n").encode()
+    with pytest.raises(NativeRefusal):
+        inspect(wheel(changes={DIST + "METADATA": metadata}), monkeypatch)
+
+
+def test_metadata_requires_utf8_even_when_the_mime_parser_would_replace_bad_bytes(monkeypatch):
+    metadata = (b"Metadata-Version: 2.4\nName: proxy_tools\nVersion: 0.1.0\nLicense: MIT\n"
+                b"License-File: LICENSE\n\nInvalid synthetic encoding: \xff\n")
+    with pytest.raises(NativeRefusal, match="dependency_metadata_encoding"):
+        inspect(wheel(changes={DIST + "METADATA": metadata}), monkeypatch)
+
+
+def compressed_carrier(raw):
+    """Keep decoded bytes/CRC/RECORD unchanged while extending an indexed range."""
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        first = archive.infolist()[0]
+        name = first.filename
+        local_offset = first.header_offset
+        header = struct.unpack_from("<4s5H3I2H", raw, local_offset)
+        insert = local_offset + 30 + header[-2] + header[-1] + first.compress_size
+    old_central = struct.unpack_from("<I", raw, len(raw) - 22 + 16)[0]
+    carrier = b"synthetic-unconsumed-carrier"
+    count = len(carrier)
+    changed = bytearray(raw[:insert] + carrier + raw[insert:])
+    struct.pack_into("<I", changed, local_offset + 18, first.compress_size + count)
+    cursor = old_central + count
+    while changed[cursor:cursor + 4] == b"PK\x01\x02":
+        compressed = struct.unpack_from("<I", changed, cursor + 20)[0]
+        offset = struct.unpack_from("<I", changed, cursor + 42)[0]
+        if offset == local_offset:
+            struct.pack_into("<I", changed, cursor + 20, compressed + count)
+        elif offset > local_offset:
+            struct.pack_into("<I", changed, cursor + 42, offset + count)
+        name_size, extra_size, comment_size = struct.unpack_from("<3H", changed, cursor + 28)
+        cursor += 46 + name_size + extra_size + comment_size
+    struct.pack_into("<I", changed, len(changed) - 22 + 16, old_central + count)
+    return bytes(changed), name
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_hidden_bytes_inside_indexed_compressed_range_are_refused(compression, monkeypatch):
+    original = wheel(compression=compression)
+    changed, name = compressed_carrier(original)
+    with zipfile.ZipFile(io.BytesIO(original)) as before, zipfile.ZipFile(io.BytesIO(changed)) as after:
+        assert before.read(name) == after.read(name)
+    with pytest.raises(NativeRefusal):
+        inspect(changed, monkeypatch)
 
 
 @pytest.mark.parametrize("carrier", ["prefix", "suffix", "duplicate"])
