@@ -530,3 +530,19 @@
   Remote Design synchronization is therefore complete. The separate canonical visual-baseline handoff remains:
   promote the six intentional card pairs only from the GitHub `windows-2025` capture artifact after privacy-pin
   refresh and human review; do not substitute the already-reviewed workstation candidates.
+
+
+## RC8 PR-1 internal summary adapters
+
+`SummaryValue`, `SummaryBands` and `SummaryRows` in
+`webapp/frontend/src/components/SummaryFacts.tsx` deliberately stay outside
+`ds.entry.ts`, `componentSrcMap`, `dtsPropsFor` and standalone docs/previews.
+They are assesshub_summary/1 adapters for source-bound engine fact envelopes,
+including withholding reasons, witnesses and lower bounds, rather than public
+Design cards. A separate fixture contract would duplicate engine vocabulary.
+This follows the existing internal ImpactValue/ImpactLowerBoundTag boundary.
+The exact three names are declared in the existing source-only exclusion set;
+the public-barrel completeness and stale-exclusion assertions remain unchanged.
+Promotion requires explicit public props/provider fixtures, all maps/docs/previews
+and reviewed hosted visual baselines. No generated bundle, preview or baseline
+is refreshed by this source-only classification.

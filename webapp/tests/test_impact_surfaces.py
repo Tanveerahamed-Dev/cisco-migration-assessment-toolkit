@@ -641,7 +641,8 @@ def test_a_lower_bound_below_the_cut_is_disclosed_because_it_could_rank_among_th
 def test_a_stored_executive_brief_keystone_list_is_never_read(client, sample, mode):
     """No engine producer writes executive_brief.keystones (compute_executive_brief takes no failure-impact input),
     so a stored one is uploaded or hand-made. Read first, it bypassed every projection hold on the dashboard, the
-    /graph badge and the cutover plan's wave tags. Each surface now ranks only the projection, list or not."""
+    /graph badge and the cutover plan's wave tags. Summary and cutover rank only the projection;
+    the topology owner leaves its unowned badge explicitly not classified."""
     if mode == "held":
         snap, _why = _held_core1(sample, "no_run_config")       # the engine withholds core1's row
     else:
@@ -661,12 +662,15 @@ def test_a_stored_executive_brief_keystone_list_is_never_read(client, sample, mo
     assert client.get(f"/api/snapshots/{sid}").json()["summary"]["keystones"] == want
     nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
     tags = {tag for wave in cutover.build_plan(copy.deepcopy(snap))["waves"] for tag in wave["keystones"]}
-    assert nodes["podacc1"]["keystone"] is False and "podacc1" not in tags
+    # The topology owner publishes no keystone classification. Unknown is not
+    # False; the independent summary/cutover ranking still has its positive control.
+    assert nodes["podacc1"]["keystone"] is None and "podacc1" not in tags
+    assert nodes["core1"]["keystone"] is None
     if mode == "published":
-        # the control: the published positive rows still surface, from the projection
-        assert want[0]["host"] == "core1" and nodes["core1"]["keystone"] is True and "core1" in tags
+        # Published positive rows still surface in both ranking consumers.
+        assert want[0]["host"] == "core1" and "core1" in tags
     else:
-        assert nodes["core1"]["keystone"] is False and "core1" not in tags
+        assert "core1" not in tags
         assert "core1" not in {k["host"] for k in s["keystones"]}
     if mode == "failed":
         assert len(want) == 1 and want[0]["severity"] == summary.IMPACT_NOT_ASSESSED, want
@@ -1114,17 +1118,18 @@ def test_a_valid_empty_failure_impact_list_stays_an_empty_table(client):
 def test_the_graph_badge_and_a_cached_summary_never_keep_a_withheld_keystone(client, sample):
     snap, _why = _held_core1(sample, "no_run_config")
     sid = _upload(client, snap)
-    nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
-    assert nodes["core1"]["keystone"] is False          # the raw ranking made it the first keystone (High, 45)
-    assert nodes["access1"]["keystone"] is True
+    projected = client.get(f"/api/snapshots/{sid}/graph").json()
+    impacts = {row["host"]["value"]: row for row in projected["topology"]["failure_impact"]["items"]}
+    assert impacts["core1"]["stranded"]["state"] != "published"
+    assert impacts["access1"]["stranded"]["state"] == "published"
     # a summary cached by the raw-row ranking (no keystone contract) that still names core1
     store = client.app.state.store
     stale = dict(store.get_snapshot_meta(sid)["summary"])
     assert stale.pop("keystone_contract") == summary.KEYSTONE_CONTRACT_VERSION
     stale["keystones"] = [{"host": "core1", "severity": "High", "stranded": 45, "vlans_impacted": 3, "detail": ""}]
     store.update_summary(sid, stale)
-    nodes = {n["id"]: n for n in client.get(f"/api/snapshots/{sid}/graph").json()["nodes"]}
-    assert nodes["core1"]["keystone"] is False          # the badge reads the snapshot, never the stale cache
+    repeated = client.get(f"/api/snapshots/{sid}/graph").json()
+    assert repeated == projected  # the entire source-bound graph ignores the stale summary cache
     fresh = client.get(f"/api/snapshots/{sid}").json()["summary"]
     assert fresh["keystone_contract"] == summary.KEYSTONE_CONTRACT_VERSION
     assert "core1" not in {k["host"] for k in fresh["keystones"]}

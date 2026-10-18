@@ -667,6 +667,9 @@ def test_hosted_admission_removed_only_whole_paths_outside_the_interface_closure
         "ollama_retrieval_judge.py": 8, "portable": 860, "research_lane": 148,
         "setup.py": 3, "tools": 1720, "webapp": 16,
     }
+    assert Counter(row["path"] for row in removed if row["path"].startswith("webapp/")) == {
+        "webapp/dev.py": 7, "webapp/frontend/e2e-real/serve_real_backend.py": 9,
+    }
     selected = guard.source_map("26b9a978728f72f648dd01ef3d60bd9cd2da114d")
     removed_paths = {row["path"] for row in removed}
     assert removed_paths.isdisjoint(selected), "A live scanned module lost an allowance"
