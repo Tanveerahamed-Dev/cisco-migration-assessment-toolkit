@@ -1,0 +1,54 @@
+{
+  "schema": "atlas.native-dependency-inputs/1",
+  "status": "BLOCKED",
+  "block_code": "PROXY_TOOLS_010_LICENSE_CONFLICT",
+  "approved_design_path": "docs/rc8-p1-e-native-window-design-approved.md",
+  "approved_design_sha256": "4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7",
+  "proxy_tools": {
+    "version": "0.1.0",
+    "source_url": "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz",
+    "source_bytes": 2978,
+    "source_sha256": "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010",
+    "package_source": {
+      "path": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "bytes": 6409,
+      "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be",
+      "header_license_declaration": "BSD"
+    },
+    "metadata_license_declaration": "MIT",
+    "standalone_license_present": false,
+    "license_references": [
+      {"member": "proxy_tools-0.1.0/PKG-INFO", "line": 8, "declaration": "MIT"},
+      {"member": "proxy_tools-0.1.0/setup.py", "line": 14, "declaration": "MIT"},
+      {"member": "proxy_tools-0.1.0/proxy_tools/__init__.py", "line": 8, "declaration": "BSD; referenced LICENSE absent"}
+    ],
+    "license_resolution": "ATTRIBUTABLE_APPLICABLE_TEXT_REQUIRED",
+    "accepted_wheel": null,
+    "exact_pinned_sdist_positive": {
+      "obligation": "PROXY_TOOLS_010_EXACT_PINNED_SDIST_POSITIVE_REQUIRED",
+      "required": true,
+      "status": "DEFERRED_REQUIRED_NOT_VERIFIED",
+      "evidence": null,
+      "skip_acceptable": false,
+      "production_pin_monkeypatch_allowed": false,
+      "synthetic_surrogate_accepted": false,
+      "required_before": "native_dependency_promotion",
+      "inspector": "portable.native_dependency.inspect_proxy_sdist",
+      "input_policy": "OWNER_PERMITTED_HOSTED_INPUT_WITHOUT_COMMIT_OR_PUBLIC_PAYLOAD_MIRROR",
+      "missing_input_or_proof": "BLOCK"
+    }
+  },
+  "producer_tools_to_hash_lock": {
+    "python": "3.12.10",
+    "pip": "26.2.1",
+    "setuptools": "84.0.0",
+    "wheel": "0.45.1",
+    "build": "1.2.2.post1",
+    "pyproject-hooks": "1.2.0"
+  },
+  "producer_workflow": "NOT_IMPLEMENTED",
+  "producer_isolation": "NOT_VERIFIED",
+  "producer_authority": "NOT_GRANTED",
+  "publication_authority": "NOT_GRANTED",
+  "legal_acceptance": "BLOCKED"
+}

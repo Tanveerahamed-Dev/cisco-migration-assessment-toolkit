@@ -1,0 +1,130 @@
+{
+  "schema": "atlas.native-dependency-sdist-fixture/2",
+  "purpose": "Finite source member metadata only; hosted tests create synthetic payloads, not upstream bytes",
+  "source_url": "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz",
+  "source_bytes": 2978,
+  "source_sha256": "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010",
+  "package_source": {
+    "path": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+    "bytes": 6409,
+    "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be",
+    "header_license_declaration": "BSD"
+  },
+  "members": [
+    {
+      "archive_name": "proxy_tools-0.1.0/",
+      "parsed_name": "proxy_tools-0.1.0",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/PKG-INFO",
+      "parsed_name": "proxy_tools-0.1.0/PKG-INFO",
+      "type": "0",
+      "size": 437,
+      "sha256": "89a85f6d9e74e8c391755c33e9529b078250e5365fb35ddaecf7cb7f227d18ec"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools/",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "type": "0",
+      "size": 6409,
+      "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/dependency_links.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/dependency_links.txt",
+      "type": "0",
+      "size": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/not-zip-safe",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/not-zip-safe",
+      "type": "0",
+      "size": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/PKG-INFO",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/PKG-INFO",
+      "type": "0",
+      "size": 437,
+      "sha256": "dd73a0ca763996298b717cf0a26198a07d0ae393849081c7aafefca6b08ddae7"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/SOURCES.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/SOURCES.txt",
+      "type": "0",
+      "size": 217,
+      "sha256": "83eee4d6f62f339d4e66ab9a14108cecb55530a113073da55b63e7bfc60a4a84"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/top_level.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/top_level.txt",
+      "type": "0",
+      "size": 12,
+      "sha256": "5787cceffb627f279f0ca8c359b2a84462a455fee63525f3fbde19c2de0ff252"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/README.rst",
+      "parsed_name": "proxy_tools-0.1.0/README.rst",
+      "type": "0",
+      "size": 1185,
+      "sha256": "1283ea54e21d1bdd171452aef9228d869fb2ad7bd3f88f0419493413dcb0096e"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/setup.cfg",
+      "parsed_name": "proxy_tools-0.1.0/setup.cfg",
+      "type": "0",
+      "size": 59,
+      "sha256": "063d04b462ef73e9d86e0b0ae49c4321b51984444a5a2a90aece1e0082b488ee"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/setup.py",
+      "parsed_name": "proxy_tools-0.1.0/setup.py",
+      "type": "0",
+      "size": 717,
+      "sha256": "2bb5e8e3c91a5cc5768310b67c2da6c7e5942f8d348402b5e9cee2fcce558b5b"
+    }
+  ],
+  "license_discrepancy": {
+    "metadata_license_declaration": "MIT",
+    "source_header_license_declaration": "BSD",
+    "standalone_license_present": false,
+    "references": [
+      {
+        "member": "proxy_tools-0.1.0/PKG-INFO",
+        "line": 8,
+        "declaration": "MIT"
+      },
+      {
+        "member": "proxy_tools-0.1.0/setup.py",
+        "line": 14,
+        "declaration": "MIT"
+      },
+      {
+        "member": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+        "line": 8,
+        "declaration": "BSD; referenced LICENSE absent"
+      }
+    ],
+    "resolution": "OWNER_EVIDENCE_REQUIRED"
+  },
+  "exact_pinned_archive_positive": "DEFERRED_REQUIRED_FAIL_CLOSED_DEPENDENCY_ADMISSION",
+  "payload_bytes_present": false,
+  "historical_payload_commit": "7045c67c99eb6428319cef4958698254c725e3e3",
+  "historical_redistribution": "OWNER_DECISION_REQUIRED; current-tree replacement does not remove history"
+}
