@@ -291,3 +291,29 @@ those three literal substitutions; assertion ASTs and test names/signatures rema
 identical. Fresh independent review, committed-head Rule-7/marker scans and hosted
 results are still required. The failed head and any other terminal findings remain
 history; no rerun, skip, relaxed assertion or earlier-head acceptance is inferred.
+
+## Windows approved-design byte custody
+
+The same source head's completed Windows job `117819460269` in CI run
+`39176198136` reported two failures: the diagnostic-fixture collision above and
+`test_current_dependency_record_is_blocked_and_preserves_the_source_license_conflict`.
+Its shared-pass summary was two failed, 21,023 passed, 58 skipped, three xfailed,
+18 warnings and 26 subtests passed in 2,663.64 seconds. The unshared pass was not
+reached. The second failure is independent of licence resolution or the private
+fixture: Windows materialized the approved Markdown snapshot with CRLF.
+
+The Git blob remains 44,596 LF-only bytes with approved SHA-256
+`4aaac441c575f273233ba5730949bb198856e948aa5c1b50066eff6193d16cd7`.
+Converting those exact LF bytes to CRLF yields
+`98f53dbdbaf54fc0ac3296b9a4890daf0f83d51d1579241b503a7176d59718f7`, exactly
+the observed Windows mismatch. The missing per-file checkout attribution is the
+cause; the approved bytes and pinned expectation are not changed.
+
+Add one exact `.gitattributes` rule, outside the existing R1/R2 policy blocks and
+domains, marking only `docs/rc8-p1-e-native-window-design-approved.md` as
+`-text -eol`. Git must retain that evidence snapshot byte-for-byte, independent of
+autocrlf. No other Markdown path, policy receipt/domain, dependency record/hash,
+test assertion, gate, budget or timeout changes. Source-only Git filter/hash
+observations and independent review precede a fresh committed-head privacy scan
+and publication. Only fresh hosted results on the subsequent exact head can
+verify the repair; no old Windows or frozen result transfers.

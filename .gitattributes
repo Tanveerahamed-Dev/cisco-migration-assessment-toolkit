@@ -143,3 +143,8 @@ tests/interface_computation_guard.py text eol=lf
 tests/interface_computation_lex.py text eol=lf
 tests/interface_computation_sources.py text eol=lf
 .github/scripts/interface_computation_ast.mjs text eol=lf
+
+# The approved native-window design is a hash-bound evidence snapshot. Preserve
+# its original bytes under every checkout configuration; no newline conversion
+# or broader documentation/policy-scope exception is permitted here.
+docs/rc8-p1-e-native-window-design-approved.md -text -eol
