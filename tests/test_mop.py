@@ -571,6 +571,19 @@ def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
 
 
 # ---- DE-01 P1: Executive-Summary BLUF (answer-first, front matter) ----------------------------
+def test_mop_fallback_capture_and_validation_prose_is_preserved(tmp_path):
+    snap = _snap()
+    snap["validation_plan"] = {}
+    out = tmp_path / "fallback-prose.docx"
+    write_mop_docx(str(out), snap, "Synthetic fallback prose")
+    text = _all_text(Document(out))
+    assert ("On each of distA, distB: also capture 'show ip interface brief', 'show cdp neighbors', "
+            "'show spanning-tree summary', and (if L3) 'show ip route' / 'show standby brief'.") in text
+    assert ("No machine-generated validation checks for this wave. As a minimum, verify "
+            "gateway reachability (ping the SVI/HSRP vIP), FHRP roles, routing "
+            "adjacencies, STP root, and port-channel membership are unchanged from the §3.3 baseline.") in text
+
+
 def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
     """DE-01 / Cisco-AS: a Bottom-Line-Up-Front executive summary sits at the TOP of the MOP (before the
     numbered sections), and it carries the load-bearing decision facts pulled from the snapshot — the wave
@@ -584,15 +597,15 @@ def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
     text = _all_text(d)
     # the BLUF names the wave count
     assert "2 wave(s)" in text
-    # STRUCTURAL (non-vacuous): the BLUF go/no-go GATE ROW itself must carry the worst readiness — not just
-    # "NOT READY" appearing somewhere in the doc (it also renders in every wave's scope table, which would
+    # STRUCTURAL (non-vacuous): the BLUF gate row must carry the engine NO-GO — not merely
+    # assessment "NOT READY" elsewhere in the document (a whole-doc substring check would
     # make a whole-doc substring check vacuous — adversarial-review finding, 2026-07-05).
     gate_rows = [[c.text.strip() for c in row.cells]
                  for tbl in d.tables for row in tbl.rows
                  if any("no-go gate" in c.text.lower() or "worst readiness" in c.text.lower()
                         for c in row.cells)]
     assert gate_rows, "BLUF go/no-go gate row not found in any table"
-    assert any("NOT READY" in " ".join(cells) for cells in gate_rows), gate_rows
+    assert any(cells[-1].startswith("NO-GO;") for cells in gate_rows), gate_rows
     # one-line rollback + a maintenance-window estimate line, both answer-first
     assert "Rollback in one line" in text or "Rollback (one line)" in text
     assert "Maintenance window" in text
@@ -655,7 +668,7 @@ def test_mop_nonclear_current_baseline_holds_every_window_without_echoing_rows(
     assert "overall readiness gate is READY" not in _all_text(doc)
 
 
-def test_mop_clear_current_baseline_keeps_per_wave_readiness_separate(tmp_path):
+def test_mop_clear_current_baseline_cannot_override_missing_readiness_evidence(tmp_path):
     snap = _snap()
     for row in snap["migration_readiness"]:
         row.update(readiness="READY", n_fail=0, n_warn=0, checks=[])
@@ -671,7 +684,7 @@ def test_mop_clear_current_baseline_keeps_per_wave_readiness_separate(tmp_path):
     assert gate.startswith("CLEAR within the bounded validation-plan scope")
     assert "not cutover authorization" in gate
     go_no_go, = _row_values(doc, "Go / no-go gate")
-    assert go_no_go.startswith("READY — the current baseline is CLEAR")
+    assert go_no_go.startswith("CONDITIONAL GO; CLEAR within the bounded validation-plan scope")
 
 
 def test_mop_retains_fhrp_not_verified_compatibility_marker_as_a_blocker(tmp_path):

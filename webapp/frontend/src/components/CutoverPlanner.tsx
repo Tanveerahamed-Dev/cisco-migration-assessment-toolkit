@@ -313,6 +313,20 @@ function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
         </span>
       </div>
 
+      {w.gate_evidence && (
+        <section aria-label="Engine gate evidence" style={{ marginTop: 12 }}>
+          <b>Engine gate evidence</b>
+          <div className="dim" style={{ fontSize: 12, marginTop: 5 }}>
+            Reasons
+            {w.gate_evidence.reasons.map((reason, index) => <p key={index}>{reason}</p>)}
+          </div>
+          <div className="dim" style={{ fontSize: 12, marginTop: 5 }}>
+            Coverage gaps
+            {w.gate_evidence.coverage.gaps.map((reason, index) => <p key={index}>{reason}</p>)}
+          </div>
+        </section>
+      )}
+
       {Object.keys(split).length > 0 && (
         <div style={{ marginTop: 12 }}>
           <SegBar data={split} colorFor={splitColor} />

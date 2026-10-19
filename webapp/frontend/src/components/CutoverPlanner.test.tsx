@@ -60,6 +60,59 @@ describe("CutoverPlanner (render)", () => {
     expect(screen.getByText("est. total window")).toBeInTheDocument();
   });
 
+  it("explains the engine coverage hold beside READY readiness and a CLEAR baseline", async () => {
+    const gap = "Device sw1 has missing or duplicate health evidence.";
+    const heldPlan = {
+      ...cutover,
+      waves: [{
+        ...cutover.waves[0], gate: "CONDITIONAL GO", readiness: "READY",
+        gate_evidence: {
+          schema: "wave_cutover_gate/1", verdict: "CONDITIONAL GO",
+          scope: { groups: ["Access-Pilot"], switches: ["sw1"] },
+          counts: { n_fail: 0, n_warn: 0, n_critical_crosslayer: 0, n_high_remediation: 0,
+                    n_high_punchlist: 0, n_blind: 0 },
+          reasons: [], coverage: { complete: false, gaps: [gap] },
+          current_baseline: { schema: "current_baseline_gate/1", verdict: "CLEAR", assessed: true,
+                              integrity: { valid: true, failures: [] }, n_items: 1, n_blockers: 0 },
+          limitations: ["Assessment gate only; human sign-off remains required."],
+        },
+        current_baseline: { schema: "current_baseline_gate/1", verdict: "CLEAR", assessed: true,
+                            note: "The bounded validation rows are clear.", blockers: [] },
+        baseline_blockers: [],
+      }],
+    };
+    vi.spyOn(api, "cutover").mockResolvedValue(heldPlan as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+
+    const explanation = await screen.findByRole("region", { name: "Engine gate evidence" });
+    expect(within(explanation).getByText(gap)).toBeVisible();
+    expect(within(explanation).getByText("Coverage gaps")).toBeVisible();
+    expect(screen.getByText("readiness: READY")).toBeInTheDocument();
+    expect(screen.getByTestId("current-baseline-verdict")).toHaveTextContent("CLEAR");
+    expect(screen.getByRole("button", { name: /Run-of-show/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getAllByText("CONDITIONAL GO").length).toBeGreaterThan(0);
+  });
+
+  it("displays every engine reason and coverage gap without deriving a new decision", async () => {
+    const reasons = ["Group Access-Pilot is NOT READY.", "Critical cross-layer finding affects this wave."];
+    const gaps = ["No baseline row binds to this wave.", "Health evidence is unavailable."];
+    vi.spyOn(api, "cutover").mockResolvedValue({
+      ...cutover,
+      waves: [{ ...cutover.waves[0], gate: "NO-GO",
+                gate_evidence: { schema: "wave_cutover_gate/1", verdict: "NO-GO", reasons,
+                                 coverage: { complete: false, gaps } } }],
+    } as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+
+    const explanation = await screen.findByRole("region", { name: "Engine gate evidence" });
+    for (const text of [...reasons, ...gaps]) expect(within(explanation).getByText(text)).toBeVisible();
+    expect(screen.getByText("NO-GO")).toBeInTheDocument();
+  });
+
   it("keeps every current-baseline blocker visible outside the ordinary ten-check cap", async () => {
     const ordinary = Array.from({ length: 31 }, (_, i) => ({
       category: "Reachability", severity: "Medium", check: `ordinary-check-${i + 1}`,

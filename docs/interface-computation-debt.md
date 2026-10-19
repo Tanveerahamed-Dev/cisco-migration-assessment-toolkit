@@ -306,7 +306,7 @@ explain their intended repair, without duplicating a second site census:
 | HTML trend headline recounts | `cisco_toolkit/html.py :: _trend_point` | Canonical facts and finding facet owner; existing report sites remain explicit debt/allowances |
 | KPI thresholds and readiness verdicts | `webapp/frontend/src/pages/Snapshot.tsx :: HEALTH_TONE / GAUGE_COLOR / SnapshotPage` | Engine facts, with the Atlas App frontend lead; PR-1 |
 | Second topology and browser failure BFS | `webapp/backend/graph.py :: build_graph`; `TopologyGraph.tsx :: counterfactualFailure` | Projected topology/device impact; PR-1 |
-| Divergent pre-change gate | `webapp/backend/cutover.py :: _gate`; `cisco_toolkit/mop.py :: _join_group_records / _worst_readiness` | One engine-owned wave gate; PR-2 |
+| Divergent pre-change gate | Retired `_gate` and `_worst_readiness`; `_join_group_records` delegates to the engine | `cisco_toolkit/analyze.py :: compute_wave_cutover_gate / rollup_wave_cutover_gates / join_wave_group_records`; PR-2 local, hosted debt closure pending |
 | Deck/workbook local counts, bands and lifecycle share | `cisco_toolkit/deck.py`, `cisco_toolkit/excel.py`, exact symbols in JSON | Canonical facts, partitions, published axis shares; PR-3 |
 | Explorer path, flow, ACL, failure, carriage, causal and health engines | `blast_radius_explorer.html :: tracePath / flowBetween / evalAcl / failureImpact / linkCarries / causalFlows / fleetHealthState / scoreToken` | **Retired-with-surface**; product serving/link retirement pending PR-4; source retained |
 | Scope forwarding, blast, graph and band qualification | `atlas-scope/src/forwarding/engine.ts`, `analysis/blast.ts`, `core/band-qualification.ts`, exact symbols in JSON | **Retired-with-surface**; hub product/packaging retirement pending PR-4; source retained |
@@ -333,8 +333,8 @@ execution/NRFU records and comparison. Existing legacy owners remain available:
 `/design` and `/design/nrfu` read stored engine sections with engine fallbacks;
 `/deliverable/{kind}` uses SPECS for MOP/runbook; `/api/compare` calls
 `engine.compare_bound_pair`; execution reads use `execution.with_progress`.
-Overview's readiness groups are validated owner records, but no unified per-wave
-gate exists yet (PR-2). Saved-plan list/revision/select/export belongs to
+Overview's readiness groups are validated owner records. PR-2 locally implements the unified
+per-wave gate in `analyze.compute_wave_cutover_gate`; hosted closure and publication are pending. Saved-plan list/revision/select/export belongs to
 unmerged #666/#667. These are identified integration gaps, not newly implemented
 projection contracts. Classic React workflows and their gates remain until the
 frontend lead moves equal-or-stronger assertions with each native replacement.
@@ -1223,3 +1223,28 @@ identities identified by that hosted census: **36,891 to 36,784, 107 removals,
 zero additions**. The final post-#682 census and shrink-only checks must still
 execute on GitHub. Tracked frontend dist is rebuilt and received through the
 existing hosted handoff, never locally.
+
+## PR-2 local wave-gate handoff
+
+`docs/rc8-p1-h-pr2-wave-gate.md` records the engine owner, closed vocabulary, consumer scopes,
+stronger restriction policy, byte expectations and pending hosted tests. The current deletion-only
+edit removed 26 retired-symbol rows; local review of `8b0d10dd` removes four further stale verdict-symbol
+occurrences (`fleet_gate` and `combined_gate`, occurrences 2 and 3). The cumulative edit is 30 deletions,
+zero additions, with 36,861 rows provisionally retained. This is not a current detected census:
+retained functions also lose expressions and lexical occurrences, whose stale register rows must
+be removed from the authorized hosted observation after the #682 schema rebase. No detector,
+role, boundary, assertion, budget or timeout is changed to manufacture a subset. No local
+inspector or tests run, and no push/CI is authorized by this handoff.
+
+
+### PR-2 complete hosted retirement
+
+After literal restoration of the incidental assembly changes, source `897b2d4a`
+CI `39171530046`, job `117805473118`, observes 36,732 sites with fingerprint
+`74baca876c01142eb78a081f95ce88ec6bb3cc2f0882038bd326991d8d1e3d17` and zero
+unregistered/resurrected identities. The full proposal, not the twelve-entry diagnostic
+sample, removes all remaining 22 stale rows. Relative to post-#681 main `bc54fa80`,
+PR-2 is **52 removals and zero additions, 36,784 to 36,732**. Full exact identities
+and tested-source/detector metadata are in `docs/rc8-p1-h-pr2-census-retirement.json`.
+The detector, boundary policy, role declarations and historical subsets are unchanged.
+Fresh final-head census equality and complete hosted checks remain the acceptance gate.

@@ -194,6 +194,11 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
         meta2.add_run("    ")
         kv(meta2, "Estimated window:", w["est_window_label"])
 
+        for reason in w["gate_evidence"]["reasons"]:
+            doc.add_paragraph(reason)
+        for reason in w["gate_evidence"]["coverage"]["gaps"]:
+            doc.add_paragraph(reason)
+
         br = w.get("blast_radius")
         if br:
             p = doc.add_paragraph()

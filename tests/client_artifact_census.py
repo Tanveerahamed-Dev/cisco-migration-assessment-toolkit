@@ -1376,10 +1376,12 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # successful returns/caller headers; _send_file's sanitized stem/header; SPECS and docmeta.
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
+# PR-2: the evidence type/panel changes these two complete source identities only.
+# All three caller/factory expressions and the other six route/catalog/header owners are unchanged.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "108849be33aa104672c393832c85ac54bb559a90",
+    "webapp/frontend/src/api.ts": "db43befd5437295c9de11f93e9649b153e670977",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
-    "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
+    "webapp/frontend/src/components/CutoverPlanner.tsx": "9f4d3f8a2c0c553a10d873538a89826e51cc2aa4",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "c0346779e2bb683eae1b89dcd92bb74fc808dcf6",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original

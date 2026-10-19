@@ -20,6 +20,7 @@ from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_protocol_assurance_receipt, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
+from cisco_toolkit import analyze
 from cisco_toolkit import impact_assessability   # W48: which stored failure-impact rows are measurements
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
@@ -94,102 +95,9 @@ def _wave_sections(snap: dict):
 
 
 def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
-    """Union the per-group records across the groups a wave's switches belong to (a coupled-subwave maps to
-    one group; an independent-batch maps to many): worst readiness verdict, fail/warn checks, first
-    non-empty sequencing/scenario, deduped validation checks. Endpoints are APPORTIONED to this wave's
-    switch-share of each group -- a sub-wave is a SLICE, so it must not inherit the parent group's full
-    endpoint total. Single source of truth -- reads the engine's records, never recomputes them."""
-    # Rank the engine's ACTUAL readiness vocabulary -- analyze.compute_migration_readiness emits exactly
-    # {"NOT READY","CAUTION","READY"}. Lower = worse, so the reduce below keeps the worst verdict; an
-    # unknown value defaults high (least-worst) and never masks a real NOT READY.
-    rank = {"not ready": 0, "caution": 1, "ready": 2}
-
-    def _i(x):
-        # Delegate to the shared fail-soft coercer: it rejects the JSON Infinity/NaN that a plain
-        # int() would let through (inf -> OverflowError, missed by (TypeError, ValueError)).
-        return int(_as_num(x))
-
-    r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
-    seq, scen, val_items, worst, seen = {}, {}, [], None, set()
-    mbb_all, hard_all = [], []   # cutover host split UNIONED across every group in the wave (not just the first)
-    members_all = set()          # full membership of the joined groups — detects a sub-wave SLICE below
-    wsw = set(wave_switches or [])
-    for g in gnames:
-        rr = readiness_by_group.get(g) or {}
-        # element-coerced: a scalar member would otherwise break `s in note` (TypeError: 'in <string>'
-        # requires string) and `sorted(gsw)` (int vs str) in the check-attribution below, and every
-        # downstream render of `switches` (the §x.1 join, the port map, the OOB evidence lookup).
-        gsw = _as_strs(rr.get("switches"))
-        members_all.update(gsw)
-        share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
-        r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
-        # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
-        # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
-        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N (Meridian Group 1's true 3/4
-        # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
-        checks = [c for c in _as_list(rr.get("checks"))
-                  if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
-        if checks:
-            gsw_set = set(gsw)
-            for chk in checks:
-                note = str(chk.get("note", ""))
-                members = sorted(s for s in gsw_set if s and s in note)   # group switches named in this check's note
-                owner = members[0] if members else (sorted(gsw)[0] if gsw else None)   # canonical single owner
-                if owner is not None and owner in wsw:                    # this sub-wave owns the check
-                    r["n_fail" if str(chk.get("status")).lower() == "fail" else "n_warn"] += 1
-        else:
-            # older snapshot with no per-check attribution -> apportion by switch-share, never rounding a lone
-            # blocker DOWN to 0 (that would mask a NOT-READY wave's gate). Single-slice correctness preserved.
-            _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
-            r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
-            r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
-        rd = rr.get("readiness")
-        if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
-            worst = rd
-        gseq = seq_by_group.get(g) or {}
-        if not seq:
-            seq = gseq
-        for _h in _as_strs(gseq.get("make_before_break")):
-            if _h not in mbb_all:
-                mbb_all.append(_h)
-        for _h in _as_strs(gseq.get("hard_cutover")):
-            if _h not in hard_all:
-                hard_all.append(_h)
-        if not scen:
-            scen = scen_by_group.get(g) or {}
-        # keep only RECORDS: every consumer of val_items dereferences it (`it.get("device")` for the
-        # §x.3 capture table, `it.get("severity")` for the §x.6 go/no-go sort), so a scalar element --
-        # a truthy int OR a plain string, both of which the old `isinstance` branch let through into
-        # the list -- crashed the render two sections later.
-        for v in _as_dicts(val_by_wave.get(g)):
-            # A command is a capture action, not a validation-check identity.  FHRP deliberately emits
-            # one semantic check per VLAN while reusing a single `show standby brief` capture; collapsing
-            # on (device, command) silently removed every VLAN after the first from the §x.6 gate.  Keep
-            # exact semantic duplicates out when groups are joined, but retain distinct VLAN/subtype/check
-            # and acceptance rows.  repr() keeps malformed JSON-like leaves hashable so this join remains
-            # total; all downstream rendering still applies the existing defensive coercion.
-            key = tuple(repr(v.get(field)) for field in (
-                "device", "category", "subtype", "vlan", "check", "command", "expect", "severity",
-            ))
-            if key not in seen:
-                seen.add(key)
-                val_items.append(v)
-    r["readiness"] = worst or "—"
-    # A wave that covers only a SLICE of its groups' membership (an oversized group split into coupled
-    # sub-waves) must not inherit the parent's full host split — same doctrine as the endpoint
-    # apportioning above (QA row-13: every ≤40-switch sub-wave row repeated the parent's full
-    # '107 hard cutover + 144 make-before-break', and §wi.5 sequenced parent-scale counts). A wave
-    # covering its WHOLE group keeps the raw union, so hosts the sequencing lists name beyond the
-    # membership record are preserved rather than silently dropped (fail-soft on inconsistent uploads).
-    if wsw and members_all and not members_all.issubset(wsw):
-        mbb_all = [h for h in mbb_all if h in wsw]
-        hard_all = [h for h in hard_all if h in wsw]
-    # Overlay the SLICED cutover host split so the procedure branches on THIS wave's members, not just the
-    # representative group (the free-text 'sequence' stays the representative's — descriptive only). Copy
-    # so the engine's record is never mutated (this joiner reads the engine's records, never recomputes).
-    if seq:
-        seq = {**seq, "make_before_break": mbb_all, "hard_cutover": hard_all}
-    return r, seq, scen, val_items
+    """Display the engine-owned joined wave records (including apportioned counts)."""
+    return analyze.join_wave_group_records(
+        gnames, wave_switches, readiness_by_group, seq_by_group, scen_by_group, val_by_wave)
 
 
 def _strategy_cell(seq, scen):
@@ -210,27 +118,6 @@ def _strategy_cell(seq, scen):
 
 
 # ---- readiness roll-up + window estimate (BLUF facts) -----------------------------------------
-# The engine's readiness vocabulary is exactly {"NOT READY","CAUTION","READY"} (analyze.compute_
-# migration_readiness). Lower rank = worse; an unknown value defaults least-worst so it never masks a
-# real NOT READY. This mirrors _join_group_records' reducer — one shared ordering, not a second copy.
-_READY_RANK = {"not ready": 0, "caution": 1, "ready": 2}
-
-
-def _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
-    """The go/no-go gate for the whole change: the WORST per-wave readiness verdict across every wave
-    (each wave's verdict is itself the worst across its constituent groups, via _join_group_records — one
-    source of truth). Returns the verdict string, or None when no wave publishes one (coverage-honest)."""
-    worst = None
-    for _name, switches, _kind, gnames in waves:
-        r, *_ = _join_group_records(gnames, switches, readiness_by_group, seq_by_group,
-                                    scen_by_group, val_by_wave)
-        rd = r.get("readiness")
-        if rd and rd != "—" and (worst is None
-                                 or _READY_RANK.get(str(rd).lower(), 9) < _READY_RANK.get(str(worst).lower(), 9)):
-            worst = rd
-    return worst
-
-
 def _current_baseline_context(validation_plan, waves):
     """Return the canonical current-baseline gate plus every unbound blocker.
 
@@ -361,7 +248,7 @@ def _oob_evidence_for(switches, ifaces_all):
 
 def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
                 snap, NAVY, RED, _label_run, table, blockers_for=None,
-                current_baseline=None, unbound_baseline_blockers=None):
+                current_baseline=None, unbound_baseline_blockers=None, wave_records=None):
     """Render the Bottom-Line-Up-Front executive summary (unnumbered H1 so the numbered sections are
     untouched). Answer-first decision facts, all snapshot-grounded and coverage-honest.
 
@@ -373,7 +260,8 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
     the first under the second's label while pointing the approver at §x.2, so the one-screen
     decision view contradicted the section it sent them to. Both are reported now, each named."""
     n_waves = len(waves)
-    gate = _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave)
+    wave_records = wave_records if wave_records is not None else analyze.rollup_wave_cutover_gates(snap, waves)
+    gate = wave_records["verdict"]
     current = _as_dict(current_baseline)
     current_verdict = str(current.get("verdict") or "NOT_ASSESSED").upper()
     current_summary = _as_dict(current.get("summary"))
@@ -407,12 +295,6 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
             "CLEAR within the bounded validation-plan scope; this is not cutover authorization. "
             "Per-wave readiness still applies."
         )
-        combined_gate = (
-            f"{gate} — the current baseline is CLEAR within its bounded scope; "
-            "do NOT open a window whose wave is NOT READY until its blockers are cleared or risk-accepted."
-            if gate else
-            "HOLD — no per-wave readiness verdict was published; treat every wave as no-go until readiness is assessed."
-        )
     elif current_verdict == "BLOCKED":
         current_detail = (
             f"HOLD — current baseline BLOCKED: {n_current_blockers} degraded/review/not-verified "
@@ -420,19 +302,19 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
             f"{len(unbound)} blocker(s) are not bound to a scheduled wave"
             + ("; see Unscheduled current-baseline blockers." if unbound else ".")
         )
-        combined_gate = current_detail
     else:
         current_detail = (
             f"HOLD — current baseline {current_verdict}; the validation-plan contract does not authorize "
             "an all-clear. Recollect or reconcile before any window."
         )
-        combined_gate = current_detail
+
+    combined_gate = "; ".join((gate, current_detail))
 
     rows = [
         ("What this MOP does",
          f"Cuts the migration over in {n_waves} candidate wave(s), each in its own maintenance window "
          "(clear blockers → baseline → procedure → validate → proceed or roll back)."),
-        ("Per-wave worst readiness (scheduled waves)",
+        ("Engine cutover gate (scheduled waves)",
          (str(gate) if gate else
           "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as no-go "
           "until readiness is assessed.")),
@@ -554,6 +436,7 @@ def write_mop_docx(
     # char-iterating or raising AttributeError mid-render (matching engagement/ops/archreview).
     devices = _as_dict(snap.get("devices"))
     waves = _wave_sections(snap)
+    wave_records = analyze.rollup_wave_cutover_gates(snap, waves)
     readiness_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("migration_readiness")))}
     seq_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("wave_sequencing")))}
     scen_by_group = {d.get("group"): d
@@ -636,13 +519,13 @@ def write_mop_docx(
     # DE-01 / Cisco-AS: answer-first executive summary at the TOP of the MOP so a change approver reads
     # the window intent, the go/no-go gate, the one-line rollback and the window estimate WITHOUT paging
     # into the numbered procedure. Every fact is the snapshot's own (never invented): wave count from
-    # `waves`, the go/no-go gate is the WORST readiness verdict across the waves (via _join_group_records,
+    # `waves`, the go/no-go gate is the engine-owned worst wave decision (the joined records retain
     # one source of truth), the recommendation + top-gating are the engine's. A fact the snapshot did not
     # publish reads "[NOT OBSERVED]", never a fabricated value (coverage-honesty).
     _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
                 snap, NAVY, RED, _label_run, table, blockers_for=_blockers_for,
                 current_baseline=current_baseline,
-                unbound_baseline_blockers=unbound_baseline_blockers)
+                unbound_baseline_blockers=unbound_baseline_blockers, wave_records=wave_records)
     doc.add_page_break()
 
     # ---- document control (AS-style front matter; unnumbered so the wave sections are untouched) ----
@@ -675,16 +558,19 @@ def write_mop_docx(
         "blocking items first, then cut the lower-risk waves to build confidence, protecting the "
         "highest-blast-radius (keystone) devices.")
     ov_rows = []
-    for name, switches, _kind, _gnames in waves:
+    for (name, switches, _kind, _gnames), record in zip(waves, wave_records["waves"]):
         r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                  scen_by_group, val_by_wave)
         blast = _blast_for(switches, fi_rows, fi_blind)
         rem, pl = _blockers_for(switches)
+        # The legacy readiness key is only a render cell here; copy the engine gate into it.
+        # Keep the joined assessment record and the source snapshot untouched.
+        r = {**r, "readiness": record["verdict"]}
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
                         r.get("readiness", "—"), _strategy_cell(seq, _scen),
                         _blast_cell(blast, short=True) if blast is not None else "[NOT OBSERVED]",
                         len(rem) + len(pl)))
-    table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
+    table(["Wave", "Devices", "Endpoint MACs", "Engine gate", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
     fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
@@ -854,6 +740,28 @@ def write_mop_docx(
               widths=[1.0, 1.5, 1.6, 0.7, 1.4])
 
     # ===== per-wave sections =====
+    # Engine decisions govern each named window; legacy readiness below is assessment context only.
+    doc.add_heading("Engine pre-change window decisions (mandatory)", level=2)
+    doc.add_paragraph(
+        "Each named engine cutover gate below is a mandatory precondition for its window. "
+        "A legacy READY/CAUTION/readiness row or proceed sentence in the following scope sections "
+        "cannot clear an engine hold. Their readiness verdict is the assessment signal only. "
+        "Resolve or explicitly disposition the engine reasons and coverage gaps before opening "
+        "the window, in addition to CAB approval, a tested rollback and human sign-off.")
+    for (name, _switches, _kind, _groups), record in zip(waves, wave_records["waves"]):
+        doc.add_heading(f"Engine cutover gate — {name}", level=3)
+        doc.add_paragraph(record["verdict"])
+        doc.add_paragraph(f"Groups: {', '.join(record['scope']['groups'])}")
+        doc.add_paragraph(f"Devices: {', '.join(record['scope']['switches'])}")
+        for reason in record["reasons"]:
+            doc.add_paragraph(reason)
+        for reason in record["coverage"]["gaps"]:
+            doc.add_paragraph(reason)
+        if analyze.wave_requires_high_risk_controls(record["verdict"]):
+            doc.add_paragraph(
+                "Non-GO window: pre-open a Cisco TAC case and retain its SR number in the war room. "
+                "The engine hold remains until its reasons and coverage gaps are resolved or dispositioned.")
+
     for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
         r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                        scen_by_group, val_by_wave)
