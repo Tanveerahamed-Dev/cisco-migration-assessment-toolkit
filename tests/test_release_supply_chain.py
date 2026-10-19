@@ -116,7 +116,6 @@ _REQUIRED_NON_MATRIX_CONTEXTS = {
     "Coverage",
     "Dependency audit",
     "Distribution contract",
-    "Exact-source compiler, reference, and release contracts",
     "Full source and frontend gate (unprivileged runner)",
     "Installed transition runtime · pinned Windows profile",
     "Ruff lint",

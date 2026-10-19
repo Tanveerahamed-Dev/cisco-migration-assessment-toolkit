@@ -1,9 +1,12 @@
 name: Master reference
 
+# PAUSED by the owner on 2026-10-18 until the Atlas application ships: the master reference is an
+# internal, private index of this repository and no Atlas runtime, build or release path uses it.
+# It runs only on manual dispatch and is not a required context (.github/portable-required-main-checks.json).
+# To resume: restore the push (main) and pull_request triggers, add its context back to that file,
+# to tests/test_release_supply_chain.py and to main branch protection in the same change, and land
+# the planned W64b compaction before its capacity guard reaches 95 %.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
