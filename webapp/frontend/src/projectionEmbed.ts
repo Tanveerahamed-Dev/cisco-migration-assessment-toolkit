@@ -40,7 +40,7 @@ export type EmbedMessage =
   | (Envelope & Readonly<{ type: "refused"; code: EmbedRefusalCode; request_id: string | null }> &
     (Bound | Readonly<{ identity: null; context_digest: null }>));
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;

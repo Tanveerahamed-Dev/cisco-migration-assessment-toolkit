@@ -1240,6 +1240,13 @@ def install_routes(app: FastAPI, store: Any) -> None:
             api = original_openapi()
             schemas = api.setdefault("components", {}).setdefault("schemas", {})
             schemas.update(openapi_owner_definitions())
+            from cisco_toolkit.design_advisor import requirements_structure
+
+            schemas["SavedPlanRequirements"] = requirements_structure()
+            schemas["SavedPlanRegister"] = requirements_structure(canonical=True)
+            schemas["SavedPlanIn"]["properties"]["requirements"] = {"$ref": "#/components/schemas/SavedPlanRequirements"}
+            schemas["SavedPlanProjectionResponse"]["properties"]["requirements"] = {"$ref": "#/components/schemas/SavedPlanRegister"}
+            schemas["SavedPlanSectionsResponse"]["properties"]["requirements_register"] = {"$ref": "#/components/schemas/SavedPlanRegister"}
             schemas.update({"UiProjection1_" + name: _rewrite_refs(schema)
                             for name, schema in _TRANSPORT_DEFS.items()})
             for name, source in (("UiProjectionViewResponse", _VIEW_SCHEMA),

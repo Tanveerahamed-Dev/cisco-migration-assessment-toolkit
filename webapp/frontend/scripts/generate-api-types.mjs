@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { requireLocalReferences, generationMode, requirementsTypeSource } from "./generation-policy.mjs";
+import { requireLocalReferences, generationMode } from "./generation-policy.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const input = join(root, ".generated", "openapi.json");
@@ -28,7 +28,6 @@ if (mode === "review") {
 const schema = JSON.parse(readFileSync(input, "utf8"));
 // Only the actual offline app export is admitted; generation never resolves remote references.
 requireLocalReferences(schema);
-const requirementsSource = requirementsTypeSource(schema);
 if (!schema.paths?.["/api/snapshots/{snapshot_id}/ui-projection/{view}"]) {
   throw new Error("Missing engine projection route in app OpenAPI export");
 }
@@ -42,7 +41,7 @@ try {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exitCode = result.status || 1;
   else {
-    const bytes = Buffer.concat([readFileSync(output), Buffer.from(requirementsSource, "utf8")]);
+    const bytes = readFileSync(output);
     if (check) {
       let existing;
       try { existing = readFileSync(target); } catch { /* missing is drift */ }

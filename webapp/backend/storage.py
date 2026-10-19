@@ -20,6 +20,7 @@ import io
 import json
 import math
 import os
+import operator
 import re
 import sqlite3
 import struct
@@ -1282,6 +1283,45 @@ def _backup_campaign_evidence(backups: List[Path]) -> str:
     return state
 
 
+_UNLIMITED_WAIT = -1
+
+
+class _StoreLock:
+    """Native lock protocol; only a locked finalizer arms the reentry shield."""
+
+    def __init__(self):
+        self._raw = threading.Lock()
+        self._local = threading.local()
+
+    def acquire(self, blocking=True, timeout=_UNLIMITED_WAIT):
+        blocking = operator.index(blocking)
+        threading.Lock().acquire(blocking, timeout)
+        if blocking and getattr(self._local, "active", None):
+            raise RuntimeError("Store blocking reentry is refused")
+        return self._raw.acquire(blocking, timeout)
+
+    def release(self):
+        return self._raw.release()
+
+    def locked(self):
+        return self._raw.locked()
+
+    def during_finalizer(self, callback, *args):
+        if not self._raw.locked():
+            raise RuntimeError("Store finalization requires its lock")
+        previous = getattr(self._local, "active", None)
+        self._local.active = object()
+        try:
+            return callback(*args)
+        finally:
+            self._local.active = previous
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *_exc):
+        self.release()
+
 class Store:
     """Thin, thread-safe SQLite wrapper. One connection guarded by a lock — fine for a single-process
     dev/demo server; swap for a pool or Postgres if this ever needs real concurrency."""
@@ -1311,7 +1351,7 @@ class Store:
         dbfile.parent.mkdir(parents=True, exist_ok=True)
         # mtime BEFORE we connect: it decides backup freshness, and opening may recover a journal.
         db_mtime = dbfile.stat().st_mtime if dbfile.is_file() else None
-        self._lock = threading.Lock()
+        self._lock = _StoreLock()
         self._preparation_lock = threading.Lock()
         # Observers of the persisted snapshot-blob digest, called by add_snapshot — the ONE insert
         # into `snapshots` — before its commit (see add_snapshot_digest_observer).
@@ -2875,9 +2915,51 @@ class Store:
                     "selected_revision": state["selected"]["revision"] if state["selected"] else None,
                     "revisions": metadata}
 
+    @contextmanager
+    def _plan_preparation(self, snapshot_id: int, binding: Dict[str, Any]):
+        # Marker/count metadata only; no snapshot payload, source hash or full state owner.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT saved_plan_revision_count AS revision_count, saved_plan_selection_id AS selection_id, "
+                "(SELECT COUNT(*) FROM (SELECT id FROM plan_selection_events WHERE snapshot_id=? LIMIT ?)) AS selection_count "
+                "FROM snapshots WHERE id=?", (snapshot_id, SAVED_PLAN_MAX_SELECTIONS + 1, snapshot_id),
+            ).fetchone()
+        if row is None:
+            yield None
+            return
+        state = dict(row)
+        try:
+            _saved_plan_integer(state["revision_count"], allow_zero=True)
+            _saved_plan_integer(state["selection_id"], allow_zero=True)
+        except ValueError:
+            raise SavedPlanIntegrityError("saved plan markers are invalid") from None
+        state["binding"] = binding
+        yield state
+
+    def _plan_selection_input(self, snapshot_id: int, revision: int, binding: Dict[str, Any]):
+        # The event map is internal. Current-selection GET remains unchanged.
+        with self._saved_plan_transaction():
+            record = self._saved_plan_record_locked(snapshot_id, revision, binding)
+            if record is None:
+                return None
+            event = self._conn.execute(
+                "SELECT * FROM plan_selection_events WHERE snapshot_id=? AND revision=? ORDER BY id DESC LIMIT 1",
+                (snapshot_id, revision),
+            ).fetchone()
+            if event is None:
+                raise SavedPlanIntegrityError("saved plan selection context is missing")
+            if not _authority_row_matches(event, _saved_plan_selection_limbs(event), prefix="digest"):
+                raise SavedPlanIntegrityError("saved plan selection context is invalid")
+            actual_digest = event["plan_sha256"]
+            expected_digest = record["sha256"]
+            if actual_digest != expected_digest:
+                raise SavedPlanIntegrityError("saved plan selection context differs")
+            record["selection_id"] = event["id"]
+        return record
+
     def save_plan_revision(self, snapshot_id: int, label: str, projection: Dict[str, Any],
-                           expected_binding: Dict[str, Any], expected_selection_id: int
-                           ) -> Optional[Dict[str, Any]]:
+                           expected_binding: Dict[str, Any], expected_selection_id: int,
+                           *, admit: Callable, finalize: Callable) -> Any:
         """Append and select server-produced plan bytes; never alter the assessment or gates."""
         _saved_plan_integer(snapshot_id)
         _saved_plan_integer(expected_selection_id, allow_zero=True)
@@ -2888,13 +2970,9 @@ class Store:
         # Cut caller aliases and do bounded serialization outside the shared connection lock.
         owned_projection = _strict_json_loads(_saved_plan_json_bytes(projection))
         supplied_binding = dict(expected_binding) if type(expected_binding) is dict else None
-        with self._saved_plan_transaction(write=True):
-            state = self._saved_plan_state_locked(snapshot_id)
+        with self._plan_preparation(snapshot_id, supplied_binding) as state:
             if state is None:
                 return None
-            if (state["selection_id"] != expected_selection_id
-                    or not _saved_plan_binding_matches(supplied_binding, state["binding"])):
-                raise SavedPlanConflictError("assessment or selected plan changed; reload before saving")
             if state["revision_count"] >= SAVED_PLAN_MAX_REVISIONS:
                 raise SavedPlanLimitError("saved plan revision limit (64) reached")
             if state["selection_count"] >= SAVED_PLAN_MAX_SELECTIONS:
@@ -2905,6 +2983,24 @@ class Store:
                       "projection": owned_projection, "status": "UNAPPROVED_DRAFT"}
             raw = _saved_plan_envelope_bytes(record)
             record["sha256"] = saved_plan_digest(record)
+            detached = _strict_json_loads(raw)
+            detached["sha256"] = record["sha256"]
+            prepared = admit(detached)
+            captured_selection = state["selection_id"]
+            captured_revision = state["revision_count"]
+            captured_digest = record["sha256"]
+        with self._saved_plan_transaction(write=True):
+            state = self._saved_plan_state_locked(snapshot_id)
+            if state is None:
+                return None
+            if (state["selection_id"] != expected_selection_id
+                    or not _saved_plan_binding_matches(supplied_binding, state["binding"])):
+                raise SavedPlanConflictError("assessment or selected plan changed; reload before saving")
+            current_selection = state["selection_id"]
+            current_revision = state["revision_count"]
+            current_digest = record["sha256"]
+            if current_selection != captured_selection or current_revision != captured_revision or current_digest != captured_digest:
+                raise SavedPlanConflictError("saved plan preparation is stale")
             plan_id = self._next_saved_plan_id_locked("plan_revisions")
             self._conn.execute(
                 "INSERT INTO plan_revisions(id,snapshot_id,revision,plan_json) VALUES (?,?,?,?)",
@@ -2918,16 +3014,22 @@ class Store:
             record["selection_id"] = self._append_saved_plan_selection_locked(
                 snapshot_id, revision, record["sha256"], state)
             self._advance_saved_plan_markers_locked(snapshot_id, state, revision, record["selection_id"])
-            return record
+            return self._lock.during_finalizer(finalize, prepared, record)
 
     def select_plan_revision(self, snapshot_id: int, revision: int, plan_sha256: str,
-                             expected_selection_id: int) -> Optional[Dict[str, Any]]:
+                             expected_selection_id: int, *, expected_binding: Dict[str, Any],
+                             admit: Callable, finalize: Callable) -> Any:
         """Append selection even when reselecting the same revision, preserving ABA detection."""
         _saved_plan_integer(snapshot_id)
         _saved_plan_integer(revision)
         _saved_plan_integer(expected_selection_id, allow_zero=True)
         if type(plan_sha256) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", plan_sha256) is None:
             raise ValueError("saved plan digest must be a SHA-256 identity")
+        detached = self._plan_selection_input(snapshot_id, revision, expected_binding)
+        if detached is None:
+            return None
+        prepared = admit(detached)
+        captured_digest = detached["sha256"]
         with self._saved_plan_transaction(write=True):
             state = self._saved_plan_state_locked(snapshot_id)
             if state is None:
@@ -2937,11 +3039,14 @@ class Store:
                 return None
             if state["selection_id"] != expected_selection_id or record["sha256"] != plan_sha256:
                 raise SavedPlanConflictError("saved plan selection or revision identity changed")
+            current_digest = record["sha256"]
+            if current_digest != captured_digest:
+                raise SavedPlanConflictError("saved plan preparation is stale")
             record["selection_id"] = self._append_saved_plan_selection_locked(
                 snapshot_id, revision, record["sha256"], state)
             self._advance_saved_plan_markers_locked(
                 snapshot_id, state, state["revision_count"], record["selection_id"])
-            return record
+            return self._lock.during_finalizer(finalize, prepared, record)
 
     def get_saved_plan_context(self, snapshot_id: int, revision: int, plan_sha256: str,
                                selection_id: int) -> Optional[Dict[str, Any]]:

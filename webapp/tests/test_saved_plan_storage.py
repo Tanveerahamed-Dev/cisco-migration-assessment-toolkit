@@ -57,9 +57,18 @@ def seeded(tmp_path):
         store.close()
 
 
+def _storage_admit(candidate):
+    # Storage-only fixtures retain their synthetic projection; route tests use the real facade.
+    return candidate
+
+
+def _storage_finish(_prepared, record):
+    return record
+
+
 def _save(store, sid, binding, selection=0, *, label="Plan alpha", projection=None):
     return store.save_plan_revision(sid, label, _projection() if projection is None else projection,
-                                    binding, selection)
+                                    binding, selection, admit=_storage_admit, finalize=_storage_finish)
 
 
 def _counts(store):
@@ -103,7 +112,7 @@ def test_complete_immutable_envelope_has_one_utf8_digest_owner(seeded):
     wire = json.dumps(immutable, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
     assert plan["sha256"] == "sha256:" + hashlib.sha256(wire).hexdigest()
-    reselected = store.select_plan_revision(sid, 1, plan["sha256"], plan["selection_id"])
+    reselected = store.select_plan_revision(sid, 1, plan["sha256"], plan["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     assert reselected["sha256"] == plan["sha256"]
     assert reselected["selection_id"] > plan["selection_id"]
     for key, value in (("label", "Different"), ("revision", 2),
@@ -265,7 +274,7 @@ def test_utc_z_plan_and_selection_survive_reopen_without_resealing(seeded, monke
     plan = _save(store, sid, binding)
     assert plan["created_at"] == timestamp
     assert _context(store, sid, plan)["plan"] == plan
-    selected = store.select_plan_revision(sid, plan["revision"], plan["sha256"], plan["selection_id"])
+    selected = store.select_plan_revision(sid, plan["revision"], plan["sha256"], plan["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     assert selected["sha256"] == plan["sha256"] and selected["created_at"] == timestamp
     assert selected["selection_id"] > plan["selection_id"]
     assert _context(store, sid, selected)["plan"] == selected
@@ -303,9 +312,9 @@ def test_stale_save_selection_and_aba_never_silently_choose_latest(seeded):
     with pytest.raises(SavedPlanConflictError):
         _context(store, sid, first)
     with pytest.raises(SavedPlanConflictError):
-        store.select_plan_revision(sid, 1, first["sha256"], first["selection_id"])
+        store.select_plan_revision(sid, 1, first["sha256"], first["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     assert _counts(store) == before
-    returned = store.select_plan_revision(sid, 1, first["sha256"], second["selection_id"])
+    returned = store.select_plan_revision(sid, 1, first["sha256"], second["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     assert returned["sha256"] == first["sha256"]
     assert returned["selection_id"] > second["selection_id"]
     with pytest.raises(SavedPlanConflictError):
@@ -343,7 +352,7 @@ def test_equal_snapshot_content_does_not_authorize_cross_campaign_or_revision_su
     other = _save(store, other_sid, other_binding)
     assert first["sha256"] != other["sha256"]
     with pytest.raises(SavedPlanConflictError):
-        store.select_plan_revision(other_sid, 1, first["sha256"], other["selection_id"])
+        store.select_plan_revision(other_sid, 1, first["sha256"], other["selection_id"], expected_binding=other_binding, admit=_storage_admit, finalize=_storage_finish)
     with pytest.raises(SavedPlanConflictError):
         _context(store, other_sid, first)
     with pytest.raises(SavedPlanConflictError):
@@ -351,7 +360,7 @@ def test_equal_snapshot_content_does_not_authorize_cross_campaign_or_revision_su
     assert store.get_saved_plan_context(other_sid, 2, first["sha256"], other["selection_id"]) is None
     assert store.list_saved_plans(999999) is None
     assert _save(store, 999999, binding) is None
-    assert store.select_plan_revision(sid, 999, first["sha256"], first["selection_id"]) is None
+    assert store.select_plan_revision(sid, 999, first["sha256"], first["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish) is None
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), (1, 2), {1: "coerced key"}, b"bytes"])
@@ -420,10 +429,10 @@ def test_actual_revision_and_selection_history_budgets(seeded):
         _save(store, sid, binding, selected)
     assert _counts(store) == (64, 64, 64)
     for _ in range(64, 256):
-        plan = store.select_plan_revision(sid, 64, plan["sha256"], selected)
+        plan = store.select_plan_revision(sid, 64, plan["sha256"], selected, expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
         selected = plan["selection_id"]
     with pytest.raises(SavedPlanLimitError, match="selection"):
-        store.select_plan_revision(sid, 64, plan["sha256"], selected)
+        store.select_plan_revision(sid, 64, plan["sha256"], selected, expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     assert _counts(store) == (64, 64, 256)
     assert store.get_snapshot_blob(sid) == (raw, binding)
 
@@ -543,7 +552,7 @@ def test_incremental_blob_tamper_is_rejected_on_every_plan_surface(seeded, targe
                       plan["sha256"].encode(), ("sha256:" + "0" * 64).encode(), "plan_selection_events_no_update")
     for operation in (lambda: store.list_saved_plans(sid), lambda: _context(store, sid, plan),
                       lambda: _save(store, sid, binding, plan["selection_id"]),
-                      lambda: store.select_plan_revision(sid, 1, plan["sha256"], plan["selection_id"])):
+                      lambda: store.select_plan_revision(sid, 1, plan["sha256"], plan["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)):
         with pytest.raises(SavedPlanIntegrityError):
             operation()
     assert _counts(store) == (1, 1, 1)
@@ -575,7 +584,7 @@ def test_durable_markers_refuse_total_history_or_latest_tail_loss_after_restart(
     store = Store(path)
     cid, sid, raw, binding = _seed(store)
     first = _save(store, sid, binding)
-    last = store.select_plan_revision(sid, 1, first["sha256"], first["selection_id"])
+    last = store.select_plan_revision(sid, 1, first["sha256"], first["selection_id"], expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
     markers = tuple(store._conn.execute(
         "SELECT saved_plan_required,saved_plan_revision_count,saved_plan_selection_id FROM snapshots WHERE id=?",
         (sid,),
