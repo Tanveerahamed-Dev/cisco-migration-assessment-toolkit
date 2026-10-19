@@ -1,8 +1,130 @@
 {
-  "schema": "atlas.native-dependency-sdist-fixture/1",
-  "purpose": "Exact public source archive as inert hosted-test data only; no execution, build or licence acceptance",
+  "schema": "atlas.native-dependency-sdist-fixture/2",
+  "purpose": "Finite source member metadata only; hosted tests create synthetic payloads, not upstream bytes",
   "source_url": "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz",
   "source_bytes": 2978,
   "source_sha256": "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010",
-  "archive_base64": "H4sICF/8Z1MC/2Rpc3QvcHJveHlfdG9vbHMtMC4xLjAudGFyAO0c/XPTOLY/66/QwbBJ2cb56EdmMhuOAuWut1B6LdzOTadnFFtJ1NqWkeQ2YZj92+9J/ojjJHWylC53WAPEkd7309N7iiVCwSdTW3HuyUbLalut5ta9txa07v5+/HkQf7Y6e/Fn3Lband3ddrd70N7tbrXa+61udwvvbz1Ai6QiAuOtKxXJsU+CVXAANhyWKKkVST//R1q44P/TX//WOD55/e5+/X+wt7fS/wfQN+//g05rdwu3Kv9/8/aWKuISRRr/okIyHvRw22qjE+LTHs7NDZQNm0mCziPfJ2Law6caBh/7oUd9GiiiAAj9nfu0EZIR0BgrFfaazRFT42hgOdxvpoZu5skfRmrMRQ//gwdEjUmA38dAyUCD+oR5PXyVDD//TIdCU0NvmEMDCYzeHr9Hr6h0BAuVEfTDya8n7347QaceUUMu/FnPS49IyYaMAsPjQNHApS4+jFxGA4fiXg+/ojfU4yGoPAeb8NIQ786P8WEIGtwAas9wT4fnUMA8I0F8nwUj/IYEowiMouFPp6BWoJ86VndDjF30TeM/19P8s9b/7j50Vev/n7L+5/1v2yxgyratcPrN1v/23l67nfq/s38A/Z32QbtTrf8P0R49eoQwtJzXwdmm6/cVDZlRs/Bb+GiiBHEUrIJDwX38GxXXn2k0imF6Dg+ngo3GqofrzjbutNq7eDDFhwKWN3wGi7kzpgLXIQOFmgQMFROAxtnbtmJyXrrYvzh/tYMlpfjN8cujk/MjDAs89rmg2IV8xkAHpBVDzA+5UFhOJTr9dwf39ZN1E6cymNpDftG6xP0+7iBkMxfyF1NTgPKIP3AJnvTwBGgMMeD2jAQuHWKW5jppD8BcdceT2/GobvDNsu2AB5+p4LYNxOIeDWrbGZhLveUDgqpIBHoMUQ9UNQMFlkA0kxah54VR5OhsEvunzgdX1FGJfGCSOF1ra8UjOARYsDwLFMdqTLHDA6lE5CguLIxfc3FLhCsx8TysE6LJ7xIrbggSM20Y4MfUAOM90OCBN81DBxxcEIXaFXqeAPNhTBdyXEwHHGemCQbP62RskAPNN3Dh7xRfM3jgQ6zz5CjQylrxFDuaEK0+jqQuN3ooM6SZjmZW42QWGN2z8RCsGNtoG+XcMsQjqmwnEgJ42JGkop7zbs5DH2DIGoJY9mAK3qgL+imiUl3UNA501C5zdPP0gG9YLzIB2Az4MX4nwOCKCggFBpXI9C6tfO5GHrWhD2ymcqDPiyN5Je9TwXQJsW3pcZiEetLXa7btcYd4tR0Mjy5zIIvEzwHUlvCcIGth0ixTl9Qb7mCDt4M1XP+EBzQnXjLNgBOEuVIiw6nZxpczpuZzex3EVKCYY16svJNiAgYpJw+ofhZby8RODJsPBiYx/AGLDSMPw0oy5RG+JQCj4QUlXkFCPKBjPdX1cOxmoiDMFPOpCRzwpK5liS5UAV3q8ILuAXUIMMmIzdhwE+GGXsLBhDrBLhsOqREXQl7RibLyWmXPILMO3zGR2mxGfyuxsjGeoB6IQeMe7dalcymPVp95RcEOYhn4KHZSgVvyLXbXjAidODRU+BAQ2CBS9EgI2EnMkyUMyvazKNB2NOP1WsAzk/NIW5zjJ7KGnxTZGELP54IonrPxnC7OiFUqxVSXzKhtKyVV1Cgv7zJ95jWuz8JsLrQEDcUaYoI0Oj2ulHID4WKFa788gYkfGOM+y9nVZCeoKFMLFzOfllenrTkl4iS5rq1NWl6tyua6vCaQivPyRAFzuEvXFylBuFepjKUMfzQ3LcX6YgHwvYp0cZkXZVRYa8362ptbWqBH118wd33qD6Awg+n7VZIuXUGWoSwu9zo3MEX9TN5rOt3BN8SL8lKvpngB8FBNxhhzLqFekW6OoC4FS4jGxPKFaJxvAUHqmtik3LRo3cFsB19B6bqCIOtdXc5XPEbzhFAioiahV9xPhfX8DkE1XbOEfCpSBw0XqRcIl1hhJnQuhc8pHYCrejgZq09WOh3AthNCwHMZoR5OBu6gkpKQBXSQYDVeiuSpAku+0lv4F8xTLLoBVj9Do5/WR+vP0IINuP1lhjbaQLVnM6wNmD2bMXP8cBEPOlf7jacugHpmXHCc7irzHNQhXoHlUwJ/n17frpS4nkJk7qdBgTX0lHEepWvTfKTfEeaXCSagFeeo7ipVFapCwgK5yJFBCbmKbYJMXHd9j/6cOVRGg/XRGhmaH3nroz3N0IYe57AHvVkft9mc8eQbaPgkQwN2m2BaM4x6NndDfruBujN9PTlmw02WntnaIzZEfTaLbdjBr4/3U4Y24WJ9tP9kaJtgfcl7ZUOX5P2hREQ3pJChzKgEdFSI0kZZiIZcFlB+LkMhgyIK9JQhseAG9j4FvN/LFxD9w8ykgJb0lrMs8oOe0rzKg6INdVcZGqwDpMjN9JUhcqeIBj1lSOMFk4zXMYe7gLZ6diXQ9ZknqHDoJvMzxahPcjkTYBYyyWoSCXQmBJ0wtWnqtFK0hRwqlmYYDrnk7sQklqYYDsmkBG9pjuGQTUrwli4MHDfvxFus9MUfWGTEwioz+0V5CdVU2FTy1emR60RYZi++1D9P1rDXhglS5DMkQo/xa8Fo4HpTfOgxIqlEhR9C0x9+UfwDW/Jt68dsd77/s+ho1NCvSZoP+/630253O9X73+/I/y4N9TGJwJnaHguupaUm6t7O/7Ra7YL/9zt7rer970M0tFW1H7mtGf8BV43PLGxIMqT3fv4vF//7B60OxP/uXnuviv8q/qv2ncT/Vx0K3vj8b6fT6R5U8f9dnP9tVOd/f9jzv7P4P3/34ezl0flGZf/a8Q+RX4j/3dZ+df7/QdrZ0eGrt0eWkApJqqJQH/5ccQIY3ZkZUNm8QWtvLFFpCbocQvHQ9nTo/rFpWuX/1fH/VaYtrf+h2C/Ef7fdreL/gf1fbQWq+If4n2WE++JREv+dzl6W/3cBQN//09dAqvh/4PjvzzWEjms+vgL7JOf8pwh9eRExz8XnUOdH8gtCb6D+hULVm2I6fw/k421yEeSjbWF8iG+omKbHoLPj67ktww6Gsl7hYzxMD+MOaArPIyWZS5E+w3xLB+l5Zdxo4LGp2PVAwh9IWSB4AN7yPNSIG0KWhfXxSyieB0SO44NkIQsxiwFT9QBsXkOQ0lwrMNsYCfsYYHLDZMNhFhejwlbGkjejvw4ECZxx3ydSUaH59GB6jahaj0TiCPSCSObgD/pOQ6pEUZHQ7AdiVWa3AmICizceFm47lN102PQSwDo3HO663LBKhaXXG5ZebbjrWsOm2jzW91iC5GKUPnmQJ2wlB0fRPzWyueHSxMdSwre8szKfvabUA/0oNafx9b7O13dksLplSukt38fnyST4aCMO1nFdzAw5fbT/9EzqOwDp7CnbSOsZYqf0su13wsqgJWMIvYeN9LW+KoBywr7nxdtZJLmOkAtprCjxzX0EGGD6Xx7p2zseJS7VZ4VCg6VPDXuevmJwy8V1LFpKpLdMI58pGY3ZNW/eZvfIqhT9wPk/3gY6w9HWA+V/6Nwt3v/vdqr3fw/SLmCLZ25CXiJFRvbAZL8+Nl9coig8t8wXeRPYgkLmggXPdFaR+f8c/+E9Hogpif/2bjv3+39rT8f/QfX/fzxMS8osLpGpwIzz5wow04OQLpWYoK4dl14SloCLSxQS5xpqVPOtlptKtUsU/5xYN7c454Z2kqosuYbdr5lpl3W7s9/w+7VlbxcyyEh4/dp67xcyHGJeJ/RrxfcMBQDbvG/o1xbeN2Rwyc7BTuwi+0UDpYDJnfV+7e3x+ww7tVs/fUgHPrPQ1j9w9s2Vs7RXQZ0pU1b9i1rAJa1d5kdtGTEFTPQIyAlVl77BnfFzshcMsn+Ru3dTK3n9kREwwOu9/5jHWesFyKYou3MIl8nzdpWRqla1qlVt/fZfnubLDQBQAAA="
+  "package_source": {
+    "path": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+    "bytes": 6409,
+    "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be",
+    "header_license_declaration": "BSD"
+  },
+  "members": [
+    {
+      "archive_name": "proxy_tools-0.1.0/",
+      "parsed_name": "proxy_tools-0.1.0",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/PKG-INFO",
+      "parsed_name": "proxy_tools-0.1.0/PKG-INFO",
+      "type": "0",
+      "size": 437,
+      "sha256": "89a85f6d9e74e8c391755c33e9529b078250e5365fb35ddaecf7cb7f227d18ec"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools/",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+      "type": "0",
+      "size": 6409,
+      "sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info",
+      "type": "5",
+      "size": 0
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/dependency_links.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/dependency_links.txt",
+      "type": "0",
+      "size": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/not-zip-safe",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/not-zip-safe",
+      "type": "0",
+      "size": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/PKG-INFO",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/PKG-INFO",
+      "type": "0",
+      "size": 437,
+      "sha256": "dd73a0ca763996298b717cf0a26198a07d0ae393849081c7aafefca6b08ddae7"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/SOURCES.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/SOURCES.txt",
+      "type": "0",
+      "size": 217,
+      "sha256": "83eee4d6f62f339d4e66ab9a14108cecb55530a113073da55b63e7bfc60a4a84"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/proxy_tools.egg-info/top_level.txt",
+      "parsed_name": "proxy_tools-0.1.0/proxy_tools.egg-info/top_level.txt",
+      "type": "0",
+      "size": 12,
+      "sha256": "5787cceffb627f279f0ca8c359b2a84462a455fee63525f3fbde19c2de0ff252"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/README.rst",
+      "parsed_name": "proxy_tools-0.1.0/README.rst",
+      "type": "0",
+      "size": 1185,
+      "sha256": "1283ea54e21d1bdd171452aef9228d869fb2ad7bd3f88f0419493413dcb0096e"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/setup.cfg",
+      "parsed_name": "proxy_tools-0.1.0/setup.cfg",
+      "type": "0",
+      "size": 59,
+      "sha256": "063d04b462ef73e9d86e0b0ae49c4321b51984444a5a2a90aece1e0082b488ee"
+    },
+    {
+      "archive_name": "proxy_tools-0.1.0/setup.py",
+      "parsed_name": "proxy_tools-0.1.0/setup.py",
+      "type": "0",
+      "size": 717,
+      "sha256": "2bb5e8e3c91a5cc5768310b67c2da6c7e5942f8d348402b5e9cee2fcce558b5b"
+    }
+  ],
+  "license_discrepancy": {
+    "metadata_license_declaration": "MIT",
+    "source_header_license_declaration": "BSD",
+    "standalone_license_present": false,
+    "references": [
+      {
+        "member": "proxy_tools-0.1.0/PKG-INFO",
+        "line": 8,
+        "declaration": "MIT"
+      },
+      {
+        "member": "proxy_tools-0.1.0/setup.py",
+        "line": 14,
+        "declaration": "MIT"
+      },
+      {
+        "member": "proxy_tools-0.1.0/proxy_tools/__init__.py",
+        "line": 8,
+        "declaration": "BSD; referenced LICENSE absent"
+      }
+    ],
+    "resolution": "OWNER_EVIDENCE_REQUIRED"
+  },
+  "exact_pinned_archive_positive": "DEFERRED_REQUIRED_FAIL_CLOSED_DEPENDENCY_ADMISSION",
+  "payload_bytes_present": false,
+  "historical_payload_commit": "7045c67c99eb6428319cef4958698254c725e3e3",
+  "historical_redistribution": "OWNER_DECISION_REQUIRED; current-tree replacement does not remove history"
 }

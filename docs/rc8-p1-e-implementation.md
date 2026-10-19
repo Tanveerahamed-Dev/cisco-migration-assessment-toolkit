@@ -364,3 +364,40 @@ fixture copying is data handling only. The native path remains inert behind the
 browser. Fresh Rule-7/marker scans and independent source review precede the one
 push; fresh 14/14 and a bounded completion comment precede the same reviewer's
 re-review. PR #693 stays draft, with no PR merge or release authority.
+
+## Re-review: replace the unresolved source copy with synthetic layout data
+
+The re-review of `1c53fbe80c46b1cf176e3ccd063a0dd26a7eba66`
+([6260510467](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/693#issuecomment-6260510467))
+closed both inspector defects but returned **BLOCKED** on the complete third-party
+archive committed in the fixture. Inert data handling does not establish a
+redistribution basis. The supervisor selected the narrower synthetic option.
+The fixture now retains only the source URL, archive/package/member hashes,
+ordered names/types/sizes and MIT/BSD/absent-LICENSE discrepancy references.
+For all three directories it distinguishes the archive's trailing slash from
+CPython's parsed name. No upstream payload bytes remain in this fixture.
+
+All existing synthetic structural positives and negatives remain. A new
+synthetic archive uses authored `S` bytes at every recorded file size, retains
+the complete 13-member order and directory spellings, and asserts the parsed
+ordered layout before inspecting it with explicit test-only synthetic hashes.
+The size/hash refusals also use synthetic input. These are not exact-source
+evidence. The earlier real pinned-archive positive is **DEFERRED**, not skipped
+or treated as passing: the dependency input owner records it as required before
+any promotion, with no accepted evidence. The existing unconditional licence
+refusal carries that fixed unmet proof obligation. An owner-permitted hosted
+input must eventually pass the real inspector with production pins unmodified,
+without committing or publicly mirroring its payload. Missing input/proof must
+block admission; a synthetic surrogate or JSON/environment PASS claim cannot
+close it. No real-input consumer, proof receipt, producer or promotion success
+path is implemented or authorized by this correction.
+
+The complete archive remains in branch history at `7045c67c`; this current-tree
+replacement is not a history purge or a redistribution resolution. PR #693
+remains draft and may not merge until the owner decides the licence and
+redistribution question and the supervisor rules whether to rebuild the branch
+without that blob. `PROXY_TOOLS_010_LICENSE_CONFLICT` stays BLOCKED. No inspector
+algorithm, dependency pin/lock, workflow, assertion in the retained synthetic
+controls, CI gate/budget/timeout, native startup or board change is authorized.
+Fresh Rule-7/marker scans, exact-head 14/14 and a short completion comment must
+precede the same independent reviewer's re-review.

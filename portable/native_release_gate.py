@@ -4,6 +4,7 @@ from portable.native_origin import NativeRefusal
 
 
 PROXY_TOOLS_010_LICENSE_CONFLICT = "PROXY_TOOLS_010_LICENSE_CONFLICT"
+EXACT_PINNED_SDIST_POSITIVE_REQUIRED = "PROXY_TOOLS_010_EXACT_PINNED_SDIST_POSITIVE_REQUIRED"
 PROXY_SDIST_SHA256 = "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010"
 PROXY_LICENSE_REFERENCES = (
     ("proxy_tools-0.1.0/PKG-INFO", 8, "MIT declaration"),
@@ -18,5 +19,13 @@ def require_native_dependency_promotion() -> None:
     The owner must supply an attributable applicable-text/copyright resolution.
     No dependency build/execution, promotion or publication is authorized here.
     An evidence-only route that omits this dependency is not an adopted route.
+
+    Before any future promotion, an owner-permitted hosted input must also pass
+    inspect_proxy_sdist with the exact source/package pins unmodified. That real
+    positive is deferred and NOT VERIFIED; metadata and synthetic controls do
+    not satisfy it. Missing input/proof blocks admission, never silently skips.
+    There is no proof consumer, accepted receipt or success path in this gate.
     """
-    raise NativeRefusal(PROXY_TOOLS_010_LICENSE_CONFLICT)
+    refusal = NativeRefusal(PROXY_TOOLS_010_LICENSE_CONFLICT)
+    setattr(refusal, "required_proofs", (EXACT_PINNED_SDIST_POSITIVE_REQUIRED,))
+    raise refusal

@@ -23,7 +23,20 @@
       {"member": "proxy_tools-0.1.0/proxy_tools/__init__.py", "line": 8, "declaration": "BSD; referenced LICENSE absent"}
     ],
     "license_resolution": "ATTRIBUTABLE_APPLICABLE_TEXT_REQUIRED",
-    "accepted_wheel": null
+    "accepted_wheel": null,
+    "exact_pinned_sdist_positive": {
+      "obligation": "PROXY_TOOLS_010_EXACT_PINNED_SDIST_POSITIVE_REQUIRED",
+      "required": true,
+      "status": "DEFERRED_REQUIRED_NOT_VERIFIED",
+      "evidence": null,
+      "skip_acceptable": false,
+      "production_pin_monkeypatch_allowed": false,
+      "synthetic_surrogate_accepted": false,
+      "required_before": "native_dependency_promotion",
+      "inspector": "portable.native_dependency.inspect_proxy_sdist",
+      "input_policy": "OWNER_PERMITTED_HOSTED_INPUT_WITHOUT_COMMIT_OR_PUBLIC_PAYLOAD_MIRROR",
+      "missing_input_or_proof": "BLOCK"
+    }
   },
   "producer_tools_to_hash_lock": {
     "python": "3.12.10",

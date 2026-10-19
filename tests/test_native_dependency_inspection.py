@@ -15,7 +15,11 @@ import pytest
 
 from portable import native_dependency as dependency
 from portable.native_origin import NativeRefusal
-from portable.native_release_gate import PROXY_LICENSE_REFERENCES, require_native_dependency_promotion
+from portable.native_release_gate import (
+    EXACT_PINNED_SDIST_POSITIVE_REQUIRED,
+    PROXY_LICENSE_REFERENCES,
+    require_native_dependency_promotion,
+)
 
 
 DIST = "proxy_tools-0.1.0.dist-info/"
@@ -257,22 +261,45 @@ def test_matching_central_local_filename_encodings_keep_the_structural_positive(
     assert result["production_authority"] == "NOT_GRANTED"
 
 
-def pinned_sdist():
+def sdist_metadata():
     path = Path(__file__).parent / "fixtures/native_dependency/proxy_tools-0.1.0.sdist.json"
     fixture = json.loads(path.read_text(encoding="utf-8"))
-    raw = base64.b64decode(fixture["archive_base64"], validate=True)
     assert fixture["source_sha256"] == dependency.PROXY_SDIST_SHA256
-    assert fixture["source_bytes"] == len(raw) == 2978
-    assert hashlib.sha256(raw).hexdigest() == dependency.PROXY_SDIST_SHA256
+    assert fixture["source_bytes"] == 2978
+    assert fixture["package_source"]["sha256"] == dependency.PROXY_SOURCE_SHA256
+    assert fixture["payload_bytes_present"] is False
+    return fixture
+
+
+def synthetic_layout_sdist(monkeypatch):
+    fixture = sdist_metadata()
+    entries = [(row["archive_name"], row["type"].encode("ascii"), b"S" * row["size"])
+               for row in fixture["members"]]
+    raw = synthetic_sdist(entries)
+    assert hashlib.sha256(raw).hexdigest() != fixture["source_sha256"]
+    package = b"S" * fixture["package_source"]["bytes"]
+    assert hashlib.sha256(package).hexdigest() != fixture["package_source"]["sha256"]
+    monkeypatch.setattr(dependency, "PROXY_SDIST_SHA256", hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(dependency, "PROXY_SOURCE_SHA256", hashlib.sha256(package).hexdigest())
     return raw
 
 
-def test_actual_hash_pinned_sdist_is_inspected_only_as_data_and_stays_license_blocked():
-    raw = pinned_sdist()
+def test_synthetic_archive_reproduces_the_exact_recorded_member_layout(monkeypatch):
+    fixture = sdist_metadata()
+    raw = synthetic_layout_sdist(monkeypatch)
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
-        first = archive.getmembers()[0]
+        members = archive.getmembers()
+        first = members[0]
         assert first.isdir()
         assert first.name == "proxy_tools-0.1.0"
+        assert fixture["members"][0]["archive_name"] == "proxy_tools-0.1.0/"
+        assert [(member.name, member.type.decode("ascii"), member.size) for member in members] == [
+            (row["parsed_name"], row["type"], row["size"]) for row in fixture["members"]
+        ]
+        for member in members:
+            if member.isfile():
+                with archive.extractfile(member) as stream:
+                    assert stream.read() == b"S" * member.size
     result = dependency.inspect_proxy_sdist(raw)
     assert result["source_sha256"] == dependency.PROXY_SDIST_SHA256
     assert result["package_sha256"] == dependency.PROXY_SOURCE_SHA256
@@ -312,7 +339,7 @@ def synthetic_sdist(entries):
 
 def inspect_synthetic_sdist(raw, monkeypatch):
     # Test inner refusals with explicit synthetic identity, never alter the
-    # production pin or monkeypatch the actual pinned-archive positive control.
+    # production pin. Exact upstream-byte inspection is a held admission proof.
     monkeypatch.setattr(dependency, "PROXY_SDIST_SHA256", hashlib.sha256(raw).hexdigest())
     monkeypatch.setattr(dependency, "PROXY_SOURCE_SHA256", hashlib.sha256(SOURCE).hexdigest())
     return dependency.inspect_proxy_sdist(raw)
@@ -380,8 +407,60 @@ def test_sdist_complete_file_set_and_package_hash_still_refuse(change, monkeypat
 
 
 @pytest.mark.parametrize("change", ["size", "hash"])
-def test_actual_sdist_size_and_whole_archive_hash_are_not_bypassed(change):
-    original = pinned_sdist()
+def test_synthetic_sdist_size_and_whole_archive_hash_are_not_bypassed(change, monkeypatch):
+    original = synthetic_layout_sdist(monkeypatch)
     changed = original + b"\x00" if change == "size" else original[:-1] + bytes([original[-1] ^ 1])
     with pytest.raises(NativeRefusal, match="dependency_sdist_identity"):
         dependency.inspect_proxy_sdist(changed)
+
+
+def test_metadata_fixture_contains_only_finite_identity_layout_and_discrepancy_records():
+    fixture = sdist_metadata()
+    record = json.loads((Path(__file__).resolve().parents[1] / "portable/native_dependency_inputs.json").read_bytes())
+    assert set(fixture) == {
+        "schema", "purpose", "source_url", "source_bytes", "source_sha256", "package_source", "members",
+        "license_discrepancy", "exact_pinned_archive_positive", "payload_bytes_present",
+        "historical_payload_commit", "historical_redistribution",
+    }
+    assert fixture["schema"] == "atlas.native-dependency-sdist-fixture/2"
+    assert fixture["source_url"] == record["proxy_tools"]["source_url"]
+    assert fixture["package_source"] == record["proxy_tools"]["package_source"]
+    assert len(fixture["members"]) == 13
+    assert sum(row["type"] == "5" for row in fixture["members"]) == 3
+    for row in fixture["members"]:
+        assert set(row) == ({"archive_name", "parsed_name", "type", "size"}
+                            if row["type"] == "5" else {"archive_name", "parsed_name", "type", "size", "sha256"})
+        assert row["type"] in {"0", "5"}
+        assert row["parsed_name"] == row["archive_name"].rstrip("/")
+        if row["type"] == "5":
+            assert row["size"] == 0
+    discrepancy = fixture["license_discrepancy"]
+    assert discrepancy["metadata_license_declaration"] == "MIT"
+    assert discrepancy["source_header_license_declaration"] == "BSD"
+    assert discrepancy["standalone_license_present"] is False
+    assert discrepancy["references"] == record["proxy_tools"]["license_references"]
+    assert discrepancy["resolution"] == "OWNER_EVIDENCE_REQUIRED"
+    assert fixture["exact_pinned_archive_positive"] == "DEFERRED_REQUIRED_FAIL_CLOSED_DEPENDENCY_ADMISSION"
+
+
+def test_exact_pinned_positive_is_required_not_skipped_or_replaced_by_synthetic_evidence(monkeypatch):
+    record = json.loads((Path(__file__).resolve().parents[1] / "portable/native_dependency_inputs.json").read_bytes())
+    proof = record["proxy_tools"]["exact_pinned_sdist_positive"]
+    assert proof == {
+        "obligation": EXACT_PINNED_SDIST_POSITIVE_REQUIRED,
+        "required": True,
+        "status": "DEFERRED_REQUIRED_NOT_VERIFIED",
+        "evidence": None,
+        "skip_acceptable": False,
+        "production_pin_monkeypatch_allowed": False,
+        "synthetic_surrogate_accepted": False,
+        "required_before": "native_dependency_promotion",
+        "inspector": "portable.native_dependency.inspect_proxy_sdist",
+        "input_policy": "OWNER_PERMITTED_HOSTED_INPUT_WITHOUT_COMMIT_OR_PUBLIC_PAYLOAD_MIRROR",
+        "missing_input_or_proof": "BLOCK",
+    }
+    monkeypatch.setenv("ATLAS_NATIVE_EXACT_SDIST_PROOF", "PASS")
+    monkeypatch.setenv("ATLAS_NATIVE_DEPENDENCY_PROOF_JSON", '{"status":"PASS","evidence":{"claim":"PASS"}}')
+    with pytest.raises(NativeRefusal, match="^PROXY_TOOLS_010_LICENSE_CONFLICT$") as refused:
+        require_native_dependency_promotion()
+    assert refused.value.required_proofs == (EXACT_PINNED_SDIST_POSITIVE_REQUIRED,)
