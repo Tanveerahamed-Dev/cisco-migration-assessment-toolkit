@@ -10830,3 +10830,46 @@ export interface operations {
         };
     };
 }
+
+// Engine-owned saved-plan admission metadata from the actual app OpenAPI export.
+export const designRequirementsContract = {
+  "schema": "atlas.requirements-contract/1",
+  "scope": "saved_plan_admission",
+  "keys": [
+    "availability_tier",
+    "critical_apps",
+    "convergence_budget_ms",
+    "growth_horizon",
+    "constraints",
+    "data_classification",
+    "address_space",
+    "vlan_zones",
+    "fabric_operating_model"
+  ],
+  "list_fields": [
+    "critical_apps",
+    "constraints",
+    "data_classification"
+  ],
+  "availability_tiers": [
+    "gold",
+    "silver",
+    "bronze"
+  ],
+  "fabric_models": [
+    "nxos-evpn",
+    "aci"
+  ],
+  "vlan_id": {
+    "minimum": 1,
+    "maximum": 4094
+  }
+} as const;
+
+export type DesignRequirements = {
+  [K in typeof designRequirementsContract.keys[number]]?:
+    K extends typeof designRequirementsContract.list_fields[number] ? string | string[]
+    : K extends "convergence_budget_ms" ? number | string
+    : K extends "vlan_zones" ? Record<string, string | Array<string | number>>
+    : string;
+};

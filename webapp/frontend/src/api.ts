@@ -184,6 +184,7 @@ export interface Deliverable {
   producer?: "engine-cli" | "assesshub-snapshot";
   engine_cli_member?: boolean;
   stage?: "pre-cutover";
+  saved_plan_basis?: "selected-requirements" | "assessment-baseline";
 }
 
 export interface ArtifactFamilyMeta {
@@ -1577,7 +1578,7 @@ function detailToMessage(detail: unknown): string | null {
   return null;
 }
 
-async function j<T>(r: Response): Promise<T> {
+export async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try {
@@ -1592,6 +1593,7 @@ async function j<T>(r: Response): Promise<T> {
   }
   return (r.status === 204 ? (null as T) : await r.json()) as T;
 }
+
 
 export const api = {
   health: () => fetch("/api/health").then((r) => j<{ status: string; sample_available: boolean }>(r)),

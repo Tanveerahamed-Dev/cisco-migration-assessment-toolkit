@@ -118,6 +118,19 @@ evidence change. Superseded receipt IDs refuse under the new contract. The engin
 
 ## Acceptance evidence
 
+The app's primary assessment page links directly to **Saved plans · MOP / NRFU**. That workspace
+shows all server-declared document choices, separating selected-requirements documents from
+assessment-baseline references. MOP and NRFU have primary download buttons. Original snapshot and
+Protocol Assurance JSON stay separate; the full workbook remains an explicitly CLI-only output.
+Unsaved edits disable export and selection until saved or discarded. A changed selection, source or
+record refuses and requires an explicit reload; there is no automatic fallback to a newer revision.
+
+The simple browser form accepts whole non-negative convergence milliseconds up to
+`9007199254740991`, preserving zero and accepted text until server normalization. This is the
+browser's exact-integer profile, not a changed engine limit. Larger values refuse before the save
+request. Saved documents are bounded, verified against the requested assessment/plan/selection
+headers and type before creating a browser download. A server refusal produces no document.
+
 Hosted tests must demonstrate save/reopen/restart, normalized zero and malformed-input behavior,
 cross-assessment refusal, stale save/selection including A→B→A, source and plan tamper refusal without
 resealing, atomic rollback, and unchanged raw assessment bytes. Actual DOCX/PPTX tests inspect visible
@@ -169,7 +182,9 @@ An independently recommended one-job repeat of old A is not dispatched: its exac
 guard detects the main advance first. No source-level performance fix is inferred.
 
 The integrated heads need fresh complete hosted gates and source-bound frontend evidence.
-Earlier positives, A's still-pending coverage and all timeout/cancellation records do not transfer.
+Earlier positives and all timeout/cancellation records do not transfer. A's coverage was pending
+at the earlier integration checkpoint; the subsequent source push superseded it, with job
+`116807637257` ending CANCELLED at06:31:06 UTC rather than producing a coverage result.
 The unchanged gated eight-module type check passes; the full-project advisory report's
 1,475 diagnostics match both main340 and preceding Bbf2 exactly. Existing named audit
 suppression, unattributed `2 ignored` output, reference capacity warnings and all 14 external

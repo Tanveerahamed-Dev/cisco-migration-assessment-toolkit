@@ -15,6 +15,7 @@ Discipline (mirrors the engine's coverage-honesty rules): every detector is EVID
 the condition from the snapshot and the decision disappears. A design claim is never asserted from
 absent evidence ("not observed" is not "healthy"); not-collected devices are an explicit unknown.
 """
+import ipaddress
 import math
 import re
 
@@ -4166,6 +4167,7 @@ REQUIREMENTS_AVAILABILITY_TIERS = ("gold", "silver", "bronze")
 REQUIREMENTS_FABRIC_MODELS = ("nxos-evpn", "aci")
 REQUIREMENTS_VLAN_MIN = 1
 REQUIREMENTS_VLAN_MAX = 4094
+REQUIREMENTS_CONVERGENCE_MAX = (1 << 53) - 1
 PLAN_SECTION_KEYS = frozenset({"requirements_register", "design_blueprint", "design_nrfu"})
 
 
@@ -4203,7 +4205,7 @@ def requirements_contract():
 
     The legacy register loaders retain their existing fail-soft treatment of arbitrary tier
     text and numeric VLAN IDs. Saved-plan validators consume this owner's explicit domain;
-    the hosted OpenAPI generator carries the same metadata to the browser.
+    the runtime endpoint carries domain metadata; generated components carry structure only.
     """
     return {
         "schema": "atlas.requirements-contract/1",
@@ -4213,6 +4215,7 @@ def requirements_contract():
         "availability_tiers": list(REQUIREMENTS_AVAILABILITY_TIERS),
         "fabric_models": list(REQUIREMENTS_FABRIC_MODELS),
         "vlan_id": {"minimum": REQUIREMENTS_VLAN_MIN, "maximum": REQUIREMENTS_VLAN_MAX},
+        "convergence_budget_ms": {"minimum": 0, "maximum": REQUIREMENTS_CONVERGENCE_MAX},
     }
 
 
@@ -4268,7 +4271,145 @@ def load_requirements(path):
     return reg
 
 
-def requirements_from_interview(answers):
+def _saved_plan_vlan_id(value):
+    """One strict decimal/range owner for legacy maps and raw form rows."""
+    if type(value) is str and re.fullmatch(rf"[0-9]{{1,{len(str(REQUIREMENTS_VLAN_MAX))}}}", value.strip()):
+        value = int(value.strip())
+    if type(value) is not int or not REQUIREMENTS_VLAN_MIN <= value <= REQUIREMENTS_VLAN_MAX:
+        raise ValueError("Saved plan VLAN identifier is invalid")
+    return value
+
+
+def _saved_plan_form_zones(value):
+    """Admit lossless raw form rows without broadening legacy list admission."""
+    if type(value) is not dict or "raw_rows" not in value:
+        return value
+    if set(value) != {"raw_rows"} or type(value["raw_rows"]) is not list or not value["raw_rows"]:
+        raise ValueError("Saved plan VLAN rows are invalid")
+    zones, vids_seen, zones_seen = {}, set(), set()
+    for row in value["raw_rows"]:
+        if (type(row) is not dict or set(row) != {"zone", "vids"}
+                or type(row["zone"]) is not str or type(row["vids"]) is not str):
+            raise ValueError("Saved plan VLAN rows are invalid")
+        zone = row["zone"].strip()
+        if not zone or zone in zones_seen:
+            raise ValueError("Saved plan VLAN rows are invalid")
+        zones_seen.add(zone)
+        for text in row["vids"].split(","):
+            vid = _saved_plan_vlan_id(text)
+            if vid in vids_seen:
+                raise ValueError("Saved plan VLAN rows are invalid")
+            vids_seen.add(vid)
+            zones[str(vid)] = zone
+    return zones
+
+
+def saved_plan_vlan_form_rows(requirements):
+    """Presentation of admitted canonical values; never change persisted requirements."""
+    grouped = {}
+    for vid, zone in requirements.get("vlan_zones", {}).items():
+        grouped.setdefault(zone, []).append(str(vid))
+    return [{"zone": zone, "vids": ", ".join(vids)} for zone, vids in grouped.items()]
+
+
+def _saved_plan_register(requirements):
+    """Strict saved-plan admission; default interview coercion is unchanged."""
+    if type(requirements) is not dict:
+        raise ValueError("Saved plan requirements must be an object")
+    if any(type(key) is not str or key not in REQUIREMENTS_KEYS for key in requirements):
+        raise ValueError("Saved plan requirements contain an unsupported field")
+    requirements = dict(requirements)
+    if "vlan_zones" in requirements:
+        requirements["vlan_zones"] = _saved_plan_form_zones(requirements["vlan_zones"])
+    for key, value in requirements.items():
+        if value is None or value == "":
+            continue
+        if key in REQUIREMENTS_LIST_KEYS:
+            if not (type(value) is str or (
+                    type(value) is list and all(type(item) is str for item in value))):
+                raise ValueError("Saved plan list requirement has an unsupported value")
+        elif key == "convergence_budget_ms":
+            if type(value) is str and re.fullmatch(r"[0-9]{1,19}", value.strip()):
+                value = int(value.strip())
+            if type(value) is not int or not 0 <= value <= REQUIREMENTS_CONVERGENCE_MAX:
+                raise ValueError("Saved plan convergence must be a nonnegative integer")
+        elif key == "vlan_zones":
+            if type(value) is not dict:
+                raise ValueError("Saved plan VLAN zones must be an object")
+            seen = set()
+            grouped = any(type(item) is list for item in value.values())
+            for zone_key, zone_value in value.items():
+                if grouped:
+                    if (type(zone_key) is not str or not zone_key.strip()
+                            or type(zone_value) is not list or not zone_value):
+                        raise ValueError("Saved plan VLAN zones have an unsupported shape")
+                    vids = zone_value
+                else:
+                    if type(zone_value) is not str or not zone_value.strip():
+                        raise ValueError("Saved plan VLAN zones have an unsupported shape")
+                    vids = [zone_key]
+                for vid in vids:
+                    vid = _saved_plan_vlan_id(vid)
+                    if vid in seen:
+                        raise ValueError("Saved plan VLAN zones contain an invalid or duplicate VLAN")
+                    seen.add(vid)
+        elif type(value) is not str:
+            raise ValueError("Saved plan requirement has an unsupported value")
+        elif key == "availability_tier" and value.strip().lower() not in REQUIREMENTS_AVAILABILITY_TIERS:
+            raise ValueError("Saved plan availability tier is unsupported")
+        elif key == "address_space":
+            try:
+                network = ipaddress.ip_network(value.strip(), strict=False)
+            except ValueError as exc:
+                raise ValueError("Saved plan address space is invalid") from exc
+            if network.version != 4:
+                raise ValueError("Saved plan address allocation supports IPv4 only")
+    register = {
+        key: value for key, value in requirements_from_interview(requirements).items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+    if requirements.get("fabric_operating_model") and "fabric_operating_model" not in register:
+        raise ValueError("Saved plan fabric operating model is unsupported")
+    if ("fabric_operating_model" in register
+            and register["fabric_operating_model"] not in REQUIREMENTS_FABRIC_MODELS):
+        raise ValueError("Saved plan fabric operating model is unsupported")
+    # A persisted JSON object has string keys, including the normalizer's integer VLAN keys.
+    if "vlan_zones" in register:
+        register["vlan_zones"] = {str(vid): zone for vid, zone in register["vlan_zones"].items()}
+    return register
+
+
+def requirements_structure(*, canonical=False):
+    """Only keys/list-ness/primitive shape; domains remain runtime metadata."""
+    properties = {}
+    for key in REQUIREMENTS_KEYS:
+        if key in REQUIREMENTS_LIST_KEYS:
+            shape = {"type": "array", "items": {"type": "string"}}
+            if not canonical:
+                shape = {"anyOf": [{"type": "string"}, shape]}
+        elif key == "convergence_budget_ms":
+            shape = {"type": "integer"}
+            if not canonical:
+                shape = {"anyOf": [shape, {"type": "string"}]}
+        elif key == "vlan_zones":
+            value = {"type": "string"}
+            if not canonical:
+                value = {"anyOf": [value, {"type": "array", "items": {
+                    "anyOf": [{"type": "integer"}, {"type": "string"}]}}]}
+            shape = {"type": "object", "additionalProperties": value}
+            if not canonical:
+                shape = {"anyOf": [shape, {"type": "object", "required": ["raw_rows"],
+                    "additionalProperties": False, "properties": {"raw_rows": {
+                        "type": "array", "items": {"type": "object", "required": ["zone", "vids"],
+                            "additionalProperties": False, "properties": {
+                                "zone": {"type": "string"}, "vids": {"type": "string"}}}}}}]}
+        else:
+            shape = {"type": "string"}
+        properties[key] = shape
+    return {"type": "object", "properties": properties, "additionalProperties": False}
+
+
+def requirements_from_interview(answers, *, profile=None):
     """Bridge the engagement interview to the design WHY: normalise a TYPED answers dict (keyed by the
     requirement keys -- the same keys `requirements_model.fields` / questionnaire `requirement_key` tags
     expose) into the requirements register, coercing list/int/tier shapes. Unknown keys ignored, empty
@@ -4279,6 +4420,10 @@ def requirements_from_interview(answers):
     PUBLIC integration entry point (no internal caller by design): a UI/CLI that captures the interview's
     requirement answers calls this, then passes the result as `requirements` to compute_design_blueprint
     (mirrors how COLLECT_PARSE uses load_requirements for the --requirements file path)."""
+    if profile == "saved_plan":
+        return _saved_plan_register(answers)
+    if profile is not None:
+        raise ValueError("Unsupported requirements profile")
     a = _as_dict(answers)
 
     def _to_list(v):

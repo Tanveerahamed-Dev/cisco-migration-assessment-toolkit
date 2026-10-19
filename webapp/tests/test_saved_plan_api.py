@@ -277,6 +277,10 @@ def test_export_selection_race_refuses_and_cleans_generated_file(client, monkeyp
         generated.append(path)
         selected = client.app.state.store.select_plan_revision(
             sid, first["revision"], first["sha256"], second["selection_id"],
+            expected_binding=first["assessment"],
+            admit=lambda candidate: app_module._prepare_existing_saved_plan(
+                client.app.state.store.get_bound_snapshot(sid)[0], candidate),
+            finalize=app_module._finish_saved_plan,
         )
         assert selected is not None
         return path

@@ -40,7 +40,7 @@ export type EmbedMessage =
   | (Envelope & Readonly<{ type: "refused"; code: EmbedRefusalCode; request_id: string | null }> &
     (Bound | Readonly<{ identity: null; context_digest: null }>));
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
@@ -50,7 +50,7 @@ function record(value: unknown): value is Record<string, unknown> {
     Object.getOwnPropertyDescriptor(value, key)?.set === undefined);
 }
 
-function closed(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+export function closed(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return record(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 

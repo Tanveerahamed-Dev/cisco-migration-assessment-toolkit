@@ -70,6 +70,35 @@ The page does not simulate, rank or fill in either one.
 "Tools and downloads" (top right of a snapshot) holds the cutover
 plan, the documents and the older full snapshot page.
 
+SAVED PLANS / MOP AND NRFU DOWNLOADS
+------------------------------------
+On the core assessment, choose Saved plans for MOP / NRFU. Enter
+requirements and a plan name, then save a revision. The app keeps the
+original assessment unchanged. Reopen or select a saved revision to see
+its stored design and acceptance checklist, then choose Download MOP or
+Download NRFU. Supporting documents appear in the same workspace.
+The files name the assessment, plan revision and selection they use.
+If you edit requirements, save a new revision before downloading.
+If another selection changes while a document is generated, Atlas
+refuses the download: reload the saved plans and select again.
+
+Saving is NOT approval. Every saved plan is an UNAPPROVED DRAFT.
+Design/MOP/NRFU use the selected planning projection; documents labelled
+assessment baseline/reference keep their original observed wave/gate
+content and are only associated with the selected revision. An NRFU
+document is a test plan, not evidence that those tests or a cutover ran.
+The older design tools under Tools and downloads are unsaved previews;
+editing one does not change the original assessment download buttons.
+
+Plan history is append-only. An assessment or campaign with saved plans
+cannot be deleted through the app; keep verified backups of data\.
+No Python, Node, Docker, Office installation or remote service is needed
+to generate the supported outputs. Windows and a supported local browser
+are required. A compatible viewer is optional for opening Office files.
+Snapshot JSON and complete Protocol Assurance exports remain separate
+assessment records. The full assessment workbook is still an engine-CLI
+output; a GUI workbook download is not claimed by this workflow.
+
 EVERY VALUE CARRIES A STATE. A dash with a label is NOT zero and NOT
 healthy - read the label and the reason under it:
   Not collected         a blind spot: the evidence was never captured.

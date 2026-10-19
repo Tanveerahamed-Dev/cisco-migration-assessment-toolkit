@@ -22,6 +22,29 @@ from cisco_toolkit.protocol_assurance import (  # noqa: E402
 )
 
 
+def test_catalogue_declares_a_closed_saved_plan_basis_for_every_writer():
+    from backend.app import _plan_catalogue_row
+
+    derived = {"design", "crd", "mop", "nrfu", "deck"}
+    baseline = {"cutover", "engagement", "runbook", "archreview", "opshandbook"}
+    assert derived.isdisjoint(baseline)
+    assert set(deliverables.SPECS) == derived | baseline
+    rows = {row["key"]: _plan_catalogue_row(row) for row in deliverables.catalogue()}
+    assert set(rows) == derived | baseline
+    for key in derived:
+        assert rows[key]["saved_plan_basis"] == "selected-requirements"
+    for key in baseline:
+        assert rows[key]["saved_plan_basis"] == "assessment-baseline"
+    assert deliverables.saved_plan_basis("future-unreviewed-writer") is None
+
+
+def test_future_unclassified_writer_cannot_export_a_saved_plan(monkeypatch):
+    monkeypatch.setitem(deliverables.SPECS, "future-unreviewed-writer", deliverables.SPECS["mop"])
+    # Refusal precedes snapshot/plan parsing and any document writer invocation.
+    with pytest.raises(deliverables.SavedPlanError, match="unsupported"):
+        deliverables.generate_saved_plan("future-unreviewed-writer", {}, "EXAMPLE", {})
+
+
 def _snapshot(*, count: int = 2):
     hosts = [f"EXAMPLE-SW-{index}" for index in range(count)]
     validation_item = {

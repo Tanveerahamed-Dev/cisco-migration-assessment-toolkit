@@ -35,7 +35,7 @@ from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cisco_toolkit import brand_tokens, docmeta
 from cisco_toolkit.protocol_assurance import (
@@ -58,7 +58,7 @@ from . import (
 )
 from .storage import (
     CarriagePreparationBusyError, CarriagePreparationLimitError, ExecutionReceiptAuthorityError,
-    SAVED_PLAN_MAX_JSON_DEPTH,
+    SAVED_PLAN_MAX_JSON_DEPTH, SAVED_PLAN_MAX_REVISIONS,
     SavedPlanConflictError, SavedPlanIntegrityError, SavedPlanLimitError, Store,
 )
 
@@ -401,6 +401,221 @@ BoundedName = Annotated[str, Field(max_length=_LEN_NAME)]
 PlanRowId = Annotated[int, PathParam(ge=1, le=_SQLITE_INT_MAX)]
 PlanSelectionQuery = Annotated[int, Query(ge=1, le=_SQLITE_INT_MAX)]
 PlanDigestQuery = Annotated[str, Query(min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$")]
+
+
+_PLAN_WIRE_MAX = (1 << 53) - 1
+_PlanWireId = Annotated[int, Field(strict=True, ge=1, le=_PLAN_WIRE_MAX)]
+
+
+class _PlanObject(BaseModel):
+    model_config = ConfigDict(strict=True, extra="allow")
+
+
+class SavedPlanAssessmentResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    source: str
+    sha256: str
+    bytes: _PlanWireId
+    snapshot_id: _PlanWireId
+    campaign_id: _PlanWireId
+    engagement_id: str
+    label: str
+    script_version: str
+
+
+class SavedPlanSummaryResponse(_PlanObject):
+    headline: str
+    n_recommended: int
+    n_needs_requirement: int
+    n_critical: int
+
+
+class SavedPlanDecisionResponse(_PlanObject):
+    id: str
+    title: str
+    priority: str
+    status: str
+    driver: str
+    recommended_action: str | None = None
+
+
+class SavedPlanBlueprintResponse(_PlanObject):
+    summary: SavedPlanSummaryResponse
+    decisions: List[SavedPlanDecisionResponse]
+
+
+class SavedPlanNrfuItemResponse(_PlanObject):
+    decision_id: str
+    title: str
+    phase: str
+    description: str
+    pass_criteria: str
+
+
+class SavedPlanNrfuResponse(_PlanObject):
+    n_items: int
+    note: str
+    items: List[SavedPlanNrfuItemResponse]
+
+
+class SavedPlanSectionsResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    requirements_register: Dict[str, Any]
+    design_blueprint: SavedPlanBlueprintResponse
+    design_nrfu: SavedPlanNrfuResponse
+
+
+class SavedPlanProjectionResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    schema: str
+    requirements: Dict[str, Any]
+    sections: SavedPlanSectionsResponse
+    derivation: Dict[str, Any]
+
+
+class SavedPlanMetaResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    schema: str
+    revision: _PlanWireId
+    label: str
+    created_at: str
+    sha256: str
+    status: Literal["UNAPPROVED_DRAFT"]
+
+
+class SavedPlanVlanFormRow(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    zone: str
+    vids: str
+
+
+class SavedPlanPayloadResponse(SavedPlanMetaResponse):
+    assessment: SavedPlanAssessmentResponse
+    projection: SavedPlanProjectionResponse
+    vlan_form_rows: List[SavedPlanVlanFormRow]
+
+
+class SavedPlanResponse(SavedPlanPayloadResponse):
+    selection_id: _PlanWireId
+
+
+class SavedPlanListResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    assessment: SavedPlanAssessmentResponse
+    selection_id: Annotated[int, Field(strict=True, ge=0, le=_PLAN_WIRE_MAX)]
+    selected_revision: _PlanWireId | None
+    revisions: List[SavedPlanMetaResponse]
+
+
+class SavedPlanContractResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    requirements: Dict[str, Any]
+    display_limits: Dict[str, int]
+    catalogue: List[Dict[str, Any]]
+
+
+class _PlanWireIdentity(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    revision: _PlanWireId
+    selection_id: _PlanWireId
+    sha256: str
+
+
+class PlanCandidateError(RuntimeError):
+    pass
+
+
+class PlanContentError(RuntimeError):
+    pass
+
+
+class PlanRenderError(RuntimeError):
+    pass
+
+
+class PlanWireError(RuntimeError):
+    pass
+
+
+class _PlanPrepared:
+    def __init__(self, model: SavedPlanPayloadResponse):
+        self.sha256 = model.sha256
+        self.revision = model.revision
+        self.payload = json.dumps(model.model_dump(exclude_unset=True), sort_keys=True,
+                                  separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+    def finish(self, record):
+        try:
+            identity = _PlanWireIdentity.model_validate({
+                "revision": record["revision"], "selection_id": record["selection_id"],
+                "sha256": record["sha256"],
+            })
+        except ValidationError:
+            raise PlanWireError from None
+        actual = identity.sha256
+        expected = self.sha256
+        if actual != expected:
+            raise SavedPlanConflictError("saved plan identity changed")
+        actual_revision = identity.revision
+        expected_revision = self.revision
+        if actual_revision != expected_revision:
+            raise SavedPlanConflictError("saved plan identity changed")
+        scalar = json.dumps(identity.selection_id, allow_nan=False).encode("ascii")
+        return b"".join((self.payload[:-1], b',"selection_id":', scalar, b"}"))
+
+
+def _plan_payload(record):
+    try:
+        SavedPlanAssessmentResponse.model_validate(record["assessment"])
+        SavedPlanMetaResponse.model_validate({key: record[key] for key in (
+            "schema", "revision", "label", "created_at", "sha256", "status",
+        )})
+    except ValidationError:
+        raise PlanWireError from None
+    payload = dict(record)
+    from cisco_toolkit.design_advisor import saved_plan_vlan_form_rows
+    payload["vlan_form_rows"] = saved_plan_vlan_form_rows(record["projection"]["requirements"])
+    if "selection_id" in payload:
+        del payload["selection_id"]
+    return _PlanPrepared(SavedPlanPayloadResponse.model_validate(payload))
+
+
+def _prepare_new_saved_plan(snapshot, record):
+    try:
+        deliverables._validated_saved_plan(snapshot, record, context="absent")
+        return _plan_payload(record)
+    except SavedPlanLimitError:
+        raise
+    except (ValueError, TypeError, UnicodeError):
+        raise PlanCandidateError from None
+
+
+def _prepare_existing_saved_plan(snapshot, record):
+    try:
+        deliverables._validated_saved_plan(snapshot, record)
+    except SavedPlanLimitError:
+        raise
+    except (ValueError, TypeError, UnicodeError):
+        raise PlanContentError from None
+    try:
+        return _plan_payload(record)
+    except (ValueError, TypeError, UnicodeError):
+        raise PlanRenderError from None
+
+
+def _finish_saved_plan(prepared, record):
+    return prepared.finish(record)
+
+
+def _plan_catalogue_row(row, availability=None):
+    entry = dict(row)
+    if availability is not None:
+        entry["available"] = availability.get(entry["key"], False)
+    basis = deliverables.saved_plan_basis(entry["key"])
+    support = basis is not None
+    entry["saved_plan_basis"] = basis
+    entry["saved_plan_supported"] = support
+    return entry
 
 
 class SavedPlanIn(BaseModel):
@@ -2771,6 +2986,34 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             headers={"Retry-After": "5"},
         )
 
+    @app.exception_handler(PlanCandidateError)
+    async def plan_candidate_error(_request: Request, _error: PlanCandidateError):
+        return JSONResponse(status_code=400, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The server-derived plan candidate was not admitted. Nothing was saved.",
+            "cause": "PLAN_CANDIDATE_NOT_ADMITTED",
+        })
+
+    @app.exception_handler(PlanContentError)
+    async def plan_content_error(_request: Request, _error: PlanContentError):
+        return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The saved plan was not admitted for this operation. Its bytes are unchanged.",
+            "cause": "PLAN_CONTENT_NOT_ADMITTED",
+        })
+
+    @app.exception_handler(PlanRenderError)
+    async def plan_render_error(_request: Request, _error: PlanRenderError):
+        return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The admitted saved plan cannot be rendered by this app.",
+            "cause": "PLAN_RENDER_REFUSED",
+        })
+
+    @app.exception_handler(PlanWireError)
+    async def plan_wire_error(_request: Request, _error: PlanWireError):
+        return JSONResponse(status_code=413, headers={"Cache-Control": "no-store"}, content={
+            "detail": "The saved-plan identity cannot be represented by this app transport. Nothing was saved or selected.",
+            "cause": "PLAN_WIRE_ID_LIMIT",
+        })
+
     @app.exception_handler(SavedPlanConflictError)
     async def saved_plan_conflict(_request: Request, _error: SavedPlanConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, headers={"Cache-Control": "no-store"}, content={
@@ -3016,6 +3259,20 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         response = Response(status_code=204)
         response.delete_cookie(_SESSION_COOKIE, path="/", samesite="strict")
         return response
+
+    @app.get("/api/saved-plan-contract", response_model=SavedPlanContractResponse)
+    def saved_plan_contract(response: Response):
+        from cisco_toolkit.design_advisor import requirements_contract
+
+        catalogue, _release = _meta_build_facts()
+        availability = _deliverable_availability()
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "requirements": requirements_contract(),
+            "display_limits": {"revision_maximum": SAVED_PLAN_MAX_REVISIONS,
+                               "label_maximum_code_points": _LEN_NAME},
+            "catalogue": [_plan_catalogue_row(row, availability) for row in catalogue],
+        }
 
     @app.get("/api/meta")
     def meta() -> Dict[str, Any]:
@@ -3672,19 +3929,22 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
-    @app.get("/api/snapshots/{snapshot_id}/plans")
-    def saved_plans(snapshot_id: PlanRowId, request: Request, response: Response) -> Dict[str, Any]:
+    @app.get("/api/snapshots/{snapshot_id}/plans", response_model=SavedPlanListResponse)
+    def saved_plans(snapshot_id: PlanRowId, request: Request, response: Response) -> SavedPlanListResponse:
         """Saved revisions and the current append-only selection, not an implicit latest preview."""
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):
             state = store.list_saved_plans(snapshot_id)
         if state is None:
             raise HTTPException(404, "Snapshot not found")
-        return state
+        try:
+            return SavedPlanListResponse.model_validate(state)
+        except ValidationError:
+            raise PlanWireError from None
 
-    @app.post("/api/snapshots/{snapshot_id}/plans", status_code=201)
+    @app.post("/api/snapshots/{snapshot_id}/plans", status_code=201, response_model=SavedPlanResponse)
     def save_plan(snapshot_id: PlanRowId, body: SavedPlanIn, request: Request,
-                  response: Response) -> Dict[str, Any]:
+                  response: Response) -> Response:
         """Derive outside the Store lock, then publish a separate immutable plan with source/CAS checks."""
         response.headers["Cache-Control"] = "no-store"
         if not body.label.strip():
@@ -3705,6 +3965,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 record = store.save_plan_revision(
                     snapshot_id, body.label.strip(), projection, binding,
                     body.expected_selection_id,
+                    admit=lambda candidate: _prepare_new_saved_plan(snap, candidate),
+                    finalize=_finish_saved_plan,
                 )
             except deliverables.SavedPlanError as exc:
                 raise HTTPException(400, "The requirements cannot form a supported saved plan") from exc
@@ -3714,20 +3976,29 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 raise HTTPException(400, "The saved-plan request is invalid") from exc
             if record is None:
                 raise HTTPException(404, "Snapshot not found")
-        return record
+        return Response(content=record, status_code=201, media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/snapshots/{snapshot_id}/plans/{revision}/select")
+    @app.post("/api/snapshots/{snapshot_id}/plans/{revision}/select", response_model=SavedPlanResponse)
     def select_saved_plan(snapshot_id: PlanRowId, revision: PlanRowId,
                           body: SavedPlanSelectionIn, request: Request,
-                          response: Response) -> Dict[str, Any]:
+                          response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):
+            bound = store.get_bound_snapshot(snapshot_id)
+            if bound is None:
+                raise HTTPException(404, "Snapshot not found")
+            snapshot, binding = bound
             record = store.select_plan_revision(
                 snapshot_id, revision, body.plan_sha256, body.expected_selection_id,
+                expected_binding=binding,
+                admit=lambda target: _prepare_existing_saved_plan(snapshot, target),
+                finalize=_finish_saved_plan,
             )
         if record is None:
             raise HTTPException(404, "Saved plan not found for this snapshot")
-        return record
+        return Response(content=record, media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
 
     def _saved_plan_context(snapshot_id: int, revision: int, plan_sha256: str,
                             selection_id: int) -> Dict[str, Any]:
@@ -3736,15 +4007,18 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             raise HTTPException(404, "Saved plan not found for this snapshot")
         return context
 
-    @app.get("/api/snapshots/{snapshot_id}/plans/{revision}")
+    @app.get("/api/snapshots/{snapshot_id}/plans/{revision}", response_model=SavedPlanResponse)
     def saved_plan(snapshot_id: PlanRowId, revision: PlanRowId, plan_sha256: PlanDigestQuery,
                    selection_id: PlanSelectionQuery, request: Request,
-                   response: Response) -> Dict[str, Any]:
+                   response: Response) -> Response:
         """Reopen the pinned saved bytes; never recompute under a newer planner."""
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):
             context = _saved_plan_context(snapshot_id, revision, plan_sha256, selection_id)
-        return context["plan"]
+            prepared = _prepare_existing_saved_plan(context["snapshot"], context["plan"])
+            payload = prepared.finish(context["plan"])
+        return Response(content=payload, media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/api/snapshots/{snapshot_id}/plans/{revision}/deliverable/{kind}")
     def saved_plan_deliverable(snapshot_id: PlanRowId, revision: PlanRowId, kind: str,
@@ -3753,6 +4027,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         """One pinned revision supplies the content, visible provenance and response identity."""
         if kind not in deliverables.SPECS:
             raise HTTPException(400, "Unknown saved-plan deliverable")
+        basis = deliverables.saved_plan_basis(kind)
+        if basis is None:
+            raise HTTPException(409, "This document does not support saved-plan export")
         if not _deliverable_availability().get(kind):
             raise HTTPException(503, "The required document renderer is unavailable")
         with _generation_slot(request.app.state.generation_semaphore):
@@ -3783,6 +4060,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "X-Atlas-Plan-SHA256": plan["sha256"],
                     "X-Atlas-Plan-Selection": str(selection_id),
                     "X-Atlas-Plan-Status": "UNAPPROVED_DRAFT",
+                    "X-Atlas-Plan-Basis": basis,
                 }
                 if gate_note:
                     headers["X-Gate-Status"] = (

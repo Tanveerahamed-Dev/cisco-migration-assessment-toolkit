@@ -1,0 +1,35 @@
+.saved-plan-page { max-width: 1240px; margin: 0 auto; padding: 24px; }
+.saved-plan-page h1 { margin: 12px 0 8px; }
+.saved-plan-page h2 { margin-top: 0; font-size: 1.2rem; }
+.saved-plan-page .panel { margin-top: 18px; padding: 22px; min-width: 0; }
+.saved-plan-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.saved-plan-editor-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 18px; }
+.saved-plan-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.saved-plan-fields label { display: flex; flex-direction: column; gap: 7px; font-weight: 600; }
+.saved-plan-field { min-width: 0; }
+.saved-plan-select-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.saved-plan-help { margin: 7px 0 0; font-size: .8rem; overflow-wrap: anywhere; }
+.saved-plan-fields input, .saved-plan-fields select, .saved-plan-fields textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; font-weight: 400; }
+.saved-plan-fields input:focus-visible, .saved-plan-fields select:focus-visible, .saved-plan-fields textarea:focus-visible, .saved-plan-page button:focus-visible, .saved-plan-page a:focus-visible, .saved-plan-page summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.saved-plan-fields:disabled { opacity: .7; }
+.saved-plan-advanced { grid-column: 1 / -1; }
+.saved-plan-advanced label { margin-top: 12px; }
+.saved-plan-page summary { cursor: pointer; padding: 8px 0; }
+.saved-plan-actions, .saved-plan-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.saved-plan-roster, .saved-plan-decision-list, .saved-plan-checklist { padding-left: 22px; }
+.saved-plan-roster li, .saved-plan-decision-list li, .saved-plan-checklist li { margin-bottom: 18px; padding: 4px 0 14px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.saved-plan-roster p { margin: 7px 0; }
+.saved-plan-hash { font: .8rem var(--mono); overflow-wrap: anywhere; }
+.saved-plan-draft, .saved-plan-unsaved { border-left: 4px solid var(--watch); padding: 10px 14px; background: var(--watch-soft); color: var(--text); }
+.saved-plan-alert { border-left: 4px solid var(--crit); padding: 10px 14px; background: var(--crit-soft); margin-top: 14px; overflow-wrap: anywhere; }
+.saved-plan-primary-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 20px 0; }
+.saved-plan-primary { width: 100%; min-height: 56px; justify-content: center; font-size: 1.05rem; font-weight: 700; }
+.saved-plan-document p { margin: 8px 0 0; font-size: .85rem; }
+.saved-plan-document .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.saved-plan-other-documents { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-top: 12px; }
+.saved-plan-summary { display: flex; flex-wrap: wrap; gap: 24px; }
+.saved-plan-summary dt { color: var(--text-dim); }
+.saved-plan-summary dd { margin: 7px 0 0; font-size: 1.4rem; }
+.saved-plan-page button:disabled { cursor: not-allowed; opacity: .55; }
+@media (max-width: 760px) { .saved-plan-page { padding: 16px; } .saved-plan-editor-layout { grid-template-columns: 1fr; gap: 0; } .saved-plan-header { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 480px) { .saved-plan-fields, .saved-plan-primary-actions, .saved-plan-other-documents { grid-template-columns: 1fr; } .saved-plan-page .panel { padding: 16px; } }

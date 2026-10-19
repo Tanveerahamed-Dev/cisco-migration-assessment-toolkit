@@ -1099,3 +1099,26 @@ def test_reconcile_catches_a_falsified_n_unknown():
     # an always-fire check.
     v2 = ssot.reconcile(_lc_snapshot(n_past_ldos=99, n_unknown=2))
     assert v2 and any("n_past_ldos" in s for s in v2), v2
+def test_saved_plan_basis_registry_resolves_the_strict_owner_and_hosted_parity_seams():
+    import ast
+    from pathlib import Path
+
+    row = next(line for line in _registry_text().splitlines() if 'id="saved-plan-basis"' in line)
+    root = Path(__file__).resolve().parents[1]
+    owners = {
+        "cisco_toolkit/design_advisor.py": ("requirements_from_interview", "requirements_contract",
+            "requirements_structure", "saved_plan_vlan_form_rows"),
+        "webapp/backend/storage.py": ("saved_plan_digest", "save_plan_revision", "get_saved_plan_context"),
+        "webapp/backend/deliverables.py": ("_validated_saved_plan", "render_saved_plan", "generate_saved_plan", "saved_plan_basis"),
+        "webapp/backend/app.py": ("_prepare_new_saved_plan", "_prepare_existing_saved_plan", "saved_plan_contract"),
+    }
+    for relative, symbols in owners.items():
+        assert relative in row
+        defined = {node.name for node in ast.walk(ast.parse((root / relative).read_text(encoding="utf-8")))
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert set(symbols) <= defined
+        assert all(symbol in row for symbol in symbols)
+    for name in ("test_saved_plan_contract.py", "test_saved_plan_lock_budget.py"):
+        assert name in row and (root / "webapp/tests" / name).is_file()
+    assert 'profile="saved_plan"' in row and "/api/saved-plan-contract" in row
+    assert "structure only" in row and "metadata" in row and "outside the Store lock" in row

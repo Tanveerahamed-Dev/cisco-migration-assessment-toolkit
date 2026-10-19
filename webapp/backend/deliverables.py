@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import importlib
 import importlib.util
-import ipaddress
 import json
 import logging
 import os
@@ -422,6 +421,18 @@ SAVED_PLAN_PROJECTION_SCHEMA = "atlas.saved_plan_projection/2"
 SAVED_PLAN_DERIVATION_SCHEMA = "atlas.saved_plan_derivation/2"
 SAVED_PLAN_REQUIREMENTS_BYTES = 64 * 1024
 _PLAN_DERIVED_KINDS = frozenset({"design", "crd", "mop", "nrfu", "deck"})
+_PLAN_BASELINE_KINDS = frozenset({"cutover", "engagement", "runbook", "archreview", "opshandbook"})
+
+
+def saved_plan_basis(kind: str) -> str | None:
+    """One owner for displayed plan semantics; a future unclassified writer is unsupported."""
+    if kind in _PLAN_DERIVED_KINDS:
+        return "selected-requirements"
+    if kind in _PLAN_BASELINE_KINDS:
+        return "assessment-baseline"
+    return None
+
+
 _PLAN_DERIVATION_OWNERS = (
     "cisco_toolkit.design_advisor.requirements_from_interview",
     "cisco_toolkit.design_advisor.derive_plan_sections",
@@ -461,77 +472,17 @@ def _saved_plan_integer(value: Any) -> bool:
 
 
 def _saved_plan_requirements(requirements: Any) -> dict:
-    """Validate the field profile, then use the existing engine's one normalization bridge."""
-    from cisco_toolkit.design_advisor import (
-        REQUIREMENTS_AVAILABILITY_TIERS, REQUIREMENTS_FABRIC_MODELS, REQUIREMENTS_KEYS,
-        REQUIREMENTS_LIST_KEYS, REQUIREMENTS_VLAN_MIN, REQUIREMENTS_VLAN_MAX,
-        requirements_from_interview,
-    )
+    """Bound serialization; strict normalization belongs to the engine."""
+    from cisco_toolkit.design_advisor import requirements_from_interview
 
     if type(requirements) is not dict:
         raise SavedPlanError("Saved plan requirements must be an object")
     if len(_saved_plan_json(requirements)) > SAVED_PLAN_REQUIREMENTS_BYTES:
         raise SavedPlanError("Saved plan requirements exceed the 64 KiB limit")
-    if any(type(key) is not str or key not in REQUIREMENTS_KEYS for key in requirements):
-        raise SavedPlanError("Saved plan requirements contain an unsupported field")
-    for key, value in requirements.items():
-        if value is None or value == "":
-            continue
-        if key in REQUIREMENTS_LIST_KEYS:
-            if not (type(value) is str or (
-                    type(value) is list and all(type(item) is str for item in value))):
-                raise SavedPlanError("Saved plan list requirement has an unsupported value")
-        elif key == "convergence_budget_ms":
-            if type(value) is str and re.fullmatch(r"[0-9]{1,19}", value.strip()):
-                value = int(value.strip())
-            if type(value) is not int or not 0 <= value <= _SQLITE_INTEGER_MAX:
-                raise SavedPlanError("Saved plan convergence must be a nonnegative integer")
-        elif key == "vlan_zones":
-            if type(value) is not dict:
-                raise SavedPlanError("Saved plan VLAN zones must be an object")
-            seen = set()
-            grouped = any(type(item) is list for item in value.values())
-            for zone_key, zone_value in value.items():
-                if grouped:
-                    if (type(zone_key) is not str or not zone_key.strip()
-                            or type(zone_value) is not list or not zone_value):
-                        raise SavedPlanError("Saved plan VLAN zones have an unsupported shape")
-                    vids = zone_value
-                else:
-                    if type(zone_value) is not str or not zone_value.strip():
-                        raise SavedPlanError("Saved plan VLAN zones have an unsupported shape")
-                    vids = [zone_key]
-                for vid in vids:
-                    if (type(vid) is str
-                            and re.fullmatch(rf"[0-9]{{1,{len(str(REQUIREMENTS_VLAN_MAX))}}}", vid.strip())):
-                        vid = int(vid.strip())
-                    if (type(vid) is not int
-                            or not REQUIREMENTS_VLAN_MIN <= vid <= REQUIREMENTS_VLAN_MAX or vid in seen):
-                        raise SavedPlanError("Saved plan VLAN zones contain an invalid or duplicate VLAN")
-                    seen.add(vid)
-        elif type(value) is not str:
-            raise SavedPlanError("Saved plan requirement has an unsupported value")
-        elif key == "availability_tier" and value.strip().lower() not in REQUIREMENTS_AVAILABILITY_TIERS:
-            raise SavedPlanError("Saved plan availability tier is unsupported")
-        elif key == "address_space":
-            try:
-                network = ipaddress.ip_network(value.strip(), strict=False)
-            except ValueError as exc:
-                raise SavedPlanError("Saved plan address space is invalid") from exc
-            if network.version != 4:
-                raise SavedPlanError("Saved plan address allocation supports IPv4 only")
-    register = {
-        key: value for key, value in requirements_from_interview(requirements).items()
-        if value is not None and value != "" and value != [] and value != {}
-    }
-    if requirements.get("fabric_operating_model") and "fabric_operating_model" not in register:
-        raise SavedPlanError("Saved plan fabric operating model is unsupported")
-    if ("fabric_operating_model" in register
-            and register["fabric_operating_model"] not in REQUIREMENTS_FABRIC_MODELS):
-        raise SavedPlanError("Saved plan fabric operating model is unsupported")
-    # A persisted JSON object has string keys, including the normalizer's integer VLAN keys.
-    if "vlan_zones" in register:
-        register["vlan_zones"] = {str(vid): zone for vid, zone in register["vlan_zones"].items()}
+    try:
+        register = requirements_from_interview(requirements, profile="saved_plan")
+    except ValueError:
+        raise SavedPlanError("Saved plan requirements were not admitted") from None
     encoded = _saved_plan_json(register)
     if len(encoded) > SAVED_PLAN_REQUIREMENTS_BYTES:
         raise SavedPlanError("Normalized saved plan requirements exceed the 64 KiB limit")
@@ -575,17 +526,23 @@ def prepare_saved_plan(snapshot: dict, requirements: dict) -> dict:
     return json.loads(_saved_plan_json(projection))
 
 
-def _validated_saved_plan(snapshot: dict, plan: Any) -> tuple[dict, dict]:
+def _validated_saved_plan(snapshot: dict, plan: Any, *, context=None) -> tuple[dict, dict]:
     from cisco_toolkit.protocol_assurance import bound_snapshot_source
     from .storage import SavedPlanLimitError, saved_plan_digest
 
     if not isinstance(snapshot, dict) or type(plan) is not dict:
         raise SavedPlanError("Saved plan context is invalid")
-    if (plan.get("schema") != "atlas.saved_plan/1"
-            or plan.get("status") != "UNAPPROVED_DRAFT"
-            or not _saved_plan_integer(plan.get("revision"))
-            or not _saved_plan_integer(plan.get("selection_id"))):
-        raise SavedPlanError("Saved plan revision or selection is invalid")
+    if context is None:
+        if (plan.get("schema") != "atlas.saved_plan/1"
+                or plan.get("status") != "UNAPPROVED_DRAFT"
+                or not _saved_plan_integer(plan.get("revision"))
+                or not _saved_plan_integer(plan.get("selection_id"))):
+            raise SavedPlanError("Saved plan revision or selection is invalid")
+    elif context == "absent":
+        if "selection_id" in plan:
+            raise SavedPlanError("Saved plan candidate carries a selection")
+    else:
+        raise SavedPlanError("Saved plan context is unsupported")
     if (type(plan.get("label")) is not str or not plan["label"].strip()
             or type(plan.get("created_at")) is not str or not plan["created_at"].strip()):
         raise SavedPlanError("Saved plan identity is incomplete")
@@ -746,7 +703,7 @@ def generate_saved_plan(kind: str, snapshot: dict, label: str, plan: dict, *,
     """Render one selected revision without changing original source, protocol or approval authority."""
     from cisco_toolkit.docmeta import protocol_assurance_receipt_view
 
-    if kind not in SPECS:
+    if kind not in SPECS or saved_plan_basis(kind) is None:
         raise SavedPlanError("Selected plan deliverable is unsupported")
     assessment, projection = _validated_saved_plan(snapshot, plan)
     if protocol_assurance_bundle is not None or kind in docmeta.PROTOCOL_ASSURANCE_DOCUMENT_KINDS:

@@ -1376,19 +1376,28 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # successful returns/caller headers; _send_file's sanitized stem/header; SPECS and docmeta.
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
-# PR-2: the evidence type/panel changes these two complete source identities only.
-# All three caller/factory expressions and the other six route/catalog/header owners are unchanged.
+# RC8 shared-contract replacement: reconcile each retained name chain by registry key.
+# CutoverPlanner -> deliverableUrl(cutover) -> snapshot_deliverable -> _cutover.docx.
+# Execution -> executionReportUrl -> execution_report -> docmeta pir -> _pir.docx.
+# Snapshot -> meta catalogue -> deliverableUrl -> each docmeta snapshot suffix.
+# SavedPlan -> savedPlanApi exact-pin/basis/media/ZIP transport -> fixed Atlas-snapshot
+# numeric-ID/revision/key .docx/.pptx Blob names, with anchor and URL cleanup.
+# Route/cache/facade edits do not change any successful response-name owner; the new
+# adapter/page are explicit owners too. Full by-name rationale and source roles:
+# docs/rc8-saved-plan-contract-validation.md. Discovery and refusal remain unchanged.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "db43befd5437295c9de11f93e9649b153e670977",
+    "webapp/frontend/src/api.ts": "96661a2f480377492157e903a7a8d19ef8052ee3",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
     "webapp/frontend/src/components/CutoverPlanner.tsx": "9f4d3f8a2c0c553a10d873538a89826e51cc2aa4",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "c0346779e2bb683eae1b89dcd92bb74fc808dcf6",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
-    "webapp/backend/app.py": "6ee882af65599d7209be6b4a64a07dd73757515a",
-    "webapp/backend/deliverables.py": "73a8469a4b22e6ef0111e21ea9c7923b830bed52",
+    "webapp/backend/app.py": "b8e668727cb6ce21c65b3238e55447e6b06902bd",
+    "webapp/backend/deliverables.py": "37e5e0fc7d1881c0cc98af6c666b223217022411",
     "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
+    "webapp/frontend/src/savedPlanApi.ts": "79c37b8348ff6623db10fad22e3fe6ae64cca1db",
+    "webapp/frontend/src/pages/SavedPlan.tsx": "9eba25bac5754ff4516e10d0766e2946e2226775",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {
     ("webapp/frontend/src/components/CutoverPlanner.tsx", 'api.deliverableUrl(snapId, "cutover")'): "cutover",
