@@ -1,21 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api";
-import type { Meta, SavedPlanState } from "../api";
+import { api, ApiError } from "../savedPlanApi";
+import type { Meta, SavedPlanState } from "../savedPlanApi";
 import SavedPlanPage from "./SavedPlan";
 
-// A deliberately different generated owner domain falsifies copied gold/silver/bronze
-// or 1..4094 policy in the page. No network interception or production fallback is added.
-vi.mock("../generated/openapi", () => ({ designRequirementsContract: {
-  schema: "atlas.requirements-contract/1", scope: "saved_plan_admission",
-  keys: ["availability_tier", "critical_apps", "convergence_budget_ms", "growth_horizon",
-    "constraints", "data_classification", "address_space", "vlan_zones", "fabric_operating_model"],
-  list_fields: ["critical_apps", "constraints", "data_classification"],
-  availability_tiers: ["platinum", "standard"], fabric_models: ["example-fabric"],
-  vlan_id: { minimum: 7, maximum: 12 },
-} }));
-
+// A different runtime owner domain detects copied client vocabulary or range policy.
 const source: SavedPlanState = {
   assessment: { source: "persisted snapshots.snapshot_json blob", sha256: `sha256:${"a".repeat(64)}`,
     bytes: 100, snapshot_id: 1, campaign_id: 7, engagement_id: "EXAMPLE", label: "EXAMPLE", script_version: "3.23.0" },
@@ -24,7 +14,9 @@ const source: SavedPlanState = {
 
 beforeEach(() => {
   vi.spyOn(api, "savedPlans").mockResolvedValue(source);
-  vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as unknown as Meta);
+  vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [], display_limits: { revision_maximum: 64, label_maximum_code_points: 200 },
+    requirementsContract: { availability_tiers: ["platinum", "standard"], fabric_models: ["example-fabric"],
+      vlan_id: { minimum: 7, maximum: 12 }, convergence_budget_ms: { minimum: 0, maximum: 9007199254740991 } } } satisfies Meta);
   vi.spyOn(api, "savePlan").mockImplementation(() => new Promise<never>(() => {}));
 });
 afterEach(() => vi.restoreAllMocks());
@@ -37,8 +29,8 @@ async function show() {
   fireEvent.change(screen.getByLabelText("Plan name"), { target: { value: "EXAMPLE owner domain" } });
 }
 
-describe("generated requirements owner contract", () => {
-  it("offers the generated tier/fabric domains and sends the selected tier without a copied allow-list", async () => {
+describe("runtime requirements owner contract", () => {
+  it("offers the runtime tier/fabric domains and sends the selected tier without a copied allow-list", async () => {
     await show();
     const tiers = screen.getByLabelText("Availability tier") as HTMLSelectElement;
     expect(Array.from(tiers.options, (option) => option.value)).toEqual(["", "platinum", "standard"]);
@@ -52,16 +44,17 @@ describe("generated requirements owner contract", () => {
     }), expect.any(AbortSignal)));
   });
 
-  it.each(["6=EXAMPLE", "13=EXAMPLE"])("refuses VLAN %s against generated bounds before saving", async (zones) => {
+  it.each(["6=EXAMPLE", "13=EXAMPLE"])("sends VLAN %s to its owner and displays the refusal", async (zones) => {
+    vi.mocked(api.savePlan).mockRejectedValueOnce(new ApiError("VLAN requirements were not admitted", 400));
     await show();
     fireEvent.click(screen.getByText("Advanced: VLAN zones"));
     fireEvent.change(screen.getByLabelText("VLAN zones — one assignment per line"), { target: { value: zones } });
     fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("between 7 and 12");
-    expect(api.savePlan).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("VLAN requirements were not admitted");
+    expect(api.savePlan).toHaveBeenCalledWith(1, expect.objectContaining({ requirements: { vlan_zones: { raw_rows: [{ vids: zones.split("=")[0], zone: "EXAMPLE" }] } } }), expect.any(AbortSignal));
   });
 
-  it("accepts both generated VLAN bounds without coercing zone identity", async () => {
+  it("accepts both runtime VLAN bounds without coercing zone identity", async () => {
     await show();
     fireEvent.click(screen.getByText("Advanced: VLAN zones"));
     fireEvent.change(screen.getByLabelText("VLAN zones — one assignment per line"), {
@@ -69,7 +62,7 @@ describe("generated requirements owner contract", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
     await waitFor(() => expect(api.savePlan).toHaveBeenCalledWith(1, expect.objectContaining({
-      requirements: { vlan_zones: { "7": "EXAMPLE low", "12": "EXAMPLE high" } },
+      requirements: { vlan_zones: { raw_rows: [{ zone: "EXAMPLE low", vids: "7" }, { zone: "EXAMPLE high", vids: "12" }] } },
     }), expect.any(AbortSignal)));
   });
 });

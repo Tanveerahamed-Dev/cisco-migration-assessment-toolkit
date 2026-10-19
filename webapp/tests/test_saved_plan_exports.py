@@ -23,11 +23,13 @@ from cisco_toolkit.protocol_assurance import (  # noqa: E402
 
 
 def test_catalogue_declares_a_closed_saved_plan_basis_for_every_writer():
+    from backend.app import _plan_catalogue_row
+
     derived = {"design", "crd", "mop", "nrfu", "deck"}
     baseline = {"cutover", "engagement", "runbook", "archreview", "opshandbook"}
     assert derived.isdisjoint(baseline)
     assert set(deliverables.SPECS) == derived | baseline
-    rows = {row["key"]: row for row in deliverables.catalogue()}
+    rows = {row["key"]: _plan_catalogue_row(row) for row in deliverables.catalogue()}
     assert set(rows) == derived | baseline
     for key in derived:
         assert rows[key]["saved_plan_basis"] == "selected-requirements"

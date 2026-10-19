@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "../api";
-import type { Deliverable, Meta, SavedPlanRecord, SavedPlanState } from "../api";
+import { api, ApiError } from "../savedPlanApi";
+import type { Deliverable, Meta, SavedPlanRecord, SavedPlanState } from "../savedPlanApi";
 import SavedPlanPage from "./SavedPlan";
 
 function record(revision = 1, selection = 3, sid = 1): SavedPlanRecord {
@@ -24,7 +24,7 @@ function record(revision = 1, selection = 3, sid = 1): SavedPlanRecord {
     pass_criteria: "EXAMPLE expected observed state", setup: "EXAMPLE test preparation", devices: [], principle_citation: "EXAMPLE" }],
     n_items: 1, note: "EXAMPLE planned checks, not passed results." };
   return {
-    schema: "atlas.saved_plan/1", revision, label: `EXAMPLE plan ${revision}`, created_at: "2026-10-16T00:00:00Z",
+    vlan_form_rows: [], schema: "atlas.saved_plan/1", revision, label: `EXAMPLE plan ${revision}`, created_at: "2026-10-16T00:00:00Z",
     sha256: `sha256:${String(revision).repeat(64)}`, status: "UNAPPROVED_DRAFT", selection_id: selection,
     assessment: { source: "persisted snapshots.snapshot_json blob", sha256: `sha256:${"a".repeat(64)}`,
       bytes: 100, snapshot_id: sid, campaign_id: 7, engagement_id: "EXAMPLE-engagement", label: `EXAMPLE source ${sid}`, script_version: "3.23.0" },
@@ -44,10 +44,11 @@ function state(selected: SavedPlanRecord | null = record(), rows = selected ? [s
 
 const kinds = ["engagement", "crd", "runbook", "design", "archreview", "mop", "cutover", "nrfu", "opshandbook", "deck"];
 function catalogue(): Meta {
-  return { engine_schema: "3.23.0", severity_order: [], bands: [], section_labels: [],
-    app: { name: "Atlas", byline: "EXAMPLE", title: "EXAMPLE", release: "3.33.0rc8" },
+  return { requirementsContract: { availability_tiers: ["gold", "silver", "bronze"], fabric_models: ["nxos-evpn", "aci"],
+    vlan_id: { minimum: 1, maximum: 4094 }, convergence_budget_ms: { minimum: 0, maximum: 9007199254740991 } },
+    display_limits: { revision_maximum: 64, label_maximum_code_points: 200 },
     deliverables: kinds.map((key) => ({ key, label: `EXAMPLE ${key} document`, available: true,
-      ext: key === "deck" ? "pptx" : "docx",
+      ext: key === "deck" ? "pptx" : "docx", saved_plan_supported: true,
       saved_plan_basis: ["design", "crd", "mop", "nrfu", "deck"].includes(key) ? "selected-requirements" : "assessment-baseline" })) };
 }
 
@@ -99,7 +100,7 @@ describe("Saved plan field workflow", () => {
     expect(await screen.findByText("Saved EXAMPLE design 1 for source 1")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Convergence budget (ms)" })).toHaveValue("0");
     expect(screen.getByText("Decisions needing requirements")).toBeInTheDocument();
-    expect(calls.reopen).toHaveBeenCalledWith(1, 1, record().sha256, 3, expect.any(AbortSignal));
+    expect(calls.reopen).toHaveBeenCalledWith(1, 1, record().sha256, 3, expect.any(AbortSignal), record().assessment);
     fireEvent.change(screen.getByLabelText("Plan name"), { target: { value: "EXAMPLE second plan" } });
     fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
     expect(await screen.findByText("Saved EXAMPLE design 2 for source 1")).toBeInTheDocument();
@@ -156,13 +157,13 @@ describe("Saved plan field workflow", () => {
     expect(downloads[0]).toEqual({ name: "Atlas-snapshot-1-plan-r1-mop.docx", href: "blob:EXAMPLE-verified" });
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:EXAMPLE-verified");
     expect(document.querySelector("a[download]")).toBeNull();
-    expect(calls.download).toHaveBeenCalledWith(1, expect.objectContaining({ revision: 1, selection_id: 3, sha256: record().sha256 }), "mop", "docx", expect.any(AbortSignal));
+    expect(calls.download).toHaveBeenCalledWith(1, expect.objectContaining({ revision: 1, selection_id: 3, sha256: record().sha256 }), "mop", "docx", expect.any(AbortSignal), "selected-requirements");
   });
 
-  it("offers all ten registry documents with the same pin and distinct useful names, excluding PIR and XLSX", async () => {
+  it("offers all ten registry documents with the same pin and distinct useful names, with server-owned PIR refusal and CLI-only XLSX", async () => {
     const calls = defaults();
     const meta = catalogue();
-    meta.deliverables.push({ key: "pir", label: "Forbidden premature PIR", ext: "docx", available: true, saved_plan_basis: "assessment-baseline" });
+    meta.deliverables.push({ key: "pir", label: "Forbidden premature PIR", ext: "docx", available: true, saved_plan_basis: null, saved_plan_supported: false });
     calls.meta.mockResolvedValue(meta);
     show();
     await screen.findByText("Saved EXAMPLE design 1 for source 1");
@@ -172,7 +173,7 @@ describe("Saved plan field workflow", () => {
       fireEvent.click(screen.getByRole("button", { name }));
       await waitFor(() => expect(calls.download).toHaveBeenCalledWith(
         1, expect.objectContaining({ revision: 1, selection_id: 3, sha256: record().sha256 }),
-        kind, kind === "deck" ? "pptx" : "docx", expect.any(AbortSignal),
+        kind, kind === "deck" ? "pptx" : "docx", expect.any(AbortSignal), meta.deliverables.find((entry) => entry.key === kind)!.saved_plan_basis,
       ));
       await waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
     }
@@ -180,7 +181,7 @@ describe("Saved plan field workflow", () => {
     expect(new Set(downloads.map((item) => item.name)).size).toBe(10);
     expect(downloads.map((item) => item.name)).toContain("Atlas-snapshot-1-plan-r1-nrfu.docx");
     expect(downloads.map((item) => item.name)).toContain("Atlas-snapshot-1-plan-r1-deck.pptx");
-    expect(screen.queryByRole("button", { name: "Forbidden premature PIR" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Forbidden premature PIR" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /workbook|xlsx/i })).not.toBeInTheDocument();
     expect(screen.getByText(/workbook remains CLI-only/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open original assessment JSON" })).toHaveAttribute("href", "/api/snapshots/1/raw");
@@ -229,7 +230,7 @@ describe("Saved plan field workflow", () => {
     expect(screen.queryByText("No document entries were provided by this server.")).not.toBeInTheDocument();
     expect(screen.queryByText("No saved plan revisions yet.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download NRFU" })).toBeDisabled();
-    calls.meta.mockResolvedValueOnce({ ...catalogue(), deliverables: null } as unknown as Meta);
+    calls.meta.mockRejectedValueOnce(new ApiError("document catalogue returned unsupported data", 502));
     fireEvent.click(screen.getByRole("button", { name: "Reload saved plans" }));
     expect(await screen.findByText(/document catalogue returned unsupported data/)).toBeInTheDocument();
     expect(screen.queryByText("No document entries were provided by this server.")).not.toBeInTheDocument();
@@ -256,7 +257,7 @@ describe("Saved plan field workflow", () => {
     await screen.findByText("Saved EXAMPLE design 2 for source 1");
     fireEvent.click(screen.getByRole("button", { name: "Select revision 1" }));
     expect(await screen.findByText(/EXAMPLE selection changed/)).toBeInTheDocument();
-    expect(calls.select).toHaveBeenCalledWith(1, 1, { plan_sha256: first.sha256, expected_selection_id: 7 }, expect.any(AbortSignal));
+    expect(calls.select).toHaveBeenCalledWith(1, 1, { plan_sha256: first.sha256, expected_selection_id: 7 }, expect.any(AbortSignal), second.assessment);
     expect(screen.getByRole("button", { name: "Save new revision" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Download MOP" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Select revision 1" })).toBeDisabled();
@@ -268,7 +269,7 @@ describe("Saved plan field workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reload saved plans" }));
     expect(await screen.findByText("Saved EXAMPLE design 1 for source 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download MOP" })).toBeEnabled();
-    expect(calls.reopen).toHaveBeenLastCalledWith(1, 1, first.sha256, 9, expect.any(AbortSignal));
+    expect(calls.reopen).toHaveBeenLastCalledWith(1, 1, first.sha256, 9, expect.any(AbortSignal), recovered.assessment);
   });
 
   it("freezes stale downloads on a 409 without silently requesting the latest revision", async () => {
@@ -317,25 +318,29 @@ describe("Saved plan field workflow", () => {
     expect(downloads).toHaveLength(0);
   });
 
-  it.each(["10=Users\n10=Servers", "010=Users\n10=Servers", "4095=Users"])("rejects ambiguous or out-of-range VLAN lines before submitting: %s", async (zones) => {
+  it.each(["10=Users\n10=Servers", "010=Users\n10=Servers", "4095=Users"])("preserves raw VLAN rows and displays the owner refusal: %s", async (zones) => {
     const calls = defaults();
+    calls.save.mockRejectedValueOnce(new ApiError("VLAN requirements were not admitted", 400));
     show();
     await screen.findByText("Saved EXAMPLE design 1 for source 1");
     fireEvent.click(screen.getByText("Advanced: VLAN zones"));
     fireEvent.change(screen.getByLabelText("VLAN zones — one assignment per line"), { target: { value: zones } });
     fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/VLAN/);
-    expect(calls.save).not.toHaveBeenCalled();
+    expect(calls.save).toHaveBeenCalledOnce();
+    expect(calls.save.mock.calls[0][1].requirements.vlan_zones).toEqual({ raw_rows: zones.split("\n").map((line) => { const [vids, zone] = line.split("="); return { vids, zone }; }) });
   });
 
-  it.each(["-1", "0.5", "1e3", "１２", "9007199254740992", "9007199254740993", "9223372036854775808"])("names invalid convergence input before submitting: %s", async (value) => {
+  it.each(["-1", "0.5", "1e3", "１２", "9007199254740992", "9007199254740993", "9223372036854775808"])("preserves convergence text and displays the owner refusal: %s", async (value) => {
     const calls = defaults();
     show();
     await screen.findByText("Saved EXAMPLE design 1 for source 1");
+    calls.save.mockRejectedValueOnce(new ApiError("Convergence budget was not admitted", 400));
     fireEvent.change(screen.getByLabelText("Convergence budget (ms)"), { target: { value } });
     fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/Convergence budget/);
-    expect(calls.save).not.toHaveBeenCalled();
+    expect(calls.save).toHaveBeenCalledOnce();
+    expect(calls.save.mock.calls[0][1].requirements.convergence_budget_ms).toBe(value);
   });
 
   it("preserves the maximum supported whole-millisecond text and exposes native keyboard form semantics", async () => {
@@ -353,4 +358,44 @@ describe("Saved plan field workflow", () => {
     await waitFor(() => expect(calls.save).toHaveBeenCalled());
     expect(calls.save.mock.calls[0][1].requirements.convergence_budget_ms).toBe("9007199254740991");
   });
+  it("renders the zero-count engine NRFU note without a client-authored empty verdict", async () => {
+    const plan = record();
+    plan.projection.sections.design_nrfu = { n_items: 0, items: [],
+      note: "Design-driven NRFU/ATP checklist: 0 acceptance-test item(s) — EXAMPLE owner note." };
+    defaults(plan); show();
+    expect(await screen.findByText(/0 acceptance-test item/)).toBeInTheDocument();
+    expect(document.querySelectorAll(".saved-plan-checklist li")).toHaveLength(0);
+    expect(screen.queryByText("No NRFU item rows were supplied for this revision.")).not.toBeInTheDocument();
+  });
+
+  it("renders unknown owner basis verbatim while obeying its unavailable support flag", async () => {
+    const calls = defaults();
+    const meta = catalogue();
+    meta.deliverables.push({ key: "future", label: "EXAMPLE future document", ext: "docx", available: true,
+      saved_plan_basis: "EXAMPLE_OWNER_BASIS", saved_plan_supported: false });
+    calls.meta.mockResolvedValueOnce(meta);
+    show();
+    await screen.findByText("Saved EXAMPLE design 1 for source 1");
+    fireEvent.click(screen.getByText("Other document drafts"));
+    expect(screen.getByRole("button", { name: "EXAMPLE future document" })).toBeDisabled();
+    expect(screen.getByText("EXAMPLE_OWNER_BASIS")).toBeInTheDocument();
+    expect(calls.download).not.toHaveBeenCalled();
+  });
+
+  it("renders engine-grouped VLAN form rows and retains duplicate zone rows for the owner", async () => {
+    const plan = record();
+    plan.vlan_form_rows = [{ zone: "EXAMPLE zone", vids: "10, 20" }];
+    const calls = defaults(plan); show();
+    await screen.findByText("Saved EXAMPLE design 1 for source 1");
+    fireEvent.click(screen.getByText("Advanced: VLAN zones"));
+    const input = screen.getByLabelText("VLAN zones — one assignment per line");
+    expect(input).toHaveValue("10, 20=EXAMPLE zone");
+    fireEvent.change(input, { target: { value: " 10 = EXAMPLE zone \n20=EXAMPLE zone" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save new revision" }));
+    await waitFor(() => expect(calls.save).toHaveBeenCalled());
+    expect(calls.save.mock.calls[0][1].requirements.vlan_zones).toEqual({ raw_rows: [
+      { zone: "EXAMPLE zone", vids: "10" }, { zone: "EXAMPLE zone", vids: "20" },
+    ] });
+  });
+
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
-import { api, ApiError, type SavedPlanAssessment, type SavedPlanRecord, type SavedPlanState } from "./api";
+import { api, ApiError, type SavedPlanAssessment, type SavedPlanRecord, type SavedPlanState } from "./savedPlanApi";
 
 const docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -13,7 +13,7 @@ function assessment(): SavedPlanAssessment {
 }
 function record(): SavedPlanRecord {
   return {
-    schema: "atlas.saved_plan/1", revision: 1, label: "EXAMPLE plan", created_at: "2026-10-15T12:30:00.123456+00:00",
+    vlan_form_rows: [], schema: "atlas.saved_plan/1", revision: 1, label: "EXAMPLE plan", created_at: "2026-10-15T12:30:00.123456+00:00",
     sha256: "sha256:" + "b".repeat(64), status: "UNAPPROVED_DRAFT", selection_id: 11, assessment: assessment(),
     projection: {
       schema: "atlas.saved_plan_projection/2", requirements: { convergence_budget_ms: 0 },
@@ -45,7 +45,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 function documentHeaders(plan = record(), type = docx): Record<string, string> {
   return { "content-type": type, "X-Atlas-Assessment-SHA256": plan.assessment.sha256,
     "X-Atlas-Plan-Revision": String(plan.revision), "X-Atlas-Plan-SHA256": plan.sha256,
-    "X-Atlas-Plan-Selection": String(plan.selection_id), "X-Atlas-Plan-Status": plan.status };
+    "X-Atlas-Plan-Selection": String(plan.selection_id), "X-Atlas-Plan-Status": plan.status, "X-Atlas-Plan-Basis": "selected-requirements" };
 }
 function documentResponse(body: BodyInit | null = zip, headers = documentHeaders()): Response {
   return new Response(body, { headers });
@@ -54,6 +54,9 @@ function pinnedUrl(kind?: string): string {
   return `/api/snapshots/7/plans/1${kind ? `/deliverable/${kind}` : ""}?plan_sha256=sha256%3A${"b".repeat(64)}&selection_id=11`;
 }
 
+function downloadDocument(sid: number, plan: SavedPlanRecord, kind: string, extension: "docx" | "pptx", signal?: AbortSignal) {
+  return api.savedPlanDocument(sid, plan, kind, extension, signal, "selected-requirements");
+}
 afterEach(() => vi.restoreAllMocks());
 
 describe("saved-plan JSON client", () => {
@@ -91,13 +94,14 @@ describe("saved-plan JSON client", () => {
   });
 
   it.each(["9007199254740992", "9223372036854775807", Number.MAX_SAFE_INTEGER + 1])(
-    "rejects convergence %s before it can commit an unreadable rounded plan", async (value) => {
-      const fetch = vi.spyOn(globalThis, "fetch");
+    "sends convergence %s unchanged and preserves the server refusal", async (value) => {
+      const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail: "Requirements were not admitted" }, 400));
       await expect(api.savePlan(7, { label: "EXAMPLE plan", requirements: { convergence_budget_ms: value },
         assessment: assessment(), expected_selection_id: 0 })).rejects.toMatchObject({
-        status: 400, message: expect.stringContaining("9007199254740991"),
+        status: 400, message: "Requirements were not admitted",
       });
-      expect(fetch).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).requirements.convergence_budget_ms).toBe(value);
     },
   );
 
@@ -132,7 +136,7 @@ describe("saved-plan JSON client", () => {
     expect(fetch).toHaveBeenCalledWith(pinnedUrl(), { cache: "no-store", signal });
   });
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, true, "7"])(
+  it.each([1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, true, "7"])(
     "rejects unsafe or coercible snapshot identity %s before fetch", async (sid) => {
       const fetch = vi.spyOn(globalThis, "fetch");
       await expect(api.savedPlans(sid as number)).rejects.toMatchObject({ name: "ApiError", status: 400 });
@@ -141,7 +145,7 @@ describe("saved-plan JSON client", () => {
   );
 
   it.each([
-    { revision: 0 }, { revision: 65 }, { revision: 1.5 }, { selection_id: 0 },
+    { revision: 1.5 },
     { selection_id: Number.MAX_SAFE_INTEGER + 1 }, { sha256: "sha256:" + "B".repeat(64) },
   ])("refuses an invalid pin before constructing a URL: %o", (change) => {
     expect(() => api.savedPlanDeliverableUrl(7, { ...record(), ...change }, "mop")).toThrow(ApiError);
@@ -157,7 +161,7 @@ describe("saved-plan JSON client", () => {
     const pending = operation === "list" ? api.savedPlans(7)
       : operation === "save" ? api.savePlan(7, { label: plan.label, requirements: {}, assessment: assessment(), expected_selection_id: 11 })
       : operation === "select" ? api.selectSavedPlan(7, 1, { plan_sha256: plan.sha256, expected_selection_id: 11 })
-      : operation === "document" ? api.savedPlanDocument(7, plan, "mop", "docx")
+      : operation === "document" ? downloadDocument(7, plan, "mop", "docx")
       : api.savedPlan(7, 1, plan.sha256, 11);
     await expect(pending).rejects.toMatchObject({ name: "ApiError", status: 409, message: "Reload the selected plan", retryable: false });
     expect(fetch).toHaveBeenCalledOnce();
@@ -165,8 +169,8 @@ describe("saved-plan JSON client", () => {
 
   it("rejects cross-snapshot and unsafe campaign bindings in wire metadata", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
-    for (const change of [{ snapshot_id: 8 }, { snapshot_id: true }, { campaign_id: 0 },
-      { campaign_id: Number.MAX_SAFE_INTEGER + 1 }, { bytes: "123" }, { source: "uploaded bytes" }]) {
+    for (const change of [{ snapshot_id: 8 }, { snapshot_id: true },
+      { campaign_id: Number.MAX_SAFE_INTEGER + 1 }, { bytes: "123" }]) {
       const wrong = { ...state(), assessment: { ...assessment(), ...change } };
       fetch.mockResolvedValueOnce(jsonResponse(wrong));
       await expect(api.savedPlans(7)).rejects.toMatchObject({ status: 502 });
@@ -183,13 +187,10 @@ describe("saved-plan JSON client", () => {
     }
   });
 
-  it("rejects inconsistent, missing and non-draft selection states", async () => {
+  it("rejects malformed selection primitives while leaving history policy to the server", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     const valid = state();
     for (const wrong of [
-      { ...valid, selected_revision: 2 }, { ...valid, selection_id: 0 },
-      { ...valid, revisions: [] }, { ...valid, revisions: [valid.revisions[0], valid.revisions[0]] },
-      { ...valid, revisions: [{ ...valid.revisions[0], status: "APPROVED" }] },
       { ...valid, selected_revision: "1" }, { ...valid, selection_id: Number.MAX_SAFE_INTEGER + 1 },
     ]) {
       fetch.mockResolvedValueOnce(jsonResponse(wrong));
@@ -200,20 +201,15 @@ describe("saved-plan JSON client", () => {
     await expect(api.savedPlans(7)).resolves.toEqual(empty);
   });
 
-  it("rejects a returned different pin, unsupported posture or malformed projection", async () => {
+  it("rejects a returned different pin or malformed rendered projection", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     const plan = record();
     for (const wrong of [
       { ...plan, selection_id: 12 }, { ...plan, revision: 2 }, { ...plan, sha256: "sha256:" + "c".repeat(64) },
-      { ...plan, status: "APPROVED" }, { ...plan, created_at: "not a date" },
       { ...plan, projection: { ...plan.projection, sections: {} } },
-      { ...plan, projection: { ...plan.projection, schema: "atlas.saved_plan_projection/1" } },
-      { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, schema: "atlas.saved_plan_derivation/1" } } },
-      { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, profile: "assessment" } } },
       ...["architecture_coverage", "coverage_matrix", "unknown_evidence", "schema_census", "fact_lineage", "executive_brief"].map((field) => ({
         ...plan, projection: { ...plan.projection, sections: { ...plan.projection.sections, [field]: {} } },
       })),
-      { ...plan, projection: { ...plan.projection, derivation: { ...plan.projection.derivation, authority: "approved" } } },
     ]) {
       fetch.mockResolvedValueOnce(jsonResponse(wrong));
       await expect(api.savedPlan(7, 1, plan.sha256, 11)).rejects.toMatchObject({ status: 502 });
@@ -237,7 +233,7 @@ describe("saved-plan JSON client", () => {
     controller.abort();
     const fetch = vi.spyOn(globalThis, "fetch");
     await expect(api.savedPlans(7, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(downloadDocument(7, record(), "mop", "docx", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -247,7 +243,7 @@ describe("saved-plan document response boundary", () => {
     "returns a verified bounded Blob for %s with explicit %s extension", async (kind, ext, type) => {
       const signal = new AbortController().signal;
       const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(zip, documentHeaders(record(), type)));
-      const result = await api.savedPlanDocument(7, record(), kind, ext, signal);
+      const result = await downloadDocument(7, record(), kind, ext, signal);
       expect(result.extension).toBe(ext);
       expect(result.blob.size).toBe(zip.byteLength);
       expect(result.blob.type).toBe(type);
@@ -260,7 +256,7 @@ describe("saved-plan document response boundary", () => {
       controller.enqueue(zip.slice(0, 1)); controller.enqueue(zip.slice(1, 3)); controller.enqueue(zip.slice(3)); controller.close();
     } });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(stream));
-    const result = await api.savedPlanDocument(7, record(), "mop", "docx");
+    const result = await downloadDocument(7, record(), "mop", "docx");
     expect(result.blob.size).toBe(8);
   });
 
@@ -275,7 +271,7 @@ describe("saved-plan document response boundary", () => {
       controller.enqueue(foreign); controller.close();
     } }));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    const result = await api.savedPlanDocument(7, record(), "mop", "docx");
+    const result = await downloadDocument(7, record(), "mop", "docx");
     expect(result.blob.size).toBe(zip.byteLength);
     expect(result.blob.type).toBe(docx);
   });
@@ -290,7 +286,7 @@ describe("saved-plan document response boundary", () => {
       controller.enqueue(foreign as unknown as Uint8Array); controller.close();
     } }));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({
       status: 502, message: "The document stream is invalid",
     });
   });
@@ -304,18 +300,18 @@ describe("saved-plan document response boundary", () => {
       controller.enqueue(foreign);
     }, cancel }));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
     expect(cancel).toHaveBeenCalledOnce();
     expect(response.body?.locked).toBe(false);
   });
 
   it("refuses a partial HTTP response even when it starts with the expected ZIP signature", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(zip, { status: 206, headers: documentHeaders() }));
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
   });
 
   it.each([
-    "X-Atlas-Assessment-SHA256", "X-Atlas-Plan-Revision", "X-Atlas-Plan-SHA256", "X-Atlas-Plan-Selection", "X-Atlas-Plan-Status",
+    "X-Atlas-Assessment-SHA256", "X-Atlas-Plan-Revision", "X-Atlas-Plan-SHA256", "X-Atlas-Plan-Selection", "X-Atlas-Plan-Status", "X-Atlas-Plan-Basis",
   ])("rejects a missing or tampered %s before returning body bytes", async (name) => {
     for (const value of [null, "wrong"]) {
       const cancel = vi.fn();
@@ -324,7 +320,7 @@ describe("saved-plan document response boundary", () => {
       if (value === null) delete headers[name]; else headers[name] = value;
       const response = documentResponse(body, headers);
       vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response);
-      await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+      await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
       expect(cancel).toHaveBeenCalledOnce();
       expect(response.body?.locked).toBe(false);
     }
@@ -333,7 +329,7 @@ describe("saved-plan document response boundary", () => {
   it.each(["application/json", "text/html", pptx, "application/octet-stream"])(
     "refuses wrong MIME %s even with a ZIP prefix", async (type) => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(zip, documentHeaders(record(), type)));
-      await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+      await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
     },
   );
 
@@ -342,19 +338,19 @@ describe("saved-plan document response boundary", () => {
     if (contentType === null) delete headers["content-type"];
     else headers["content-type"] = contentType;
     vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(zip, headers));
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
   });
 
   it.each([new Uint8Array(), new Uint8Array([0x50, 0x4b]), new Uint8Array([0x50, 0x4b, 0x05, 0x06]), new TextEncoder().encode("<html>error</html>")])(
     "refuses empty, truncated or non-Office ZIP body %o", async (body) => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(body));
-      await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+      await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
     },
   );
 
   it("rejects cross-snapshot document input before fetching", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
-    await expect(api.savedPlanDocument(8, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+    await expect(downloadDocument(8, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -365,7 +361,7 @@ describe("saved-plan document response boundary", () => {
     });
     const read = vi.spyOn(response, "arrayBuffer");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
     expect(read).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
   });
@@ -380,7 +376,7 @@ describe("saved-plan document response boundary", () => {
     }));
     const blob = vi.spyOn(response, "blob"), arrayBuffer = vi.spyOn(response, "arrayBuffer");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 413 });
     expect(pulls).toBeLessThanOrEqual(6);
     expect(blob).not.toHaveBeenCalled();
     expect(arrayBuffer).not.toHaveBeenCalled();
@@ -390,7 +386,7 @@ describe("saved-plan document response boundary", () => {
 
   it("refuses a body shorter than the unencoded declared length", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(documentResponse(zip, { ...documentHeaders(), "content-length": "20" }));
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toMatchObject({ status: 502 });
   });
 
   it("cancels a pending stream read on abort and releases its reader", async () => {
@@ -400,7 +396,7 @@ describe("saved-plan document response boundary", () => {
     const response = documentResponse(new ReadableStream<Uint8Array>({ pull() { began(); }, cancel }));
     const controller = new AbortController();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    const pending = api.savedPlanDocument(7, record(), "mop", "docx", controller.signal);
+    const pending = downloadDocument(7, record(), "mop", "docx", controller.signal);
     await reading;
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
@@ -411,7 +407,33 @@ describe("saved-plan document response boundary", () => {
   it("preserves stream errors while cleaning up its reader", async () => {
     const response = documentResponse(new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error("synthetic transport failure")); } }));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
-    await expect(api.savedPlanDocument(7, record(), "mop", "docx")).rejects.toThrow("synthetic transport failure");
+    await expect(downloadDocument(7, record(), "mop", "docx")).rejects.toThrow("synthetic transport failure");
     expect(response.body?.locked).toBe(false);
   });
+});
+
+it("does not compare the normalized echoed label with browser-trimmed input", async () => {
+  const plan = { ...record(), label: "EXAMPLE server-normalized" };
+  const body = { label: "\u001cEXAMPLE\ufeff", requirements: {}, assessment: assessment(), expected_selection_id: 0 };
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(plan, 201));
+  await expect(api.savePlan(7, body)).resolves.toEqual(plan);
+});
+
+it.each([0, -1, 65])("sends representable identity %s to the unchanged server range policy", async (sid) => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail: "Server identity refusal" }, 422));
+  await expect(api.savedPlans(sid)).rejects.toMatchObject({ status: 422, message: "Server identity refusal" });
+  expect(fetch).toHaveBeenCalledOnce();
+});
+
+it("does not re-admit server business or posture metadata in the transport decoder", async () => {
+  const plan = { ...record(), status: "SERVER_POSTURE", created_at: "SERVER_DATE", projection: {
+    ...record().projection, schema: "SERVER_SCHEMA", derivation: { profile: "SERVER_PROFILE", authority: "SERVER_AUTHORITY" },
+  } };
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(plan));
+  await expect(api.savedPlan(7, 1, plan.sha256, 11)).resolves.toEqual(plan);
+});
+
+it("refuses a malformed runtime catalogue before the page receives it", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ requirements: {}, display_limits: {}, catalogue: null }));
+  await expect(api.meta()).rejects.toMatchObject({ status: 502 });
 });

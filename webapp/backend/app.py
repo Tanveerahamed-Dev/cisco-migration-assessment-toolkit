@@ -483,9 +483,16 @@ class SavedPlanMetaResponse(BaseModel):
     status: Literal["UNAPPROVED_DRAFT"]
 
 
+class SavedPlanVlanFormRow(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    zone: str
+    vids: str
+
+
 class SavedPlanPayloadResponse(SavedPlanMetaResponse):
     assessment: SavedPlanAssessmentResponse
     projection: SavedPlanProjectionResponse
+    vlan_form_rows: List[SavedPlanVlanFormRow]
 
 
 class SavedPlanResponse(SavedPlanPayloadResponse):
@@ -566,6 +573,8 @@ def _plan_payload(record):
     except ValidationError:
         raise PlanWireError from None
     payload = dict(record)
+    from cisco_toolkit.design_advisor import saved_plan_vlan_form_rows
+    payload["vlan_form_rows"] = saved_plan_vlan_form_rows(record["projection"]["requirements"])
     if "selection_id" in payload:
         del payload["selection_id"]
     return _PlanPrepared(SavedPlanPayloadResponse.model_validate(payload))
@@ -598,8 +607,10 @@ def _finish_saved_plan(prepared, record):
     return prepared.finish(record)
 
 
-def _plan_catalogue_row(row):
+def _plan_catalogue_row(row, availability=None):
     entry = dict(row)
+    if availability is not None:
+        entry["available"] = availability.get(entry["key"], False)
     basis = deliverables.saved_plan_basis(entry["key"])
     support = basis is not None
     entry["saved_plan_basis"] = basis
@@ -3254,12 +3265,13 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         from cisco_toolkit.design_advisor import requirements_contract
 
         catalogue, _release = _meta_build_facts()
+        availability = _deliverable_availability()
         response.headers["Cache-Control"] = "no-store"
         return {
             "requirements": requirements_contract(),
             "display_limits": {"revision_maximum": SAVED_PLAN_MAX_REVISIONS,
                                "label_maximum_code_points": _LEN_NAME},
-            "catalogue": [_plan_catalogue_row(row) for row in catalogue],
+            "catalogue": [_plan_catalogue_row(row, availability) for row in catalogue],
         }
 
     @app.get("/api/meta")
@@ -3918,7 +3930,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
     @app.get("/api/snapshots/{snapshot_id}/plans", response_model=SavedPlanListResponse)
-    def saved_plans(snapshot_id: PlanRowId, request: Request, response: Response) -> Dict[str, Any]:
+    def saved_plans(snapshot_id: PlanRowId, request: Request, response: Response) -> SavedPlanListResponse:
         """Saved revisions and the current append-only selection, not an implicit latest preview."""
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):
@@ -3932,7 +3944,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
 
     @app.post("/api/snapshots/{snapshot_id}/plans", status_code=201, response_model=SavedPlanResponse)
     def save_plan(snapshot_id: PlanRowId, body: SavedPlanIn, request: Request,
-                  response: Response) -> Dict[str, Any]:
+                  response: Response) -> Response:
         """Derive outside the Store lock, then publish a separate immutable plan with source/CAS checks."""
         response.headers["Cache-Control"] = "no-store"
         if not body.label.strip():
@@ -3970,7 +3982,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     @app.post("/api/snapshots/{snapshot_id}/plans/{revision}/select", response_model=SavedPlanResponse)
     def select_saved_plan(snapshot_id: PlanRowId, revision: PlanRowId,
                           body: SavedPlanSelectionIn, request: Request,
-                          response: Response) -> Dict[str, Any]:
+                          response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):
             bound = store.get_bound_snapshot(snapshot_id)
@@ -3998,7 +4010,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     @app.get("/api/snapshots/{snapshot_id}/plans/{revision}", response_model=SavedPlanResponse)
     def saved_plan(snapshot_id: PlanRowId, revision: PlanRowId, plan_sha256: PlanDigestQuery,
                    selection_id: PlanSelectionQuery, request: Request,
-                   response: Response) -> Dict[str, Any]:
+                   response: Response) -> Response:
         """Reopen the pinned saved bytes; never recompute under a newer planner."""
         response.headers["Cache-Control"] = "no-store"
         with _generation_slot(request.app.state.generation_semaphore):

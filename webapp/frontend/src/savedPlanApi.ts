@@ -83,7 +83,11 @@ function renderedRequirements(value: unknown): void {
   }
 }
 function checkedPlan(value: unknown, sid: number, pin?: SavedPlanPin, expected?: SavedPlanAssessment): SavedPlanRecord {
-  planAssert(closed(value, [...META_KEYS, "selection_id", "assessment", "projection"]));
+  planAssert(closed(value, [...META_KEYS, "selection_id", "assessment", "projection", "vlan_form_rows"]));
+  planArray(value.vlan_form_rows);
+  for (const row of value.vlan_form_rows) {
+    planAssert(closed(row, ["zone", "vids"])); planString(row.zone); planString(row.vids);
+  }
   metaFields(value); planInteger(value.selection_id);
   const assessment = checkedAssessment(value.assessment, sid);
   if (expected) planAssert(equalJson(assessment, expected), "The response does not match the captured assessment");

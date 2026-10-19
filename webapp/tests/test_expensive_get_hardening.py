@@ -635,6 +635,9 @@ def test_meta_does_not_reprobe_optional_libs_and_pyproject_on_every_request(clie
             r = client.get("/api/meta")
             assert r.status_code == 200, r.text[:200]
             bodies.append(r.json())
+            contract = client.get("/api/saved-plan-contract")
+            assert contract.status_code == 200
+            assert len(contract.json()["catalogue"]) == len(deliverables.SPECS)
         assert calls == {"catalogue": 1, "release": 1}, calls
         # the response is unchanged and still complete — caching must not hollow it out
         assert bodies[0] == bodies[-1]
@@ -645,7 +648,11 @@ def test_meta_does_not_reprobe_optional_libs_and_pyproject_on_every_request(clie
         # cache makes the probes run again, so `1` above is memoisation, not a dead monkeypatch.
         app_mod._meta_build_facts.cache_clear()
         assert client.get("/api/meta").status_code == 200
+        assert client.get("/api/saved-plan-contract").status_code == 200
         assert calls == {"catalogue": 2, "release": 2}, calls
+        body = client.get("/api/saved-plan-contract").json()
+        body["catalogue"][0]["label"] = "consumer-only mutation"
+        assert client.get("/api/saved-plan-contract").json()["catalogue"][0]["label"] != "consumer-only mutation"
     finally:
         app_mod._meta_build_facts.cache_clear()
 
@@ -668,7 +675,7 @@ def test_deliverable_and_report_routes_do_not_reprobe_optional_libs_per_request(
 
     def counted_availability():
         calls["availability"] += 1
-        return {}
+        return {key: False for key in deliv.SPECS}
 
     def counted_have_docx():
         calls["have_docx"] += 1
@@ -689,11 +696,34 @@ def test_deliverable_and_report_routes_do_not_reprobe_optional_libs_per_request(
     # would swallow the sibling suites' `monkeypatch.setattr(deliverables, "availability", ...)`.
     def counted_availability_again():
         calls["availability"] += 1
-        return {}
+        return {key: False for key in deliv.SPECS}
 
     monkeypatch.setattr(deliv, "availability", counted_availability_again)
     assert client.get(f"/api/snapshots/{sid}/deliverable/mop").status_code == 503
     assert calls["availability"] == 2, calls
+    app_mod._meta_build_facts.cache_clear()
+    try:
+        first = client.get("/api/saved-plan-contract")
+        assert first.status_code == 200
+        assert all(not row["available"] for row in first.json()["catalogue"])
+        warmed = dict(calls)
+        for _ in range(4):
+            assert client.get("/api/saved-plan-contract").json() == first.json()
+        assert calls == warmed
+
+        def changed_probe():
+            calls["availability"] += 1
+            return {key: True for key in deliv.SPECS}
+
+        monkeypatch.setattr(deliv, "availability", changed_probe)
+        updated = client.get("/api/saved-plan-contract")
+        assert updated.status_code == 200
+        assert all(row["available"] for row in updated.json()["catalogue"])
+        assert calls["availability"] == warmed["availability"] + 1
+        assert client.get("/api/saved-plan-contract").json() == updated.json()
+        assert calls["availability"] == warmed["availability"] + 1
+    finally:
+        app_mod._meta_build_facts.cache_clear()
 
 
 # ── defense 2: concurrency cap on the heavy generators ───────────────────────────

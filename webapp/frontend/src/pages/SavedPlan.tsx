@@ -24,10 +24,7 @@ function listText(value: unknown): string {
 
 function planDraft(plan: SavedPlanRecord): Draft {
   const r = plan.projection.requirements;
-  const zoneLines: string[] = [];
-  for (const [key, value] of Object.entries(r.vlan_zones ?? {})) {
-    zoneLines.push(`${key}=${value}`);
-  }
+  const zoneLines = plan.vlan_form_rows.map(({ zone, vids }) => `${vids}=${zone}`);
   return {
     label: plan.label, tier: r.availability_tier ?? "", apps: listText(r.critical_apps),
     convergence: r.convergence_budget_ms === undefined ? "" : String(r.convergence_budget_ms),
@@ -48,17 +45,10 @@ function formRequirements(draft: Draft): SavedPlanRequirements {
   if (draft.classification.trim()) requirements.data_classification = draft.classification;
   if (draft.address.trim()) requirements.address_space = draft.address;
   if (draft.zones.trim()) {
-    const zones: Record<string, string> = {};
-    const seen = new Set<string>();
-    for (const line of draft.zones.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const [rawVid, ...zoneParts] = line.split("=");
-      const vid = rawVid.trim(), zone = zoneParts.join("=").trim();
-      if (seen.has(vid)) throw new Error("Repeated VLAN input. Keep one zone assignment per raw key.");
-      seen.add(vid);
-      zones[vid] = zone;
-    }
-    requirements.vlan_zones = zones;
+    requirements.vlan_zones = { raw_rows: draft.zones.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+      const [vids = "", zone = ""] = line.split(/=(.*)/s);
+      return { zone: zone.trim(), vids: vids.trim() };
+    }) };
   }
   return requirements;
 }
@@ -297,7 +287,7 @@ function SavedPlanWorkspace({ snapshotId, activeSource, sourceKey }: {
       </button>
       {item && <p className="dim">{!item.available ? "Unavailable in this installation."
         : !supported ? "The server did not provide a supported saved-plan content basis or format."
-        : item.saved_plan_basis ?? "No saved-plan basis was supplied."}</p>}
+        : null}{item.saved_plan_basis && <span>{item.saved_plan_basis}</span>}</p>}
       {!item && !metaLoading && !metaError && <p className="dim">Not listed by this installation.</p>}
     </div>;
   }
@@ -334,7 +324,7 @@ function SavedPlanWorkspace({ snapshotId, activeSource, sourceKey }: {
               <select id={`${formId}-tier`} value={draft.tier} onChange={(event) => change("tier", event.target.value)}>
                 <option value="">Not specified</option>{(meta?.requirementsContract.availability_tiers ?? []).map((tier) => <option key={tier} value={tier}>{tier.charAt(0).toUpperCase() + tier.slice(1)}</option>)}</select></div>
             <label htmlFor={`${formId}-apps`}>Critical applications<input id={`${formId}-apps`} value={draft.apps} placeholder="voice, video, ERP" onChange={(event) => change("apps", event.target.value)} /></label>
-            <div className="saved-plan-field"><label htmlFor={`${formId}-convergence`}>Convergence budget (ms)<input id={`${formId}-convergence`} inputMode="numeric" value={draft.convergence} placeholder="0 is retained" aria-describedby={`${formId}-convergence-limit`} onChange={(event) => change("convergence", event.target.value)} /></label><p className="dim saved-plan-help" id={`${formId}-convergence-limit`}>Whole milliseconds, from 0 to {meta?.requirementsContract.convergence_budget_ms.maximum}.</p></div>
+            <div className="saved-plan-field"><label htmlFor={`${formId}-convergence`}>Convergence budget (ms)<input id={`${formId}-convergence`} inputMode="numeric" value={draft.convergence} placeholder="0 is retained" aria-describedby={`${formId}-convergence-limit`} onChange={(event) => change("convergence", event.target.value)} /></label><p className="dim saved-plan-help" id={`${formId}-convergence-limit`}>Whole milliseconds, from {meta?.requirementsContract.convergence_budget_ms.minimum} to {meta?.requirementsContract.convergence_budget_ms.maximum}.</p></div>
             <label htmlFor={`${formId}-growth`}>Growth horizon<input id={`${formId}-growth`} value={draft.growth} onChange={(event) => change("growth", event.target.value)} /></label>
             <div className="saved-plan-select-field"><label htmlFor={`${formId}-fabric`}>Fabric operating model</label>
               <select id={`${formId}-fabric`} value={draft.fabric} onChange={(event) => change("fabric", event.target.value)}>
@@ -344,7 +334,7 @@ function SavedPlanWorkspace({ snapshotId, activeSource, sourceKey }: {
             <label htmlFor={`${formId}-address`}>Target IPv4 address space<input id={`${formId}-address`} value={draft.address} placeholder="10.0.0.0/16" onChange={(event) => change("address", event.target.value)} /></label>
             <details className="saved-plan-advanced"><summary>Advanced: VLAN zones</summary>
               <label htmlFor={`${formId}-zones`}>VLAN zones — one assignment per line<textarea id={`${formId}-zones`} rows={4} value={draft.zones} placeholder={"10=Users\n20=Servers"} onChange={(event) => change("zones", event.target.value)} /></label>
-              <p className="dim">Use VLAN=Zone, such as 10=Users. Repeated VLANs are rejected; a zone is never inferred from a VLAN number.</p>
+              <p className="dim">Use VLANs=Zone, such as 10, 20=Users. Put each zone on one line. The server checks the assignments.</p>
             </details>
           </fieldset>
           {formError && <p role="alert" className="saved-plan-alert">{formError}</p>}
@@ -390,7 +380,7 @@ function SavedPlanWorkspace({ snapshotId, activeSource, sourceKey }: {
       <dl className="saved-plan-summary"><div><dt>Recommended decisions</dt><dd>{blueprint.summary.n_recommended}</dd></div><div><dt>Decisions needing requirements</dt><dd>{blueprint.summary.n_needs_requirement}</dd></div><div><dt>Critical recommendations</dt><dd>{blueprint.summary.n_critical}</dd></div></dl>
       <details><summary>Saved design decisions</summary><ul className="saved-plan-decision-list">{blueprint.decisions.map((decision) => <li key={decision.id}><h4>{decision.title}</h4><p>{decision.priority} · {decision.status}</p><p>{decision.recommended_action || decision.driver}</p></li>)}</ul></details>
       <h3>NRFU checklist</h3><p className="dim">Planned verification checks, not passed test results. {nrfu.note}</p>
-      {nrfu.n_items === 0 ? <p>No NRFU item rows were supplied for this revision.</p> : <ol className="saved-plan-checklist">{nrfu.items.map((item) => <li key={item.decision_id}><h4>{item.title}</h4><p>{item.phase}</p><p>{item.description}</p><p><strong>Pass criteria:</strong> {item.pass_criteria}</p></li>)}</ol>}
+      <ol className="saved-plan-checklist">{nrfu.items.map((item) => <li key={item.decision_id}><h4>{item.title}</h4><p>{item.phase}</p><p>{item.description}</p><p><strong>Pass criteria:</strong> {item.pass_criteria}</p></li>)}</ol>
     </section>}
     {selected && !previewAvailable && <p role="alert" className="saved-plan-alert">The saved design or NRFU projection could not be read. Downloads are disabled; reload saved plans.</p>}
   </main>;

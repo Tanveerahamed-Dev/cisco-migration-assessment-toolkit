@@ -757,3 +757,113 @@ def test_additive_plan_schema_preserves_prior_store_rows_and_objects(tmp_path):
         assert _counts(reopened) == (0, 0, 0)
     finally:
         reopened.close()
+
+
+def test_publication_finalizer_reentry_refuses_promptly_and_rolls_back(seeded):
+    store, _cid, sid, _raw, binding = seeded
+    errors = []
+
+    def operation():
+        try:
+            store.save_plan_revision(sid, "EXAMPLE", _projection(), binding, 0,
+                admit=_storage_admit, finalize=lambda _prepared, _record: store.list_saved_plans(sid))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=operation, daemon=True)
+    worker.start()
+    worker.join(timeout=2)
+    assert not worker.is_alive(), "same-thread Store reentry deadlocked"
+    assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
+    assert "reentry" in str(errors[0])
+    assert _counts(store) == (0, 0, 0)
+    assert store.list_saved_plans(sid)["selection_id"] == 0
+    assert not store._lock.locked()
+    assert _save(store, sid, binding)["revision"] == 1
+
+
+def test_lock_wrapper_preserves_native_protocol_nonblocking_and_foreign_release():
+    lock = storage._StoreLock()
+    assert not lock.locked()
+    with lock as acquired:
+        assert acquired is True and lock.locked()
+        assert lock.acquire(False) is False
+        assert lock.during_finalizer(lambda: lock.acquire(False)) is False
+        with pytest.raises(ValueError):
+            lock.acquire(False, 1)
+        with pytest.raises(TypeError):
+            lock.acquire(None)
+    assert not lock.locked()
+    assert lock.acquire(True, 0.1) is True
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(lock.release).result(timeout=2) is None
+    assert not lock.locked()
+    with pytest.raises(RuntimeError):
+        lock.release()
+
+
+@pytest.mark.parametrize("same_snapshot", [False, True])
+def test_detached_admission_preserves_cross_store_identity_and_same_source_cas(seeded, same_snapshot):
+    store, _cid, sid, _raw, binding = seeded
+    other = Store(store.db_path)
+    if same_snapshot:
+        other_sid, other_binding = sid, binding
+    else:
+        _cid2, other_sid, _raw2, other_binding = _seed(other, name="EXAMPLE second")
+    barrier = threading.Barrier(2)
+
+    def admission(candidate):
+        barrier.wait(timeout=5)
+        return candidate
+
+    def save(target, target_sid, target_binding):
+        try:
+            return target.save_plan_revision(target_sid, "EXAMPLE", _projection(), target_binding, 0,
+                admit=admission, finalize=_storage_finish)
+        except SavedPlanConflictError as error:
+            return error
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = [pool.submit(save, store, sid, binding), pool.submit(save, other, other_sid, other_binding)]
+            results = [future.result(timeout=10) for future in pending]
+        if same_snapshot:
+            assert sum(isinstance(result, SavedPlanConflictError) for result in results) == 1
+            assert _counts(store) == (1, 1, 1)
+        else:
+            assert all(isinstance(result, dict) for result in results)
+            assert len({result["selection_id"] for result in results}) == 2
+            assert _counts(store) == (2, 2, 2)
+    finally:
+        other.close()
+
+
+def test_save_selection_cap_is_checked_before_candidate_admission(seeded):
+    store, _cid, sid, _raw, binding = seeded
+    plan = _save(store, sid, binding)
+    for _ in range(1, 256):
+        plan = store.select_plan_revision(sid, 1, plan["sha256"], plan["selection_id"],
+            expected_binding=binding, admit=_storage_admit, finalize=_storage_finish)
+
+    def forbidden(_candidate):
+        pytest.fail("selection-capped save entered candidate admission")
+
+    with pytest.raises(SavedPlanLimitError, match="selection limit"):
+        store.save_plan_revision(sid, "EXAMPLE 257", _projection(), binding, plan["selection_id"],
+                                 admit=forbidden, finalize=_storage_finish)
+    assert _counts(store) == (1, 1, 256)
+
+
+def test_cheap_finalizer_failure_rolls_back_all_identity_and_history_state(seeded):
+    store, _cid, sid, _raw, binding = seeded
+    before_sequences = list(store._conn.execute("SELECT name,seq FROM sqlite_sequence ORDER BY name"))
+
+    def broken(_prepared, _record):
+        raise RuntimeError("EXAMPLE finalizer failure")
+
+    with pytest.raises(RuntimeError, match="finalizer"):
+        store.save_plan_revision(sid, "EXAMPLE", _projection(), binding, 0,
+                                 admit=_storage_admit, finalize=broken)
+    assert _counts(store) == (0, 0, 0)
+    assert list(store._conn.execute("SELECT name,seq FROM sqlite_sequence ORDER BY name")) == before_sequences
+    assert store.list_saved_plans(sid)["selection_id"] == 0

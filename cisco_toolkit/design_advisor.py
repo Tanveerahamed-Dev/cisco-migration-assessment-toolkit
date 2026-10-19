@@ -4205,7 +4205,7 @@ def requirements_contract():
 
     The legacy register loaders retain their existing fail-soft treatment of arbitrary tier
     text and numeric VLAN IDs. Saved-plan validators consume this owner's explicit domain;
-    the hosted OpenAPI generator carries the same metadata to the browser.
+    the runtime endpoint carries domain metadata; generated components carry structure only.
     """
     return {
         "schema": "atlas.requirements-contract/1",
@@ -4271,12 +4271,56 @@ def load_requirements(path):
     return reg
 
 
+def _saved_plan_vlan_id(value):
+    """One strict decimal/range owner for legacy maps and raw form rows."""
+    if type(value) is str and re.fullmatch(rf"[0-9]{{1,{len(str(REQUIREMENTS_VLAN_MAX))}}}", value.strip()):
+        value = int(value.strip())
+    if type(value) is not int or not REQUIREMENTS_VLAN_MIN <= value <= REQUIREMENTS_VLAN_MAX:
+        raise ValueError("Saved plan VLAN identifier is invalid")
+    return value
+
+
+def _saved_plan_form_zones(value):
+    """Admit lossless raw form rows without broadening legacy list admission."""
+    if type(value) is not dict or "raw_rows" not in value:
+        return value
+    if set(value) != {"raw_rows"} or type(value["raw_rows"]) is not list or not value["raw_rows"]:
+        raise ValueError("Saved plan VLAN rows are invalid")
+    zones, vids_seen, zones_seen = {}, set(), set()
+    for row in value["raw_rows"]:
+        if (type(row) is not dict or set(row) != {"zone", "vids"}
+                or type(row["zone"]) is not str or type(row["vids"]) is not str):
+            raise ValueError("Saved plan VLAN rows are invalid")
+        zone = row["zone"].strip()
+        if not zone or zone in zones_seen:
+            raise ValueError("Saved plan VLAN rows are invalid")
+        zones_seen.add(zone)
+        for text in row["vids"].split(","):
+            vid = _saved_plan_vlan_id(text)
+            if vid in vids_seen:
+                raise ValueError("Saved plan VLAN rows are invalid")
+            vids_seen.add(vid)
+            zones[str(vid)] = zone
+    return zones
+
+
+def saved_plan_vlan_form_rows(requirements):
+    """Presentation of admitted canonical values; never change persisted requirements."""
+    grouped = {}
+    for vid, zone in requirements.get("vlan_zones", {}).items():
+        grouped.setdefault(zone, []).append(str(vid))
+    return [{"zone": zone, "vids": ", ".join(vids)} for zone, vids in grouped.items()]
+
+
 def _saved_plan_register(requirements):
     """Strict saved-plan admission; default interview coercion is unchanged."""
     if type(requirements) is not dict:
         raise ValueError("Saved plan requirements must be an object")
     if any(type(key) is not str or key not in REQUIREMENTS_KEYS for key in requirements):
         raise ValueError("Saved plan requirements contain an unsupported field")
+    requirements = dict(requirements)
+    if "vlan_zones" in requirements:
+        requirements["vlan_zones"] = _saved_plan_form_zones(requirements["vlan_zones"])
     for key, value in requirements.items():
         if value is None or value == "":
             continue
@@ -4305,11 +4349,8 @@ def _saved_plan_register(requirements):
                         raise ValueError("Saved plan VLAN zones have an unsupported shape")
                     vids = [zone_key]
                 for vid in vids:
-                    if (type(vid) is str
-                            and re.fullmatch(rf"[0-9]{{1,{len(str(REQUIREMENTS_VLAN_MAX))}}}", vid.strip())):
-                        vid = int(vid.strip())
-                    if (type(vid) is not int
-                            or not REQUIREMENTS_VLAN_MIN <= vid <= REQUIREMENTS_VLAN_MAX or vid in seen):
+                    vid = _saved_plan_vlan_id(vid)
+                    if vid in seen:
                         raise ValueError("Saved plan VLAN zones contain an invalid or duplicate VLAN")
                     seen.add(vid)
         elif type(value) is not str:
@@ -4356,6 +4397,12 @@ def requirements_structure(*, canonical=False):
                 value = {"anyOf": [value, {"type": "array", "items": {
                     "anyOf": [{"type": "integer"}, {"type": "string"}]}}]}
             shape = {"type": "object", "additionalProperties": value}
+            if not canonical:
+                shape = {"anyOf": [shape, {"type": "object", "required": ["raw_rows"],
+                    "additionalProperties": False, "properties": {"raw_rows": {
+                        "type": "array", "items": {"type": "object", "required": ["zone", "vids"],
+                            "additionalProperties": False, "properties": {
+                                "zone": {"type": "string"}, "vids": {"type": "string"}}}}}}]}
         else:
             shape = {"type": "string"}
         properties[key] = shape
