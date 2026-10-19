@@ -1376,16 +1376,18 @@ DOWNLOAD_NAME_PASSTHROUGH: Mapping[tuple[str, str], str] = {
 # successful returns/caller headers; _send_file's sanitized stem/header; SPECS and docmeta.
 # Any source change removes this proof and leaves the implicit obligation for re-reconciliation.
 # This evidence table never filters discovery or exempts an unknown name from either gate.
+# PR-2: the evidence type/panel changes these two complete source identities only.
+# All three caller/factory expressions and the other six route/catalog/header owners are unchanged.
 ENDPOINT_DOWNLOAD_SOURCE_BLOBS = {
-    "webapp/frontend/src/api.ts": "4f9c2f9abc4975744f028dd1854f70f22ba578a0",
+    "webapp/frontend/src/api.ts": "db43befd5437295c9de11f93e9649b153e670977",
     "webapp/frontend/src/components/ui.tsx": "5cdc83e9f423cce091d4f2124e54c7743a860e7d",
-    "webapp/frontend/src/components/CutoverPlanner.tsx": "b16306b6b6d1092636f6a02bfcb05fd064f9420f",
+    "webapp/frontend/src/components/CutoverPlanner.tsx": "9f4d3f8a2c0c553a10d873538a89826e51cc2aa4",
     "webapp/frontend/src/pages/Execution.tsx": "134e0ad077373d5d235770974faa075850063531",
     "webapp/frontend/src/pages/Snapshot.tsx": "c0346779e2bb683eae1b89dcd92bb74fc808dcf6",
     # RC8 adds separately pinned saved-plan routes/provenance. Review of the complete original
     # caller/route/catalogue/_send_file closure retains every original response-name owner.
     "webapp/backend/app.py": "6ee882af65599d7209be6b4a64a07dd73757515a",
-    "webapp/backend/deliverables.py": "2934411b5768c67c2a78a35176d7f1c638d1b9fb",
+    "webapp/backend/deliverables.py": "73a8469a4b22e6ef0111e21ea9c7923b830bed52",
     "cisco_toolkit/docmeta.py": "f4cb1bb064d04c8a8044bbbc7f600b64a27a94a6",
 }
 ENDPOINT_DOWNLOAD_BINDINGS = {

@@ -1,0 +1,619 @@
+{
+  "schema": "rc8-p1-h-pr2-census-retirement/1",
+  "base_commit": "bc54fa80721adf00f0e4c9f309b7264739ffc6fb",
+  "source_head": "897b2d4a1035f82987ee2a9ab4c485d8bd868f58",
+  "tested_merge": "b8bb9005554b3ff59f407fbbd25e94b3ec6c9f37",
+  "source_tree": "4b3501885591253899cec7b2a9da0a61eadb95b7",
+  "run_id": 39171530046,
+  "job_id": 117805473118,
+  "python": "3.11.17",
+  "platform": "linux",
+  "sites_sha256": "74baca876c01142eb78a081f95ce88ec6bb3cc2f0882038bd326991d8d1e3d17",
+  "detectors": {
+    "tests/interface_computation_guard.py": "0f80a96dd9b014d3ba0c0bffd19f709675b3c3d0acee19e4017bcd2dd9274b51",
+    "tests/interface_computation_lex.py": "9bb4ac362db65f5da10f37a3c9c26766afe3f9956e4e46104fae2feaa6f4658c",
+    "tests/interface_computation_sources.py": "6b29467c0b11ea6e64282e3701031b250f3b332c130fe28aac0e646b28992741",
+    ".github/scripts/interface_computation_ast.mjs": "f230971bba5c3d6802760164e642d345adbb1c2d57dc8422b40cb0290a2fb6a3"
+  },
+  "base_sites": 36784,
+  "retained_sites": 36732,
+  "additions": [],
+  "removed": [
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 22,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 23,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "aggregate",
+      "fingerprint": "0c67b71c5209ec7a2032b26fe27f4b5063527333f8b5b813704b5e1d88dfabae",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "aggregate",
+      "fingerprint": "141a6cbc252ab35c4ed8fe477e395cc2929f80f84c542acf4a7250d0e93118c7",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "collection-update",
+      "fingerprint": "0d99758a9906977413f4e843c64bbe36cef72c323007613855bd6432201cbd5f",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "collection-update",
+      "fingerprint": "504d7f698e86173e2a104df6c94bf79d94507d22a452ae484494cc308f9422c5",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "collection-update",
+      "fingerprint": "712bac97ffeeb9886f03b334e32eb1d458f142fedf57186a7955efe74d20dddb",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "collection-update",
+      "fingerprint": "b5de466be03ea8f51255fd062521fb79f94cf8401b17c8a6b609f37dbff62c6c",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "collection-update",
+      "fingerprint": "c4a0a52318e2fa02366c8655e66523125cc1e2887b2bca2987530390f2456ea8",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "counter-update",
+      "fingerprint": "6f3d596035bb310cb58d8c592ae71a723bbc1a4a280eb9eceb56726f95f9d14a",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "counter-update",
+      "fingerprint": "73b47b7304960a8cf134f0a8a2330dde49157f1caa06d00a8d0ae5ac3ed67dfb",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "counter-update",
+      "fingerprint": "b24367cd12ff32b0be269856b828a7e4879862899c1cd98208da0bfb30f4011c",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "counter-update",
+      "fingerprint": "bafbf7b89e902c982339d4a6c9a0341c3428f1b1d44b192adb4cbaee58a72998",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "fact-arithmetic",
+      "fingerprint": "a5c63e64af9c677d4b91f5f863c6e9181f5a4e14209d9c8ed1dfccdf249da4f6",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "fact-threshold",
+      "fingerprint": "561bb1b558c93490c8c2e7c748060930bc544fc07fd4fed322473be6b783a19e",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "fact-threshold",
+      "fingerprint": "6ca12b2b4788f9235eb4f704db873e5508fc1a3bf945079bcd3bec6a9892bc88",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "fact-threshold",
+      "fingerprint": "b71984ecb645fa9307f51a0c00b8e5eb1d0b7b45c2dc3f24cdf1ed4fc825837e",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_join_group_records",
+      "rule": "ratio-arithmetic",
+      "fingerprint": "4f3b8a14e8e59c97fdcbb0d133d64f1bf4251886b9428fc07f92551927d09a7e",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_worst_readiness",
+      "rule": "analysis-symbol",
+      "fingerprint": "512f40c4b236b8e4324389eb88b9c4d42f091485c1c6b8917097eac4729da44d",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_worst_readiness",
+      "rule": "fact-threshold",
+      "fingerprint": "461572750cfe66c1eadb0bafa7315c20ef9545236afddc2547ff036296794cc0",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_worst_readiness",
+      "rule": "verdict-symbol",
+      "fingerprint": "512f40c4b236b8e4324389eb88b9c4d42f091485c1c6b8917097eac4729da44d",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_write_bluf",
+      "rule": "fact-decision",
+      "fingerprint": "33f560c1f11dd6a16a1ab6b890652f5fbb0d7b486c800e3df568d24dc5cbf8ac",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_write_bluf",
+      "rule": "verdict-symbol",
+      "fingerprint": "9c1a9ae5d1bed5cb34afeec896c9f2164ab8af2b1f06fdbd18308273ba5c1f80",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_write_bluf",
+      "rule": "verdict-symbol",
+      "fingerprint": "9c1a9ae5d1bed5cb34afeec896c9f2164ab8af2b1f06fdbd18308273ba5c1f80",
+      "occurrence": 3,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "2168484ed6197ad576cc1c1e00468514e5dcf787c8061edc8a05ec99657b71f5",
+      "occurrence": 12,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 14,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 15,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 16,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 3,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 4,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 5,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 6,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 7,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "111593c18b6f9c1133eb7388dc4a673f1b1f9c19773cc3fb5e850669783fff74",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "174c9eb71df7f1db72fcbd634d3196163ed43a3da1622c4b70b4b92b57e156e0",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "5a45c53dfb71854825ea20c1849a5469e394ab06678f53dde1ecd78773b30837",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "9e641a2705d697e4b8cd39deacbb43aefa976f7061b35deaee36c382ac362bbc",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "e88527bff7965a4113ce1eaf5920b70c998c954b689da1b1a674786a9889fe60",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "fact-threshold",
+      "fingerprint": "febd6a71b82512472796b744c6177900e42bc92a858acfa1dbab62d9758f712f",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "_gate",
+      "rule": "verdict-symbol",
+      "fingerprint": "7e18bced19a7ba47655f414f994b646d2d91cfd766cff363d187cc3a6f07e1e2",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "007e36dc1e35853a0b6087296f1a6fdc7be4a1f572201c2b797094af8a2fb509",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "7da875fd03bf87fda443588e33c28f482d34e9622d99570a794aa2cc02e8923c",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "e2270292a88c361f4e2a8361583a2ec85cad5d945715f0c6c3d6f024d02d7332",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "ef66e820079e66de57dcb7bee9d996e9963df1ac2513e7e410b622f56cef4fc5",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "fact-decision",
+      "fingerprint": "7417ac327b85297767602a59f86b021d628cf2bd595d644febbdd0f3e6945ae6",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "fact-threshold",
+      "fingerprint": "3c79a56609531e719b81601db9dfac44be7b010d0a09688bd06db9816a0dd107",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "verdict-symbol",
+      "fingerprint": "9af0e7cff327742416148d13c253ba5e4055ce747b1345495cb41eeb4c43e83c",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "verdict-symbol",
+      "fingerprint": "9af0e7cff327742416148d13c253ba5e4055ce747b1345495cb41eeb4c43e83c",
+      "occurrence": 3,
+      "disposition": "legacy-site-review-required"
+    }
+  ],
+  "remaining_stale_removed_from_full_proposal": [
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 22,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 23,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "cisco_toolkit/mop.py",
+      "symbol": "_write_bluf",
+      "rule": "fact-decision",
+      "fingerprint": "33f560c1f11dd6a16a1ab6b890652f5fbb0d7b486c800e3df568d24dc5cbf8ac",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "2168484ed6197ad576cc1c1e00468514e5dcf787c8061edc8a05ec99657b71f5",
+      "occurrence": 12,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 14,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 15,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-count",
+      "fingerprint": "73c8364d44f0a0c803a98720c35b4f3d21e8febdca20d1da2428e30f77d48904",
+      "occurrence": 16,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 3,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 4,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 5,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 6,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "<forbidden-pattern>",
+      "rule": "raw-threshold",
+      "fingerprint": "996583833f806790740e05844cacad49f3a4b35d88941f23b28422ee1d567aa7",
+      "occurrence": 7,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "007e36dc1e35853a0b6087296f1a6fdc7be4a1f572201c2b797094af8a2fb509",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "7da875fd03bf87fda443588e33c28f482d34e9622d99570a794aa2cc02e8923c",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "e2270292a88c361f4e2a8361583a2ec85cad5d945715f0c6c3d6f024d02d7332",
+      "occurrence": 2,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "aggregate",
+      "fingerprint": "ef66e820079e66de57dcb7bee9d996e9963df1ac2513e7e410b622f56cef4fc5",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "fact-decision",
+      "fingerprint": "7417ac327b85297767602a59f86b021d628cf2bd595d644febbdd0f3e6945ae6",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    },
+    {
+      "path": "webapp/backend/cutover.py",
+      "symbol": "build_plan",
+      "rule": "fact-threshold",
+      "fingerprint": "3c79a56609531e719b81601db9dfac44be7b010d0a09688bd06db9816a0dd107",
+      "occurrence": 1,
+      "disposition": "legacy-site-review-required"
+    }
+  ],
+  "boundary_preserved": true,
+  "status": "SOURCE_ONLY_HOSTED_OBSERVATION; FINAL_HEAD_GUARD_REQUIRED"
+}
