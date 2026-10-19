@@ -1085,11 +1085,37 @@ export interface ValidationCheck {
   baseline_blocker?: boolean;
 }
 
+export interface WaveCutoverEvidence {
+  schema: "wave_cutover_gate/1";
+  verdict: "GO" | "CONDITIONAL GO" | "NO-GO" | "NOT ASSESSED";
+  scope: { groups: string[]; switches: string[] };
+  counts: {
+    n_fail: number;
+    n_warn: number;
+    n_critical_crosslayer: number;
+    n_high_remediation: number;
+    n_high_punchlist: number;
+    n_blind: number;
+  };
+  reasons: string[];
+  coverage: { complete: boolean; gaps: string[] };
+  current_baseline: {
+    schema: "current_baseline_gate/1";
+    verdict: CurrentBaselineGate["verdict"];
+    assessed: boolean;
+    integrity: { valid: boolean; failures: string[] };
+    n_items: number;
+    n_blockers: number;
+  };
+  limitations: string[];
+}
+
 export interface CutoverWave {
   group: string;
   order: number;
   readiness: string;
   gate: string;
+  gate_evidence?: WaveCutoverEvidence;
   strategy: string;
   n_switches: number;
   switches: string[];

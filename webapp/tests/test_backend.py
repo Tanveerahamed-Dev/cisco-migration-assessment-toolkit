@@ -584,7 +584,8 @@ def test_cutover_blind_devices_block_go_and_are_disclosed():
         "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
                              "hard_cutover": [], "hard_cutover_endpoints": 0}],
         "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
-                                 "n_fail": 0, "n_warn": 0, "checks": []}],
+                                 "n_fail": 0, "n_warn": 0, "checks": [{"check": "Baseline", "status": "pass", "note": "Observed"}]}],
+        "cross_layer": [], "punchlist": [], "remediation_plan": {"items": [], "by_device": {}},
         "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
         "validation_plan": {
             "items": [clear_validation], "by_wave": {"G1": [clear_validation]},

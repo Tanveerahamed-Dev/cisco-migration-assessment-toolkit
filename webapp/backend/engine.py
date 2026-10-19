@@ -321,6 +321,10 @@ compute_campaign_trend = _html.compute_campaign_trend
 redact_snapshot = _html.redact_snapshot
 
 
+wave_cutover = _analyze.compute_wave_cutover_gate
+wave_rollup = _analyze.rollup_wave_cutover_gates
+
+
 def compute_current_baseline_gate(validation_plan: Any) -> Dict[str, Any]:
     """Return the engine-owned current-baseline cutover verdict for a validation plan.
 
