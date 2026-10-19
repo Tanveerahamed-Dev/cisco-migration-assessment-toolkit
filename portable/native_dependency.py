@@ -28,6 +28,8 @@ _DIST = "proxy_tools-0.1.0.dist-info/"
 _PACKAGE = "proxy_tools/__init__.py"
 _LICENSE = _DIST + "licenses/LICENSE"
 _RECORD = _DIST + "RECORD"
+_SOURCE_ROOT = "proxy_tools-0.1.0"
+_SOURCE_DIRECTORIES = frozenset({_SOURCE_ROOT + "/proxy_tools", _SOURCE_ROOT + "/proxy_tools.egg-info"})
 _MEMBERS = frozenset({_PACKAGE, _LICENSE, _RECORD, _DIST + "METADATA", _DIST + "WHEEL", _DIST + "top_level.txt"})
 _SOURCE_MEMBERS = frozenset({"PKG-INFO", "proxy_tools/__init__.py", "README.rst", "setup.cfg", "setup.py",
                              *("proxy_tools.egg-info/" + name for name in (
@@ -50,13 +52,20 @@ def inspect_proxy_sdist(raw: bytes) -> dict:
         files = {}
         seen = set()
         for member in archive.getmembers():
-            if (member.name in seen or not member.name.startswith("proxy_tools-0.1.0/")
-                    or member.issym() or member.islnk()):
+            if member.name in seen or member.issym() or member.islnk():
                 raise NativeRefusal("dependency_sdist_member")
             seen.add(member.name)
-            if member.isdir():
+            # TarInfo removes the directory's trailing slash. Only this exact
+            # top-level directory may precede the descendant-prefix check.
+            if member.isdir() and member.name == _SOURCE_ROOT:
                 continue
-            relative = member.name[len("proxy_tools-0.1.0/"):]
+            if not member.name.startswith(_SOURCE_ROOT + "/"):
+                raise NativeRefusal("dependency_sdist_member")
+            if member.isdir():
+                if member.name not in _SOURCE_DIRECTORIES:
+                    raise NativeRefusal("dependency_sdist_member")
+                continue
+            relative = member.name[len(_SOURCE_ROOT) + 1:]
             if not member.isfile() or relative not in _SOURCE_MEMBERS or member.size > 16384:
                 raise NativeRefusal("dependency_sdist_member")
             stream = archive.extractfile(member)
@@ -91,21 +100,33 @@ def _single(parsed, name, expected):
         raise NativeRefusal("dependency_metadata")
 
 
+def _zip_name(member):
+    # ZipInfo.filename can truncate at NUL or normalize separators. Never use
+    # that sanitized view as evidence of the complete central-directory name.
+    if (type(member.orig_filename) is not str or type(member.filename) is not str
+            or member.orig_filename != member.filename or "\x00" in member.orig_filename
+            or "\x00" in member.filename or member.flag_bits not in {0, 0x800}):
+        raise NativeRefusal("dependency_wheel_filename")
+    return member.orig_filename.encode("utf-8" if member.flag_bits & 0x800 else "cp437")
+
+
 def _zip_closure(raw, archive):
     """Reject prefix, unindexed local bytes, extra fields and trailing carriers."""
     cursor = 0
     files = {}
+    local_names = []
     for member in archive.infolist():
         if member.header_offset != cursor or member.flag_bits not in {0, 0x800}:
             raise NativeRefusal("dependency_wheel_layout")
         header = struct.unpack_from("<4s5H3I2H", raw, cursor)
         signature, _version, flags, method, _clock, _date, crc, compressed, size, name_size, extra = header
-        name = member.filename.encode("utf-8" if flags & 0x800 else "cp437")
+        name = _zip_name(member)
         start = cursor + 30
         if (signature != b"PK\x03\x04" or flags != member.flag_bits or method != member.compress_type
                 or crc != member.CRC or compressed != member.compress_size or size != member.file_size
                 or name_size != len(name) or extra != 0 or raw[start:start + name_size] != name):
             raise NativeRefusal("dependency_wheel_layout")
+        local_names.append(raw[start:start + name_size])
         body_start = start + name_size
         cursor = body_start + compressed
         body = raw[body_start:cursor]
@@ -130,6 +151,28 @@ def _zip_closure(raw, archive):
     if (disk or central_disk or comment or count_disk != count or count != len(_MEMBERS)
             or central_offset != cursor or central_offset + central_size != len(raw) - 22):
         raise NativeRefusal("dependency_wheel_layout")
+    # Walk every raw central entry, not just its aggregate bounds. Bind its
+    # encoded filename and UTF-8 flag to the local header and original name.
+    central_cursor = central_offset
+    central_end = central_offset + central_size
+    for member, local_name in zip(archive.infolist(), local_names):
+        if central_cursor + 46 > central_end:
+            raise NativeRefusal("dependency_wheel_layout")
+        central = struct.unpack_from("<4s6H3I5H2I", raw, central_cursor)
+        (signature, _made, _needed, flags, method, _clock, _date, crc, compressed, size,
+         name_size, extra, member_comment, member_disk, _attributes, external, offset) = central
+        name_start = central_cursor + 46
+        central_cursor = name_start + name_size + extra + member_comment
+        name = raw[name_start:name_start + name_size]
+        if (signature != b"PK\x01\x02" or central_cursor > central_end or extra or member_comment
+                or member_disk or flags != member.flag_bits or method != member.compress_type
+                or crc != member.CRC or compressed != member.compress_size or size != member.file_size
+                or external != member.external_attr or offset != member.header_offset
+                or b"\x00" in name or name != local_name or name != _zip_name(member)
+                or name.decode("utf-8" if flags & 0x800 else "cp437") != member.orig_filename):
+            raise NativeRefusal("dependency_wheel_layout")
+    if central_cursor != central_end:
+        raise NativeRefusal("dependency_wheel_layout")
     return files
 
 
@@ -148,6 +191,8 @@ def inspect_proxy_wheel(raw: bytes, *, expected_sha256: str, applicable_license_
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             members = archive.infolist()
+            for item in members:
+                _zip_name(item)
             if len(members) != len(_MEMBERS) or {item.filename for item in members} != _MEMBERS:
                 raise NativeRefusal("dependency_wheel_member_set")
             if archive.comment:

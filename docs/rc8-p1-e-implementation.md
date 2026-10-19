@@ -317,3 +317,50 @@ test assertion, gate, budget or timeout changes. Source-only Git filter/hash
 observations and independent review precede a fresh committed-head privacy scan
 and publication. Only fresh hosted results on the subsequent exact head can
 verify the repair; no old Windows or frozen result transfers.
+
+## Independent slice review: two archive-inspector defects
+
+The independent review of `32482da94aaa74702d217c975589c30aeec7b4ea`
+([6258189947](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/693#issuecomment-6258189947))
+is **BLOCKED** on two P2 source defects. The earlier head's 14 green contexts and
+desktop proof do not close these counterexamples or validate a correction head.
+The supervisor authorized both repairs and a preserved-parent pure merge of main
+`17bd076aca5b18deccdaf659152011410f4987c3`. Merge commit
+`7bbcfa70ffb9765fbbb5eb147c0529a304a491ea` has parents `32482da9` and
+`17bd076a`; its tree exactly matches `git merge-tree`, with no authored conflict
+resolution. The four imported #689 pause files remain main-owned.
+
+1. The wheel inspector compared local names and the closed set with the
+   sanitized `ZipInfo.filename`. A NUL followed by carrier bytes in only the
+   central-directory name could disappear from that view even with the altered
+   wheel's selected digest. The correction refuses original/sanitized name
+   differences and any NUL, parses every raw central entry, and binds its name
+   bytes and encoding flag to the local header and original name. Exact central
+   span consumption, stream EOF/CRC/size, source/license digests, member set,
+   metadata and RECORD checks remain required. Hosted controls mutate only the
+   central name and its declared size with the matching changed digest, retain
+   local headers/payload/RECORD bytes, and exercise encoding disagreements plus
+   matched encoding positives. New controls require both the existing public
+   archive-refusal code and the exact typed filename/layout cause; the existing
+   parser-error normalization is preserved.
+2. The sdist inspector required a descendant prefix before allowing its canonical
+   root directory. CPython strips that directory's trailing slash, so the only
+   pinned archive necessarily refused. The correction admits only the exact
+   canonical top-level directory before the prefix check; only the two known
+   descendant directories are admitted. Duplicate/link/type/file-set/size/source
+   and archive-hash refusals remain. The hosted positive reads the exact public
+   2,978-byte pinned archive from an inert base64 JSON fixture; it never imports,
+   extracts to disk, installs or executes its source. Synthetic positive and
+   directory/name/link/duplicate/file-set/size/hash negatives exercise the inner
+   guards with explicitly synthetic identity, separate from the unpatched real
+   pinned-archive positive.
+
+These are source corrections pending fresh exact-head hosted evidence. Every
+existing assertion is retained. No gate, budget, timeout, scanner, dependency
+pin, lock, producer or native startup change is made. The unresolved
+`PROXY_TOOLS_010_LICENSE_CONFLICT` remains BLOCKED, and all dependency execution,
+build, licence resolution, promotion and publication remain held. Static archive
+fixture copying is data handling only. The native path remains inert behind the
+browser. Fresh Rule-7/marker scans and independent source review precede the one
+push; fresh 14/14 and a bounded completion comment precede the same reviewer's
+re-review. PR #693 stays draft, with no PR merge or release authority.
