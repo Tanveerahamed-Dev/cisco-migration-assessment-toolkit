@@ -266,3 +266,28 @@ exact-head 14/14 and an itemized proof-status comment, then independent review.
 It is not P1-E native completion. PR #693 stays draft; the licence BLOCK and pins
 remain unchanged. Terminal hosted failures must be inspected and genuine source
 failures corrected without changing gates, budgets, timeouts or assertions.
+
+## Hosted diagnostic-fixture failure and correction
+
+On source head `cddd87ca6598e1f36564bf52329ce132a5945323`, CI run
+`39176198136`, Python 3.11 job `117819460127` ended with one failure in the
+shared default-suite pass: 20,712 passed, 370 skipped, three xfailed, five warnings
+and 26 subtests passed in 1,630.90 seconds. The unshared pass was not reached.
+The completed job log is retained outside the checkout; this is an actual test
+failure, not the expected old-head/main-parent custody refusal.
+
+`test_diagnostics_do_not_expose_physical_directories_selected_names_or_volume_ids`
+used the private fixture component `Protected`, which also appears in the
+redacted public type name `ProtectedRoot(<private>)`. The displayed representation
+contained no snapshot fields; the test's substring oracle collided with its own
+generic fixture name. Change only that synthetic namespace to the distinctive
+`ClientNamespaceSentinel` at its three consistent uses: protected-root fixture,
+diagnostic sentinel list and protected-path candidate. Every assertion and test
+definition is preserved, as is all product redaction code. This repairs the
+authored fixture; it does not resolve a demonstrated private-data exposure.
+
+Static round-trip comparison must reproduce the prior test bytes after reversing
+those three literal substitutions; assertion ASTs and test names/signatures remain
+identical. Fresh independent review, committed-head Rule-7/marker scans and hosted
+results are still required. The failed head and any other terminal findings remain
+history; no rerun, skip, relaxed assertion or earlier-head acceptance is inferred.

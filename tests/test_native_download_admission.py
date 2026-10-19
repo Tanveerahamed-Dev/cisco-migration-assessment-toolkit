@@ -15,7 +15,7 @@ VOLUME = "11111111-2222-3333-4444-555555555555"
 OTHER_VOLUME = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 STAGE = DirectorySnapshot(VOLUME, b"s" * 16, ("User", "NativeDownloads"), "NTFS", True, 123)
 TARGET = DirectorySnapshot(VOLUME, b"t" * 16, ("User", "Reports"), "NTFS", True, 123)
-ROOTS = tuple(ProtectedRoot(kind, VOLUME, ("Protected", kind)) for kind in sorted(ROOT_KINDS))
+ROOTS = tuple(ProtectedRoot(kind, VOLUME, ("ClientNamespaceSentinel", kind)) for kind in sorted(ROOT_KINDS))
 ATTEMPT = "a" * 32
 OWNED = {"staging_inventory": StagingInventory(True, 0), "slot": DownloadSlot(ATTEMPT)}
 
@@ -44,7 +44,7 @@ def test_diagnostics_do_not_expose_physical_directories_selected_names_or_volume
     plan = admit_download(**arguments())
     for item in (plan, STAGE, TARGET, *ROOTS):
         text = repr(item)
-        for private in (VOLUME, "NativeDownloads", "Reports", "Protected", "synthetic-report.json"):
+        for private in (VOLUME, "NativeDownloads", "Reports", "ClientNamespaceSentinel", "synthetic-report.json"):
             assert private not in text
 
 
@@ -54,7 +54,7 @@ def test_diagnostics_do_not_expose_physical_directories_selected_names_or_volume
 def test_each_protected_root_refuses_both_sides_including_resolved_aliases(kind, side, spelling):
     # A short-name/reparse test against real handles belongs to the hosted OS
     # owner. Here its resolved observation is deliberately the protected path.
-    components = ("Protected", kind)
+    components = ("ClientNamespaceSentinel", kind)
     if spelling == "case-alias":
         components = tuple(part.upper() for part in components)
     candidate = replace(STAGE if side == "staging_parent" else TARGET, components=components)
