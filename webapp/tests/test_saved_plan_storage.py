@@ -773,7 +773,16 @@ def test_publication_finalizer_reentry_refuses_promptly_and_rolls_back(seeded):
     worker = threading.Thread(target=operation, daemon=True)
     worker.start()
     worker.join(timeout=2)
-    assert not worker.is_alive(), "same-thread Store reentry deadlocked"
+    stalled = worker.is_alive()
+    if stalled:
+        # Native Lock permits foreign release. Unwind a broken guard before fixture.close;
+        # the original deadline still fails, rather than hanging teardown behind the lock.
+        try:
+            store._lock.release()
+        except RuntimeError:
+            pass
+        worker.join(timeout=2)
+    assert not stalled, "same-thread Store reentry deadlocked"
     assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
     assert "reentry" in str(errors[0])
     assert _counts(store) == (0, 0, 0)
