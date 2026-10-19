@@ -1,12 +1,11 @@
 {
   "schema": "atlas.portable-required-main-checks/1",
-  "source": "GitHub main branch protection observed after Release-1 hardening on 2026-09-05",
+  "source": "GitHub main branch protection observed after Release-1 hardening on 2026-09-05; the master reference context was removed when the owner paused it on 2026-10-18",
   "contexts": [
     "Build and qualify Atlas.exe",
     "Coverage",
     "Dependency audit",
     "Distribution contract",
-    "Exact-source compiler, reference, and release contracts",
     "Full source and frontend gate (unprivileged runner)",
     "Installed transition runtime · pinned Windows profile",
     "Ruff lint",
