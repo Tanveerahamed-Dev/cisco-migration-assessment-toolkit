@@ -73,7 +73,7 @@ jobs:
           git reset --hard --quiet
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (git status --porcelain) { throw 'test checkout normalization left a dirty tree' }
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12.10"
       # The suite drives node, so node is on PATH exactly as it was for the single gate job. No npm
@@ -166,7 +166,7 @@ jobs:
           git reset --hard --quiet
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (git status --porcelain) { throw 'test checkout normalization left a dirty tree' }
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12.10"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -259,7 +259,7 @@ jobs:
           if (git status --porcelain) { throw 'portable source checkout is not clean' }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "commit=$commit"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "tree=$tree"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12.10"
           cache: pip
@@ -422,7 +422,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12.10"
       - name: Reverify the downloaded closed release set
