@@ -11,7 +11,7 @@
 # than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
 
 [build-system]
-requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -54,7 +54,7 @@ dependencies = [
     "python-multipart>=0.0.9,<1",
     # AssessHub validates engine-owned UI contracts at runtime; also serves schema-contract tests.
     "jsonschema==4.26.0",
-    "jsonschema-rs==0.58.6",
+    "jsonschema-rs==0.59.0",
     # Explicit offline Registry policy; do not inherit this boundary transitively.
     "referencing==0.37.0",
     # Atlas R2 qualification receipts verify Ed25519 signatures directly.  Keep this an explicit
@@ -72,7 +72,7 @@ dev = [
     # Tests execute the pinned setup.py guard directly. PEP 517 installs the
     # build backend only in an isolated environment, so the development/test
     # environment must also carry the exact backend version it imports.
-    "setuptools==84.0.0",
+    "setuptools==84.2.1",
     "pytest>=8,<10",
     "pytest-cov>=5,<8",
     # REQUIRED by the Stop hook's green gate, not an optional speed-up. The suite runs 486-611 s
@@ -111,7 +111,7 @@ mcp = ["mcp>=1.28,<3"]
 # Compatibility alias; AssessHub runtime dependencies are already in the base set.
 webapp = []
 # Building the Atlas one-folder portable bundle (ADR-0004 P2; portable/build_atlas.py).
-build = ["pip==26.2.1", "pyinstaller>=6.10,<7", "cyclonedx-python-lib[json-validation]==11.12.0"]
+build = ["pip==26.2.2", "pyinstaller>=6.10,<7", "cyclonedx-python-lib[json-validation]==11.12.0"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
 # all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
 # BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
