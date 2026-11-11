@@ -30,7 +30,7 @@
     "miniflare": "5.20261006.0-alpha",
     "node-html-parser": "9.0.4",
     "oxlint": "1.76.0",
-    "react-server-dom-webpack": "19.3.0",
+    "react-server-dom-webpack": "19.3.1",
     "typescript": "5.9.3",
     "vinext": "0.2.1",
     "vite": "8.2.4",
